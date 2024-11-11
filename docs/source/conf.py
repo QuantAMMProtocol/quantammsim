@@ -11,10 +11,11 @@ sys.path.insert(0, os.path.abspath("../.."))
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'quantammsim'
-copyright = '2024, quantamm.fi'
-author = 'QuantAMM.fi team'
-release = '0.1'
+project = "quantammsim"
+copyright = "2024, quantamm.fi"
+author = "QuantAMM.fi team"
+version = "0.1"
+release = "0.1"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
