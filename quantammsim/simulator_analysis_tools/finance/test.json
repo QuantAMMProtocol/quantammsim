@@ -1,0 +1,420 @@
+{
+  "analysis": {
+    "return_analysis": [
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Absolute Return",
+        "metricValue": 198.7131334109519,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Sharpe Ratio",
+        "metricValue": NaN,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Annualized Sharpe Ratio",
+        "metricValue": NaN,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Sortino Ratio",
+        "metricValue": NaN,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Calmer Ratio",
+        "metricValue": NaN,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Omega Ratio",
+        "metricValue": 198.5153380715845,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Return on VaR",
+        "metricValue": NaN,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Annualized Return on VaR",
+        "metricValue": NaN,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Information Ratio",
+        "metricValue": NaN,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Tracking Error",
+        "metricValue": NaN,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Daily Returns Maximum Drawdown",
+        "metricValue": 0.0,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Weekly Returns Maximum Drawdown",
+        "metricValue": 0.0,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Monthly Returns Maximum Drawdown",
+        "metricValue": 0.0,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Conditional Drawdown at Risk",
+        "metricValue": 0.0,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Ulcer Index",
+        "metricValue": 0.0,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Sterling Ratio",
+        "metricValue": 356603.54596434213,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "mean",
+        "metricValue": NaN,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "std",
+        "metricValue": NaN,
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "kurtosis",
+        "metricValue": { "py/newargs": [NaN] },
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "skewness",
+        "metricValue": { "py/newargs": [NaN] },
+        "benchmarkName": "",
+        "metricTimePeriod": "Daily"
+      }
+    ],
+    "benchmark_analysis": [
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Upside Capture Ratio",
+        "metricValue": NaN,
+        "benchmarkName": "hodl",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Downside Capture Ratio",
+        "metricValue": -1.0678853703381296e-11,
+        "benchmarkName": "hodl",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Total Capture Ratio",
+        "metricValue": NaN,
+        "benchmarkName": "hodl",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "alpha",
+        "metricValue": NaN,
+        "benchmarkName": "hodl",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Information Ratio",
+        "metricValue": NaN,
+        "benchmarkName": "hodl",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Tracking Error",
+        "metricValue": NaN,
+        "benchmarkName": "hodl",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Daily VaR (95)",
+        "metricValue": 0,
+        "benchmarkName": "hodl",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Volatility",
+        "metricValue": 48.10421953869628,
+        "benchmarkName": "hodl",
+        "metricTimePeriod": "Daily"
+      },
+      {
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Beta",
+        "metricValue": NaN,
+        "benchmarkName": "hodl",
+        "metricTimePeriod": "Daily"
+      }
+    ],
+    "return_timeseries_analysis": [
+      {
+        "timeSteps": [
+          { "unix": 1696029400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696115800, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696202200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696288600, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696375000, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696461400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696547800, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696634200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696720600, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696807000, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696893400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696979800, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1697066200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1697152600, "coinsHeld": null, "timeStepTotal": 0.0 }
+        ],
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Avg Daily Drawdown per week",
+        "benchmarkName": "Daily"
+      },
+      {
+        "timeSteps": [
+          { "unix": 1696029400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696115800, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696202200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696288600, "coinsHeld": null, "timeStepTotal": 0.0 }
+        ],
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Avg Daily Drawdown per month",
+        "benchmarkName": "Daily"
+      },
+      {
+        "timeSteps": [
+          { "unix": 1696029400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696115800, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696202200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696288600, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696375000, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696461400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696547800, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696634200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696720600, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696807000, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696893400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696979800, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1697066200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1697152600, "coinsHeld": null, "timeStepTotal": 0.0 }
+        ],
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Daily Maximum Drawdown per week",
+        "benchmarkName": "Daily"
+      },
+      {
+        "timeSteps": [
+          { "unix": 1696029400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696115800, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696202200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696288600, "coinsHeld": null, "timeStepTotal": 0.0 }
+        ],
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Daily Maximum Drawdown per month",
+        "benchmarkName": "Daily"
+      },
+      {
+        "timeSteps": [
+          { "unix": 1696029400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696634200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1697239000, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1697843800, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1698448600, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1699053400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1699658200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1700263000, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1700867800, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1701472600, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1702077400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1702682200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1703287000, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1703891800, "coinsHeld": null, "timeStepTotal": 0.0 }
+        ],
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Weekly CDaR",
+        "benchmarkName": "Daily"
+      },
+      {
+        "timeSteps": [
+          { "unix": 1696029400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1698657400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1701285400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1703913400, "coinsHeld": null, "timeStepTotal": 0.0 }
+        ],
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Monthly CDaR",
+        "benchmarkName": "Daily"
+      },
+      {
+        "timeSteps": [
+          { "unix": 1696029400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1696634200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1697239000, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1697843800, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1698448600, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1699053400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1699658200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1700263000, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1700867800, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1701472600, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1702077400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1702682200, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1703287000, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1703891800, "coinsHeld": null, "timeStepTotal": 0.0 }
+        ],
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Weekly Ulcer Index",
+        "benchmarkName": "Daily"
+      },
+      {
+        "timeSteps": [
+          { "unix": 1696029400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1698657400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1701285400, "coinsHeld": null, "timeStepTotal": 0.0 },
+          { "unix": 1703913400, "coinsHeld": null, "timeStepTotal": 0.0 }
+        ],
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Monthly Ulcer Index",
+        "benchmarkName": "Daily"
+      },
+      {
+        "timeSteps": [
+          {
+            "unix": 1696029400,
+            "coinsHeld": null,
+            "timeStepTotal": -676.5722000576513
+          },
+          {
+            "unix": 1696634200,
+            "coinsHeld": null,
+            "timeStepTotal": -583.9252185096768
+          },
+          {
+            "unix": 1697239000,
+            "coinsHeld": null,
+            "timeStepTotal": -740.1165207733659
+          },
+          {
+            "unix": 1697843800,
+            "coinsHeld": null,
+            "timeStepTotal": -742.752476282368
+          },
+          {
+            "unix": 1698448600,
+            "coinsHeld": null,
+            "timeStepTotal": -359.118267188484
+          },
+          {
+            "unix": 1699053400,
+            "coinsHeld": null,
+            "timeStepTotal": -738.6736158021454
+          },
+          {
+            "unix": 1699658200,
+            "coinsHeld": null,
+            "timeStepTotal": -512.4132508640221
+          },
+          {
+            "unix": 1700263000,
+            "coinsHeld": null,
+            "timeStepTotal": -737.1744180780328
+          },
+          {
+            "unix": 1700867800,
+            "coinsHeld": null,
+            "timeStepTotal": -227.2817580396565
+          },
+          {
+            "unix": 1701472600,
+            "coinsHeld": null,
+            "timeStepTotal": 909903.1441032726
+          }
+        ],
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Weekly Sterling Ratio",
+        "benchmarkName": "Daily"
+      },
+      {
+        "timeSteps": [
+          {
+            "unix": 1696029400,
+            "coinsHeld": null,
+            "timeStepTotal": -476.93957654256127
+          },
+          {
+            "unix": 1698657400,
+            "coinsHeld": null,
+            "timeStepTotal": -493.781740159828
+          },
+          {
+            "unix": 1701285400,
+            "coinsHeld": null,
+            "timeStepTotal": 577397.2757046726
+          }
+        ],
+        "Rf": "3M T-Bill Returns",
+        "metricName": "Monthly Sterling Ratio",
+        "benchmarkName": "Daily"
+      }
+    ]
+  }
+}

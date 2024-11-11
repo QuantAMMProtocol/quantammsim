@@ -1,0 +1,92 @@
+Getting Started
+===============
+
+This tutorial will walk you through your first AMM simulation using quantammsim.
+
+Your First Simulation
+---------------------
+
+Let's create a simple momentum-based AMM pool and run a simulation:
+
+.. code-block:: python
+
+    from quantammsim.runners.jax_runners import do_run_on_historic_data
+
+    # Set up a basic simulation
+    run_fingerprint = {
+        'tokens': ['BTC', 'DAI'],
+        'rule': 'momentum',
+        'initial_pool_value': 1000000.0
+    }
+
+    result = do_run_on_historic_data(run_fingerprint)
+
+Understanding the Results
+-------------------------
+
+Let's examine what the simulation tells us:
+
+.. code-block:: python
+
+    # Access key metrics
+    print(f"Final pool value: {result.final_pool_value}")
+    print(f"Total trading volume: {result.total_volume}")
+
+
+Now that you've run your first simulation, you might want to:
+
+* Try different update rules (see :doc:`./update_rules`)
+* Explore Balancer and CowAMM pools (see :doc:`./balancer_pools` and :doc:`./cow_pools`)
+* Learn about the mechanics of the pools (see :doc:`../api/core/pools`)
+
+Basic Usage
+-----------
+
+Let's walk through a simple example of simulating a BTC/DAI pool using the momentum strategy:
+
+.. code-block:: python
+
+    from quantammsim.runners.jax_runners import do_run_on_historic_data
+
+    # Define the basic parameters for our simulation
+    run_fingerprint = {
+        'tokens': ['BTC', 'DAI'],        # Token pair to simulate
+        'rule': 'momentum',              # Weight update strategy
+        'initial_pool_value': 1000000.0, # Starting liquidity
+        'chunk_period': 60,              # Update frequency in minutes
+        'startDateString': '2023-06-01 00:00:00',
+        'endDateString': '2023-12-31 23:59:59'
+    }
+
+    # Run the simulation
+    result = do_run_on_historic_data(run_fingerprint)
+
+    # The result contains various metrics and time series including:
+    # - Token prices
+    # - Pool weights
+    # - Trading volumes
+    # - Pool value over time
+
+Advanced Configuration
+----------------------
+
+The run_fingerprint supports many additional parameters for fine-tuning the simulation:
+
+.. code-block:: python
+
+    run_fingerprint = {
+        # ... basic parameters ...
+        'weight_interpolation_method': 'linear',  # How weights change between updates
+        'fees': 0.0,                             # Trading fees
+        'initial_memory_length': 20.0,           # Lookback period for strategies
+        'maximum_change': 0.0003                 # Max weight change per update
+    }
+
+Next Steps
+----------
+
+To learn more about:
+
+* Different pool types and strategies, see :doc:`../user_guide/core_concepts`
+* Detailed parameter configuration, see :doc:`../user_guide/run_fingerprints`
+* Dive into the math and implementation details, see :doc:`../api/core/pools`
