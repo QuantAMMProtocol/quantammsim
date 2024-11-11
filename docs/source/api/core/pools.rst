@@ -42,6 +42,7 @@ Traditional constant-weight geometric mean AMM pools, following the Balancer pro
    :noindex:
 
 .. _cow pool:
+
 CowAMM Pools
 ~~~~~~~~~~~~
 

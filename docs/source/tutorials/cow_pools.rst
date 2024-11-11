@@ -72,4 +72,4 @@ CoW pools support several advanced parameters:
 Implementation Details
 ----------------------
 
-The logic can be found in the class documenation :ref:`here <cow pool>`.
+The logic can be found in the class documentation :ref:`here <cow pool>`.
