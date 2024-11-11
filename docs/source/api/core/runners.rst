@@ -1,7 +1,7 @@
 Runners
 =========
 
-.. automodule:: quantamm.runners
+.. automodule:: quantsim.runners
    :members:
    :undoc-members:
    :show-inheritance:
