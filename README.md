@@ -31,9 +31,9 @@
     <br />
     <a href="https://quantammsim.readthedocs.io/en/latest/tutorials/getting_started.html">Getting Started</a>
     ·
-    <a href="https://github.com/username/quantammsim/issues">Report Bug</a>
+    <a href="https://github.com/QuantAMMProtocol/QuantAMMSim/issues">Report Bug</a>
     ·
-    <a href="https://github.com/username/quantammsim/issues">Request Feature</a>
+    <a href="https://github.com/QuantAMMProtocol/QuantAMMSim/issues">Request Feature</a>
   </p>
 </div>
 
@@ -78,7 +78,7 @@ pip install quantammsim
 
 ### Development Installation
 ```bash
-git clone https://github.com/username/quantammsim.git
+git clone https://github.com/QuantAMMProtocol/quantammsim.git
 cd quantammsim
 pip install -e .
 ```
@@ -117,13 +117,13 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 Distributed under the MIT License. See `LICENSE` for more information.
 
 <!-- MARKDOWN LINKS & IMAGES -->
-[contributors-shield]: https://img.shields.io/github/contributors/username/quantammsim.svg?style=for-the-badge
-[contributors-url]: https://github.com/username/quantammsim/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/username/quantammsim.svg?style=for-the-badge
-[forks-url]: https://github.com/username/quantammsim/network/members
-[stars-shield]: https://img.shields.io/github/stars/username/quantammsim.svg?style=for-the-badge
-[stars-url]: https://github.com/username/quantammsim/stargazers
-[issues-shield]: https://img.shields.io/github/issues/username/quantammsim.svg?style=for-the-badge
-[issues-url]: https://github.com/username/quantammsim/issues
-[license-shield]: https://img.shields.io/github/license/username/quantammsim.svg?style=for-the-badge
-[license-url]: https://github.com/username/quantammsim/blob/master/LICENSE
+[contributors-shield]: https://img.shields.io/github/contributors/QuantAMMProtocol/quantammsim.svg?style=for-the-badge
+[contributors-url]: https://github.com/QuantAMMProtocol/quantammsim/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/QuantAMMProtocol/quantammsim.svg?style=for-the-badge
+[forks-url]: https://github.com/QuantAMMProtocol/quantammsim/network/members
+[stars-shield]: https://img.shields.io/github/stars/QuantAMMProtocol/quantammsim.svg?style=for-the-badge
+[stars-url]: https://github.com/QuantAMMProtocol/quantammsim/stargazers
+[issues-shield]: https://img.shields.io/github/issues/QuantAMMProtocol/quantammsim.svg?style=for-the-badge
+[issues-url]: https://github.com/QuantAMMProtocol/quantammsim/issues
+[license-shield]: https://img.shields.io/github/license/QuantAMMProtocol/quantammsim.svg?style=for-the-badge
+[license-url]: https://github.com/QuantAMMProtocol/quantammsim/blob/master/LICENSE
