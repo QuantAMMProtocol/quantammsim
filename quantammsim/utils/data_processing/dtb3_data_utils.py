@@ -1,6 +1,6 @@
 import pandas as pd
 from importlib import resources as impresources
-from quantamm import data
+from quantammsim import data
 from pathlib import Path
 
 
