@@ -27,7 +27,6 @@ class FinancialAnalysisRequestDto(object):
 class SimulationRunDto(object):
     def __init__(self, jsonDto):
         print("run const")
-        print("jsonDto[pool]: ", jsonDto["pool"])
         self.pool = LiquidityPoolDto(jsonDto["pool"])
         print(jsonDto["startUnix"])
         print(jsonDto["endUnix"])
@@ -123,6 +122,7 @@ class LiquidityPoolDto(object):
         self.id = poolDto["id"]
         poolConstituents = list()
         for coin in poolDto["poolConstituents"]:
+            print("coin:", coin)
             poolConstituents.append(LiquidityPoolCoinDto(coin))
         self.poolConstituents = poolConstituents
         self.updateRule = UpdateRuleDto(poolDto["updateRule"])
@@ -177,6 +177,26 @@ class SimulationResultTimestepDto(object):
         self.coinsHeld = coinsHeld
         self.timeStepTotal = timeStepTotal
 
+
+class SimulationRunMetric:
+    def __init__(self, Rf, metricName, metricValue, benchmarkName, metricTimePeriod):
+        self.Rf = Rf
+        self.metricName = metricName
+        self.metricValue = metricValue
+        self.benchmarkName = benchmarkName
+        self.metricTimePeriod = metricTimePeriod
+
+
+class SimulationResultTimeseries(object):
+    def __init__(self, resultTimeSteps, Rf, metricName, benchmarkName):
+        self.timeSteps = resultTimeSteps
+        self.Rf = Rf
+        self.metricName = metricName
+        self.benchmarkName = benchmarkName
+
+
+if __name__ == "__main__":
+    print("module")
 
 if __name__ == "__main__":
     print("module")

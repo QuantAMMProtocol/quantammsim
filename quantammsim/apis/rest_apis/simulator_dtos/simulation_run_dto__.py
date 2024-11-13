@@ -27,7 +27,6 @@ class FinancialAnalysisRequestDto(object):
 class SimulationRunDto(object):
     def __init__(self, jsonDto):
         print("run const")
-        print("jsonDto[pool]: ", jsonDto["pool"])
         self.pool = LiquidityPoolDto(jsonDto["pool"])
         print(jsonDto["startUnix"])
         print(jsonDto["endUnix"])

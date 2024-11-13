@@ -221,7 +221,7 @@ def forward_pass(
         return {
             "reserves": reserves,
         }
-    local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
+    local_prices = dynamic_slice(prices, start_index, (bout_length-1, n_assets))
     value_over_time = jnp.sum(jnp.multiply(reserves, local_prices), axis=-1)
     pool_returns = jnp.diff(value_over_time) / value_over_time[:-1]
     if return_val == "sharpe":

@@ -14,27 +14,15 @@ class TrainingParameterDto(object):
         self.value = factorDto["value"]
 
 
-class FinancialAnalysisRequestDto(object):
-    def __init__(self, jsonDto):
-        self.startDateString = jsonDto["startDateString"]
-        self.endDateString = jsonDto["endDateString"]
-        self.tokens = jsonDto["tokens"]
-        self.returns = jsonDto["returns"]
-        self.benchmarks = jsonDto["benchmarks"]
-
-
 # input root
 class SimulationRunDto(object):
     def __init__(self, jsonDto):
         print("run const")
-        print("jsonDto[pool]: ", jsonDto["pool"])
         self.pool = LiquidityPoolDto(jsonDto["pool"])
         print(jsonDto["startUnix"])
         print(jsonDto["endUnix"])
         self.startDate = jsonDto["startUnix"]
         self.endDate = jsonDto["endUnix"]
-        self.startDateString = jsonDto["startDateString"]
-        self.endDateString = jsonDto["endDateString"]
 
 
 class TrainingDto(object):
@@ -133,7 +121,7 @@ class UpdateRuleDto(object):
         print("rule const")
         self.name = ruleDto["name"]
         factors = list()
-        for coin in ruleDto["UpdateRuleParameters"]:
+        for coin in ruleDto["updateRuleParameters"]:
             factors.append(UpdateRuleFactorDto(coin))
         self.updateRuleFactors = factors
 
@@ -141,10 +129,7 @@ class UpdateRuleDto(object):
 class UpdateRuleFactorDto(object):
     def __init__(self, factorDto):
         self.name = factorDto["name"]
-        tokenValues = list()
-        for tokenValue in factorDto["value"]:
-            tokenValues.append(float(tokenValue))
-        self.value = tokenValues
+        self.value = float(factorDto["value"])
 
 
 class LiquidityPoolCoinDto(object):
@@ -161,14 +146,8 @@ class LiquidityPoolCoinDto(object):
 
 # outputs
 class SimulationResult(object):
-    def __init__(self, result):
-        self.timeSteps = result["resultTimeSteps"]
-        self.analysis = result["analysis"]
-
-
-class FinancialAnalysisResult(object):
-    def __init__(self, result):
-        self.analysis = result
+    def __init__(self, resultTimeSteps):
+        self.timeSteps = resultTimeSteps
 
 
 class SimulationResultTimestepDto(object):
@@ -176,6 +155,23 @@ class SimulationResultTimestepDto(object):
         self.unix = unix
         self.coinsHeld = coinsHeld
         self.timeStepTotal = timeStepTotal
+
+
+class SimulationRunMetric:
+    def __init__(self, Rf, metricName, metricValue, benchmarkName, metricTimePeriod):
+        self.Rf = Rf
+        self.metricName = metricName
+        self.metricValue = metricValue
+        self.benchmarkName = benchmarkName
+        self.metricTimePeriod = metricTimePeriod
+
+
+class SimulationResultTimeseries(object):
+    def __init__(self, resultTimeSteps, Rf, metricName, benchmarkName):
+        self.timeSteps = resultTimeSteps
+        self.Rf = Rf
+        self.metricName = metricName
+        self.benchmarkName = benchmarkName
 
 
 if __name__ == "__main__":

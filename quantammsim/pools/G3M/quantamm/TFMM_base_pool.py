@@ -59,14 +59,9 @@ class TFMMBasePool(AbstractPool):
 
     def __init__(self):
         """
-        Initialize a new G3MBasePool instance.
-
-        Args:
-            pool_type (str): The type of the pool.
-            n_parameter_sets (int, optional): The number of parameter sets. Defaults to 1.
+        Initialize a new TFMMBasePool instance.
         """
         super().__init__()
-        # pool_type, n_assets, n_parameter_sets)
 
     @partial(jit, static_argnums=(2))
     def calculate_reserves_with_fees(

@@ -7,35 +7,16 @@ from itertools import product
 
 import random
 from datetime import datetime, timedelta
-# from quantamm.runners.jax_runners import do_run_on_historic_data, optimized_output_conversion
-# import quantamm.simulator_analysis_tools.finance.financial_analysis_calculator as fac
-# import quantamm.simulator_analysis_tools.finance.financial_analysis_functions as faf
-# import quantamm.simulator_analysis_tools.finance.financial_analysis_utils as fau
-# import quantamm.simulator_analysis_tools.finance.financial_analysis_charting as fach
-# from quantamm.core_amm_simulator.param_utils import dict_of_np_to_jnp, memory_days_to_lamb
-# from quantamm.utils.data_processing.datetime_utils import unixtimestamp_to_precise_datetime
-# from quantamm.utils.data_processing.dtb3_data_utils import filter_dtb3_values
-# from quantamm.utils.data_processing.historic_data_utils import  get_data_dict,get_historic_csv_data
-
 from quantammsim.runners.jax_runners import do_run_on_historic_data
 from quantammsim.runners.jax_runner_utils import optimized_output_conversion
 import quantammsim.simulator_analysis_tools.finance.financial_analysis_calculator as fac
 import quantammsim.simulator_analysis_tools.finance.financial_analysis_functions as faf
 import quantammsim.simulator_analysis_tools.finance.financial_analysis_utils as fau
 import quantammsim.simulator_analysis_tools.finance.financial_analysis_charting as fach
-from quantammsim.core_simulator.param_utils import (
-    dict_of_np_to_jnp,
-    memory_days_to_lamb,
-)
-from quantammsim.utils.data_processing.datetime_utils import (
-    unixtimestamp_to_precise_datetime,
-)
+from quantammsim.core_simulator.param_utils import dict_of_np_to_jnp, memory_days_to_lamb
+from quantammsim.utils.data_processing.datetime_utils import unixtimestamp_to_precise_datetime
 from quantammsim.utils.data_processing.dtb3_data_utils import filter_dtb3_values
-from quantammsim.utils.data_processing.historic_data_utils import (
-    get_data_dict,
-    get_historic_csv_data,
-)
-
+from quantammsim.utils.data_processing.historic_data_utils import  get_data_dict,get_historic_csv_data
 
 def slice_minutes_array(
     minutes_array, array_start_date_str, start_date_str, end_date_str
@@ -200,7 +181,8 @@ def retrieve_simulation_run_analysis_results(run_fingerprint, params, portfolio_
     hodl_daily_returns = calculate_daily_returns(
         hodl_result["value"], run_fingerprint["startDateString"], "hodl"
     )
-
+    print("portfolio_daily_returns: ", portfolio_daily_returns.shape)
+    print("portfolio_daily value: ", portfolio_result["value"].shape)
     # if btc_result is not None:
     #    # Calculate returns for hodl
     #    btc_daily_returns = calculate_daily_returns(
@@ -212,6 +194,7 @@ def retrieve_simulation_run_analysis_results(run_fingerprint, params, portfolio_
             "DTB3.csv", run_fingerprint["startDateString"], run_fingerprint["endDateString"]
         )
     )
+    print("yearly_daily_rf_values: ", yearly_daily_rf_values.shape)
 
     results = fac.perform_porfolio_financial_analysis(portfolio_daily_returns, yearly_daily_rf_values,run_fingerprint["startDateString"], [hodl_daily_returns], ["hodl"], "3M TBill (DTB3)")
 
@@ -296,7 +279,7 @@ def run_bencharks_and_financial_analysis(tokens, portfolio_daily_returns, startD
     if isinstance(portfolio_daily_returns, list):
         portfolio_daily_returns = np.array(portfolio_daily_returns)
     benchmark_results = []
-
+    
     yearly_daily_rf_values = fau.convert_annual_to_daily_returns(
         filter_dtb3_values(
             "DTB3.csv", startDateString, endDateString
@@ -314,14 +297,14 @@ def run_bencharks_and_financial_analysis(tokens, portfolio_daily_returns, startD
         "initial_weights_logits": initial_value_log_ratio,
         "bout_offset": 0,
     }
-
+    
     if "hodl" in benchmarks:
         hodl_params = {
             "initial_weights_logits": initial_value_log_ratio
         }
         hodl_fingerprint = copy.deepcopy(benchmark_fingerprint)
         hodl_fingerprint["rule"] = "hodl"
-
+        
         hodl_result = do_run_on_historic_data(
             hodl_fingerprint, dict_of_np_to_jnp(hodl_params), do_test_period=False
         )
@@ -343,22 +326,16 @@ def retrieve_param_and_mc_financial_analysis_results(
     train_end_date_str = run_fingerprint["endDateString"]
     local_run_fingerprint = copy.deepcopy(run_fingerprint)
     local_run_fingerprint["endDateString"] = testEndDateString
-
+    
     portfolio_result = do_run_on_historic_data(
-        local_run_fingerprint,
-        dict_of_np_to_jnp(params),
-        price_data=price_data,
-        do_test_period=False,
+        local_run_fingerprint, dict_of_np_to_jnp(params), price_data=price_data, do_test_period=False
     )
 
     hodl_params = copy.deepcopy(params)
     hodl_fingerprint = copy.deepcopy(local_run_fingerprint)
     hodl_fingerprint["rule"] = "hodl"
     hodl_result = do_run_on_historic_data(
-        hodl_fingerprint,
-        dict_of_np_to_jnp(hodl_params),
-        price_data=price_data,
-        do_test_period=False,
+        hodl_fingerprint, dict_of_np_to_jnp(hodl_params), price_data=price_data, do_test_period=False
     )
 
     btc_params = copy.deepcopy(params)
@@ -366,10 +343,7 @@ def retrieve_param_and_mc_financial_analysis_results(
     btc_fingerprint["tokens"] = ["BTC"]
     btc_fingerprint["rule"] = "hodl"
     btc_result = do_run_on_historic_data(
-        btc_fingerprint,
-        dict_of_np_to_jnp(btc_params),
-        price_data=btc_price_data,
-        do_test_period=False,
+        btc_fingerprint, dict_of_np_to_jnp(btc_params), price_data=btc_price_data, do_test_period=False
     )
 
     fach.plot_line_chart_from_results(
@@ -560,7 +534,7 @@ def calculate_daily_returns(minute_values, startDateString, name):
     daily_return_array = daily_returns.to_numpy()
 
     # Convert daily returns to numpy array and return
-    daily_return_array = np.insert(daily_return_array, 0, 0)
+    # daily_return_array = np.insert(daily_return_array, 0, 0)
 
     return daily_return_array
 
@@ -596,9 +570,6 @@ def retrieve_param_financial_analysis_results(
         hodl_result, run_fingerprint_start_date, "hodl"
     )
 
-    print("portfolio_daily_returns: ", portfolio_daily_returns.shape)
-    print("portfolio_daily value: ", portfolio_result["value"].shape)
-    
     if btc_result is not None:
         # Calculate returns for hodl
         btc_daily_returns = calculate_daily_returns(
@@ -778,10 +749,7 @@ def retrieve_mc_param_financial_results(run_fingerprint, params, testEndDateStri
     btc_fingerprint["tokens"] = ["BTC"]
     btc_fingerprint["rule"] = "hodl"
     btc_result = do_run_on_historic_data(
-        btc_fingerprint,
-        dict_of_np_to_jnp(btc_params),
-        price_data=None,
-        do_test_period=False,
+        btc_fingerprint, dict_of_np_to_jnp(btc_params), price_data=None, do_test_period=False
     )
 
     mc_data = get_historic_csv_data(results,["close"],None,run_fingerprint["startDateString"],testEndDateString)
@@ -795,10 +763,7 @@ def retrieve_mc_param_financial_results(run_fingerprint, params, testEndDateStri
         local_run_fingerprint["endDateString"] = testEndDateString
 
         portfolio_result = do_run_on_historic_data(
-            local_run_fingerprint,
-            dict_of_np_to_jnp(params),
-            price_data=variation_dict,
-            do_test_period=False,
+            local_run_fingerprint, dict_of_np_to_jnp(params), price_data=variation_dict, do_test_period=False
         )
 
         minute_index = pd.date_range(
@@ -813,10 +778,7 @@ def retrieve_mc_param_financial_results(run_fingerprint, params, testEndDateStri
         hodl_fingerprint = copy.deepcopy(local_run_fingerprint)
         hodl_fingerprint["rule"] = "hodl"
         hodl_result = do_run_on_historic_data(
-            hodl_fingerprint,
-            dict_of_np_to_jnp(hodl_params),
-            price_data=variation_dict,
-            do_test_period=False,
+            hodl_fingerprint, dict_of_np_to_jnp(hodl_params), price_data=variation_dict, do_test_period=False
         )
 
         mc_results.append(

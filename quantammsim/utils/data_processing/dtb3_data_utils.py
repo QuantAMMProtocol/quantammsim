@@ -1,6 +1,6 @@
 import pandas as pd
 from importlib import resources as impresources
-from quantsim import data
+from quantamm import data
 from pathlib import Path
 
 
@@ -51,8 +51,7 @@ def filter_dtb3_values(filename, start_date, end_date, target_directory=None):
 
     # Convert DTB3 column to numpy array
     dtb3_values = filtered_df["DTB3"].astype(float).to_numpy()
-    # Remove the last element of the array
-    dtb3_values = dtb3_values[:-1]
+
     # Convert percentage values in DTB3 column to decimals
     dtb3_values = dtb3_values / 100.0
 

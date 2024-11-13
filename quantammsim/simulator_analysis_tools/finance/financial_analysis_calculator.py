@@ -1,6 +1,11 @@
 from datetime import datetime
-from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
-    SimulationResultTimestepDto,
+# from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
+#     SimulationResultTimestepDto,
+#     SimulationResultTimeseries,
+#     SimulationRunMetric,
+# )
+from quantammsim._simulationRunDto import SimulationResultTimestepDto
+from quantammsim.simulatorMocks.simulationRunDto import (
     SimulationResultTimeseries,
     SimulationRunMetric,
 )
@@ -277,6 +282,8 @@ def perform_return_analysis(returns, dailyRfValues):
             - Statistical Properties
     """
     # Calculate the Sharpe ratio
+    print("returns.shape ", returns.shape)
+    print("dailyRfValues.shape ", dailyRfValues.shape)
     sharpe = faf.calculate_sharpe_ratio(returns, dailyRfValues)
 
     # Calculate the Sortino ratio

@@ -189,7 +189,7 @@ def runSimulation():
     print(request_data)
     dto = SimulationRunDto(request_data)
     print("starting")
-
+    print("dto: ", dto.pool.poolConstituents)
     result = run_pool_simulation(dto)
 
     resultJSON = jsonpickle.encode(SimulationResult(result), unpicklable=False)
