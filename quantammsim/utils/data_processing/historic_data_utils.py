@@ -232,7 +232,6 @@ def update_historic_data(token, root):
     # Save the plot to a file
     final_plot_filename = outputPath + f"{token}_final_close_price_over_unix_time.png"
     plt.savefig(final_plot_filename)
-
     csvData = csvData.sort_values(by="unix", ascending=True)
 
     csvData.to_csv(outputMinutePath, mode="w", index=False)
@@ -278,6 +277,7 @@ def update_historic_data(token, root):
     price_pct_plot_filename = outputPath + f"{token}_price_pct_diff_over_time.png"
     plt.savefig(price_pct_plot_filename)
 
+    plt.close()
     csvData[csvData["date"].str.contains("05:00:00")].to_csv(
         dailyPath, mode="w", index=False
     )
