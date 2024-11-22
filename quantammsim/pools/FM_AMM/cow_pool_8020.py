@@ -166,7 +166,7 @@ class CowPool8020(AbstractPool):
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
 
-    def calculate_weights(self) -> jnp.ndarray:
+    def calculate_weights(self, *args, **kwargs) -> jnp.ndarray:
         return jnp.array([0.8, 0.2])
 
     def make_vmap_in_axes(self, params: Dict[str, Any], n_repeats_of_recurred: int = 0):
