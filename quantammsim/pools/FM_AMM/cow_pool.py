@@ -50,7 +50,7 @@ class CowPool(AbstractPool):
         weights = self.calculate_weights(params)
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
-        local_prices = dynamic_slice(prices, start_index, (bout_length - 1 + 1, n_assets))
+        local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
 
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_local_prices = local_prices[
@@ -86,7 +86,7 @@ class CowPool(AbstractPool):
         weights = self.calculate_weights(params)
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
-        local_prices = dynamic_slice(prices, start_index, (bout_length - 1 + 1, n_assets))
+        local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
 
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_local_prices = local_prices[
@@ -129,7 +129,7 @@ class CowPool(AbstractPool):
         weights = self.calculate_weights(params)
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
-        local_prices = dynamic_slice(prices, start_index, (bout_length - 1 + 1, n_assets))
+        local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
 
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_local_prices = local_prices[
@@ -147,7 +147,7 @@ class CowPool(AbstractPool):
         # can be singletons, in which case we repeat them for the length of the bout
 
         # Determine the maximum leading dimension
-        max_len = bout_length - 1 + 1
+        max_len = bout_length - 1
         if run_fingerprint["arb_frequency"] != 1:
             max_len = max_len // run_fingerprint["arb_frequency"]
         # Broadcast input arrays to match the maximum leading dimension.
