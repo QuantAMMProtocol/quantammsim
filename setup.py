@@ -15,6 +15,7 @@ setup(
         "cvxpy",
         "matplotlib",
         "tqdm",
+        "optuna",
     ],
     extras_require={
         "dev": [
