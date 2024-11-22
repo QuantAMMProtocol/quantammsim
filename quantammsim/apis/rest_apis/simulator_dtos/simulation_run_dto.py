@@ -35,6 +35,19 @@ class SimulationRunDto(object):
         self.endDate = jsonDto["endUnix"]
         self.startDateString = jsonDto["startDateString"]
         self.endDateString = jsonDto["endDateString"]
+        self.feeHooks = list()
+        for feeHook in jsonDto["feeHooks"]:
+            self.feeHooks.append(FeeHook(feeHook))
+        
+        self.swapImports = list()
+
+        for swapImport in jsonDto["swapImports"]:
+            self.swapImports.append(SwapImport(swapImport))
+        
+        self.gasSteps = list()
+
+        for gasStep in jsonDto["gasPriceImports"]:
+            self.gasSteps.append(GasStep(gasStep))
 
 
 class TrainingDto(object):
@@ -117,6 +130,51 @@ class TrainingParametersDto(object):
         self.trainingParameters = params
 
 
+class GasStep:
+    def __init__(self, gasStepDto):
+        self.unix = gasStepDto["unix"]
+        self.value = gasStepDto["value"]
+
+class FeeHookStep:
+    def __init__(self, feeHookStepDto):
+        self.unix = feeHookStepDto["unix"]
+        self.value = feeHookStepDto["value"]
+
+
+class SwapImport:
+    def __init__(self, swapImportDto):
+        unix = swapImportDto["unix"]
+        tokenIn = swapImportDto["tokenIn"]
+        tokenOut = swapImportDto["tokenOut"]
+        amountIn = swapImportDto["amountIn"]
+
+
+class SwapTimeseries:
+    def __init__(self, swapTimeSeriesDto):
+        self.timeSeriesName = swapTimeSeriesDto["timeSeriesName"]
+        self.swaps = list()
+        for swapImport in swapTimeSeriesDto["swaps"]:
+            self.swaps.append(SwapImport(swapImport))
+
+
+class FeeHook(object):
+    def __init__(self, feeHookDto):
+        self.hookName = feeHookDto["hookName"]
+        self.hookTargetTokens = list()
+        for token in feeHookDto["hookTargetTokens"]:
+            self.hookTargetTokens.append(token)
+
+        self.hookTimeSteps = list()
+
+        for step in feeHookDto["hookTimeSteps"]:
+            self.hookTimeSteps.append(FeeHookStep(step))
+
+        self.hookScalarStep = FeeHookStep(feeHookDto["hookScalarStep"])
+        self.minValue = feeHookDto["minValue"]
+        self.maxValue = feeHookDto["maxValue"]
+        self.unit = feeHookDto["unit"]
+
+
 class LiquidityPoolDto(object):
     def __init__(self, poolDto):
         print("pool const")
@@ -126,6 +184,7 @@ class LiquidityPoolDto(object):
             poolConstituents.append(LiquidityPoolCoinDto(coin))
         self.poolConstituents = poolConstituents
         self.updateRule = UpdateRuleDto(poolDto["updateRule"])
+
 
 
 class UpdateRuleDto(object):
