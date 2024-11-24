@@ -85,7 +85,7 @@ class HODLPool(AbstractPool):
             params, run_fingerprint, prices, start_index, additional_oracle_input
         )
 
-    def init_parameters(
+    def _init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],

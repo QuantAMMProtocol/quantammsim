@@ -235,6 +235,8 @@ class TFMMBasePool(AbstractPool):
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
+        *args,
+        **kwargs,
     ) -> jnp.ndarray:
         """
         Calculate the weights of assets in the pool.

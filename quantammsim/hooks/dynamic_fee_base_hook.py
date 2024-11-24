@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 import jax.numpy as jnp
-
+from jax.lax import dynamic_slice
 
 class BaseDynamicFeeHook(ABC):
     """Mixin class to add dynamic fee calculation capabilities to pools.
@@ -44,15 +44,8 @@ class BaseDynamicFeeHook(ABC):
     ...         # Custom fee calculation logic here
     ...         return computed_fees
     """
-    def __init__(self, params_init_dict):
-        """
-        Initialize a new MomentumPool instance.
-
-        Parameters
-        ----------
-        None
-        """
-        super().__init__()
+    def __init__(self):
+        pass
 
     @abstractmethod
     def calculate_dynamic_fees(
@@ -79,10 +72,21 @@ class BaseDynamicFeeHook(ABC):
     ) -> jnp.ndarray:
 
         # Calculate dynamic fees based on price/oracle input
-        dynamic_fees = self.calculate_dynamic_fees(
+        raw_dynamic_fees = self.calculate_dynamic_fees(
             params, run_fingerprint, prices, start_index, additional_oracle_input
         )
 
+        chunk_period = run_fingerprint["chunk_period"]
+
+        bout_length = run_fingerprint["bout_length"]
+
+        start_index_coarse = ((start_index[0] / chunk_period).astype("int64"), 0)
+        raw_dynamic_fees = dynamic_slice(
+            raw_dynamic_fees,
+            start_index_coarse,
+            (int((bout_length) / chunk_period), 1),
+        )
+        dynamic_fees = raw_dynamic_fees.repeat(chunk_period, axis=0).squeeze()
         # Use existing dynamic inputs infrastructure
         return self.calculate_reserves_with_dynamic_inputs(
             params,
@@ -92,6 +96,17 @@ class BaseDynamicFeeHook(ABC):
             dynamic_fees,
             run_fingerprint["gas_cost"],
             run_fingerprint["arb_fees"],
-            jnp.zeros((dynamic_fees.shape[0], run_fingerprint["n_assets"])),
+            dynamic_fees,
             additional_oracle_input,
         )
+
+    @abstractmethod
+    def extend_parameters(
+        self,
+        base_params: Dict[str, Any],
+        initial_values_dict: Dict[str, Any],
+        n_assets: int,
+        n_parameter_sets: int,
+    ) -> Dict[str, Any]:
+        """Extend base parameters with dynamic fee parameters."""
+        pass
