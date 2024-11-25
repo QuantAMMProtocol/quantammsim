@@ -26,11 +26,7 @@ class FinancialAnalysisRequestDto(object):
 # input root
 class SimulationRunDto(object):
     def __init__(self, jsonDto):
-        print("run const")
-        print("jsonDto[pool]: ", jsonDto["pool"])
         self.pool = LiquidityPoolDto(jsonDto["pool"])
-        print(jsonDto["startUnix"])
-        print(jsonDto["endUnix"])
         self.startDate = jsonDto["startUnix"]
         self.endDate = jsonDto["endUnix"]
         self.startDateString = jsonDto["startDateString"]
@@ -159,6 +155,7 @@ class SwapTimeseries:
 
 class FeeHook(object):
     def __init__(self, feeHookDto):
+        print(feeHookDto)
         self.hookName = feeHookDto["hookName"]
         self.hookTargetTokens = list()
         for token in feeHookDto["hookTargetTokens"]:
@@ -169,7 +166,10 @@ class FeeHook(object):
         for step in feeHookDto["hookTimeSteps"]:
             self.hookTimeSteps.append(FeeHookStep(step))
 
-        self.hookScalarStep = FeeHookStep(feeHookDto["hookScalarStep"])
+        #if undefined not included in dto
+        if("hookScalarStep" in feeHookDto):
+            self.hookScalarStep = FeeHookStep(feeHookDto["hookScalarStep"])
+
         self.minValue = feeHookDto["minValue"]
         self.maxValue = feeHookDto["maxValue"]
         self.unit = feeHookDto["unit"]
