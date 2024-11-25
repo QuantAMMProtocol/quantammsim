@@ -327,6 +327,7 @@ def get_historic_parquet_data(
         csvData = csvData.filter(items=["unix"] + renamedCols)
     if len(list_of_tickers) > 1:
         for ticker in list_of_tickers[1:]:
+            renamedCols = [col + "_" + ticker for col in cols]
             # path = root + ticker + "_USD.csv"
             filename = ticker + "_USD.parquet"
             if root is not None:
@@ -339,8 +340,12 @@ def get_historic_parquet_data(
             csvData = csvData.join(newCsvData)
     csvData = csvData.dropna()
     if start_time_unix is not None and end_time_unix is not None:
-        return csvData[start_time_unix - 1 : end_time_unix + 1]
+        print(csvData)
+        csvData = csvData[start_time_unix - 1 : end_time_unix + 1]
+        print(csvData)
+        return csvData
     else:
+        print(csvData)
         return csvData
     
 
