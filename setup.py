@@ -16,6 +16,7 @@ setup(
         "matplotlib",
         "tqdm",
         "optuna",
+        "pyarrow",
     ],
     extras_require={
         "dev": [

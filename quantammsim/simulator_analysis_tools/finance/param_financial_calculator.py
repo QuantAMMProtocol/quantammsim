@@ -138,6 +138,8 @@ def run_pool_simulation(simulationRunDto):
     print("settings")
     print(run_fingerprint)
     print(update_rule_parameter_dict_converted)
+
+
     outputDict = do_run_on_historic_data(
         run_fingerprint,
         update_rule_parameter_dict_converted,

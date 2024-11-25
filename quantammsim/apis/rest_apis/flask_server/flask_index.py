@@ -186,7 +186,7 @@ def runSimulation():
         A JSON string containing the simulation results.
     """
     request_data = request.get_json()
-    print(request_data)
+    
     dto = SimulationRunDto(request_data)
     print("starting")
     print("dto: ", dto.pool.poolConstituents)

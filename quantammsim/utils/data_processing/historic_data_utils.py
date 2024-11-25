@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import os.path
 import os
+import pyarrow as pa
 
 # from numba import jit
 # from numba import float64
@@ -307,7 +308,41 @@ def createMissingDataFrameFromClosePrices(startUnix, closePrices, token):
             "Volume " + token: totalMissingCoinVolumePoints,
         }
     )
-
+def get_historic_parquet_data(
+        list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
+):
+    firstTicker = list_of_tickers[0]
+    # print('cwd: ', os.getcwd())
+    filename = firstTicker + "_USD.parquet"
+    renamedCols = [col + "_" + firstTicker for col in cols]
+    if root is not None:
+        inp_file = Path(root) / filename
+    else:
+        inp_file = impresources.files(data) / filename
+    with inp_file.open("rb") as f:
+        # path = root + firstTicker + "_USD.csv"
+        print(f)
+        csvData = pd.read_parquet(f, engine='pyarrow')
+        print(csvData)
+        csvData = csvData.filter(items=["unix"] + renamedCols)
+    if len(list_of_tickers) > 1:
+        for ticker in list_of_tickers[1:]:
+            # path = root + ticker + "_USD.csv"
+            filename = ticker + "_USD.parquet"
+            if root is not None:
+                inp_file = Path(root) / filename
+            else:
+                inp_file = impresources.files(data) / filename
+            with inp_file.open("rb") as f:
+                print(f)
+                newCsvData = pd.read_parquet(f, engine='pyarrow').filter(items=["unix"] + renamedCols)
+            csvData = csvData.join(newCsvData)
+    csvData = csvData.dropna()
+    if start_time_unix is not None and end_time_unix is not None:
+        return csvData[start_time_unix - 1 : end_time_unix + 1]
+    else:
+        return csvData
+    
 
 def get_historic_csv_data(
     list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
@@ -446,7 +481,7 @@ def get_data_dict(
     )
     if data_kind == "historic":
         if price_data is None:
-            price_data = get_historic_csv_data(list_of_tickers, cols, root)
+            price_data = get_historic_parquet_data(list_of_tickers, cols, root)
         unix_values = price_data.index.to_numpy()
         prices = price_data.filter(
             items=["close_" + ticker for ticker in list_of_tickers]
@@ -478,7 +513,7 @@ def get_data_dict(
             price_data_mc = get_historic_csv_data_w_versions(
                 mc_tokens, ["close"], root, max_verion=max_mc_version
             )
-            price_data_non_mc = get_historic_csv_data(non_mc_tokens, cols, root)
+            price_data_non_mc = get_historic_parquet_data(non_mc_tokens, cols, root)
         else:
             price_data_mc, price_data_non_mc = price_data
         if len(non_mc_tokens) > 0:
