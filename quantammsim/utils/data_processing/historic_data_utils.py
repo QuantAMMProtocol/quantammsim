@@ -95,7 +95,6 @@ def update_historic_data(token, root):
 
     print("sorting")
     csvData = csvData.sort_values(by="unix", ascending=True)
-    print(csvData.shape[0])
     print("sorted")
     prevRow = csvData.iloc[0]
     notFirstRow = False
@@ -323,9 +322,7 @@ def get_historic_parquet_data(
         inp_file = impresources.files(data) / filename
     with inp_file.open("rb") as f:
         # path = root + firstTicker + "_USD.csv"
-        print(f)
         csvData = pd.read_parquet(f, engine='pyarrow')
-        print(csvData)
         csvData = csvData.filter(items=["unix"] + renamedCols)
     if len(list_of_tickers) > 1:
         for ticker in list_of_tickers[1:]:
@@ -337,17 +334,13 @@ def get_historic_parquet_data(
             else:
                 inp_file = impresources.files(data) / filename
             with inp_file.open("rb") as f:
-                print(f)
                 newCsvData = pd.read_parquet(f, engine='pyarrow').filter(items=["unix"] + renamedCols)
             csvData = csvData.join(newCsvData)
     csvData = csvData.dropna()
     if start_time_unix is not None and end_time_unix is not None:
-        print(csvData)
         csvData = csvData[start_time_unix - 1 : end_time_unix + 1]
-        print(csvData)
         return csvData
     else:
-        print(csvData)
         return csvData
     
 

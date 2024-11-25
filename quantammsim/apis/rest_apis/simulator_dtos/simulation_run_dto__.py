@@ -3,13 +3,11 @@ import json
 
 class LoadPriceHistoryRequestDto(object):
     def __init__(self, jsonDto):
-        print("run const")
         self.coinCode = jsonDto["coinCode"]
 
 
 class TrainingParameterDto(object):
     def __init__(self, factorDto):
-        print(factorDto)
         self.name = factorDto["name"]
         self.value = factorDto["value"]
 
@@ -26,10 +24,7 @@ class FinancialAnalysisRequestDto(object):
 # input root
 class SimulationRunDto(object):
     def __init__(self, jsonDto):
-        print("run const")
         self.pool = LiquidityPoolDto(jsonDto["pool"])
-        print(jsonDto["startUnix"])
-        print(jsonDto["endUnix"])
         self.startDate = jsonDto["startUnix"]
         self.endDate = jsonDto["endUnix"]
         self.startDateString = jsonDto["startDateString"]
@@ -46,9 +41,6 @@ class TrainingDto(object):
 
         for opt in self.trainingParameters.trainingParameters:
             optimisation_settings[opt.name] = opt.value
-        print("convert to run fingerprint")
-        print(self.startDate)
-        print(self.endDate)
         return {
             "filename_override": "override",
             "startDateUnix": self.startDate,
@@ -96,15 +88,10 @@ class TrainingDto(object):
         }
 
     def __init__(self, jsonDto):
-        print("run const")
         self.trainingRunFilename = jsonDto["trainingRunFilename"]
         self.pool = LiquidityPoolDto(jsonDto["pool"])
-        print(jsonDto["startUnix"])
-        print(jsonDto["endUnix"])
         self.startDate = jsonDto["startUnix"]
         self.endDate = jsonDto["endUnix"]
-        print(self.startDate)
-        print(self.endDate)
         self.trainingParameters = TrainingParametersDto(jsonDto["trainingParameters"])
 
 
@@ -118,7 +105,6 @@ class TrainingParametersDto(object):
 
 class LiquidityPoolDto(object):
     def __init__(self, poolDto):
-        print("pool const")
         self.id = poolDto["id"]
         poolConstituents = list()
         for coin in poolDto["poolConstituents"]:
@@ -129,7 +115,6 @@ class LiquidityPoolDto(object):
 
 class UpdateRuleDto(object):
     def __init__(self, ruleDto):
-        print("rule const")
         self.name = ruleDto["name"]
         factors = list()
         for coin in ruleDto["UpdateRuleParameters"]:

@@ -596,9 +596,6 @@ def retrieve_param_financial_analysis_results(
         hodl_result, run_fingerprint_start_date, "hodl"
     )
 
-    print("portfolio_daily_returns: ", portfolio_daily_returns.shape)
-    print("portfolio_daily value: ", portfolio_result["value"].shape)
-    
     if btc_result is not None:
         # Calculate returns for hodl
         btc_daily_returns = calculate_daily_returns(
