@@ -64,6 +64,7 @@ def start_and_end_calcs(
 
 def update_historic_data(token, root):
     print("get starting")
+    parquetPath = root + token + "_USD.parquet"
     path = root + token + "_USD.csv"
     dailyPath = root + token + "_USD_daily.csv"
     hourlyPath = root + token + "_USD_hourly.csv"
@@ -268,6 +269,7 @@ def update_historic_data(token, root):
     #        print(e)
 
     csvData.to_csv(path, mode="w", index=False)
+    csvData.to_parquet(parquetPath, engine='pyarrow')
     csvData[csvData["date"].str.contains(":00:00")].to_csv(
         hourlyPath, mode="w", index=False
     )
