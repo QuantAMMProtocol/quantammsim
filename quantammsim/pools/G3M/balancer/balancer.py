@@ -171,7 +171,7 @@ class BalancerPool(AbstractPool):
         )
         return reserves
 
-    def init_parameters(
+    def _init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -216,7 +216,9 @@ class BalancerPool(AbstractPool):
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
 
-    def calculate_weights(self, params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
+    def calculate_weights(
+        self, params: Dict[str, jnp.ndarray], *args, **kwargs
+    ) -> jnp.ndarray:
         initial_weights_logits = params.get("initial_weights_logits")
         # we dont't want to change the weights during any training
         # so wrap them in a stop_grad

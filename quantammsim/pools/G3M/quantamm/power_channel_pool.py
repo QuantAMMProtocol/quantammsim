@@ -191,7 +191,7 @@ class PowerChannelPool(MomentumPool):
 
         return raw_weight_outputs
 
-    def init_parameters(
+    def _init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -323,6 +323,7 @@ class PowerChannelPool(MomentumPool):
 
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
+
 
 tree_util.register_pytree_node(
     PowerChannelPool, PowerChannelPool._tree_flatten, PowerChannelPool._tree_unflatten
