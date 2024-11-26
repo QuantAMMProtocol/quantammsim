@@ -374,7 +374,7 @@ def get_trades_and_fees(run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_f
             fees_df,
             run_fingerprint["startDateString"],
             run_fingerprint["endDateString"],
-            names=['fees'],
+            names=["fees"],
             fill_method="ffill",
         )
         if fees_df is not None
@@ -386,7 +386,7 @@ def get_trades_and_fees(run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_f
                     fees_df,
                     run_fingerprint["startDateString"],
                     run_fingerprint["endDateString"],
-                    names=['fees'],
+                    names=["fees"],
                     fill_method="ffill",
                 )
                 if fees_df is not None
@@ -398,6 +398,7 @@ def get_trades_and_fees(run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_f
             gas_cost_df,
             run_fingerprint["startDateString"],
             run_fingerprint["endDateString"],
+            names = ["trade_gas_cost_usd"],
             fill_method="ffill",
         )
         if gas_cost_df is not None
@@ -409,6 +410,7 @@ def get_trades_and_fees(run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_f
                 gas_cost_df,
                 run_fingerprint["endDateString"],
                 run_fingerprint["endTestDateString"],
+                names = ["trade_gas_cost_usd"],
                 fill_method="ffill",
             )
             if gas_cost_df is not None
@@ -420,6 +422,7 @@ def get_trades_and_fees(run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_f
             arb_fees_df,
             run_fingerprint["startDateString"],
             run_fingerprint["endDateString"],
+            names=["arb_fees"],
             fill_method="ffill",
         )
         if arb_fees_df is not None
@@ -431,6 +434,7 @@ def get_trades_and_fees(run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_f
                 arb_fees_df,
                 run_fingerprint["endDateString"],
                 run_fingerprint["endTestDateString"],
+                names=["arb_fees"],
                 fill_method="ffill",
             )
             if arb_fees_df is not None

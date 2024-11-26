@@ -105,7 +105,7 @@ def raw_trades_to_trade_array(raw_trades, start_date_string, end_date_string, to
     Parameters
     ----------
     raw_trades : pandas df
-        Raw trades, where each trade is a row containing unix_timestamp, token_in (str), token_out (str), amount_in).
+        Raw trades, where each trade is a row containing unix, token_in (str), token_out (str), amount_in).
     start_time : str
         The start date time in format "%Y-%m-%d %H:%M:%S".
     end_time : str
@@ -131,12 +131,12 @@ def raw_trades_to_trade_array(raw_trades, start_date_string, end_date_string, to
         // 10**9
     )
     full_index_df = pd.DataFrame(
-        index=full_index, columns=["token in", "token out", "amount in"], data=0
+        index=full_index, columns=["token_in", "token_out", "amount_in"], data=0
     )
     # Create a dictionary to map token strings to their numerical indexes
     token_to_index = {token: index for index, token in enumerate(tokens)}
     for index, row in raw_trades.iterrows():
-        unix_timestamp = row["unix_timestamp"]
+        unix_timestamp = row["unix"]
         token_in = row["token_in"]
         token_out = row["token_out"]
         amount_in = row["amount_in"]
@@ -166,7 +166,7 @@ def raw_fee_like_amounts_to_fee_like_array(
     Parameters
     ----------
     raw_inputs : pandas.DataFrame
-        Raw fee-like data, where each row contains unix_timestamp and the fee-like 
+        Raw fee-like data, where each row contains unix and the fee-like
         amount with given column name
     start_time : str
         The start date time in format "%Y-%m-%d %H:%M:%S"
@@ -198,7 +198,7 @@ def raw_fee_like_amounts_to_fee_like_array(
     full_index_df = pd.DataFrame(index=full_index[:-1], columns=names, data=0)
     # Map raw data to the full index DataFrame
     for index, row in raw_inputs.iterrows():
-        unix_timestamp = row["unix_timestamp"]
+        unix_timestamp = row["unix"]
         if unix_timestamp in full_index_df.index:
             for name in names:
                 full_index_df.loc[unix_timestamp, name] = row[name]
