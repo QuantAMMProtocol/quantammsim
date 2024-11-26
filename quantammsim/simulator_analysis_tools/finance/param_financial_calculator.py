@@ -124,7 +124,7 @@ def run_pool_simulation(simulationRunDto):
             update_rule_parameter_dict_converted["hook_time_steps"] = time_series_fee_hook_variable.hookTimeSteps
             fee_steps_df = pd.DataFrame({
                 "unix": [step.unix for step in time_series_fee_hook_variable.hookTimeSteps],
-                "fees": [float(step.value) for step in time_series_fee_hook_variable.hookTimeSteps],
+                "fees": [float(step.value)/float(10000) for step in time_series_fee_hook_variable.hookTimeSteps],
     })
     update_rule_parameter_dict_converted["hook_time_steps"] = fee_steps_df
     raw_trades = None
