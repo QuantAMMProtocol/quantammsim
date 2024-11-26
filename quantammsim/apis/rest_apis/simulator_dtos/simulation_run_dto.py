@@ -121,18 +121,12 @@ class GasStep:
         self.unix = gasStepDto["unix"]
         self.value = gasStepDto["value"]
 
-class FeeHookStep:
-    def __init__(self, feeHookStepDto):
-        self.unix = feeHookStepDto["unix"]
-        self.value = feeHookStepDto["value"]
-
-
 class SwapImport:
     def __init__(self, swapImportDto):
-        unix = swapImportDto["unix"]
-        tokenIn = swapImportDto["tokenIn"]
-        tokenOut = swapImportDto["tokenOut"]
-        amountIn = swapImportDto["amountIn"]
+        self.unix = swapImportDto["unix"]
+        self.tokenIn = swapImportDto["tokenIn"]
+        self.tokenOut = swapImportDto["tokenOut"]
+        self.amountIn = swapImportDto["amountIn"]
 
 
 class SwapTimeseries:
@@ -141,6 +135,11 @@ class SwapTimeseries:
         self.swaps = list()
         for swapImport in swapTimeSeriesDto["swaps"]:
             self.swaps.append(SwapImport(swapImport))
+
+class FeeHookStep:
+    def __init__(self, feeHookStepDto):
+        self.unix = feeHookStepDto["unix"]
+        self.value = feeHookStepDto["value"]
 
 
 class FeeHook(object):

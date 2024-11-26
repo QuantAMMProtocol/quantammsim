@@ -109,6 +109,34 @@ def run_pool_simulation(simulationRunDto):
 
     update_rule_parameter_dict_converted["initial_weights_logits"] = initial_value_log_ratio
     update_rule_parameter_dict_converted["initial_pool_value"] = total_initial_value
+
+    time_series_fee_hook_variable = None
+    for feeHook in simulationRunDto.feeHooks:
+        if feeHook.name == "timeSeriesFeeImport":
+            time_series_fee_hook_variable = feeHook
+            break
+    
+    if time_series_fee_hook_variable is not None:
+        if time_series_fee_hook_variable.
+
+    raw_trades = None
+
+    if len(simulationRunDto.swapImports) > 0:
+        raw_trades = pd.DataFrame({
+            "unix": [swap.unix for swap in simulationRunDto.swapImports],
+            "token_in": [swap.tokenIn for swap in simulationRunDto.swapImports],
+            "token_out": [swap.tokenOut for swap in simulationRunDto.swapImports],
+            "amount_in": [float(swap.amountIn) for swap in simulationRunDto.swapImports],
+        })
+
+    gas_cost_df = None
+
+    if len(simulationRunDto.gasSteps) > 0:
+        gas_cost_df = pd.DataFrame({
+            "unix": [gasStep.unix for gasStep in simulationRunDto.gasSteps],
+            "trade_gas_cost_usd": [float(gasStep.value) for gasStep in simulationRunDto.gasSteps],
+        })
+
     test_window_end = (simulationRunDto.endDate + 2 * 24 * 60 * 60 * 1000) / 1000
     test_window_end_str = unixtimestamp_to_precise_datetime(test_window_end, scaling=1.0)
 
@@ -150,6 +178,8 @@ def run_pool_simulation(simulationRunDto):
         price_data=price_data_local,
         verbose=True,
         do_test_period=False,
+        raw_trades=raw_trades,
+        gas_cost_df=gas_cost_df
     )
 
     resultTimeSteps = optimized_output_conversion(simulationRunDto, outputDict, tokens)
