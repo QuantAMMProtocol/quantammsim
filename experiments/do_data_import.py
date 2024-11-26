@@ -23,13 +23,13 @@ tokens = [
     # "BTC",
     # "DOGE",
     # "EOS",
-    "ETH",
-    "LINK",
-    "LTC",
-    "MATIC",
-    "QTUM",
-    "SOL",
-    "TRX",
+    #"ETH",
+    #"LINK",
+    #"LTC",
+    #"MATIC",
+    #"QTUM",
+    #"SOL",
+    #"TRX",
     "UNI",
     "XLM",
     "XMR",
@@ -43,6 +43,7 @@ def process_token(token):
     root = "/media/cadeh/3137-3364/local_data/"
     return update_historic_data(token, root)
 
-
-with Pool() as pool:
-    pool.map(process_token, tokens)
+for token in tokens:
+    process_token(token)
+#with Pool() as pool:
+#    pool.map(process_token, tokens)

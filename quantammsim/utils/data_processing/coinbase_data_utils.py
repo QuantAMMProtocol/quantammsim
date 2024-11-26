@@ -247,17 +247,19 @@ def _cleaned_up_coinbase_data(
     print("3")
     return cleaned_prices
 
-def fill_missing_rows_with_coinbase_data(concatenated_df, token1):
+import os
+
+def fill_missing_rows_with_coinbase_data(concatenated_df, token1, root):
+
+    file_path = root + 'coinbase_data/' + token1 + '_cb_sorted_.csv'
+    if not os.path.exists(file_path):
+        return concatenated_df, []
     # Load Coinbase data
-    coinbase_data = pd.read_csv('../local_data/coinbase_data/'+token1+'_cb_sorted_.csv')
+    coinbase_data = pd.read_csv(file_path)
     # Set the 'Unix' column as the index for Coinbase data
     coinbase_data.set_index('unix', inplace=True)
 
     # Identify missing timestamps in the concatenated DataFrame
-
-    # first timestep
-    first_timestep = coinbase_data.index[0]
-    concatenated_df = concatenated_df.loc[first_timestep:]
 
     coinbase_data["symbol"] = concatenated_df.iloc[0]["symbol"]
 
@@ -265,6 +267,11 @@ def fill_missing_rows_with_coinbase_data(concatenated_df, token1):
     filled_in_df = pd.concat([concatenated_df, coinbase_data.loc[missing_timestamps]])
     # Sort by 'Unix' index after filling missing rows
     filled_in_df.sort_index(inplace=True)
-    return filled_in_df
+    filled_unix_values = missing_timestamps.tolist()
+    # Drop duplicate indexes, the first are from the concatenated data, the second are from the Coinbase data
+    filled_in_df = filled_in_df[~filled_in_df.index.duplicated(keep='first')]
+    filled_unix_values = filled_in_df.index.tolist()
+    return filled_in_df, filled_unix_values
+
 
 
