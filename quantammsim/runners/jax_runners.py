@@ -265,11 +265,14 @@ def train_on_historic_data(
         pool=pool
     )
     partial_forward_pass_nograd_batch = Partial(
-        forward_pass_nograd, static_dict=Hashabledict(base_static_dict), pool=pool
+        forward_pass_nograd,
+        prices=data_dict["prices"],
+        static_dict=Hashabledict(base_static_dict),
+        pool=pool
     )
 
     returns_train_static_dict = base_static_dict.copy()
-    returns_train_static_dict["return_val"] = "returns"
+    returns_train_static_dict["return_val"] = "returns_over_hodl"
     returns_train_static_dict["bout_length"] = data_dict["bout_length"]
     partial_forward_pass_nograd_batch_returns_train = Partial(
         forward_pass_nograd, static_dict=Hashabledict(returns_train_static_dict), pool=pool
@@ -327,96 +330,130 @@ def train_on_historic_data(
     decay_lr_ratio = run_fingerprint["optimisation_settings"]["decay_lr_ratio"]
     min_lr = run_fingerprint["optimisation_settings"]["min_lr"]
 
-    if run_fingerprint["optimisation_settings"]["optimiser"] == "adam":
-        import optax
+    if run_fingerprint["optimisation_settings"]["method"] == "gradient_descent":
+        if run_fingerprint["optimisation_settings"]["optimiser"] == "adam":
+            import optax
+            opt = optax.inject_hyperparams(optax.adam)(learning_rate=local_learning_rate)
+            raise NotImplementedError
+        elif run_fingerprint["optimisation_settings"]["optimiser"] != "sgd":
+            raise NotImplementedError
 
-        opt = optax.inject_hyperparams(optax.adam)(learning_rate=local_learning_rate)
-        raise NotImplementedError
-    elif run_fingerprint["optimisation_settings"]["optimiser"] != "sgd":
-        raise NotImplementedError
-
-    paramSteps = []
-    trainingSteps = []
-    testSteps = []
-    objectiveSteps = []
-    learningRateSteps = []
-    interationsSinceImprovementSteps = []
-    stepSteps = []
-    for i in range(run_fingerprint["optimisation_settings"]["n_iterations"] + 1):
-        step = i + offset
-        start_indexes, random_key = get_indices(
-            start_index=data_dict["start_idx"],
-            bout_length=bout_length_window,
-            len_prices=data_dict["end_idx"],
-            key=random_key,
-            optimisation_settings=run_fingerprint["optimisation_settings"],
-        )
-
-        params, objective_value, old_params, grads = update(
-            params, start_indexes, local_learning_rate
-        )
-
-        params = nan_rollback(grads, params, old_params)
-
-        train_objective = partial_forward_pass_nograd_returns_train(
-            params,
-            (data_dict["start_idx"], 0),
-            data_dict["prices"],
-        )
-
-        test_objective = partial_forward_pass_nograd_returns_test(
-            params,
-            (data_dict["start_idx_test"], 0),
-            data_dict["prices_test"],
-        )
-        paramSteps.append(deepcopy(params))
-        trainingSteps.append(np.array(train_objective.copy()))
-        testSteps.append(np.array(test_objective.copy()))
-        objectiveSteps.append(np.array(objective_value.copy()))
-        learningRateSteps.append(deepcopy(local_learning_rate))
-        interationsSinceImprovementSteps.append(iterations_since_improvement)
-        stepSteps.append(step)
-
-        if (objective_value > best_train_objective).any():
-            best_train_objective = np.array(objective_value.max())
-            best_train_params = deepcopy(params)
-            iterations_since_improvement = 0
-        else:
-            iterations_since_improvement += 1
-        if iterations_since_improvement > max_iterations_with_no_improvement:
-            local_learning_rate = local_learning_rate * decay_lr_ratio
-            iterations_since_improvement = 0
-            if local_learning_rate < min_lr:
-                local_learning_rate = min_lr
-        if step % iterations_per_print == 0:
-            if verbose:
-                print(step, "Objective: ", objective_value)
-                print(step, "train_objective", train_objective)
-                print(step, "test_objective", test_objective)
-                print(step, "local_learning_rate", local_learning_rate)
-            save_multi_params(
-                deepcopy(run_fingerprint),
-                paramSteps,
-                testSteps,
-                trainingSteps,
-                objectiveSteps,
-                learningRateSteps,
-                interationsSinceImprovementSteps,
-                stepSteps,
-                sorted_tokens=True,
+        paramSteps = []
+        trainingSteps = []
+        testSteps = []
+        objectiveSteps = []
+        learningRateSteps = []
+        interationsSinceImprovementSteps = []
+        stepSteps = []
+        for i in range(run_fingerprint["optimisation_settings"]["n_iterations"] + 1):
+            step = i + offset
+            start_indexes, random_key = get_indices(
+                start_index=data_dict["start_idx"],
+                bout_length=bout_length_window,
+                len_prices=data_dict["end_idx"],
+                key=random_key,
+                optimisation_settings=run_fingerprint["optimisation_settings"],
             )
 
-            paramSteps = []
-            trainingSteps = []
-            testSteps = []
-            objectiveSteps = []
-            learningRateSteps = []
-            interationsSinceImprovementSteps = []
-            stepSteps = []
-    if verbose:
-        print("final objective value: ", objective_value)
-        print("best train params", best_train_params)
+            params, objective_value, old_params, grads = update(
+                params, start_indexes, local_learning_rate
+            )
 
+            params = nan_rollback(grads, params, old_params)
+
+            train_objective = partial_forward_pass_nograd_returns_train(
+                params,
+                (data_dict["start_idx"], 0),
+                data_dict["prices"],
+            )
+
+            test_objective = partial_forward_pass_nograd_returns_test(
+                params,
+                (data_dict["start_idx_test"], 0),
+                data_dict["prices_test"],
+            )
+            paramSteps.append(deepcopy(params))
+            trainingSteps.append(np.array(train_objective.copy()))
+            testSteps.append(np.array(test_objective.copy()))
+            objectiveSteps.append(np.array(objective_value.copy()))
+            learningRateSteps.append(deepcopy(local_learning_rate))
+            interationsSinceImprovementSteps.append(iterations_since_improvement)
+            stepSteps.append(step)
+
+            if (objective_value > best_train_objective).any():
+                best_train_objective = np.array(objective_value.max())
+                best_train_params = deepcopy(params)
+                iterations_since_improvement = 0
+            else:
+                iterations_since_improvement += 1
+            if iterations_since_improvement > max_iterations_with_no_improvement:
+                local_learning_rate = local_learning_rate * decay_lr_ratio
+                iterations_since_improvement = 0
+                if local_learning_rate < min_lr:
+                    local_learning_rate = min_lr
+            if step % iterations_per_print == 0:
+                if verbose:
+                    print(step, "Objective: ", objective_value)
+                    print(step, "train_objective", train_objective)
+                    print(step, "test_objective", test_objective)
+                    print(step, "local_learning_rate", local_learning_rate)
+                save_multi_params(
+                    deepcopy(run_fingerprint),
+                    paramSteps,
+                    testSteps,
+                    trainingSteps,
+                    objectiveSteps,
+                    learningRateSteps,
+                    interationsSinceImprovementSteps,
+                    stepSteps,
+                    sorted_tokens=True,
+                )
+
+                paramSteps = []
+                trainingSteps = []
+                testSteps = []
+                objectiveSteps = []
+                learningRateSteps = []
+                interationsSinceImprovementSteps = []
+                stepSteps = []
+        if verbose:
+            print("final objective value: ", objective_value)
+            print("best train params", best_train_params)
+    elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
+        import optuna
+        import jax.numpy as jnp
+        # define optuna study
+        assert run_fingerprint["optimisation_settings"]["n_parameter_sets"] == 1, "Optuna only supports single parameter sets"
+        # create objective function
+        def objective(trial):
+            trial_params = {}
+            for key, value in params.items():
+                if key != "subsidary_params":
+                    trial_params[key] = jnp.array(
+                            [trial.suggest_float(key + f"_{i}", -10, 10) for i in range(value.shape[1])]
+                    )
+                #     trial_params[key] = jnp.array(
+                #         [trial.suggest_float(key, -10, 10)] * value.shape[1]
+                # )
+            print("return over hodl: ",
+                partial_forward_pass_nograd_batch_returns_train(
+                    trial_params,
+                    (data_dict["start_idx"], 0),
+                    data_dict["prices"],
+                )
+            )
+            value = partial_forward_pass_nograd_batch(
+                trial_params, (data_dict["start_idx"], 0)
+            )
+            print(
+                run_fingerprint["return_val"] + ": ",
+                value,
+            )
+            return -value
+        study = optuna.create_study(sampler=optuna.samplers.TPESampler())
+        study.optimize(objective, n_trials=2000) 
+    else:
+        raise NotImplementedError
 
 def do_run_on_historic_data(
     run_fingerprint,
@@ -598,6 +635,10 @@ def do_run_on_historic_data(
         "weight_interpolation_method": weight_interpolation_method,
         "arb_frequency": arb_frequency,
         "do_trades": False if raw_trades is None else run_fingerprint["do_trades"],
+        "tokens": tuple(run_fingerprint["tokens"]),
+        "startDateString": run_fingerprint["startDateString"],
+        "endDateString": run_fingerprint["endDateString"],
+        "endTestDateString": run_fingerprint["endTestDateString"],
     }
 
     # Create static dictionaries for training and testing

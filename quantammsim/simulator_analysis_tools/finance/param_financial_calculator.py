@@ -34,6 +34,7 @@ from quantammsim.utils.data_processing.dtb3_data_utils import filter_dtb3_values
 from quantammsim.utils.data_processing.historic_data_utils import (
     get_data_dict,
     get_historic_csv_data,
+    get_historic_parquet_data,
 )
 
 
@@ -108,6 +109,42 @@ def run_pool_simulation(simulationRunDto):
 
     update_rule_parameter_dict_converted["initial_weights_logits"] = initial_value_log_ratio
     update_rule_parameter_dict_converted["initial_pool_value"] = total_initial_value
+
+    time_series_fee_hook_variable = None
+    for feeHook in simulationRunDto.feeHooks:
+        if feeHook.name == "timeSeriesFeeImport":
+            time_series_fee_hook_variable = feeHook
+            break
+    fixed_fee = None
+    fee_steps_df = None
+    if time_series_fee_hook_variable is not None:
+        if time_series_fee_hook_variable.hookScalarStep is not None:
+            fixed_fee = float(time_series_fee_hook_variable.hookScalarStep.value)
+        if len(time_series_fee_hook_variable.hookTimeSteps) > 0:
+            update_rule_parameter_dict_converted["hook_time_steps"] = time_series_fee_hook_variable.hookTimeSteps
+            fee_steps_df = pd.DataFrame({
+                "unix": [step.unix for step in time_series_fee_hook_variable.hookTimeSteps],
+                "fees": [float(step.value) for step in time_series_fee_hook_variable.hookTimeSteps],
+    })
+    update_rule_parameter_dict_converted["hook_time_steps"] = fee_steps_df
+    raw_trades = None
+
+    if len(simulationRunDto.swapImports) > 0:
+        raw_trades = pd.DataFrame({
+            "unix": [swap.unix for swap in simulationRunDto.swapImports],
+            "token_in": [swap.tokenIn for swap in simulationRunDto.swapImports],
+            "token_out": [swap.tokenOut for swap in simulationRunDto.swapImports],
+            "amount_in": [float(swap.amountIn) for swap in simulationRunDto.swapImports],
+        })
+
+    gas_cost_pd = None
+
+    if len(simulationRunDto.gasSteps) > 0:
+        gas_cost_pd = pd.DataFrame({
+            "unix": [gasStep.unix for gasStep in simulationRunDto.gasSteps],
+            "trade_gas_cost_usd": [float(gasStep.value) for gasStep in simulationRunDto.gasSteps],
+        })
+
     test_window_end = (simulationRunDto.endDate + 2 * 24 * 60 * 60 * 1000) / 1000
     test_window_end_str = unixtimestamp_to_precise_datetime(test_window_end, scaling=1.0)
 
@@ -120,38 +157,35 @@ def run_pool_simulation(simulationRunDto):
             "tokens": tokens,
             "rule": update_rule,
             "bout_offset": 14400,
-            #"maximum_change": 3e-4,
-            #"chunk_period": 60,
-            #"weight_interpolation_period": 60,
             "initial_weights_logits": initial_value_log_ratio,
             "initial_pool_value": total_initial_value,
-            #"fees": 0.0,
-            #"arb_fees": 0.0,
-            #"gas_cost": 0.0,
             "use_alt_lamb": False,
-            #"use_pre_exp_scaling": True,
-            #"weight_interpolation_method": "linear",
-            #"arb_frequency": 1,
             "return_val":"final_reserves_value_and_weights"
         }
 
     print("settings")
     print(run_fingerprint)
     print(update_rule_parameter_dict_converted)
+
+    price_data_local = get_historic_parquet_data(tokens)
+    
     outputDict = do_run_on_historic_data(
         run_fingerprint,
         update_rule_parameter_dict_converted,
-        fees=None,
+        fees=fixed_fee,
         root=None,
-        price_data=None,
+        price_data=price_data_local,
         verbose=True,
         do_test_period=False,
+        raw_trades=raw_trades,
+        gas_cost_df=gas_cost_pd,
+        fees_df=fee_steps_df
     )
 
     resultTimeSteps = optimized_output_conversion(simulationRunDto, outputDict, tokens)
 
     analysis = retrieve_simulation_run_analysis_results(run_fingerprint, update_rule_parameter_dict_converted
-                                             ,outputDict)
+                                             ,outputDict, price_data_local)
     return {
         "resultTimeSteps":  resultTimeSteps,
         "analysis": analysis
@@ -165,16 +199,12 @@ def retrieve_simulation_run_analysis_results(run_fingerprint, params, portfolio_
         freq="T",
     )
 
-    minute_series = (
-        pd.Series(portfolio_result["value"], index=minute_index).resample("D").first()
-    )
-
     hodl_params = copy.deepcopy(params)
     hodl_fingerprint = copy.deepcopy(run_fingerprint)
     hodl_fingerprint["rule"] = "hodl"
 
     hodl_result = do_run_on_historic_data(
-        hodl_fingerprint, dict_of_np_to_jnp(hodl_params), do_test_period=False
+        hodl_fingerprint, dict_of_np_to_jnp(hodl_params), do_test_period=False, price_data=price_data
     )
 
     # btc_params = copy.deepcopy(params)
@@ -596,9 +626,6 @@ def retrieve_param_financial_analysis_results(
         hodl_result, run_fingerprint_start_date, "hodl"
     )
 
-    print("portfolio_daily_returns: ", portfolio_daily_returns.shape)
-    print("portfolio_daily value: ", portfolio_result["value"].shape)
-    
     if btc_result is not None:
         # Calculate returns for hodl
         btc_daily_returns = calculate_daily_returns(

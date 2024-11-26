@@ -53,6 +53,136 @@ np.seterr(under="print")
 # TODO above is all from jax utils, tidy up required
 
 
+def _calculate_max_drawdown(value_over_time, duration=7*24*60):
+    """Calculate maximum drawdown on a chosen basis."""
+    n_complete_chunks = (len(value_over_time) // duration) * duration
+    value_over_time_truncated = value_over_time[:n_complete_chunks]
+    values = value_over_time_truncated.reshape(-1, duration)
+    running_max = jnp.maximum.accumulate(values, axis=1)
+    drawdowns = (values - running_max) / running_max
+    max_drawdowns = jnp.min(drawdowns, axis=1)
+    return jnp.min(max_drawdowns)
+
+
+def _calculate_var(value_over_time, percentile=5.0, duration=24 * 60):
+    """Calculate 95% VaR using intraday returns."""
+    n_complete_chunks = (len(value_over_time) // duration) * duration
+    value_over_time_truncated = value_over_time[:n_complete_chunks]
+    values = value_over_time_truncated.reshape(-1, duration)
+    returns = jnp.diff(values, axis=-1) / values[:, :-1]
+    var = vmap(lambda x: jnp.percentile(x, percentile))(returns)
+    return jnp.mean(var)
+
+
+def _calculate_var_trad(value_over_time, percentile=5.0, duration=24 * 60):
+    """Calculate traditional 95% VaR using daily returns."""
+    n_complete_chunks = (len(value_over_time) // duration) * duration
+    value_over_time_truncated = value_over_time[:n_complete_chunks]
+    value_over_time = value_over_time_truncated.reshape(-1, duration)[:, -1]
+    returns = jnp.diff(value_over_time) / value_over_time[:-1]
+    return jnp.percentile(returns, percentile)
+
+def _calculate_raroc(value_over_time, percentile=5.0, duration=24 * 60):
+    # Calculate returns
+    total_return = value_over_time[-1] / value_over_time[0] - 1.0
+
+    # Drop any incomplete chunks at the end by truncating to multiple of duration
+    n_complete_chunks = (len(value_over_time) // duration) * duration
+    value_over_time_truncated = value_over_time[:n_complete_chunks]
+    value_over_time_chunks = value_over_time_truncated.reshape(-1, duration)
+    # Calculate VaR (using our intraday method)
+    returns = jnp.diff(value_over_time_chunks) / value_over_time_chunks[:, :-1]
+    var = vmap(lambda x: jnp.percentile(x, percentile))(returns)
+    var = jnp.mean(var)  # This is already negative
+
+    # Calculate annualized RAROC
+    days_in_sample = len(value_over_time) / (24 * 60)
+    annualization_factor = 365 / days_in_sample
+
+    annualized_return = (1 + total_return) ** annualization_factor - 1
+    annualized_var = var * jnp.sqrt(annualization_factor * 24 * 60 / duration)
+
+    # RAROC = Annualized Return / VaR (VaR is already negative)
+    return annualized_return / annualized_var
+
+def _calculate_return_value(
+    return_val, reserves, local_prices, value_over_time, initial_reserves=None
+):
+    """Helper function to calculate different return metrics based on the specified return_val."""
+
+    if return_val == "reserves":
+        return {"reserves": reserves}
+
+    pool_returns = None
+    if return_val in ["sharpe", "returns", "returns_over_hodl"]:
+        pool_returns = jnp.diff(value_over_time) / value_over_time[:-1]
+
+    return_metrics = {
+        # "sharpe": lambda: jnp.sqrt(365 * 24 * 60)
+        # * (
+        #     (pool_returns - ((1.05 ** (1.0 / (60 * 24 * 365)) - 1) + 1) - 1.0).mean()
+        #     / pool_returns.std()
+        # ),
+        "sharpe": lambda: jnp.sqrt(365 * 24 * 60)
+        * (
+            (pool_returns).mean()
+            / pool_returns.std()
+        ),
+        "returns": lambda: value_over_time[-1] / value_over_time[0] - 1.0,
+        "returns_over_hodl": lambda: (
+            value_over_time[-1]
+            / (stop_gradient(initial_reserves) * local_prices[-1]).sum()
+            - 1.0
+        ),
+        "greatest_draw_down": lambda: jnp.min(value_over_time - value_over_time[0])
+        / value_over_time[0],
+        "value": lambda: value_over_time,
+        "weekly_max_drawdown": lambda: _calculate_weekly_max_drawdown(value_over_time),
+        "daily_var_95%": lambda: _calculate_var(
+            value_over_time, percentile=5.0, duration=24 * 60
+        ),
+        "daily_var_95%_trad": lambda: _calculate_var_trad(
+            value_over_time, percentile=5.0, duration=24 * 60
+        ),
+        "weekly_var_95%": lambda: _calculate_var(
+            value_over_time, percentile=5.0, duration=7 * 24 * 60
+        ),
+        "weekly_var_95%_trad": lambda: _calculate_var_trad(
+            value_over_time, percentile=5.0, duration=7 * 24 * 60
+        ),
+        "daily_var_99%": lambda: _calculate_var(
+            value_over_time, percentile=1.0, duration=24 * 60
+        ),
+        "daily_var_99%_trad": lambda: _calculate_var_trad(
+            value_over_time, percentile=1.0, duration=24 * 60
+        ),
+        "weekly_var_99%": lambda: _calculate_var(
+            value_over_time, percentile=1.0, duration=7 * 24 * 60
+        ),
+        "weekly_var_99%_trad": lambda: _calculate_var_trad(
+            value_over_time, percentile=1.0, duration=7 * 24 * 60
+        ),
+        "daily_raroc": lambda: _calculate_raroc(
+            value_over_time, percentile=5.0, duration=24 * 60
+        ),
+        "weekly_raroc": lambda: _calculate_raroc(
+            value_over_time, percentile=5.0, duration=7 * 24 * 60
+        ),
+        "reserves_and_values": lambda: {
+            "final_reserves": reserves[-1],
+            "final_value": (reserves[-1] * local_prices[-1]).sum(),
+            "value": value_over_time,
+            "prices": local_prices,
+            "reserves": reserves,
+        },
+    }
+
+    if return_val not in return_metrics:
+        raise NotImplementedError(f"Return value type '{return_val}' not implemented")
+
+    return return_metrics[return_val]()
+
+
 @partial(jit, static_argnums=(7,8))
 def forward_pass(
     params,
@@ -147,7 +277,7 @@ def forward_pass(
     >>> forward_pass(params, start_index, prices, pool=my_pool)
     {'reserves': array([...])}
     """
-    
+
     # 'pool' has default of None only to handle how partial function
     # evaluation works with jitted functions in jax. If no pool is provided
     # the forward pass cannot be performed.
@@ -223,38 +353,13 @@ def forward_pass(
         }
     local_prices = dynamic_slice(prices, start_index, (bout_length-1, n_assets))
     value_over_time = jnp.sum(jnp.multiply(reserves, local_prices), axis=-1)
-    pool_returns = jnp.diff(value_over_time) / value_over_time[:-1]
-    if return_val == "sharpe":
-        # calculate sharpe ratio over time
-        minute_level_rf = ((1.05 ** (1.0 / (60 * 24 * 365)) - 1) + 1) - 1.0
-        sharpe_ratio_minute = (
-            pool_returns - minute_level_rf
-        ).mean() / pool_returns.std()
-        sharpe_ratio_annual = jnp.sqrt(365 * 24 * 60) * sharpe_ratio_minute
-        return sharpe_ratio_annual
-    elif return_val == "returns":
-        return value_over_time[-1] / value_over_time[0] - 1.0
-    elif return_val == "returns_over_hodl":
-        return (
-            value_over_time[-1] / (stop_gradient(initial_reserves) * local_prices[-1]).sum()
-            - 1.0
-        )
-    elif return_val == "greatest_draw_down":
-        return jnp.min(value_over_time - value_over_time[0]) / value_over_time[0]
-    elif return_val == "alpha":
-        raise NotImplementedError
-    elif return_val == "value":
-        return value_over_time
-    elif return_val == "reserves_and_values":
-        return {
-            "final_reserves": reserves[-1],
-            "final_value": (reserves[-1] * local_prices[-1]).sum(),
-            "value": value_over_time,
-            "prices": local_prices,
-            "reserves": reserves,
-        }
-    else:
-        raise NotImplementedError
+    return _calculate_return_value(
+        return_val,
+        reserves,
+        local_prices,
+        value_over_time,
+        initial_reserves=reserves[0],
+    )
 
 
 @partial(jit, static_argnums=(7,8))

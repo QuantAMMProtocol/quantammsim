@@ -15,6 +15,8 @@ setup(
         "cvxpy",
         "matplotlib",
         "tqdm",
+        "optuna",
+        "pyarrow",
     ],
     extras_require={
         "dev": [

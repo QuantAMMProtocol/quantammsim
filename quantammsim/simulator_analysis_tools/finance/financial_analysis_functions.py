@@ -132,9 +132,6 @@ def calculate_tracking_error_and_information_ratio(portfolio_returns, benchmark_
 
     # Calculate the Tracking Error (standard deviation of the excess returns)
     tracking_error = calculate_tracking_error(portfolio_returns, benchmark_returns)
-
-    print("mean", type(mean_excess_return))
-    print("tracking", type(tracking_error))
     
     # Calculate the Information Ratio
     information_ratio = mean_excess_return / tracking_error
@@ -176,7 +173,7 @@ def calculate_portfolio_risk_metrics(portfolio_returns, rf_values, benchmark_ret
 
     # Calculate Beta (sensitivity of portfolio returns to market returns)
     beta, alpha, r_value, p_value, std_err = linregress(benchmark_returns, portfolio_returns)
-    print(type(VaR_95))
+    
     return {
         'Daily VaR (95)': VaR_95.item(),
         'Volatility': volatility,
