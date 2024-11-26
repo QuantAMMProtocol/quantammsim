@@ -112,7 +112,7 @@ def run_pool_simulation(simulationRunDto):
 
     time_series_fee_hook_variable = None
     for feeHook in simulationRunDto.feeHooks:
-        if feeHook.name == "timeSeriesFeeImport":
+        if feeHook.hookName == "timeSeriesFeeImport":
             time_series_fee_hook_variable = feeHook
             break
     fixed_fee = None

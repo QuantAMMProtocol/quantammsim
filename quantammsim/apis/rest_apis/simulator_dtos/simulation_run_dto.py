@@ -158,7 +158,9 @@ class FeeHook(object):
         #if undefined not included in dto
         if("hookScalarStep" in feeHookDto):
             self.hookScalarStep = FeeHookStep(feeHookDto["hookScalarStep"])
-
+        else:
+            self.hookScalarStep = None
+            
         self.minValue = feeHookDto["minValue"]
         self.maxValue = feeHookDto["maxValue"]
         self.unit = feeHookDto["unit"]
