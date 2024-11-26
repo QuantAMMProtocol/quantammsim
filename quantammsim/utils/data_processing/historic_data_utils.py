@@ -609,6 +609,8 @@ def get_data_dict(
                         sign=False,
                     )
                 )
+                if np.isnan(per_ticker_spread[-1]):
+                    per_ticker_spread[-1] = 0.0
             spread.append(np.array(per_ticker_spread))
             per_ticker_annualised_daily_volatility = (
                 np.array(calculate_annualised_daily_volatility_from_minute_data(
