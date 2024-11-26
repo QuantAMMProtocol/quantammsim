@@ -115,10 +115,18 @@ def run_pool_simulation(simulationRunDto):
         if feeHook.name == "timeSeriesFeeImport":
             time_series_fee_hook_variable = feeHook
             break
-    
+    fixed_fee = None
+    fee_steps_df = None
     if time_series_fee_hook_variable is not None:
-        if time_series_fee_hook_variable.
-
+        if time_series_fee_hook_variable.hookScalarStep is not None:
+            fixed_fee = float(time_series_fee_hook_variable.hookScalarStep.value)
+        if len(time_series_fee_hook_variable.hookTimeSteps) > 0:
+            update_rule_parameter_dict_converted["hook_time_steps"] = time_series_fee_hook_variable.hookTimeSteps
+            fee_steps_df = pd.DataFrame({
+                "unix": [step.unix for step in time_series_fee_hook_variable.hookTimeSteps],
+                "fees": [float(step.value) for step in time_series_fee_hook_variable.hookTimeSteps],
+    })
+    update_rule_parameter_dict_converted["hook_time_steps"] = fee_steps_df
     raw_trades = None
 
     if len(simulationRunDto.swapImports) > 0:
@@ -129,10 +137,10 @@ def run_pool_simulation(simulationRunDto):
             "amount_in": [float(swap.amountIn) for swap in simulationRunDto.swapImports],
         })
 
-    gas_cost_df = None
+    gas_cost_pd = None
 
     if len(simulationRunDto.gasSteps) > 0:
-        gas_cost_df = pd.DataFrame({
+        gas_cost_pd = pd.DataFrame({
             "unix": [gasStep.unix for gasStep in simulationRunDto.gasSteps],
             "trade_gas_cost_usd": [float(gasStep.value) for gasStep in simulationRunDto.gasSteps],
         })
@@ -149,18 +157,9 @@ def run_pool_simulation(simulationRunDto):
             "tokens": tokens,
             "rule": update_rule,
             "bout_offset": 14400,
-            #"maximum_change": 3e-4,
-            #"chunk_period": 60,
-            #"weight_interpolation_period": 60,
             "initial_weights_logits": initial_value_log_ratio,
             "initial_pool_value": total_initial_value,
-            #"fees": 0.0,
-            #"arb_fees": 0.0,
-            #"gas_cost": 0.0,
             "use_alt_lamb": False,
-            #"use_pre_exp_scaling": True,
-            #"weight_interpolation_method": "linear",
-            #"arb_frequency": 1,
             "return_val":"final_reserves_value_and_weights"
         }
 
@@ -173,13 +172,14 @@ def run_pool_simulation(simulationRunDto):
     outputDict = do_run_on_historic_data(
         run_fingerprint,
         update_rule_parameter_dict_converted,
-        fees=None,
+        fees=fixed_fee,
         root=None,
         price_data=price_data_local,
         verbose=True,
         do_test_period=False,
         raw_trades=raw_trades,
-        gas_cost_df=gas_cost_df
+        gas_cost_df=gas_cost_pd,
+        fees_df=fee_steps_df
     )
 
     resultTimeSteps = optimized_output_conversion(simulationRunDto, outputDict, tokens)
