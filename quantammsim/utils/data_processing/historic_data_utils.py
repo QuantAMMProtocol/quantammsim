@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import os.path
 import os
+import pyarrow as pa
 import matplotlib.pyplot as plt
 
 # from numba import jit
@@ -83,6 +84,7 @@ def start_and_end_calcs(
 def update_historic_data(token, root):
     outputPath = root + "combined_data/"
     outputMinutePath = outputPath + token + "_USD.csv"
+    parquetPath = outputPath + token + "_USD.parquet"
     path = root + "concat_binance_data/" + token + "_USD.csv"
     dailyPath = outputPath + token + "_USD_daily.csv"
     hourlyPath = outputPath + token + "_USD_hourly.csv"
@@ -143,7 +145,11 @@ def update_historic_data(token, root):
             columns=["tradecount"]
         )  # TODO do we need to drop or just not read?
 
-    concat_csv = concat_csv.sort_values(by="unix", ascending=True)
+    print("sorting")
+    csvData = csvData.sort_values(by="unix", ascending=True)
+    print("sorted")
+    prevRow = csvData.iloc[0]
+    notFirstRow = False
     totalMissingUnixPoints = list()
     totalMissingClosePoints = list()
 
@@ -234,7 +240,38 @@ def update_historic_data(token, root):
     plt.savefig(final_plot_filename)
     csvData = csvData.sort_values(by="unix", ascending=True)
 
+    # usdtData = pd.read_csv(
+    #     root + "USDT_USD.csv",
+    #     dtype={
+    #         "unix": float,
+    #         "date": "string",
+    #         "symbol": "string",
+    #         "open": float,
+    #         "high": float,
+    #         "low": float,
+    #         "close": float,
+    #         "Volume USD": float,
+    #         "Volume " + token: float,
+    #         "tradecount": float,
+    #     },
+    # )
+
+    # usdtData = usdtData.set_index("unix")
+    # usdtToken = token + "/USDT"
+    # for index, row in csvData.iterrows():
+    #    try:
+    #        if(usdtToken == row["symbol"]):
+    #            usdtRow = usdtData.iloc[usdtData.index.get_loc(row["unix"])]
+    #            csvData.at[index, "close"] = row["close"] * usdtRow["close"]
+    #            csvData.at[index, "open"] = row["open"] * usdtRow["open"]
+    #            csvData.at[index, "low"] = row["low"] * usdtRow["low"]
+    #            csvData.at[index, "high"] = row["high"] * usdtRow["high"]
+    #            csvData.at[index, "symbol"] = token + "/USD"
+    #    except  Exception as e:
+    #        print(e)
+
     csvData.to_csv(outputMinutePath, mode="w", index=False)
+    csvData.to_parquet(parquetPath, engine='pyarrow')
     csvData[csvData["date"].str.contains(":00:00")].to_csv(
         hourlyPath, mode="w", index=False
     )
@@ -315,7 +352,40 @@ def createMissingDataFrameFromClosePrices(startUnix, closePrices, token):
             "Volume " + token: totalMissingCoinVolumePoints,
         }
     )
-
+def get_historic_parquet_data(
+        list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
+):
+    firstTicker = list_of_tickers[0]
+    # print('cwd: ', os.getcwd())
+    filename = firstTicker + "_USD.parquet"
+    renamedCols = [col + "_" + firstTicker for col in cols]
+    if root is not None:
+        inp_file = Path(root) / filename
+    else:
+        inp_file = impresources.files(data) / filename
+    with inp_file.open("rb") as f:
+        # path = root + firstTicker + "_USD.csv"
+        csvData = pd.read_parquet(f, engine='pyarrow')
+        csvData = csvData.filter(items=["unix"] + renamedCols)
+    if len(list_of_tickers) > 1:
+        for ticker in list_of_tickers[1:]:
+            renamedCols = [col + "_" + ticker for col in cols]
+            # path = root + ticker + "_USD.csv"
+            filename = ticker + "_USD.parquet"
+            if root is not None:
+                inp_file = Path(root) / filename
+            else:
+                inp_file = impresources.files(data) / filename
+            with inp_file.open("rb") as f:
+                newCsvData = pd.read_parquet(f, engine='pyarrow').filter(items=["unix"] + renamedCols)
+            csvData = csvData.join(newCsvData)
+    csvData = csvData.dropna()
+    if start_time_unix is not None and end_time_unix is not None:
+        csvData = csvData[start_time_unix - 1 : end_time_unix + 1]
+        return csvData
+    else:
+        return csvData
+    
 
 def get_historic_csv_data(
     list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
@@ -455,7 +525,7 @@ def get_data_dict(
 
     if data_kind == "historic":
         if price_data is None:
-            price_data = get_historic_csv_data(list_of_tickers, cols, root)
+            price_data = get_historic_parquet_data(list_of_tickers, cols, root)
         unix_values = price_data.index.to_numpy()
         prices = price_data.filter(
             items=["close_" + ticker for ticker in list_of_tickers]
@@ -487,7 +557,7 @@ def get_data_dict(
             price_data_mc = get_historic_csv_data_w_versions(
                 mc_tokens, ["close"], root, max_verion=max_mc_version
             )
-            price_data_non_mc = get_historic_csv_data(non_mc_tokens, cols, root)
+            price_data_non_mc = get_historic_parquet_data(non_mc_tokens, cols, root)
         else:
             price_data_mc, price_data_non_mc = price_data
         if len(non_mc_tokens) > 0:
@@ -583,6 +653,8 @@ def get_data_dict(
                         sign=False,
                     )
                 )
+                if np.isnan(per_ticker_spread[-1]):
+                    per_ticker_spread[-1] = 0.0
             spread.append(np.array(per_ticker_spread))
             per_ticker_annualised_daily_volatility = (
                 np.array(calculate_annualised_daily_volatility_from_minute_data(

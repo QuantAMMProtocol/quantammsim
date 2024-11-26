@@ -25,6 +25,10 @@ price-data-new
 ehthumbs.db
 Thumbs.db
 
+#ignore data files
+*.png
+*.parquet
+
 # ignore compiled files
 *.com
 *.class

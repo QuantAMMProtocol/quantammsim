@@ -113,8 +113,6 @@ def convert_return_analysis_to_run_metric(return_analysis, rf_name, startDateStr
             continue
         if key == "risk_metrics":
             for risk_metric in return_analysis[key]:
-                print(risk_metric)
-                print(return_analysis[key][risk_metric])
                 if isinstance(return_analysis[key][risk_metric], np.ndarray):
                     timeseries = convert_simulation_timeseries_to_run_metric(
                         return_analysis[key][risk_metric], startDateString, risk_metric
@@ -136,8 +134,6 @@ def convert_return_analysis_to_run_metric(return_analysis, rf_name, startDateStr
                     )
         elif key == "Drawdown Statistics" or key == "Statistical Properties":
             for drawdown_metric in return_analysis[key]:
-                print(drawdown_metric)
-                print(return_analysis[key][drawdown_metric])
                 if isinstance(return_analysis[key][drawdown_metric], np.ndarray):
                     timeseries = convert_simulation_timeseries_to_run_metric(
                         return_analysis[key][drawdown_metric],
@@ -282,8 +278,6 @@ def perform_return_analysis(returns, dailyRfValues):
             - Statistical Properties
     """
     # Calculate the Sharpe ratio
-    print("returns.shape ", returns.shape)
-    print("dailyRfValues.shape ", dailyRfValues.shape)
     sharpe = faf.calculate_sharpe_ratio(returns, dailyRfValues)
 
     # Calculate the Sortino ratio
