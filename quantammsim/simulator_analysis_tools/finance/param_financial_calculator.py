@@ -121,12 +121,16 @@ def run_pool_simulation(simulationRunDto):
         if time_series_fee_hook_variable.hookScalarStep is not None:
             fixed_fee = float(time_series_fee_hook_variable.hookScalarStep.value)
         if len(time_series_fee_hook_variable.hookTimeSteps) > 0:
-            update_rule_parameter_dict_converted["hook_time_steps"] = time_series_fee_hook_variable.hookTimeSteps
+            divisor = 1
+            if time_series_fee_hook_variable.unit == "bps":
+                divisor = 10000
+            if time_series_fee_hook_variable.unit == "%":
+                divisor = 100
             fee_steps_df = pd.DataFrame({
                 "unix": [step.unix for step in time_series_fee_hook_variable.hookTimeSteps],
-                "fees": [float(step.value)/float(10000) for step in time_series_fee_hook_variable.hookTimeSteps],
+                "fees": [float(step.value)/float(divisor) for step in time_series_fee_hook_variable.hookTimeSteps],
     })
-    update_rule_parameter_dict_converted["hook_time_steps"] = fee_steps_df
+            
     raw_trades = None
 
     if len(simulationRunDto.swapImports) > 0:
