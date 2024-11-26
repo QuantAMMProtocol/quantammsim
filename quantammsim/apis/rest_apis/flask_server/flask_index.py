@@ -72,9 +72,7 @@ def redirect_if_jwt_invalid():
         @wraps(fn)
         def decorator(*args, **kwargs):
             try:
-                print("verifying")
                 verify_jwt_in_request()
-                print("verfied")
             except:
                 return redirect("login", code=302)
 
@@ -99,7 +97,6 @@ def runTraining():
         A success message indicating that the training process has started.
     """
     request_data = request.get_json()
-    print(request_data)
     dto = TrainingDto(request_data)
     run_fingerprint = dto.convert_to_run_fingerprint()
     null_keys = list()
@@ -162,11 +159,9 @@ def getTrainingResult(request):
     """
     request_data = request.get_json()
     dto = load_from_file("../../../../experiments/results/run_test.json")
-    print(dto)
 
     resultJSON = jsonpickle.encode(dto, unpicklable=False)
     jsonString = json.dumps(resultJSON, indent=4)
-    print(jsonString)
 
     return jsonString
 
@@ -186,10 +181,8 @@ def runSimulation():
         A JSON string containing the simulation results.
     """
     request_data = request.get_json()
-    print(request_data)
+
     dto = SimulationRunDto(request_data)
-    print("starting")
-    print("dto: ", dto.pool.poolConstituents)
     result = run_pool_simulation(dto)
 
     resultJSON = jsonpickle.encode(SimulationResult(result), unpicklable=False)
@@ -255,15 +248,11 @@ def loadHistoricDailyPrices():
         A JSON string containing the historic daily price data.
     """
     request_data = request.get_json()
-    print(request_data)
     dto = LoadPriceHistoryRequestDto(request_data)
-    print("get data")
     root = "../../../../quantammsim/data/"
     historic = get_historic_daily_csv_data([dto.coinCode], root)
     result = historic.to_json(orient="records")
-    print("json load data")
     parsed = json.loads(result)
-    print("json dump data")
     jsonString = json.dumps(parsed)
     return jsonString
 
@@ -283,9 +272,7 @@ def loadCoinComparisonData():
     root = "../../../../quantammsim/data/"
     historic = get_coin_comparison_data(root)
     result = historic.to_json(orient="records")
-    print("comparison load data")
     parsed = json.loads(result)
-    print("comparison dump data")
     jsonString = json.dumps(parsed)
     ##return result
     return jsonString

@@ -52,7 +52,6 @@ def run_pool_simulation(simulationRunDto):
     tokens = [
         constituent.coinCode for constituent in simulationRunDto.pool.poolConstituents
     ]
-    print(tokens)
 
     # initial pool constituents
     initial_value_per_token = [
@@ -181,8 +180,6 @@ def retrieve_simulation_run_analysis_results(run_fingerprint, params, portfolio_
     hodl_daily_returns = calculate_daily_returns(
         hodl_result["value"], run_fingerprint["startDateString"], "hodl"
     )
-    print("portfolio_daily_returns: ", portfolio_daily_returns.shape)
-    print("portfolio_daily value: ", portfolio_result["value"].shape)
     # if btc_result is not None:
     #    # Calculate returns for hodl
     #    btc_daily_returns = calculate_daily_returns(
@@ -194,7 +191,6 @@ def retrieve_simulation_run_analysis_results(run_fingerprint, params, portfolio_
             "DTB3.csv", run_fingerprint["startDateString"], run_fingerprint["endDateString"]
         )
     )
-    print("yearly_daily_rf_values: ", yearly_daily_rf_values.shape)
 
     results = fac.perform_porfolio_financial_analysis(portfolio_daily_returns, yearly_daily_rf_values,run_fingerprint["startDateString"], [hodl_daily_returns], ["hodl"], "3M TBill (DTB3)")
 

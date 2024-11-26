@@ -34,6 +34,7 @@ from quantammsim.utils.data_processing.dtb3_data_utils import filter_dtb3_values
 from quantammsim.utils.data_processing.historic_data_utils import (
     get_data_dict,
     get_historic_csv_data,
+    get_historic_parquet_data,
 )
 
 
@@ -138,12 +139,15 @@ def run_pool_simulation(simulationRunDto):
     print("settings")
     print(run_fingerprint)
     print(update_rule_parameter_dict_converted)
+
+    price_data_local = get_historic_parquet_data(tokens)
+    
     outputDict = do_run_on_historic_data(
         run_fingerprint,
         update_rule_parameter_dict_converted,
         fees=None,
         root=None,
-        price_data=None,
+        price_data=price_data_local,
         verbose=True,
         do_test_period=False,
     )
@@ -151,7 +155,7 @@ def run_pool_simulation(simulationRunDto):
     resultTimeSteps = optimized_output_conversion(simulationRunDto, outputDict, tokens)
 
     analysis = retrieve_simulation_run_analysis_results(run_fingerprint, update_rule_parameter_dict_converted
-                                             ,outputDict)
+                                             ,outputDict, price_data_local)
     return {
         "resultTimeSteps":  resultTimeSteps,
         "analysis": analysis
@@ -165,16 +169,12 @@ def retrieve_simulation_run_analysis_results(run_fingerprint, params, portfolio_
         freq="T",
     )
 
-    minute_series = (
-        pd.Series(portfolio_result["value"], index=minute_index).resample("D").first()
-    )
-
     hodl_params = copy.deepcopy(params)
     hodl_fingerprint = copy.deepcopy(run_fingerprint)
     hodl_fingerprint["rule"] = "hodl"
 
     hodl_result = do_run_on_historic_data(
-        hodl_fingerprint, dict_of_np_to_jnp(hodl_params), do_test_period=False
+        hodl_fingerprint, dict_of_np_to_jnp(hodl_params), do_test_period=False, price_data=price_data
     )
 
     # btc_params = copy.deepcopy(params)
@@ -596,9 +596,6 @@ def retrieve_param_financial_analysis_results(
         hodl_result, run_fingerprint_start_date, "hodl"
     )
 
-    print("portfolio_daily_returns: ", portfolio_daily_returns.shape)
-    print("portfolio_daily value: ", portfolio_result["value"].shape)
-    
     if btc_result is not None:
         # Calculate returns for hodl
         btc_daily_returns = calculate_daily_returns(
