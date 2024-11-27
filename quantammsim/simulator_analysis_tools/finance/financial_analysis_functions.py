@@ -252,7 +252,7 @@ def calculate_drawdown_statistics(daily_returns, rf_values):
         'Ulcer Index': ulcer_index.item(),
         'Weekly Sterling Ratio': daily_weekly_sterling,
         'Monthly Sterling Ratio': daily_monthly_sterling,
-        'Sterling Ratio': sterling.item()
+        'Sterling Ratio': sterling
     }
 
 
