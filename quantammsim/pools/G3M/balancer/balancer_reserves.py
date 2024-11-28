@@ -306,7 +306,7 @@ def _jax_calc_balancer_reserves_with_fees_using_precalcs(
     return reserves
 
 
-@partial(jit, static_argnums=(6,7))
+@partial(jit, static_argnums=(6,7,8))
 def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using_precalcs(
     carry_list,
     input_list,
@@ -316,6 +316,7 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
     active_trade_directions,
     n,
     do_trades,
+    do_arb
 ):
     """
     Calculate changes in AMM reserves considering fees and arbitrage opportunities using signature variations.
@@ -425,7 +426,7 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
 
     # if arb trade IS profitable AND outside_no_arb_region IS true
     # then reserves is equal to post_price_reserves, otherwise equal to prev_reserves
-    do_price_arb_trade = arb_profitable
+    do_price_arb_trade = arb_profitable * do_arb
 
     reserves = jnp.where(do_price_arb_trade, post_price_reserves, prev_reserves)
 
@@ -441,7 +442,7 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
     ], reserves
 
 
-@partial(jit, static_argnums=(8,))
+@partial(jit, static_argnums=(8,9,))
 def _jax_calc_balancer_reserves_with_dynamic_inputs(
     initial_reserves,
     weights,
@@ -452,6 +453,7 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
     all_sig_variations=None,
     trades=None,
     do_trades=False,
+    do_arb=True,
 ):
     """
     Calculate AMM reserves considering fees and arbitrage opportunities using signature variations,
@@ -486,6 +488,8 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
         Array of all signature variations used for arbitrage calculations.
     do_trades : bool, optional
         Whether or not to apply the trades, by default False
+    do_arb : bool, optional
+        Whether or not to apply the arbitrage, by default True
 
     Returns
     -------
@@ -547,6 +551,7 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
         do_trades=do_trades,
+        do_arb=do_arb,
     )
 
     carry_list_init = [

@@ -90,15 +90,18 @@ class TFMMBasePool(AbstractPool):
         initial_pool_value = run_fingerprint["initial_pool_value"]
         initial_value_per_token = arb_acted_upon_weights[0] * initial_pool_value
         initial_reserves = initial_value_per_token / arb_acted_upon_local_prices[0]
-        reserves = _jax_calc_quantAMM_reserves_with_fees_using_precalcs(
-            initial_reserves,
-            arb_acted_upon_weights,
-            arb_acted_upon_local_prices,
-            fees=run_fingerprint["fees"],
-            arb_thresh=run_fingerprint["gas_cost"],
-            arb_fees=run_fingerprint["arb_fees"],
-            all_sig_variations=jnp.array(run_fingerprint["all_sig_variations"]),
-        )
+        if run_fingerprint["do_arb"]:
+            reserves = _jax_calc_quantAMM_reserves_with_fees_using_precalcs(
+                initial_reserves,
+                arb_acted_upon_weights,
+                arb_acted_upon_local_prices,
+                fees=run_fingerprint["fees"],
+                arb_thresh=run_fingerprint["gas_cost"],
+                arb_fees=run_fingerprint["arb_fees"],
+                all_sig_variations=jnp.array(run_fingerprint["all_sig_variations"]),
+            )
+        else:
+            reserves = jnp.broadcast_to(initial_reserves, weights.shape)
         return reserves
 
     @partial(jit, static_argnums=(2))
@@ -113,37 +116,43 @@ class TFMMBasePool(AbstractPool):
 
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
-
+        
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
 
         weights = self.calculate_weights(
             params, run_fingerprint, prices, start_index, additional_oracle_input
         )
-        if run_fingerprint["arb_frequency"] != 1:
-            arb_acted_upon_weights = weights[:: run_fingerprint["arb_frequency"]]
-            arb_acted_upon_local_prices = local_prices[:: run_fingerprint["arb_frequency"]]
-        else:
-            arb_acted_upon_weights = weights
-            arb_acted_upon_local_prices = local_prices
 
-        reserve_ratios = _jax_calc_quantAMM_reserve_ratios(
-            arb_acted_upon_weights[:-1],
-            arb_acted_upon_local_prices[:-1],
-            arb_acted_upon_weights[1:],
-            arb_acted_upon_local_prices[1:],
-        )
         # calculate initial reserves
         initial_pool_value = run_fingerprint["initial_pool_value"]
         initial_value_per_token = weights[0] * initial_pool_value
         initial_reserves = initial_value_per_token / local_prices[0]
 
-        # calculate the reserves by cumprod of reserve ratios
-        reserves = jnp.vstack(
-            [
-                initial_reserves,
-                initial_reserves * jnp.cumprod(reserve_ratios, axis=0),
-            ]
-        )
+        if run_fingerprint["do_arb"]:
+            if run_fingerprint["arb_frequency"] != 1:
+                arb_acted_upon_weights = weights[:: run_fingerprint["arb_frequency"]]
+                arb_acted_upon_local_prices = local_prices[:: run_fingerprint["arb_frequency"]]
+            else:
+                arb_acted_upon_weights = weights
+                arb_acted_upon_local_prices = local_prices
+
+            reserve_ratios = _jax_calc_quantAMM_reserve_ratios(
+                arb_acted_upon_weights[:-1],
+                arb_acted_upon_local_prices[:-1],
+                arb_acted_upon_weights[1:],
+                arb_acted_upon_local_prices[1:],
+            )
+
+
+            # calculate the reserves by cumprod of reserve ratios
+            reserves = jnp.vstack(
+                [
+                    initial_reserves,
+                    initial_reserves * jnp.cumprod(reserve_ratios, axis=0),
+                ]
+            )
+        else:
+            reserves = jnp.broadcast_to(initial_reserves, weights.shape)
         return reserves
 
     @partial(jit, static_argnums=(2))
@@ -204,6 +213,7 @@ class TFMMBasePool(AbstractPool):
             jnp.array(run_fingerprint["all_sig_variations"]),
             trade_array,
             run_fingerprint["do_trades"],
+            run_fingerprint["do_arb"],
         )
         return reserves
 

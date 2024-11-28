@@ -168,6 +168,7 @@ class BalancerPool(AbstractPool):
             jnp.array(run_fingerprint["all_sig_variations"]),
             trade_array,
             run_fingerprint["do_trades"],
+            run_fingerprint["do_arb"],
         )
         return reserves
 
