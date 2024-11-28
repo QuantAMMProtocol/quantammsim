@@ -536,13 +536,7 @@ def optimized_output_conversion(simulationRunDto, outputDict, tokens):
     prices_df = pd.DataFrame(outputDict["prices"])[::1440]
     reserves_df = pd.DataFrame(outputDict["reserves"])[::1440]
     values_df = pd.DataFrame(outputDict["value"])[::1440]
-    print(len(outputDict["prices"]))
-    print(len(outputDict["reserves"]))
-    print(len(outputDict["value"]))
-    print("--------------")
-    print(len(outputDict["prices"][::1440]))
-    print(len(outputDict["reserves"][::1440]))
-    print(len(outputDict["value"][::1440]))
+    
     # note that the returned weights are empirical weights, not calculated weights
     # this is because the calculated weights are not returned in the outputDict as
     # they are not guaranteed to exist for all possible pool types

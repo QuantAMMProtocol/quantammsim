@@ -155,24 +155,21 @@ def run_pool_simulation(simulationRunDto):
     test_window_end_str = test_window_end_str.split()[0] + " 00:00:00"
 
     run_fingerprint = {
-            "startDateString": simulationRunDto.startDateString,
-            "endDateString": simulationRunDto.endDateString,
-            "endTestDateString": test_window_end_str,
-            "tokens": tokens,
-            "rule": update_rule,
-            "bout_offset": 14400,
-            "initial_weights_logits": initial_value_log_ratio,
-            "initial_pool_value": total_initial_value,
-            "use_alt_lamb": False,
-            "return_val":"final_reserves_value_and_weights"
-        }
-
-    print("settings")
-    print(run_fingerprint)
-    print(update_rule_parameter_dict_converted)
+        "startDateString": simulationRunDto.startDateString,
+        "endDateString": simulationRunDto.endDateString,
+        "endTestDateString": test_window_end_str,
+        "tokens": tokens,
+        "rule": update_rule,
+        "bout_offset": 14400,
+        "initial_weights_logits": initial_value_log_ratio,
+        "initial_pool_value": total_initial_value,
+        "use_alt_lamb": False,
+        "do_trades": raw_trades is not None,
+        "return_val": "final_reserves_value_and_weights"
+    }
 
     price_data_local = get_historic_parquet_data(tokens)
-    
+
     outputDict = do_run_on_historic_data(
         run_fingerprint,
         update_rule_parameter_dict_converted,
@@ -195,7 +192,7 @@ def run_pool_simulation(simulationRunDto):
         "analysis": analysis
     }
 
-def retrieve_simulation_run_analysis_results(run_fingerprint, params, portfolio_result, price_data=None, btc_price_data=None):
+def retrieve_simulation_run_analysis_results(run_fingerprint, params, portfolio_result, price_data=None):
 
     minute_index = pd.date_range(
         start=run_fingerprint["startDateString"],
@@ -211,15 +208,6 @@ def retrieve_simulation_run_analysis_results(run_fingerprint, params, portfolio_
         hodl_fingerprint, dict_of_np_to_jnp(hodl_params), do_test_period=False, price_data=price_data
     )
 
-    # btc_params = copy.deepcopy(params)
-    # btc_fingerprint = copy.deepcopy(run_fingerprint)
-    # btc_fingerprint["tokens"] = ["BTC"]
-    # btc_fingerprint["rule"] = "hodl"
-    #
-    # btc_result, btc_test_result = do_run_on_historic_data(
-    #     btc_fingerprint, dict_of_np_to_jnp(btc_params)
-    # )
-
     yearly_daily_rf_values = fau.convert_annual_to_daily_returns(
         filter_dtb3_values(
             "DTB3.csv", run_fingerprint["startDateString"], run_fingerprint["endDateString"]
@@ -234,12 +222,6 @@ def retrieve_simulation_run_analysis_results(run_fingerprint, params, portfolio_
     hodl_daily_returns = calculate_daily_returns(
         hodl_result["value"], run_fingerprint["startDateString"], "hodl"
     )
-
-    # if btc_result is not None:
-    #    # Calculate returns for hodl
-    #    btc_daily_returns = calculate_daily_returns(
-    #        btc_result["value"], run_fingerprint["startDateString"], "btc"
-    #    )
 
     yearly_daily_rf_values = fau.convert_annual_to_daily_returns(
         filter_dtb3_values(
@@ -371,7 +353,7 @@ def run_bencharks_and_financial_analysis(tokens, portfolio_daily_returns, startD
     return results
 
 def retrieve_param_and_mc_financial_analysis_results(
-    run_fingerprint, params, testEndDateString, plot_drawdowns, plot_returns, price_data=None, btc_price_data=None
+    run_fingerprint, params, testEndDateString, plot_drawdowns, plot_returns, price_data=None
 ):
 
     train_end_date_str = run_fingerprint["endDateString"]
@@ -395,20 +377,9 @@ def retrieve_param_and_mc_financial_analysis_results(
         do_test_period=False,
     )
 
-    btc_params = copy.deepcopy(params)
-    btc_fingerprint = copy.deepcopy(local_run_fingerprint)
-    btc_fingerprint["tokens"] = ["BTC"]
-    btc_fingerprint["rule"] = "hodl"
-    btc_result = do_run_on_historic_data(
-        btc_fingerprint,
-        dict_of_np_to_jnp(btc_params),
-        price_data=btc_price_data,
-        do_test_period=False,
-    )
-
     fach.plot_line_chart_from_results(
-        [portfolio_result["value"], hodl_result["value"], btc_result["value"]],
-        ["QuantAMM Momentum", "basket HODL", "BTC HODL"],
+        [portfolio_result["value"], hodl_result["value"]],
+        ["QuantAMM Momentum", "basket HODL"],
         run_fingerprint["startDateString"],
         "./results",
         "portfolio_result_abs_ " + '_'.join(run_fingerprint["tokens"]) + ".png",
@@ -428,7 +399,6 @@ def retrieve_param_and_mc_financial_analysis_results(
         local_run_fingerprint["startDateString"],
         portfolio_result,
         hodl_result,
-        btc_result,
     )
 
     full_test_results = single_run_results(
@@ -441,7 +411,6 @@ def retrieve_param_and_mc_financial_analysis_results(
         train_end_date_str,
         portfolio_result,
         hodl_result,
-        btc_result,
     )
 
     mc_results = retrieve_mc_param_financial_results(run_fingerprint, params, testEndDateString)
@@ -460,7 +429,6 @@ def retrieve_param_and_mc_financial_analysis_results(
         train_end_date_str,
         portfolio_result["value"],
         hodl_result["value"],
-        btc_result["value"],
         4,
         bout_length,
     )
@@ -483,7 +451,6 @@ def retrieve_param_and_mc_financial_analysis_results(
         test_fingerprint["endDateString"],
         portfolio_result["value"],
         hodl_result["value"],
-        btc_result["value"],
         4,
         bout_length,
     )
@@ -506,7 +473,6 @@ def single_run_results(
     single_run_start_date,
     portfolio_result,
     hodl_result,
-    btc_result = None,
 ):
 
     portfolio_train_results = slice_minutes_array(
@@ -516,15 +482,11 @@ def single_run_results(
     hodl_train_results = slice_minutes_array(
         hodl_result["value"], dataStartDateString, single_run_start_date, end_date
     )
-    if btc_result is not None:
-        btc_train_results = slice_minutes_array(
-            btc_result["value"], dataStartDateString, single_run_start_date, end_date
-        )
 
     if plot_train_returns:
         fach.plot_line_chart_from_results(
-            [portfolio_train_results, hodl_train_results, btc_train_results],
-            ["QuantAMM Momentum", "basket HODL", "BTC HODL"],
+            [portfolio_train_results, hodl_train_results],
+            ["QuantAMM Momentum", "basket HODL"],
             single_run_start_date,
             "./results",
             run_name + ".png",
@@ -540,7 +502,6 @@ def single_run_results(
         end_date,
         portfolio_train_results,
         hodl_train_results,
-        btc_train_results,
     )
 
     return normal_results
@@ -618,7 +579,6 @@ def retrieve_param_financial_analysis_results(
     run_fingerprint_end_date,
     portfolio_result,
     hodl_result,
-    btc_result = None,
 ):
     # Calculate returns for portfolio
     portfolio_daily_returns = calculate_daily_returns(
@@ -630,12 +590,6 @@ def retrieve_param_financial_analysis_results(
         hodl_result, run_fingerprint_start_date, "hodl"
     )
 
-    if btc_result is not None:
-        # Calculate returns for hodl
-        btc_daily_returns = calculate_daily_returns(
-            btc_result, run_fingerprint_start_date, "btc"
-        )
-
     yearly_daily_rf_values = fau.convert_annual_to_daily_returns(
         filter_dtb3_values(
             "DTB3.csv", run_fingerprint_start_date, run_fingerprint_end_date
@@ -646,7 +600,6 @@ def retrieve_param_financial_analysis_results(
     analysis_result = fac.perform_financial_analysis(
         portfolio_daily_returns,
         hodl_daily_returns,
-        btc_daily_returns,
         yearly_daily_rf_values,
     )
 
@@ -666,7 +619,6 @@ def plot_drawdown_charts(analysis_result, run_name):
         "2019-01-01",
         analysis_result["portfolio"]["drawdown"][targetDrawdown],
         analysis_result["hodl"]["drawdown"][targetDrawdown],
-        analysis_result["btc"]["drawdown"][targetDrawdown],
         "./results",
         run_name + "_" + targetDrawdown + ".png",
     )
@@ -679,7 +631,6 @@ def plot_drawdown_charts(analysis_result, run_name):
         "2019-01-01",
         analysis_result["portfolio"]["drawdown"][targetDrawdown],
         analysis_result["hodl"]["drawdown"][targetDrawdown],
-        analysis_result["btc"]["drawdown"][targetDrawdown],
         "./results",
         run_name + "_" + targetDrawdown + ".png",
     )
@@ -692,7 +643,6 @@ def plot_drawdown_charts(analysis_result, run_name):
         "2019-01-01",
         analysis_result["portfolio"]["drawdown"][targetDrawdown],
         analysis_result["hodl"]["drawdown"][targetDrawdown],
-        analysis_result["btc"]["drawdown"][targetDrawdown],
         "./results",
         run_name + "_" + targetDrawdown + ".png",
     )
@@ -705,7 +655,6 @@ def plot_drawdown_charts(analysis_result, run_name):
         "2019-01-01",
         analysis_result["portfolio"]["drawdown"][targetDrawdown],
         analysis_result["hodl"]["drawdown"][targetDrawdown],
-        analysis_result["btc"]["drawdown"][targetDrawdown],
         "./results",
         run_name + "_" + targetDrawdown + ".png",
     )
@@ -718,7 +667,6 @@ def plot_drawdown_charts(analysis_result, run_name):
         "2019-01-01",
         analysis_result["portfolio"]["drawdown"][targetDrawdown],
         analysis_result["hodl"]["drawdown"][targetDrawdown],
-        analysis_result["btc"]["drawdown"][targetDrawdown],
         "./results",
         run_name + "_" + targetDrawdown + ".png",
     )
@@ -730,7 +678,6 @@ def plot_drawdown_charts(analysis_result, run_name):
         "2019-01-01",
         analysis_result["portfolio"]["drawdown"][targetDrawdown],
         analysis_result["hodl"]["drawdown"][targetDrawdown],
-        analysis_result["btc"]["drawdown"][targetDrawdown],
         "./results",
         run_name + "_" + targetDrawdown + ".png",
     )
@@ -743,7 +690,6 @@ def plot_drawdown_charts(analysis_result, run_name):
         "2019-01-01",
         analysis_result["portfolio"]["drawdown"][targetDrawdown],
         analysis_result["hodl"]["drawdown"][targetDrawdown],
-        analysis_result["btc"]["drawdown"][targetDrawdown],
         "./results",
         run_name + "_" + targetDrawdown + ".png",
     )
@@ -755,7 +701,6 @@ def plot_drawdown_charts(analysis_result, run_name):
         "2019-01-01",
         analysis_result["portfolio"]["drawdown"][targetDrawdown],
         analysis_result["hodl"]["drawdown"][targetDrawdown],
-        analysis_result["btc"]["drawdown"][targetDrawdown],
         "./results",
         run_name + "_" + targetDrawdown + ".png",
     )
@@ -768,7 +713,6 @@ def plot_drawdown_charts(analysis_result, run_name):
         "2019-01-01",
         analysis_result["portfolio"]["drawdown"][targetDrawdown],
         analysis_result["hodl"]["drawdown"][targetDrawdown],
-        analysis_result["btc"]["drawdown"][targetDrawdown],
         "./results",
         run_name + "_" + targetDrawdown + ".png",
     )
@@ -780,7 +724,6 @@ def plot_drawdown_charts(analysis_result, run_name):
         "2019-01-01",
         analysis_result["portfolio"]["drawdown"][targetDrawdown],
         analysis_result["hodl"]["drawdown"][targetDrawdown],
-        analysis_result["btc"]["drawdown"][targetDrawdown],
         "./results",
         run_name + "_" + targetDrawdown + ".png",
     )
@@ -803,17 +746,6 @@ def retrieve_mc_param_financial_results(run_fingerprint, params, testEndDateStri
     mc_variations = generate_interarray_permutations(*results)
 
     mc_results = []
-
-    btc_params = copy.deepcopy(params)
-    btc_fingerprint = copy.deepcopy(local_run_fingerprint)
-    btc_fingerprint["tokens"] = ["BTC"]
-    btc_fingerprint["rule"] = "hodl"
-    btc_result = do_run_on_historic_data(
-        btc_fingerprint,
-        dict_of_np_to_jnp(btc_params),
-        price_data=None,
-        do_test_period=False,
-    )
 
     mc_data = get_historic_csv_data(results,["close"],None,run_fingerprint["startDateString"],testEndDateString)
 
@@ -861,7 +793,6 @@ def retrieve_mc_param_financial_results(run_fingerprint, params, testEndDateStri
                 local_run_fingerprint["startDateString"],
                 portfolio_result,
                 hodl_result,
-                btc_result,
             )
         )
 
@@ -878,7 +809,6 @@ def retrieve_batch_window_analysis_results(
     run_fingerprint_end_date,
     portfolio_result,
     hodl_result,
-    btc_result,
     batch_count,
     bout_length,
 ):
@@ -901,12 +831,6 @@ def retrieve_batch_window_analysis_results(
             batch_param["startDateString"],
             batch_param["endDateString"],
         )
-        sliced_btc_result = slice_minutes_array(
-            btc_result,
-            original_start_date,
-            batch_param["startDateString"],
-            batch_param["endDateString"],
-        )
 
         batch_results.append(
             retrieve_param_financial_analysis_results(
@@ -916,7 +840,6 @@ def retrieve_batch_window_analysis_results(
                 batch_param["endDateString"],
                 sliced_portfolio_result,
                 sliced_hodl_result,
-                sliced_btc_result,
             )
         )
 
@@ -1000,17 +923,15 @@ def plot_drawdown_chart(
     start_date,
     portfolio_drawdown,
     hodl_drawdown,
-    btc_drawdown,
     target_directory,
     filename,
 ):
     portfolio_drawdown_series = fau.convert_to_series(portfolio_drawdown, value_column)
     hodl_drawdown_series = fau.convert_to_series(hodl_drawdown, value_column)
-    btc_drawdown_series = fau.convert_to_series(btc_drawdown, value_column)
 
     fach.plot_line_chart_from_series(
-        [portfolio_drawdown_series, hodl_drawdown_series, btc_drawdown_series],
-        ["Portfolio", "basket HODL", "BTC HODL"],
+        [portfolio_drawdown_series, hodl_drawdown_series],
+        ["Portfolio", "basket HODL"],
         start_date,
         target_directory,
         filename,
