@@ -371,7 +371,7 @@ def retrieve_param_and_mc_financial_analysis_results(
         run_fingerprint["startDateString"],
         train_end_date_str,
         portfolio_result["value"],
-        hodl_result["value"]
+        hodl_result["value"],
         4,
         bout_length,
     )
@@ -393,7 +393,7 @@ def retrieve_param_and_mc_financial_analysis_results(
         test_fingerprint["startDateString"],
         test_fingerprint["endDateString"],
         portfolio_result["value"],
-        hodl_result["value"]
+        hodl_result["value"],
         4,
         bout_length,
     )
