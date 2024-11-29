@@ -115,11 +115,8 @@ def run_pool_simulation(simulationRunDto):
         if feeHook.hookName == "timeSeriesFeeImport":
             time_series_fee_hook_variable = feeHook
             break
-    fixed_fee = None
     fee_steps_df = None
     if time_series_fee_hook_variable is not None:
-        if time_series_fee_hook_variable.hookScalarStep is not None:
-            fixed_fee = float(time_series_fee_hook_variable.hookScalarStep.value)
         if len(time_series_fee_hook_variable.hookTimeSteps) > 0:
             divisor = 1
             if time_series_fee_hook_variable.unit == "bps":
@@ -173,7 +170,6 @@ def run_pool_simulation(simulationRunDto):
     outputDict = do_run_on_historic_data(
         run_fingerprint,
         update_rule_parameter_dict_converted,
-        fees=fixed_fee,
         root=None,
         price_data=price_data_local,
         verbose=True,

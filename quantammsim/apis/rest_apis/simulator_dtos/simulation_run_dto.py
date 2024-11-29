@@ -154,12 +154,6 @@ class FeeHook(object):
 
         for step in feeHookDto["hookTimeSteps"]:
             self.hookTimeSteps.append(FeeHookStep(step))
-
-        #if undefined not included in dto
-        if("hookScalarStep" in feeHookDto):
-            self.hookScalarStep = FeeHookStep(feeHookDto["hookScalarStep"])
-        else:
-            self.hookScalarStep = None
             
         self.minValue = feeHookDto["minValue"]
         self.maxValue = feeHookDto["maxValue"]

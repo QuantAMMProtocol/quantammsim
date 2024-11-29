@@ -143,7 +143,7 @@ def update_historic_data(token, root):
     if "tradecount" in concat_csv.columns:
         concat_csv = concat_csv.drop(
             columns=["tradecount"]
-        )  # TODO do we need to drop or just not read?
+        ) 
 
     print("sorting")
     csvData = csvData.sort_values(by="unix", ascending=True)
@@ -315,9 +315,18 @@ def update_historic_data(token, root):
     plt.savefig(price_pct_plot_filename)
 
     plt.close()
-    csvData[csvData["date"].str.contains("05:00:00")].to_csv(
-        dailyPath, mode="w", index=False
-    )
+    
+    # Aggregate volume data for daily rows
+    daily_data = csvData[csvData['date'].str.contains(":01:00:00")].copy()
+    daily_data.set_index('unix', inplace=True)
+    
+    # Aggregate volume columns over the day
+    volume_columns = [col for col in csvData.columns if col.startswith('Volume')]
+    for col in volume_columns:
+        daily_data[col] = csvData.resample('D', on='unix')[col].sum().reindex(daily_data.index)
+
+    # Save the daily data to CSV
+    daily_data.to_csv(dailyPath, mode="w", index=False)
 
 
 def createMissingDataFrameFromClosePrices(startUnix, closePrices, token):
