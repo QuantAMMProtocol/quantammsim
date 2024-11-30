@@ -1,9 +1,23 @@
+from typing import Dict, Any, Optional
+from functools import partial
+import numpy as np
+
 # again, this only works on startup!
-from jax import config
+from jax import devices, jit, config, tree_util
+
+from jax.lib.xla_bridge import default_backend
+
+import jax.numpy as jnp
+from jax.lax import dynamic_slice
+
+
+from quantammsim.pools.base_pool import AbstractPool
+from quantammsim.pools.FM_AMM.cow_reserves import (
+    _jax_calc_cowamm_reserves_with_weights_with_fees,
+)
+from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 
 config.update("jax_enable_x64", True)
-from jax.lib.xla_bridge import default_backend
-from jax import local_device_count, devices
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -14,30 +28,47 @@ else:
     GPU_DEVICE = devices("cpu")[0]
     config.update("jax_platform_name", "cpu")
 
-import jax.numpy as jnp
-from jax import jit, vmap
-from jax import device_put
-from jax import tree_util
-from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
-
-from typing import Dict, Any, Optional, Callable
-from functools import partial
-import numpy as np
-
-from quantammsim.pools.base_pool import AbstractPool
-from quantammsim.pools.FM_AMM.cow_reserves import (
-    _jax_calc_cowamm_reserve_ratio_vmapped,
-    _jax_calc_cowamm_reserves_with_weights_with_fees,
-)
-from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
-
-
 class CowPool8020(AbstractPool):
+    """
+    CowPool8020 is a class that represents a specific type of pool 
+    with an 80/20 weight distribution.
+    
+    Methods
+    -------
+    __init__():
+        Initializes the CowPool8020 instance.
+    
+    calculate_reserves_with_fees(params, run_fingerprint, prices, start_index, 
+    additional_oracle_input=None):
+        Calculates the reserves with fees applied using the given parameters and prices.
+    
+    calculate_reserves_zero_fees(params, run_fingerprint, prices, start_index, 
+    additional_oracle_input=None):
+        Calculates the reserves without fees using the given parameters and prices.
+    
+    calculate_reserves_with_dynamic_inputs(params, run_fingerprint, prices, start_index, 
+    fees_array, arb_thresh_array, arb_fees_array, trade_array, additional_oracle_input=None):
+        Raises NotImplementedError as this method is not yet implemented.
+    
+    _init_base_parameters(initial_values_dict, run_fingerprint, n_assets, n_parameter_sets=1, 
+        noise="gaussian"):
+    Initializes the base parameters for the pool using the provided initial values 
+        and run fingerprint.
+    
+    calculate_weights(*args, **kwargs):
+        Calculates and returns the weights for the pool.
+    
+    make_vmap_in_axes(params, n_repeats_of_recurred=0):
+        Creates and returns the vmap in_axes dictionary for the given parameters.
+    
+    is_trainable():
+        Returns False indicating that the pool is not trainable.
+    """
+
     def __init__(self):
         super().__init__()
 
-    @partial(jit, static_argnums=(2))
+    @partial(jit, static_argnums=2)
     def calculate_reserves_with_fees(
         self,
         params: Dict[str, Any],
@@ -73,7 +104,7 @@ class CowPool8020(AbstractPool):
         )
         return reserves
 
-    @partial(jit, static_argnums=(2))
+    @partial(jit, static_argnums=2)
     def calculate_reserves_zero_fees(
         self,
         params: Dict[str, Any],
@@ -108,7 +139,7 @@ class CowPool8020(AbstractPool):
         )
         return reserves
 
-    @partial(jit, static_argnums=(2))
+    @partial(jit, static_argnums=2)
     def calculate_reserves_with_dynamic_inputs(
         self,
         params: Dict[str, Any],
@@ -154,7 +185,8 @@ class CowPool8020(AbstractPool):
                         return initial_value
                     else:
                         raise ValueError(
-                            f"{key} must be a singleton or a vector of length n_assets or a matrix of shape (n_parameter_sets, n_assets)"
+                            f"{key} must be a singleton or a vector of length"
+                             + "n_assets or a matrix of shape (n_parameter_sets, n_assets)"
                         )
                 else:
                     return np.array([[initial_value] * n_assets] * n_parameter_sets)

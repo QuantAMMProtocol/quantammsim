@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Callable
-import jax.numpy as jnp
+from typing import Dict, Any, Optional
 import numpy as np
+
+import jax.numpy as jnp
 from jax import tree_util
 
 
@@ -18,7 +19,8 @@ class AbstractPool(ABC):
     calculate_reserve_changes(params, run_fingerprint, prices, start_index, additional_oracle_input)
         Calculate changes in reserves based on weights, prices, and parameters.
 
-    calculate_reserve_changes_zero_fees(params, run_fingerprint, prices, start_index, additional_oracle_input)
+    calculate_reserve_changes_zero_fees(params, run_fingerprint, prices, 
+    start_index, additional_oracle_input)
         Calculate reserve changes assuming zero fees, based on weights, prices, and parameters.
 
     initialize_parameters(initial_values_dict, run_fingerprint, n_assets, n_parameter_sets, noise)

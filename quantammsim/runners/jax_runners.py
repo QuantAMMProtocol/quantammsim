@@ -1,6 +1,10 @@
-import pickle
-import os
 import numpy as np
+from copy import deepcopy
+
+from itertools import product
+from tqdm import tqdm
+import math
+
 
 from jax.tree_util import Partial
 from jax import jit, vmap
@@ -10,40 +14,23 @@ from quantammsim.utils.data_processing.historic_data_utils import (
     get_data_dict,
 )
 
-from quantammsim.utils.data_processing.price_data_fingerprint_utils import (
-    load_run_fingerprints,
-    load_price_data_if_fingerprints_in_dir_match,
-)
-
-
 from quantammsim.core_simulator.forward_pass import (
     forward_pass,
     forward_pass_nograd,
 )
 from quantammsim.core_simulator.windowing_utils import (
-    get_indices,
-    raw_trades_to_trade_array,
-    raw_fee_like_amounts_to_fee_like_array,
+    get_indices
 )
 
 from quantammsim.training.backpropagation import (
-    update_from_partial_training_step_factory,
+    update_from_partial_training_step_factory
 )
 from quantammsim.core_simulator.param_utils import (
-    load_or_init,
-    load,
-    default_set,
-    dict_of_jnp_to_np,
-    NumpyEncoder,
+    default_set
 )
 
 from quantammsim.core_simulator.result_exporter import (
-    save_params,
     save_multi_params,
-)
-from quantammsim.core_simulator.param_utils import (
-    dict_of_jnp_to_np,
-    NumpyEncoder,
 )
 
 from quantammsim.runners.jax_runner_utils import (
@@ -54,14 +41,6 @@ from quantammsim.runners.jax_runner_utils import (
 )
 
 from quantammsim.pools.creator import create_pool
-from functools import partial
-
-from copy import deepcopy
-
-import hashlib
-from itertools import product
-from tqdm import tqdm
-import math
 
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 
@@ -77,8 +56,8 @@ def train_on_historic_data(
     """
     Train a model on historical price data using JAX.
 
-    This function trains a model on historical price data using JAX for optimization. It supports various
-    hyperparameters and training configurations specified in the run_fingerprint.
+    This function trains a model on historical price data using JAX for optimization. 
+    It supports various hyperparameters and training configurations specified in the run_fingerprint.
 
     Parameters:
     -----------
@@ -121,7 +100,6 @@ def train_on_historic_data(
         print("Run Fingerprint: ", run_fingerprint)
 
     rule = run_fingerprint["rule"]
-    n_subsidary_rules = len(run_fingerprint["subsidary_pools"])
     chunk_period = run_fingerprint["chunk_period"]
     weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
     use_alt_lamb = run_fingerprint["use_alt_lamb"]
@@ -131,10 +109,6 @@ def train_on_historic_data(
     gas_cost = run_fingerprint["gas_cost"]
     n_parameter_sets = run_fingerprint["optimisation_settings"]["n_parameter_sets"]
     weight_interpolation_method = run_fingerprint["weight_interpolation_method"]
-    training_data_kind = run_fingerprint["optimisation_settings"]["training_data_kind"]
-    include_flipped_training_data = run_fingerprint["optimisation_settings"][
-        "include_flipped_training_data"
-    ]
     arb_frequency = run_fingerprint["arb_frequency"]
     random_key = random.key(
         run_fingerprint["optimisation_settings"]["initial_random_key"]
@@ -320,7 +294,6 @@ def train_on_historic_data(
     )
 
     best_train_objective = -100.0
-    best_test_objective = -100.0
     local_learning_rate = run_fingerprint["optimisation_settings"]["base_lr"]
     iterations_since_improvement = 0
 
@@ -512,11 +485,14 @@ def do_run_on_historic_data(
     arb_fees : float, optional
         Arbitrage fees to apply (overrides run_fingerprint value if provided).
     fees_df : pd.DataFrame, optional
-        Transaction fees to apply over time. Each row should contain the unix timestamp and fee to be charged.
+        Transaction fees to apply over time. 
+        Each row should contain the unix timestamp and fee to be charged.
     gas_cost_df : pd.DataFrame, optional
-        Gas costs for transactions over time. Each row should contain the unix timestamp and gas cost.
+        Gas costs for transactions over time. 
+        Each row should contain the unix timestamp and gas cost.
     arb_fees_df : pd.DataFrame, optional
-        Arbitrage fees to apply over time. Each row should contain the unix timestamp and arb fee to be charged.
+        Arbitrage fees to apply over time. 
+        Each row should contain the unix timestamp and arb fee to be charged.
     do_test_period : bool, optional
         Whether to run the test period (default is False).
 
@@ -552,10 +528,7 @@ def do_run_on_historic_data(
     weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
     use_alt_lamb = run_fingerprint["use_alt_lamb"]
     use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-    n_parameter_sets = run_fingerprint["optimisation_settings"]["n_parameter_sets"]
-    n_parameter_sets = 1
     weight_interpolation_method = run_fingerprint["weight_interpolation_method"]
-    training_data_kind = run_fingerprint["optimisation_settings"]["training_data_kind"]
     arb_frequency = run_fingerprint["arb_frequency"]
     rule = run_fingerprint["rule"]
 
@@ -613,17 +586,6 @@ def do_run_on_historic_data(
 
     # create pool
     pool = create_pool(rule)
-
-    inital_params = {
-        "initial_memory_length": run_fingerprint["initial_memory_length"],
-        "initial_memory_length_delta": run_fingerprint["initial_memory_length_delta"],
-        "initial_k_per_day": run_fingerprint["initial_k_per_day"],
-        "initial_weights_logits": run_fingerprint["initial_weights_logits"],
-        "initial_log_amplitude": run_fingerprint["initial_log_amplitude"],
-        "initial_raw_width": run_fingerprint["initial_raw_width"],
-        "initial_raw_exponents": run_fingerprint["initial_raw_exponents"],
-        "initial_pre_exp_scaling": run_fingerprint["maximum_change"],
-    }
 
     base_static_dict = {
         "chunk_period": chunk_period,

@@ -1,18 +1,9 @@
-# again, this only works on startup!
-from jax import config
+from jax import config, jit, devices
+import jax.numpy as jnp
+from jax.lax import cond
+from jax.lib.xla_bridge import default_backend
 
 config.update("jax_enable_x64", True)
-
-import jax.numpy as jnp
-
-from jax import jit, vmap
-from jax import devices
-from jax.tree_util import Partial
-from jax.lax import scan, cond
-from jax.lib.xla_bridge import default_backend
-from jax import local_device_count, devices
-
-from functools import partial
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]

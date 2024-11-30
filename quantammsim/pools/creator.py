@@ -1,3 +1,9 @@
+
+from typing import Type, TypeVar
+from abc import ABC
+
+from jax import tree_util
+
 from quantammsim.pools.G3M.balancer.balancer import BalancerPool
 from quantammsim.pools.G3M.quantamm.momentum_pool import MomentumPool
 from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
@@ -10,15 +16,10 @@ from quantammsim.pools.FM_AMM.cow_pool_one_arb import CowPoolOneArb
 from quantammsim.pools.FM_AMM.cow_pool_weights import CowPoolWeights
 from quantammsim.pools.FM_AMM.cow_pool_8020 import CowPool8020
 from quantammsim.pools.base_pool import AbstractPool
-from quantammsim.hooks.momentum_dynamic_fee_hook import MomentumDynamicFeeHook
 from quantammsim.hooks.versus_rebalancing import (
     CalculateLossVersusRebalancing,
     CalculateRebalancingVersusRebalancing,
 )
-from jax import tree_util
-
-from typing import Type, TypeVar
-from abc import ABC
 
 # Create a type variable bound to AbstractPool
 P = TypeVar("P", bound=AbstractPool)

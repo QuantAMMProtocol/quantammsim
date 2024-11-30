@@ -1,32 +1,27 @@
-# again, this only works on startup!
-from jax import config
 
-config.update("jax_enable_x64", True)
-
-from jax.tree_util import tree_map
-
-# jax.set_cpu_device_count(n)
-# print(devices("cpu"))
-
-import jax.numpy as jnp
 
 import numpy as np
 import pandas as pd
-import math
-from itertools import product
 
 import json
 import hashlib
-from quantammsim.utils.data_processing.historic_data_utils import get_data_dict
+
+# again, this only works on startup!
+from jax import config
+from jax.tree_util import tree_map
+import jax.numpy as jnp
+
 from quantammsim.core_simulator.windowing_utils import (
     raw_fee_like_amounts_to_fee_like_array,
     raw_trades_to_trade_array,
 )
+
 from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
     LiquidityPoolCoinDto,
     SimulationResultTimestepDto,
 )
-import time
+
+config.update("jax_enable_x64", True)
 
 
 class Hashabledict(dict):
@@ -207,6 +202,7 @@ def split_list(lst, num_splits):
     result = []
     start_idx = 0
 
+    #TODO MW review
     # Iterate over the number of sublists
     for i in range(num_splits):
         # Calculate the end index of the sublist
@@ -369,11 +365,9 @@ def get_trades_and_fees(
                 end_date_string=run_fingerprint["endTestDateString"],
                 tokens=get_unique_tokens(run_fingerprint),
             )
-        do_trades = True
     else:
         train_period_trades = None
         test_period_trades = None
-        do_trades = False
     # Process fees, gas costs, and arb fees if provided
     fees_array = (
         raw_fee_like_amounts_to_fee_like_array(
@@ -399,6 +393,7 @@ def get_trades_and_fees(
             else None
         )
 
+    #TODO MW review names?
     gas_cost_array = (
         raw_fee_like_amounts_to_fee_like_array(
             gas_cost_df,
@@ -473,7 +468,6 @@ def create_daily_unix_array(start_date_str, end_date_str):
     Returns:
         list: Array of Unix timestamps in milliseconds for each day between start and end dates
     """
-    start_date = pd.to_datetime(start_date_str)
     end_date = pd.to_datetime(end_date_str)
     # Create a date range ending the day before the end_date
     date_range = pd.date_range(start=start_date_str, end=end_date, freq="D")
@@ -537,7 +531,6 @@ def optimized_output_conversion(simulationRunDto, outputDict, tokens):
     # Convert outputDict data to pandas DataFrame for efficient slicing
     prices_df = pd.DataFrame(outputDict["prices"])[::1440]
     reserves_df = pd.DataFrame(outputDict["reserves"])[::1440]
-    values_df = pd.DataFrame(outputDict["value"])[::1440]
     print(len(outputDict["prices"]))
     print(len(outputDict["reserves"]))
     print(len(outputDict["value"]))

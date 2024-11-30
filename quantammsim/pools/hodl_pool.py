@@ -1,9 +1,18 @@
+
+from typing import Dict, Any, Optional
+import numpy as np
+
 # again, this only works on startup!
-from jax import config
+from jax import config, devices, tree_util
+import jax.numpy as jnp
+from jax.lax import stop_gradient, dynamic_slice
+from jax.nn import softmax
+from jax.lib.xla_bridge import default_backend
+
+from quantammsim.pools.base_pool import AbstractPool
+from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 
 config.update("jax_enable_x64", True)
-from jax.lib.xla_bridge import default_backend
-from jax import local_device_count, devices
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -14,21 +23,45 @@ else:
     GPU_DEVICE = devices("cpu")[0]
     config.update("jax_platform_name", "cpu")
 
-import jax.numpy as jnp
-from jax import jit, vmap
-from jax import device_put
-from jax import tree_util
-from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
-
-from typing import Dict, Any, Optional, Callable
-import numpy as np
-
-from quantammsim.pools.base_pool import AbstractPool
-from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
-
-
 class HODLPool(AbstractPool):
+    """
+    HODLPool is a subclass of AbstractPool that represents a pool with no activity 
+    (HODL - Hold On for Dear Life).
+    This class provides methods to calculate reserves assuming no trading activity occurs.
+
+    Methods
+    -------
+    __init__():
+        Initializes the HODLPool instance.
+
+    calculate_reserves_with_fees(params, run_fingerprint, prices, start_index, 
+    additional_oracle_input=None):
+        Calculates the reserves with fees, which in this case is the same as reserves 
+        without fees due to no activity.
+
+    calculate_reserves_zero_fees(params, run_fingerprint, prices, start_index, 
+    additional_oracle_input=None):
+        Calculates the reserves without fees, assuming no trading activity.
+
+    calculate_reserves_with_dynamic_inputs(params, run_fingerprint, prices, start_index, 
+    fees_array, arb_thresh_array, arb_fees_array, trade_array, additional_oracle_input=None):
+        Calculates the reserves with dynamic inputs, which in this case is 
+        the same as reserves without fees due to no activity.
+
+    _init_base_parameters(initial_values_dict, run_fingerprint, n_assets, 
+        n_parameter_sets=1, noise="gaussian"):
+    Initializes the base parameters for the pool, including weights and other initial values.
+
+    calculate_weights(params):
+        Calculates the weights for the assets in the pool based on the initial weights logits.
+
+    make_vmap_in_axes(params, n_repeats_of_recurred=0):
+        Creates a dictionary for vectorized mapping of input axes.
+
+    is_trainable():
+        Indicates whether the pool is trainable. Always returns False for HODLPool.
+    """
+
     def __init__(self):
         super().__init__()
 
@@ -115,7 +148,8 @@ class HODLPool(AbstractPool):
                         return initial_value
                     else:
                         raise ValueError(
-                            f"{key} must be a singleton or a vector of length n_assets or a matrix of shape (n_parameter_sets, n_assets)"
+                            f"{key} must be a singleton or a vector of length n_assets"
+                             + " or a matrix of shape (n_parameter_sets, n_assets)"
                         )
                 else:
                     return np.array([[initial_value] * n_assets] * n_parameter_sets)

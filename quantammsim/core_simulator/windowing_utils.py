@@ -1,3 +1,7 @@
+
+import numpy as np
+import pandas as pd
+
 # again, this only works on startup!
 from jax import config
 
@@ -5,8 +9,6 @@ config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
 from jax import random
-import pandas as pd
-import numpy as np
 
 
 def get_indices(
@@ -80,7 +82,6 @@ def get_indices(
         )
 
     elif sample_method == "uniform":
-        # start_indexes[:, 0] = start_index + np.random.choice(range_, size=batch_size, replace=False)
         start_indexes = start_indexes.at[:, 0].set(
             start_index
             + random.choice(subkey, range_, shape=sample_shape, replace=False)
@@ -106,7 +107,8 @@ def raw_trades_to_trade_array(raw_trades, start_date_string, end_date_string, to
     Parameters
     ----------
     raw_trades : pandas df
-        Raw trades, where each trade is a row containing unix_timestamp, token_in (str), token_out (str), amount_in).
+        Raw trades, where each trade is a row containing unix_timestamp, 
+        token_in (str), token_out (str), amount_in).
     start_time : str
         The start date time in format "%Y-%m-%d %H:%M:%S".
     end_time : str

@@ -1,14 +1,20 @@
-# again, this only works on startup!
-from jax import config
-
-config.update("jax_enable_x64", True)
-
-import jax.numpy as jnp
-from jax import jit, vmap
 
 import numpy as np
+from itertools import product
 
 from functools import partial
+
+# again, this only works on startup!
+from jax import config, jit, vmap
+import jax.numpy as jnp
+
+#TODO MW review 
+#from quantammsim.core_amm_arbitrage.optimal_n_pool_arb import (
+#    sig_to_tokens_to_keep,
+#    sig_to_direction_jnp,
+#)
+
+config.update("jax_enable_x64", True)
 
 np.seterr(all="raise")
 np.seterr(under="print")
@@ -113,7 +119,7 @@ def construct_optimal_trade_jnp(
           slack: float of slack value
 
     """
-    current_value = (initial_reserves * local_prices).sum()
+
     # central_reserves = current_value * dex_weights_local/market_prices
     tokens_to_keep = sig_to_tokens_to_keep(sig)
     tokens_to_drop = jnp.invert(tokens_to_keep)
@@ -131,7 +137,8 @@ def construct_optimal_trade_jnp(
         (active_initial_weights * (fee_gamma ** (active_trade_direction)))
         / (active_local_prices)
     ) ** (1.0 - active_initial_weights)
-    # log_per_asset_ratio = (1.0-initial_weights) * (np.log(initial_weights) + trade_direction*np.log(fee_gamma)-np.log(local_prices)-np.log(initial_reserves))
+    # log_per_asset_ratio = (1.0-initial_weights) * (np.log(initial_weights)
+    # + trade_direction*np.log(fee_gamma)-np.log(local_prices)-np.log(initial_reserves))
     all_other_assets_quantities = (
         (active_local_prices)
         / ((fee_gamma ** (active_trade_direction)) * active_initial_weights)
@@ -261,7 +268,8 @@ def precalc_components_of_optimal_trade_for_one_signature(
         (active_initial_weights * (fee_gamma ** (active_trade_direction)))
         / (active_local_prices)
     ) ** (1.0 - active_initial_weights)
-    # log_per_asset_ratio = (1.0-initial_weights) * (np.log(initial_weights) + trade_direction*np.log(fee_gamma)-np.log(local_prices)-np.log(initial_reserves))
+    # log_per_asset_ratio = (1.0-initial_weights) * (np.log(initial_weights) 
+    # + trade_direction*np.log(fee_gamma)-np.log(local_prices)-np.log(initial_reserves))
     all_other_assets_quantities = (
         (active_local_prices)
         / ((fee_gamma ** (active_trade_direction)) * active_initial_weights)
@@ -269,7 +277,8 @@ def precalc_components_of_optimal_trade_for_one_signature(
     all_other_assets_quantities = jnp.where(
         tokens_to_drop, 1.0, all_other_assets_quantities
     )
-    # log_all_other_assets_quantities = (initial_weights) * (np.log(local_prices)+ np.log(initial_reserves) - trade_direction*np.log(fee_gamma)- np.log(initial_weights))
+    # log_all_other_assets_quantities = (initial_weights) * (np.log(local_prices)
+    # + np.log(initial_reserves) - trade_direction*np.log(fee_gamma)- np.log(initial_weights))
     all_other_assets_ratio = jnp.prod(
         all_other_assets_quantities[leave_one_out_idx], axis=-1
     )
@@ -424,7 +433,7 @@ def wrapped_parallelised_optimal_trade_sifter(
     n,
     slack=0,
 ):
-    tokens_to_keep, active_trade_directions, tokens_to_drop, leave_one_out_idx = (
+    _, active_trade_directions, tokens_to_drop, leave_one_out_idx = (
         precalc_shared_values_for_all_signatures(all_sig_variations, n)
     )
 
@@ -455,9 +464,6 @@ def wrapped_parallelised_optimal_trade_sifter(
 
 
 if __name__ == "__main__":
-
-    import numpy as np
-    from itertools import product
 
     np.random.seed(0)
     n = 2
@@ -556,7 +562,8 @@ if __name__ == "__main__":
         (active_initial_weights * (fee_gamma ** (active_trade_direction)))
         / (active_local_prices)
     ) ** (1.0 - active_initial_weights)
-    # log_per_asset_ratio = (1.0-initial_weights) * (np.log(initial_weights) + trade_direction*np.log(fee_gamma)-np.log(local_prices)-np.log(initial_reserves))
+    # log_per_asset_ratio = (1.0-initial_weights) * (np.log(initial_weights)
+    #  + trade_direction*np.log(fee_gamma)-np.log(local_prices)-np.log(initial_reserves))
     all_other_assets_quantities = (
         (active_local_prices)
         / ((fee_gamma ** (active_trade_direction)) * active_initial_weights)
@@ -564,7 +571,8 @@ if __name__ == "__main__":
     all_other_assets_quantities = jnp.where(
         tokens_to_drop, 1.0, all_other_assets_quantities
     )
-    # log_all_other_assets_quantities = (initial_weights) * (np.log(local_prices)+ np.log(initial_reserves) - trade_direction*np.log(fee_gamma)- np.log(initial_weights))
+    # log_all_other_assets_quantities = (initial_weights) * (np.log(local_prices)
+    # + np.log(initial_reserves) - trade_direction*np.log(fee_gamma)- np.log(initial_weights))
     leave_one_out_idx = jnp.arange(1, active_n) - jnp.tri(
         active_n, active_n - 1, k=-1, dtype=bool
     )
@@ -611,10 +619,6 @@ if __name__ == "__main__":
     initial_weights = prev_weights
     fee_gamma = gamma
     active_n = n
-    from quantammsim.core_amm_arbitrage.optimal_n_pool_arb import (
-        sig_to_tokens_to_keep,
-        sig_to_direction_jnp,
-    )
 
     tokens_to_keep = sig_to_tokens_to_keep(sig)
     tokens_to_drop = jnp.invert(tokens_to_keep)
