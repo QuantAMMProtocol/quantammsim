@@ -20,6 +20,7 @@ import hashlib
 np.seterr(all="raise")
 np.seterr(under="print")
 
+
 def default_set_or_get(dictionary, key, default, augment=True):
     value = dictionary.get(key)
     if value is None:
@@ -197,6 +198,7 @@ def lamb_to_memory_days(lamb, chunk_period):
     memory_days = jnp.cbrt(6 * lamb / ((1 - lamb) ** 3.0)) * 2 * chunk_period / 1440
     return memory_days
 
+
 @jit
 def jax_logit_lamb_to_lamb(logit_lamb):
     """
@@ -278,7 +280,7 @@ def init_params_singleton(
         dict: The initialized parameters.
     """
     n_pool_members = n_tokens + n_subsidary_rules
-    
+
     if log_for_k:
         log_k = jnp.array(
             [np.log2(initial_values_dict["initial_k_per_day"])] * n_pool_members
@@ -347,9 +349,7 @@ def init_params_singleton(
         }
     else:
         params = {
-            "k": jnp.array(
-                [initial_values_dict["initial_k_per_day"]] * n_pool_members
-            ),
+            "k": jnp.array([initial_values_dict["initial_k_per_day"]] * n_pool_members),
             "logit_lamb": logit_lamb,
             "logit_delta_lamb": logit_delta_lamb,
             "initial_weights_logits": initial_weights_logits,
@@ -369,7 +369,7 @@ def fill_in_missing_values_from_init_singleton(
     n_subsidary_rules=0,
     chunk_period=60,
     n_parameter_sets=1,
-    log_for_k=True
+    log_for_k=True,
 ):
     """
     Fill in missing values in parameters from initial values.
@@ -1012,9 +1012,8 @@ def create_product_of_linspaces(
 
     return param_combinations
 
-def create_product_of_arrays(
-    params, keys_arrays
-):
+
+def create_product_of_arrays(params, keys_arrays):
     """
     Create a product of arrays for chosen keys in the params dict.
 
@@ -1050,7 +1049,7 @@ def generate_params_combinations(
     memory_days_range,
     num_points_k_per_day=10,
     num_points_memory_days=10,
-    log_for_k=True
+    log_for_k=True,
 ):
     """
     Generate parameter combinations with linearly-spaced values of k_per_day and memory_days.
@@ -1117,7 +1116,7 @@ def generate_random_params_combinations(
     memory_days_range,
     n_random_samples=5,
     log_for_k=True,
-    scalar=False
+    scalar=False,
 ):
     """
     Generate parameter combinations with uniformly-sampled random values of k_per_day and memory_days.
@@ -1142,21 +1141,21 @@ def generate_random_params_combinations(
         raise NotImplementedError
     # Fill in missing values from initial values
     initial_params = fill_in_missing_values_from_init_singleton(
-            {},
-            initial_values_dict,
-            n_tokens,
-            n_subsidary_rules,
-            chunk_period,
-            n_parameter_sets,
-            log_for_k,
-        )
+        {},
+        initial_values_dict,
+        n_tokens,
+        n_subsidary_rules,
+        chunk_period,
+        n_parameter_sets,
+        log_for_k,
+    )
     filled_param_combinations = []
     for i in range(n_random_samples):
         if scalar:
-            memory_days = np.random.uniform(*memory_days_range,1) * np.ones(n_tokens)
+            memory_days = np.random.uniform(*memory_days_range, 1) * np.ones(n_tokens)
             k = np.random.uniform(*k_per_day_range, 1) * np.ones(n_tokens)
         else:
-            memory_days = np.random.uniform(*memory_days_range,n_tokens)
+            memory_days = np.random.uniform(*memory_days_range, n_tokens)
             k = np.random.uniform(*k_per_day_range, n_tokens)
         local_params = initial_params.copy()
         if log_for_k:
@@ -1219,9 +1218,10 @@ def generate_run_fingerprint_combinations(
 
     return run_fingerprint_combinations
 
+
 def make_log_range_with_zero(x):
     y = np.exp(x)
-    if x==0:
+    if x == 0:
         return 0
     else:
         return np.exp(x)
@@ -1306,7 +1306,7 @@ def split_param_combinations(param_combinations):
 
 def make_vmap_in_axes_dict(
     input_dict, in_axes, keys_to_recur_on, keys_with_no_vamp=[], n_repeats_of_recurred=0
-):  
+):
     """
     Create a dictionary specifying vmap axes for input parameters for use in function
     quantammsim.core_simulator.forward_pass.forward_pass.

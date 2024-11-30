@@ -1,6 +1,7 @@
 import cvxpy as cp
 import numpy as np
 from jax.config import config
+
 config.update("jax_enable_x64", True)
 from scipy.special import softmax
 from itertools import product
@@ -25,10 +26,11 @@ sns.set(rc={"text.usetex": True})
 # set_start_method("spawn",force=True)
 
 try:
-   set_start_method('spawn', force=True)
-   # print("spawned")
+    set_start_method("spawn", force=True)
+    # print("spawned")
 except RuntimeError:
-   pass
+    pass
+
 
 def get_signature(trade):
     sig = np.zeros_like(trade)
@@ -61,13 +63,15 @@ def sig_to_direction(sig):
     trade_direction[sig == 1] = 1
     return trade_direction
 
+
 def sig_to_direction_jnp(sig):
     return jnp.where(sig == 1, 1, 0)
 
 
 def is_sig_a_swap(sig):
     count = Counter(sig)
-    return Counter(sig)[1]==1 and Counter(sig)[-1]==1
+    return Counter(sig)[1] == 1 and Counter(sig)[-1] == 1
+
 
 def sample_weights(n_samples, n_tokens):
     # need to make initial weights,
@@ -77,7 +81,8 @@ def sample_weights(n_samples, n_tokens):
         size=(
             n_samples,
             n_tokens + 1,
-        ))
+        )
+    )
     vals[:, 0:2] = [0.0, 1.0]
     # [:,0:2] = np.array([0.0, 1.0])
     weights = np.diff(np.sort(vals))
@@ -103,7 +108,9 @@ def construct_optimal_trade_np(
         # tokens_to_drop = ((gamma_matrix.prod(0) < 1/fee_gamma) * (gamma_matrix.prod(0) > fee_gamma) * (gamma_matrix.prod(1) < 1/fee_gamma) * (gamma_matrix.prod(1) > fee_gamma))
         # tokens_to_keep = np.invert(tokens_to_drop)
         # tokens_to_keep = (local_prices < lower_range)|(local_prices > upper_range)
-        tokens_to_keep = (gamma_matrix > (numerator/n)* 1.0/fee_gamma).sum(0) + (gamma_matrix <  (numerator/n)* fee_gamma).sum(0) > 0
+        tokens_to_keep = (gamma_matrix > (numerator / n) * 1.0 / fee_gamma).sum(0) + (
+            gamma_matrix < (numerator / n) * fee_gamma
+        ).sum(0) > 0
         # tokens_to_drop = (
         #     (gamma_matrix.prod(0) ** (numerator / n) < 1 / fee_gamma)
         #     * (gamma_matrix.prod(0) ** (numerator / n) > fee_gamma)
@@ -157,7 +164,10 @@ def construct_optimal_trade_np(
     #     active_initial_reserves / ((fee_gamma ** (active_trade_direction)))
     # ) * ((per_asset_ratio * all_other_assets_ratio) - 1.0)
 
-    per_asset_ratio = ((active_initial_weights * (fee_gamma ** (active_trade_direction)))/ (active_local_prices)) ** (1.0 - active_initial_weights)
+    per_asset_ratio = (
+        (active_initial_weights * (fee_gamma ** (active_trade_direction)))
+        / (active_local_prices)
+    ) ** (1.0 - active_initial_weights)
     # log_per_asset_ratio = (1.0-initial_weights) * (np.log(initial_weights) + trade_direction*np.log(fee_gamma)-np.log(local_prices)-np.log(initial_reserves))
     all_other_assets_quantities = (
         (active_local_prices)
@@ -170,8 +180,11 @@ def construct_optimal_trade_np(
     all_other_assets_ratio = np.prod(
         all_other_assets_quantities[leave_one_out_idx], axis=-1
     )
-    active_initial_constant = np.prod(active_initial_reserves ** active_initial_weights)
-    active_overall_trade = (1.0 / ((fee_gamma ** (active_trade_direction)))) * (((active_initial_constant)*per_asset_ratio * all_other_assets_ratio) - active_initial_reserves)
+    active_initial_constant = np.prod(active_initial_reserves**active_initial_weights)
+    active_overall_trade = (1.0 / ((fee_gamma ** (active_trade_direction)))) * (
+        ((active_initial_constant) * per_asset_ratio * all_other_assets_ratio)
+        - active_initial_reserves
+    )
 
     overall_trade = np.zeros(n)
     overall_trade[tokens_to_keep] = active_overall_trade
@@ -182,9 +195,11 @@ def construct_optimal_trade_np(
         sig[tokens_to_drop] = 0
     return overall_trade, sig, get_signature(overall_trade)
 
+
 @partial(jit, static_argnums=(5,))
 def construct_optimal_trade_jnp(
-    initial_weights, local_prices, initial_reserves, fee_gamma, sig, n):
+    initial_weights, local_prices, initial_reserves, fee_gamma, sig, n
+):
     current_value = (initial_reserves * local_prices).sum()
     # central_reserves = current_value * dex_weights_local/market_prices
 
@@ -204,14 +219,19 @@ def construct_optimal_trade_jnp(
 
     active_trade_direction = sig_to_direction_jnp(sig)
 
-    per_asset_ratio = ((active_initial_weights * (fee_gamma ** (active_trade_direction)))/ (active_local_prices)) ** (1.0 - active_initial_weights)
+    per_asset_ratio = (
+        (active_initial_weights * (fee_gamma ** (active_trade_direction)))
+        / (active_local_prices)
+    ) ** (1.0 - active_initial_weights)
     # log_per_asset_ratio = (1.0-initial_weights) * (np.log(initial_weights) + trade_direction*np.log(fee_gamma)-np.log(local_prices)-np.log(initial_reserves))
     all_other_assets_quantities = (
         (active_local_prices)
         / ((fee_gamma ** (active_trade_direction)) * active_initial_weights)
     ) ** (active_initial_weights)
 
-    all_other_assets_quantities = jnp.where(tokens_to_drop, 1.0, all_other_assets_quantities)
+    all_other_assets_quantities = jnp.where(
+        tokens_to_drop, 1.0, all_other_assets_quantities
+    )
     # log_all_other_assets_quantities = (initial_weights) * (np.log(local_prices)+ np.log(initial_reserves) - trade_direction*np.log(fee_gamma)- np.log(initial_weights))
     leave_one_out_idx = jnp.arange(1, active_n) - jnp.tri(
         active_n, active_n - 1, k=-1, dtype=bool
@@ -219,19 +239,31 @@ def construct_optimal_trade_jnp(
     all_other_assets_ratio = jnp.prod(
         all_other_assets_quantities[leave_one_out_idx], axis=-1
     )
-    active_initial_constant = jnp.prod(active_initial_reserves ** active_initial_weights)
-    active_overall_trade = (1.0 / ((fee_gamma ** (active_trade_direction)))) * (((active_initial_constant)*per_asset_ratio * all_other_assets_ratio) - active_initial_reserves)
+    active_initial_constant = jnp.prod(active_initial_reserves**active_initial_weights)
+    active_overall_trade = (1.0 / ((fee_gamma ** (active_trade_direction)))) * (
+        ((active_initial_constant) * per_asset_ratio * all_other_assets_ratio)
+        - active_initial_reserves
+    )
 
     active_overall_trade = jnp.where(tokens_to_drop, 0.0, active_overall_trade)
 
-    initial_constant = jnp.prod((initial_reserves)**initial_weights)
-    return active_overall_trade, jnp.prod((initial_reserves+active_overall_trade* (fee_gamma ** (active_trade_direction)))**initial_weights) - initial_constant
+    initial_constant = jnp.prod((initial_reserves) ** initial_weights)
+    return (
+        active_overall_trade,
+        jnp.prod(
+            (
+                initial_reserves
+                + active_overall_trade * (fee_gamma ** (active_trade_direction))
+            )
+            ** initial_weights
+        )
+        - initial_constant,
+    )
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     n_top = 7
-    n_range = list(range(3,n_top))
+    n_range = list(range(3, n_top))
     # Problem data.
     # n = 3
     n_bouts = 1000
@@ -253,10 +285,8 @@ if __name__ == '__main__':
     jnp_brute_force_timing = list()
 
     for n in n_range:
-        initial_weights_list.append(sample_weights(1,n)[0])
+        initial_weights_list.append(sample_weights(1, n)[0])
         prices_list.append(np.random.rand(n))
-
-
 
     for j in range(len(n_range)):
         initial_weights = initial_weights_list[j]
@@ -268,7 +298,6 @@ if __name__ == '__main__':
         all_sig_variations = all_sig_variations[(all_sig_variations != 0).sum(-1) > 1]
         all_sig_variations = all_sig_variations[np.any(all_sig_variations == 1, -1)]
         all_sig_variations = all_sig_variations[np.any(all_sig_variations == -1, -1)]
-
 
         initial_reserves = initial_value * initial_weights / prices
         gamma_list = gamma_range * np.random.rand(n_bouts, n) + (1 - 0.5 * gamma_range)
@@ -319,7 +348,11 @@ if __name__ == '__main__':
             constant = cp.geo_mean(initial_reserves, initial_weights.tolist())
 
             constraints = [
-                (cp.geo_mean(R_plus_coins_to_minus_coins_from, initial_weights.tolist()))
+                (
+                    cp.geo_mean(
+                        R_plus_coins_to_minus_coins_from, initial_weights.tolist()
+                    )
+                )
                 / initial_constant
                 >= (1 + 1e-8),
                 to_give >= 0,
@@ -335,9 +368,13 @@ if __name__ == '__main__':
             # try:
             result = prob.solve(verbose=False, solver="ECOS")
         end_of_cvx_time = time()
-        print(n, ' token, CXV elapsed time:', - start_of_cvx_time + end_of_cvx_time)
-        print(n, ' token, CXV time per bout:', (- start_of_cvx_time + end_of_cvx_time)/n_bouts)
-        cxv_timing.append(- start_of_cvx_time + end_of_cvx_time)
+        print(n, " token, CXV elapsed time:", -start_of_cvx_time + end_of_cvx_time)
+        print(
+            n,
+            " token, CXV time per bout:",
+            (-start_of_cvx_time + end_of_cvx_time) / n_bouts,
+        )
+        cxv_timing.append(-start_of_cvx_time + end_of_cvx_time)
         # DO HEURISTIC ITERATIONS AND TIME
         start_of_heuristic_time = time()
         for i in range(len(gamma_list)):
@@ -348,26 +385,48 @@ if __name__ == '__main__':
             # Construct the problem.
             local_prices = prices * gamma
             overall_trade, sig, empirical_sig = construct_optimal_trade_np(
-            local_prices, initial_weights, initial_reserves, fee_gamma, numerator=n
+                local_prices, initial_weights, initial_reserves, fee_gamma, numerator=n
             )
 
         end_of_heuristic_time = time()
-        print(n, ' token, HEURISTIC elapsed time:', - start_of_heuristic_time + end_of_heuristic_time)
-        print(n, ' token, HEURISTIC time per bout:', (- start_of_heuristic_time + end_of_heuristic_time)/n_bouts)
-        heuristic_timing.append(- start_of_heuristic_time + end_of_heuristic_time)
+        print(
+            n,
+            " token, HEURISTIC elapsed time:",
+            -start_of_heuristic_time + end_of_heuristic_time,
+        )
+        print(
+            n,
+            " token, HEURISTIC time per bout:",
+            (-start_of_heuristic_time + end_of_heuristic_time) / n_bouts,
+        )
+        heuristic_timing.append(-start_of_heuristic_time + end_of_heuristic_time)
 
         # DO POOL MAP NP AND TIME
         start_of_pool_time = time()
 
-        local_run_wrapper = partial(construct_optimal_trade_np, initial_weights=initial_weights, initial_reserves=initial_reserves, fee_gamma=fee_gamma, numerator=n)
+        local_run_wrapper = partial(
+            construct_optimal_trade_np,
+            initial_weights=initial_weights,
+            initial_reserves=initial_reserves,
+            fee_gamma=fee_gamma,
+            numerator=n,
+        )
 
         pool = multiprocessing.Pool(multiprocessing.cpu_count())
         results = pool.map(local_run_wrapper, local_prices_list)
         end_of_pool_time = time()
 
-        print(n, ' token, BRUTE POOL MAP elapsed time:', - start_of_pool_time + end_of_pool_time)
-        print(n, ' token, BRUTE POOL MAP time per bout:', (- start_of_pool_time + end_of_pool_time)/n_bouts)
-        np_brute_force_map_timing.append(- start_of_pool_time + end_of_pool_time)
+        print(
+            n,
+            " token, BRUTE POOL MAP elapsed time:",
+            -start_of_pool_time + end_of_pool_time,
+        )
+        print(
+            n,
+            " token, BRUTE POOL MAP time per bout:",
+            (-start_of_pool_time + end_of_pool_time) / n_bouts,
+        )
+        np_brute_force_map_timing.append(-start_of_pool_time + end_of_pool_time)
         # DO NP BRUTE FORCE ITERATIONS AND TIME
         start_of_np_time = time()
         for i in range(len(gamma_list)):
@@ -405,18 +464,40 @@ if __name__ == '__main__':
                 )
                 s_sig_profit = -np.sum(s_sig_overall_trade * local_prices)
                 sig_rez.append(s_sig_overall_trade)
-                if s_sig_profit > best_profit and post_trade_constant_anal - initial_constant > -1e-8:
+                if (
+                    s_sig_profit > best_profit
+                    and post_trade_constant_anal - initial_constant > -1e-8
+                ):
                     best_profit = s_sig_profit
                     best_trade = s_sig_overall_trade
                     best_sig = s_sig
 
         end_of_np_time = time()
-        print(n, ' token, NP BRUTE FORCE elapsed time:', - start_of_np_time + end_of_np_time)
-        print(n, ' token, NP BRUTE FORCE time per bout:', (- start_of_np_time + end_of_np_time)/n_bouts)
-        np_brute_force_loop_timing.append(- start_of_np_time + end_of_np_time)
+        print(
+            n,
+            " token, NP BRUTE FORCE elapsed time:",
+            -start_of_np_time + end_of_np_time,
+        )
+        print(
+            n,
+            " token, NP BRUTE FORCE time per bout:",
+            (-start_of_np_time + end_of_np_time) / n_bouts,
+        )
+        np_brute_force_loop_timing.append(-start_of_np_time + end_of_np_time)
         # DO JNP BRUTE FORCE ITERATIONS AND TIME
-        construct_optimal_trade_jnp_vmapped = jit(vmap(Partial(construct_optimal_trade_jnp, n=n), in_axes=[None,None,None,None,0]))
-        test = construct_optimal_trade_jnp_vmapped(initial_weights, local_prices, initial_reserves, fee_gamma, all_sig_variations)
+        construct_optimal_trade_jnp_vmapped = jit(
+            vmap(
+                Partial(construct_optimal_trade_jnp, n=n),
+                in_axes=[None, None, None, None, 0],
+            )
+        )
+        test = construct_optimal_trade_jnp_vmapped(
+            initial_weights,
+            local_prices,
+            initial_reserves,
+            fee_gamma,
+            all_sig_variations,
+        )
         start_of_jax_time = time()
         for i in range(len(gamma_list)):
             gamma = gamma_list[i]
@@ -426,14 +507,26 @@ if __name__ == '__main__':
             # Construct the problem.
             local_prices = prices * gamma
             overall_trades, constant_differences = construct_optimal_trade_jnp_vmapped(
-            initial_weights, local_prices, initial_reserves, fee_gamma, all_sig_variations
+                initial_weights,
+                local_prices,
+                initial_reserves,
+                fee_gamma,
+                all_sig_variations,
             )
 
         end_of_jax_time = time()
-        print(n, ' token, JAX BRUTE FORCE elapsed time:', - start_of_jax_time + end_of_jax_time)
-        print(n, ' token, JAX BRUTE FORCE time per bout:', (- start_of_jax_time + end_of_jax_time)/n_bouts)
-        jnp_brute_force_timing.append(- start_of_jax_time + end_of_jax_time)
-    
+        print(
+            n,
+            " token, JAX BRUTE FORCE elapsed time:",
+            -start_of_jax_time + end_of_jax_time,
+        )
+        print(
+            n,
+            " token, JAX BRUTE FORCE time per bout:",
+            (-start_of_jax_time + end_of_jax_time) / n_bouts,
+        )
+        jnp_brute_force_timing.append(-start_of_jax_time + end_of_jax_time)
+
     # rez=np.array([cxv_timing, heuristic_timing, np_brute_force_loop_timing, np_brute_force_map_timing, jnp_brute_force_timing]).T
 
     # names = ["CVX", "Heuristic", "NumPy Brute Force", "NumPy Map", "Jax jit+vmap"]
@@ -684,13 +777,10 @@ if __name__ == '__main__':
     #         s_best_profit_swap.append(0)
     #         s_best_sig_swap.append([])
 
-
-
     # s_best_profit = np.array(s_best_profit)
     # s_best_sig = np.array(s_best_sig)
     # s_best_profit_swap = np.array(s_best_profit_swap)
     # s_best_sig_swap = np.array(s_best_sig_swap)
-
 
     # arb_when_alt_says_arbable = sum(
     #     [s_best_profit[i] > 0 and rez[i]["alt_outside_no_arb_region"] for i in range(len(rez))]
@@ -749,7 +839,6 @@ if __name__ == '__main__':
     # print('arb_when_combined_says_not_arbable: ', arb_when_combined_says_not_arbable)
     # print('no_arb_when_combined_says_arbable: ', no_arb_when_combined_says_arbable)
     # print('no_arb_when_combined_says_not_arbable: ', no_arb_when_combined_says_not_arbable)
-
 
     # num_rez = []
     # for numerator in np.linspace(n-1,n,11):
@@ -857,13 +946,11 @@ if __name__ == '__main__':
     #     num_rez.append({"rez": rez,"numerator": numerator,"profit_anal": profit_anal,"sum_profit_diff_cvx": sum((profit-profit_anal)**2.0),"sum_profit_diff_s_sig": sum((s_best_profit-profit_anal)**2.0),})
     #     print(num_rez[-1]['numerator'],num_rez[-1]['sum_profit_diff_cvx'],num_rez[-1]['sum_profit_diff_s_sig'])
 
-
     # # current_value = (initial_reserves*local_prices).sum()
     # # # central_reserves = current_value * dex_weights_local/market_prices
 
     # # # get current quoted prices
     # # quoted_prices = current_value * initial_weights/initial_reserves
-
 
     # # trade_direction = (quoted_prices > local_prices).astype('int')
 
@@ -872,7 +959,6 @@ if __name__ == '__main__':
     # # leave_one_out_idx = np.arange(1, n) - np.tri(n, n-1, k=-1, dtype=bool)
     # # all_other_assets_ratio = np.prod(all_other_assets_quantities[leave_one_out_idx], axis=-1)
     # # overall_trade = (initial_reserves/(fee_gamma**(trade_direction)))*((per_asset_ratio*all_other_assets_ratio)-1.0)
-
 
     # # initial_weights=initial_weights[0:2]
     # # initial_weights=initial_weights/sum(initial_weights)
@@ -952,22 +1038,5 @@ if __name__ == '__main__':
 
     # # s_sig_constant_difference[(np.arange(len(s_sig_constant_difference)),best_trade_per_bout)]
 
-
     # (local_prices*initial_reserves*(1+s_sig_results[0]['overall_trade']*(fee_gamma**sig_to_direction(s_sig_results[0]['s_sig']))**initial_weights))/(initial_weights * (fee_gamma**sig_to_direction(s_sig_results[0]['s_sig'])))
     # # filter_for_s_runs_with_constant
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

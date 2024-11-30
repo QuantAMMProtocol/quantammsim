@@ -8,13 +8,14 @@ from jax import random
 import pandas as pd
 import numpy as np
 
+
 def get_indices(
     start_index,
     bout_length,
     len_prices,
     key,
     optimisation_settings,
-):  
+):
     """
     Get indices for sampling data windows during training.
 
@@ -159,14 +160,14 @@ def raw_fee_like_amounts_to_fee_like_array(
     """
     Convert raw fee-like data to a structured fee-like array.
 
-    Takes raw fee-like data (fees, gas costs, arb fees) and converts it into a pandas 
+    Takes raw fee-like data (fees, gas costs, arb fees) and converts it into a pandas
     DataFrame with a continuous range of Unix timestamps. Each row represents a minute,
     with trades mapped to their corresponding timestamps.
 
     Parameters
     ----------
     raw_inputs : pandas.DataFrame
-        Raw fee-like data, where each row contains unix_timestamp and the fee-like 
+        Raw fee-like data, where each row contains unix_timestamp and the fee-like
         amount with given column name
     start_time : str
         The start date time in format "%Y-%m-%d %H:%M:%S"
@@ -206,13 +207,15 @@ def raw_fee_like_amounts_to_fee_like_array(
     # Apply fill method
     if fill_method == "ffill":
         for name in names:
-            full_index_df[name] = full_index_df[name].replace(to_replace=0, method="ffill")
+            full_index_df[name] = full_index_df[name].replace(
+                to_replace=0, method="ffill"
+            )
     # If fill_method is 'base', we don't need to do anything as zeros are already in place
     elif fill_method == "base":
         pass
     else:
         raise NotImplementedError
     if len(names) == 1:
-        return np.array(full_index_df)[:,0]
+        return np.array(full_index_df)[:, 0]
     else:
         return np.array(full_index_df)

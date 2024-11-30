@@ -20,6 +20,7 @@ from copy import deepcopy
 
 from quantammsim.utils.data_processing.historic_data_utils import get_data_dict
 
+
 @jit
 def calc_rvr_trade_cost(
     trade,
@@ -416,7 +417,9 @@ class CalculateLossVersusRebalancing(ABC):
         n_assets = run_fingerprint["n_assets"]
 
         # Calculate loss versus rebalancing reserve changes
-        weights = self.calculate_weights(params, run_fingerprint, prices, start_index, additional_oracle_input)
+        weights = self.calculate_weights(
+            params, run_fingerprint, prices, start_index, additional_oracle_input
+        )
 
         # some pools might return a single weight vector, not a time series
         weights = jnp.broadcast_to(
@@ -432,7 +435,9 @@ class CalculateLossVersusRebalancing(ABC):
         initial_reserves = initial_value_per_token / local_prices[0]
 
         # Use existing dynamic inputs infrastructure
-        return _jax_calc_lvr_reserve_change(initial_reserves, weights, local_prices, gamma=1-run_fingerprint["fees"])
+        return _jax_calc_lvr_reserve_change(
+            initial_reserves, weights, local_prices, gamma=1 - run_fingerprint["fees"]
+        )
 
     def calculate_reserves_with_dynamic_inputs(self, *args, **kwargs):
         raise NotImplementedError("This method is not implemented for LVR pools.")
@@ -446,8 +451,10 @@ class CalculateLossVersusRebalancing(ABC):
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         local_run_fingerprint = deepcopy(run_fingerprint)
-        local_run_fingerprint["fees"] = 0   
-        return self.calculate_reserves_with_fees(params, local_run_fingerprint, prices, start_index, additional_oracle_input)
+        local_run_fingerprint["fees"] = 0
+        return self.calculate_reserves_with_fees(
+            params, local_run_fingerprint, prices, start_index, additional_oracle_input
+        )
 
 
 class CalculateRebalancingVersusRebalancing(ABC):
@@ -488,13 +495,19 @@ class CalculateRebalancingVersusRebalancing(ABC):
         )
 
         volatilities = data_dict["annualised_daily_volatility"][
-            data_dict["start_idx"] : data_dict["start_idx"] + data_dict["bout_length"] - 1
+            data_dict["start_idx"] : data_dict["start_idx"]
+            + data_dict["bout_length"]
+            - 1
         ]
         cex_volumes = data_dict["daily_volume"][
-            data_dict["start_idx"] : data_dict["start_idx"] + data_dict["bout_length"] - 1
+            data_dict["start_idx"] : data_dict["start_idx"]
+            + data_dict["bout_length"]
+            - 1
         ]
         cex_spread = data_dict["spread"][
-            data_dict["start_idx"] : data_dict["start_idx"] + data_dict["bout_length"] - 1
+            data_dict["start_idx"] : data_dict["start_idx"]
+            + data_dict["bout_length"]
+            - 1
         ]
 
         n_assets = run_fingerprint["n_assets"]

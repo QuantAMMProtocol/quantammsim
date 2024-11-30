@@ -122,13 +122,16 @@ class CowPoolOneArb(CowPool):
     ) -> jnp.ndarray:
         # Cow pools have no parameters and are only defined for 2 assets
         assert run_fingerprint["n_assets"] == 2
-        raise NotImplementedError("Dynamic inputs not implemented for COW pools with only a single arbitrageur.")
+        raise NotImplementedError(
+            "Dynamic inputs not implemented for COW pools with only a single arbitrageur."
+        )
 
     def make_vmap_in_axes(self, params: Dict[str, Any], n_repeats_of_recurred: int = 0):
         return make_vmap_in_axes_dict(params, 0, [], [], n_repeats_of_recurred)
 
     def is_trainable(self):
         return False
+
 
 tree_util.register_pytree_node(
     CowPoolOneArb,

@@ -75,7 +75,9 @@ def _jax_calc_FMAMM_trade_from_exact_out_given_in(
     # Note are using non-pythonic indexing here, in keeping with the TFMM papers.
 
     # Calculate the new reserves for token_out
-    amount_out = reserves[token_out] * amount_in / ((reserves[token_in] / gamma) + 2 * amount_in)
+    amount_out = (
+        reserves[token_out] * amount_in / ((reserves[token_in] / gamma) + 2 * amount_in)
+    )
     overall_trade = jnp.zeros(len(reserves))
     overall_trade = overall_trade.at[token_in].set(amount_in)
     overall_trade = overall_trade.at[token_out].set(-amount_out)

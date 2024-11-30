@@ -17,6 +17,7 @@ np.seterr(under="print")
 
 # TODO above is all from jax utils, tidy up required
 
+
 def get_run_location(run_fingerprint):
     run_location = "run_" + str(
         hashlib.sha256(
@@ -65,7 +66,7 @@ def save_multi_params(
     iterations_since_improvement,
     steps,
     sorted_tokens=True,
-):  
+):
     """
     Save multiple parameter sets along with their associated metrics to a JSON file.
 
@@ -77,7 +78,7 @@ def save_multi_params(
         List of parameter dictionaries to save
     test_objective : list
         List of objective values on test set for each parameter set
-    train_objective : list 
+    train_objective : list
         List of objective values on training set for each parameter set
     objective : list
         List of overall objective values for each parameter set
@@ -101,7 +102,7 @@ def save_multi_params(
         if params[i].get("subsidary_params") is not None:
             params[i]["subsidary_params"] = [
                 dict_of_jnp_to_np(sp) for sp in params[i]["subsidary_params"]
-        ]
+            ]
         params[i]["step"] = steps[i]
         params[i]["test_objective"] = test_objective[i]
         params[i]["train_objective"] = train_objective[i]
@@ -132,7 +133,7 @@ def save_params(
     local_learning_rate,
     iterations_since_improvement,
     sorted_tokens=True,
-):  
+):
     """
     Save optimization parameters and results to a JSON file.
 
@@ -147,7 +148,7 @@ def save_params(
     test_objective : float
         Objective function value on test data
     train_objective : float
-        Objective function value on training data 
+        Objective function value on training data
     objective : float
         Overall objective function value
     hess : float

@@ -21,6 +21,7 @@ if DEFAULT_BACKEND != "cpu":
 else:
     GPU_DEVICE = devices("cpu")[0]
 
+
 @jit
 def calculate_reserves_after_noise_trade(
     arb_trade,
@@ -95,11 +96,17 @@ def calculate_reserves_after_noise_trade(
     # (https://arxiv.org/pdf/2307.02074) the authors describe in section 5.3 that the volume from noise traders
     # on uniswap v3 is about 60% of all volume compared to about 40% of volume being from arbitrageurs.
     # this would correspond to a noise trader ratio of 0.6 / 0.4 = 1.5.
-    estimated_arb_fee_income_from_inbound_trade = noise_trader_ratio * (1.0 - gamma) * jnp.sum(estimated_trade_in * prices)
+    estimated_arb_fee_income_from_inbound_trade = (
+        noise_trader_ratio * (1.0 - gamma) * jnp.sum(estimated_trade_in * prices)
+    )
     # We then add this fee income to the reserves, which we do by scaling up all reserves
     # which means a) that the quoted prices of the pool are not changed and b) that we are assuming
     # that noise traders are taking no directional view on the market, but trading in equal and opposite
     # directions across all assets.
-    ratio_of_value_of_trade_to_reserves = 1.0 + estimated_arb_fee_income_from_inbound_trade / jnp.sum(current_reserves * prices)
+    ratio_of_value_of_trade_to_reserves = (
+        1.0
+        + estimated_arb_fee_income_from_inbound_trade
+        / jnp.sum(current_reserves * prices)
+    )
     reserves = current_reserves * ratio_of_value_of_trade_to_reserves
     return reserves

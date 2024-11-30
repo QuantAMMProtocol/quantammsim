@@ -53,7 +53,7 @@ np.seterr(under="print")
 # TODO above is all from jax utils, tidy up required
 
 
-def _calculate_max_drawdown(value_over_time, duration=7*24*60):
+def _calculate_max_drawdown(value_over_time, duration=7 * 24 * 60):
     """Calculate maximum drawdown on a chosen basis."""
     n_complete_chunks = (len(value_over_time) // duration) * duration
     value_over_time_truncated = value_over_time[:n_complete_chunks]
@@ -82,6 +82,7 @@ def _calculate_var_trad(value_over_time, percentile=5.0, duration=24 * 60):
     returns = jnp.diff(value_over_time) / value_over_time[:-1]
     return jnp.percentile(returns, percentile)
 
+
 def _calculate_raroc(value_over_time, percentile=5.0, duration=24 * 60):
     # Calculate returns
     total_return = value_over_time[-1] / value_over_time[0] - 1.0
@@ -105,6 +106,7 @@ def _calculate_raroc(value_over_time, percentile=5.0, duration=24 * 60):
     # RAROC = Annualized Return / VaR (VaR is already negative)
     return annualized_return / annualized_var
 
+
 def _calculate_return_value(
     return_val, reserves, local_prices, value_over_time, initial_reserves=None
 ):
@@ -124,10 +126,7 @@ def _calculate_return_value(
         #     / pool_returns.std()
         # ),
         "sharpe": lambda: jnp.sqrt(365 * 24 * 60)
-        * (
-            (pool_returns).mean()
-            / pool_returns.std()
-        ),
+        * ((pool_returns).mean() / pool_returns.std()),
         "returns": lambda: value_over_time[-1] / value_over_time[0] - 1.0,
         "returns_over_hodl": lambda: (
             value_over_time[-1]
@@ -183,7 +182,7 @@ def _calculate_return_value(
     return return_metrics[return_val]()
 
 
-@partial(jit, static_argnums=(7,8))
+@partial(jit, static_argnums=(7, 8))
 def forward_pass(
     params,
     start_index,
@@ -305,7 +304,10 @@ def forward_pass(
     # 1. Any of Fees, gas costs, and arb fees are provided as arrays, or trades are provided
     # 2. Any of Fees, gas costs, and arb fees are nonzero scalar values, with no trades provided
     # 3. Fees, gas costs, and arb fees are all zero, with no trades provided
-    if any(ele is not None for ele in [fees_array, gas_cost_array, arb_fees_array, trades_array]):
+    if any(
+        ele is not None
+        for ele in [fees_array, gas_cost_array, arb_fees_array, trades_array]
+    ):
         # Case 1, at least one of fees, gas costs, or arb fees is not None
         if fees_array is None:
             fees_array = jnp.array([static_dict["fees"]])
@@ -337,7 +339,9 @@ def forward_pass(
             params, static_dict, prices, start_index
         )
     else:
-        reserves = pool.calculate_reserves_zero_fees(params, static_dict, prices, start_index)
+        reserves = pool.calculate_reserves_zero_fees(
+            params, static_dict, prices, start_index
+        )
 
     if static_dict["arb_frequency"] != 1:
         reserves = jnp.repeat(
@@ -351,7 +355,7 @@ def forward_pass(
         return {
             "reserves": reserves,
         }
-    local_prices = dynamic_slice(prices, start_index, (bout_length-1, n_assets))
+    local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
     value_over_time = jnp.sum(jnp.multiply(reserves, local_prices), axis=-1)
     return _calculate_return_value(
         return_val,
@@ -362,7 +366,7 @@ def forward_pass(
     )
 
 
-@partial(jit, static_argnums=(7,8))
+@partial(jit, static_argnums=(7, 8))
 def forward_pass_nograd(
     params,
     start_index,
@@ -458,9 +462,7 @@ def forward_pass_nograd(
     >>> forward_pass_nograd(params, start_index, prices, pool=my_pool)
     {'reserves': array([...])}
     """
-    params = {
-        k: stop_gradient(v) for k, v in params.items()
-    }
+    params = {k: stop_gradient(v) for k, v in params.items()}
     start_index = stop_gradient(start_index)
     prices = stop_gradient(prices)
     return forward_pass(

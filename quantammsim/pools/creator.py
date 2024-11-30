@@ -1,7 +1,9 @@
 from quantammsim.pools.G3M.balancer.balancer import BalancerPool
 from quantammsim.pools.G3M.quantamm.momentum_pool import MomentumPool
 from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
-from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import MeanReversionChannelPool
+from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import (
+    MeanReversionChannelPool,
+)
 from quantammsim.pools.hodl_pool import HODLPool
 from quantammsim.pools.FM_AMM.cow_pool import CowPool
 from quantammsim.pools.FM_AMM.cow_pool_one_arb import CowPoolOneArb
@@ -82,7 +84,7 @@ def create_pool(rule):
         The identifier string for the desired pool type. Valid options are:
         - "balancer": Standard Balancer pool implementation
         - "momentum": Momentum-based G3M pool variant
-        - "power_channel": Power law G3M pool variant 
+        - "power_channel": Power law G3M pool variant
         - "mean_reversion_channel": Mean reversion G3M pool variant
         - "hodl": Basic HODL strategy pool
         - "cow": CoW AMM pool implementation
@@ -146,9 +148,13 @@ def create_pool(rule):
 
     # Apply hook if specified
     if hook_type == "lvr":
-        return create_hooked_pool_instance(base_pool.__class__, CalculateLossVersusRebalancing)
+        return create_hooked_pool_instance(
+            base_pool.__class__, CalculateLossVersusRebalancing
+        )
     elif hook_type == "rvr":
-        return create_hooked_pool_instance(base_pool.__class__, CalculateRebalancingVersusRebalancing)
+        return create_hooked_pool_instance(
+            base_pool.__class__, CalculateRebalancingVersusRebalancing
+        )
     elif hook_type is not None:
         raise NotImplementedError(f"Unknown hook type: {hook_type}")
 

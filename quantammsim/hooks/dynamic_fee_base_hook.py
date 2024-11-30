@@ -3,6 +3,7 @@ from typing import Dict, Any, Optional
 import jax.numpy as jnp
 from jax.lax import dynamic_slice
 
+
 class BaseDynamicFeeHook(ABC):
     """Mixin class to add dynamic fee calculation capabilities to pools.
 
@@ -28,13 +29,13 @@ class BaseDynamicFeeHook(ABC):
     oracle inputs, and other parameters. It is designed to be used with AMM (Automated Market Maker) pool
     implementations.
 
-    The mixin assumes the existence of calculate_reserves_with_dynamic_inputs() in the pool class it will 
+    The mixin assumes the existence of calculate_reserves_with_dynamic_inputs() in the pool class it will
     be used with. Fee calculations should only use current and historical data to avoid look-ahead bias.
     All calculations should be vectorized (i.e. use jax.vmap) where possible for performance.
 
     Features:
     - Supports time-varying fees based on market conditions
-    - Integrates with existing pool infrastructure for reserve calculations  
+    - Integrates with existing pool infrastructure for reserve calculations
     - Handles gas costs and arbitrage fees
 
     Examples
@@ -44,6 +45,7 @@ class BaseDynamicFeeHook(ABC):
     ...         # Custom fee calculation logic here
     ...         return computed_fees
     """
+
     def __init__(self):
         pass
 

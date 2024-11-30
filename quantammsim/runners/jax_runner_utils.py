@@ -56,6 +56,7 @@ class Hashabledict(dict):
     True
     >>> d3 = {d1: 'value'}  # Can use as dictionary key
     """
+
     def __key(self):
         return tuple((k, self[k]) for k in sorted(self))
 
@@ -111,7 +112,7 @@ def nan_rollback(grads, params, old_params):
     ----------
     grads : dict
         Dictionary containing the current gradients
-    params : dict 
+    params : dict
         Dictionary containing the current parameter values
     old_params : dict
         Dictionary containing the previous parameter values
@@ -130,7 +131,9 @@ def nan_rollback(grads, params, old_params):
     """
     if "log_k" in grads:
         bool_idx = jnp.sum(jnp.isnan(grads["log_k"]), axis=-1, keepdims=True) > 0
-        return tree_map(lambda p, old_p: jnp.where(bool_idx, old_p, p), params, old_params)
+        return tree_map(
+            lambda p, old_p: jnp.where(bool_idx, old_p, p), params, old_params
+        )
     else:
         return params
 
@@ -161,7 +164,7 @@ def get_unique_tokens(run_fingerprint):
     ['BTC', 'DAI', 'ETH']
     """
     all_tokens = [run_fingerprint["tokens"]] + [
-    cprd["tokens"] for cprd in run_fingerprint["subsidary_pools"]
+        cprd["tokens"] for cprd in run_fingerprint["subsidary_pools"]
     ]
     all_tokens = [item for sublist in all_tokens for item in sublist]
     unique_tokens = list(set(all_tokens))
@@ -191,7 +194,7 @@ def split_list(lst, num_splits):
     --------
     >>> split_list([1,2,3,4,5], 2)
     [[1,2,3], [4,5]]
-    >>> split_list([1,2,3,4,5,6], 3) 
+    >>> split_list([1,2,3,4,5,6], 3)
     [[1,2], [3,4], [5,6]]
     """
     # Calculate the length of each sublist
@@ -222,12 +225,13 @@ def split_list(lst, num_splits):
 
     return result
 
+
 def invert_permutation(perm):
     """
     Compute the inverse of a permutation.
 
     Given a permutation array that maps indices to their new positions,
-    returns the inverse permutation that maps the new positions back to 
+    returns the inverse permutation that maps the new positions back to
     their original indices.
 
     Parameters
@@ -246,11 +250,10 @@ def invert_permutation(perm):
     >>> invert_permutation(perm)
     array([1, 2, 0])
     """
-    s = np.zeros(
-        perm.size, perm.dtype
-    )
+    s = np.zeros(perm.size, perm.dtype)
     s[perm] = range(perm.size)
     return s
+
 
 def permute_list_of_params(list_of_params, seed=0):
     """
@@ -287,6 +290,7 @@ def permute_list_of_params(list_of_params, seed=0):
     list_of_params_to_return = [list_of_params[i] for i in idx]
     return list_of_params_to_return
 
+
 def unpermute_list_of_params(list_of_params):
     """
     Restore the original order of a previously permuted list of parameters.
@@ -320,7 +324,9 @@ def unpermute_list_of_params(list_of_params):
     return list_of_params_to_return
 
 
-def get_trades_and_fees(run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_fees_df, do_test_period=False):
+def get_trades_and_fees(
+    run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_fees_df, do_test_period=False
+):
     """
     Process trade and fee data for a simulation run.
 
@@ -335,7 +341,7 @@ def get_trades_and_fees(run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_f
         DataFrame containing raw trade data
     fees_df : pd.DataFrame, optional
         DataFrame containing fee data
-    gas_cost_df : pd.DataFrame, optional 
+    gas_cost_df : pd.DataFrame, optional
         DataFrame containing gas cost data
     arb_fees_df : pd.DataFrame, optional
         DataFrame containing arbitrage fee data
@@ -374,7 +380,7 @@ def get_trades_and_fees(run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_f
             fees_df,
             run_fingerprint["startDateString"],
             run_fingerprint["endDateString"],
-            names=['fees'],
+            names=["fees"],
             fill_method="ffill",
         )
         if fees_df is not None
@@ -382,16 +388,16 @@ def get_trades_and_fees(run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_f
     )
     if do_test_period:
         test_fees_array = (
-                raw_fee_like_amounts_to_fee_like_array(
-                    fees_df,
-                    run_fingerprint["startDateString"],
-                    run_fingerprint["endDateString"],
-                    names=['fees'],
-                    fill_method="ffill",
-                )
-                if fees_df is not None
-                else None
+            raw_fee_like_amounts_to_fee_like_array(
+                fees_df,
+                run_fingerprint["startDateString"],
+                run_fingerprint["endDateString"],
+                names=["fees"],
+                fill_method="ffill",
             )
+            if fees_df is not None
+            else None
+        )
 
     gas_cost_array = (
         raw_fee_like_amounts_to_fee_like_array(
@@ -446,14 +452,14 @@ def get_trades_and_fees(run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_f
             "test_fees_array": test_fees_array,
             "test_gas_cost_array": test_gas_cost_array,
             "test_arb_fees_array": test_arb_fees_array,
-    }
+        }
     else:
         return {
             "train_period_trades": train_period_trades,
             "fees_array": fees_array,
             "gas_cost_array": gas_cost_array,
-            "arb_fees_array": arb_fees_array
-    }
+            "arb_fees_array": arb_fees_array,
+        }
 
 
 def create_daily_unix_array(start_date_str, end_date_str):
@@ -513,7 +519,7 @@ def optimized_output_conversion(simulationRunDto, outputDict, tokens):
 
     Returns:
         list: List of SimulationResultTimestepDto objects containing timestep data
-        
+
     The function:
     1. Creates Unix timestamps for each day between start and end dates
     2. Downsamples simulation data from minutes to daily frequency
@@ -542,7 +548,11 @@ def optimized_output_conversion(simulationRunDto, outputDict, tokens):
     # note that the returned weights are empirical weights, not calculated weights
     # this is because the calculated weights are not returned in the outputDict as
     # they are not guaranteed to exist for all possible pool types
-    weights_df = pd.DataFrame(outputDict["reserves"] * outputDict["prices"] / outputDict["value"][:,np.newaxis])[::1440]
+    weights_df = pd.DataFrame(
+        outputDict["reserves"]
+        * outputDict["prices"]
+        / outputDict["value"][:, np.newaxis]
+    )[::1440]
 
     print("prices_df: ", len(prices_df))
     print("reserves_df: ", len(reserves_df))

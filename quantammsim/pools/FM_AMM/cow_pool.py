@@ -101,7 +101,7 @@ class CowPool(AbstractPool):
         initial_reserves = initial_value_per_token / local_prices[0]
 
         reserve_ratios = _jax_calc_cowamm_reserve_ratio_vmapped(
-                    arb_acted_upon_local_prices[:-1], arb_acted_upon_local_prices[1:]
+            arb_acted_upon_local_prices[:-1], arb_acted_upon_local_prices[1:]
         )
         reserves = jnp.vstack(
             [

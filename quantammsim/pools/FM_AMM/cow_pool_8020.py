@@ -52,7 +52,9 @@ class CowPool8020(AbstractPool):
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
 
         if run_fingerprint["arb_frequency"] != 1:
-            arb_acted_upon_local_prices = local_prices[:: run_fingerprint["arb_frequency"]]
+            arb_acted_upon_local_prices = local_prices[
+                :: run_fingerprint["arb_frequency"]
+            ]
         else:
             arb_acted_upon_local_prices = local_prices
 
@@ -119,7 +121,9 @@ class CowPool8020(AbstractPool):
         trade_array: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-        raise NotImplementedError("CowPoolWeights does not yet implement calculate_reserves_with_dynamic_inputs")
+        raise NotImplementedError(
+            "CowPoolWeights does not yet implement calculate_reserves_with_dynamic_inputs"
+        )
 
     def _init_base_parameters(
         self,

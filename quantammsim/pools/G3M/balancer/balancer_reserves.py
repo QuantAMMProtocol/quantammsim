@@ -306,7 +306,7 @@ def _jax_calc_balancer_reserves_with_fees_using_precalcs(
     return reserves
 
 
-@partial(jit, static_argnums=(6,7))
+@partial(jit, static_argnums=(6, 7))
 def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using_precalcs(
     carry_list,
     input_list,
@@ -507,9 +507,7 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
 
     initial_weights = weights
 
-    gamma = jnp.where(
-        fees.size == 1, jnp.full(prices.shape[0], 1.0 - fees), 1.0 - fees
-    )
+    gamma = jnp.where(fees.size == 1, jnp.full(prices.shape[0], 1.0 - fees), 1.0 - fees)
 
     arb_thresh = jnp.where(
         arb_thresh.size == 1, jnp.full(prices.shape[0], arb_thresh), arb_thresh

@@ -68,6 +68,7 @@ def redirect_if_jwt_invalid():
     function
         A decorator function that wraps the input function and verifies the JWT.
     """
+
     def wrapper(fn):
         @wraps(fn)
         def decorator(*args, **kwargs):
@@ -255,6 +256,7 @@ def loadHistoricDailyPrices():
     parsed = json.loads(result)
     jsonString = json.dumps(parsed)
     return jsonString
+
 
 @app.route("/loadCoinComparisonData", methods=["POST"])
 def loadCoinComparisonData():

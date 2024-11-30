@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 import jax.numpy as jnp
-from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import calc_gradients, calc_k
+from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
+    calc_gradients,
+    calc_k,
+)
 from quantammsim.hooks.dynamic_fee_base_hook import BaseDynamicFeeHook
 from jax.nn import sigmoid, softplus
 
@@ -40,7 +43,9 @@ class MomentumDynamicFeeHook(BaseDynamicFeeHook):
             False,
             cap_lamb=True,
         )
-        dynamic_fees = max_fees * sigmoid(params["momentum_fee_params"]["fee_scaling_factor"] * gradients)
+        dynamic_fees = max_fees * sigmoid(
+            params["momentum_fee_params"]["fee_scaling_factor"] * gradients
+        )
         return dynamic_fees
 
     def extend_parameters(

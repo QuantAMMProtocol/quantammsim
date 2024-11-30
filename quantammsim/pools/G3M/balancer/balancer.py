@@ -53,7 +53,9 @@ class BalancerPool(AbstractPool):
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
 
         if run_fingerprint["arb_frequency"] != 1:
-            arb_acted_upon_local_prices = local_prices[:: run_fingerprint["arb_frequency"]]
+            arb_acted_upon_local_prices = local_prices[
+                :: run_fingerprint["arb_frequency"]
+            ]
         else:
             arb_acted_upon_local_prices = local_prices
 
@@ -134,7 +136,9 @@ class BalancerPool(AbstractPool):
         weights = self.calculate_weights(params)
 
         if run_fingerprint["arb_frequency"] != 1:
-            arb_acted_upon_local_prices = local_prices[:: run_fingerprint["arb_frequency"]]
+            arb_acted_upon_local_prices = local_prices[
+                :: run_fingerprint["arb_frequency"]
+            ]
         else:
             arb_acted_upon_local_prices = local_prices
 
@@ -152,9 +156,15 @@ class BalancerPool(AbstractPool):
         # Broadcast input arrays to match the maximum leading dimension.
         # If they are singletons, this will just repeat them for the length of the bout.
         # If they are arrays of length bout_length, this will cause no change.
-        fees_array_broadcast = jnp.broadcast_to(fees_array, (max_len,) + fees_array.shape[1:])
-        arb_thresh_array_broadcast = jnp.broadcast_to(arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:])
-        arb_fees_array_broadcast = jnp.broadcast_to(arb_fees_array, (max_len,) + arb_fees_array.shape[1:])
+        fees_array_broadcast = jnp.broadcast_to(
+            fees_array, (max_len,) + fees_array.shape[1:]
+        )
+        arb_thresh_array_broadcast = jnp.broadcast_to(
+            arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:]
+        )
+        arb_fees_array_broadcast = jnp.broadcast_to(
+            arb_fees_array, (max_len,) + arb_fees_array.shape[1:]
+        )
         # if we are doing trades, the trades array must be of the same length as the other arrays
         if run_fingerprint["do_trades"]:
             assert trade_array.shape[0] == max_len

@@ -1,6 +1,7 @@
 from jax import jit
 import jax.numpy as jnp
 
+
 def _jax_calc_approx_optimal_interpolation_block(
     actual_start, scaled_diff, interpol_arange, fine_ones, interpol_num
 ):

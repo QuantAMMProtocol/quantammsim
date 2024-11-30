@@ -42,7 +42,10 @@ import numpy as np
 
 # import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
 # as this is False for momentum pools --- the strategy outputs weight _changes_
-from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import calc_fine_weight_output_from_weight_changes
+from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
+    calc_fine_weight_output_from_weight_changes,
+)
+
 
 @jit
 def _jax_mean_reversion_channel_weight_update(
@@ -185,16 +188,16 @@ class MeanReversionChannelPool(MomentumPool):
         """
         use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
         if use_pre_exp_scaling:
-            logit_pre_exp_scaling = params.get(
-                "logit_pre_exp_scaling"
-            )
+            logit_pre_exp_scaling = params.get("logit_pre_exp_scaling")
             pre_exp_scaling = jnp.exp(logit_pre_exp_scaling) / (
                 1 + jnp.exp(logit_pre_exp_scaling)
             )
         else:
             pre_exp_scaling = 0.5
         memory_days = lamb_to_memory_days_clipped(
-            calc_lamb(params), run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"]
+            calc_lamb(params),
+            run_fingerprint["chunk_period"],
+            run_fingerprint["max_memory_days"],
         )
         k = calc_k(params, memory_days)
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
@@ -229,7 +232,6 @@ class MeanReversionChannelPool(MomentumPool):
         n_parameter_sets: int = 1,
         noise: str = "gaussian",
     ) -> Dict[str, Any]:
-
         """
         Initialize parameters for a power channel pool.
 
@@ -269,6 +271,7 @@ class MeanReversionChannelPool(MomentumPool):
         """
 
         np.random.seed(0)
+
         # We need to initialise the weights for each parameter set
         # If a vector is provided in the inital values dict, we use
         # that, if only a singleton array is provided we expand it
@@ -368,5 +371,7 @@ class MeanReversionChannelPool(MomentumPool):
 
 
 tree_util.register_pytree_node(
-    MeanReversionChannelPool, MeanReversionChannelPool._tree_flatten, MeanReversionChannelPool._tree_unflatten
+    MeanReversionChannelPool,
+    MeanReversionChannelPool._tree_flatten,
+    MeanReversionChannelPool._tree_unflatten,
 )

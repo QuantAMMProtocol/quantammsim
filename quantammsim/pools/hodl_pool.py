@@ -27,6 +27,7 @@ import numpy as np
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 
+
 class HODLPool(AbstractPool):
     def __init__(self):
         super().__init__()

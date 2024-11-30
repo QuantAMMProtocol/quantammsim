@@ -230,9 +230,7 @@ def train_on_historic_data(
     else:
         offset = 0
 
-    params_in_axes_dict = pool.make_vmap_in_axes(
-        params
-    )
+    params_in_axes_dict = pool.make_vmap_in_axes(params)
     base_static_dict = {
         "chunk_period": chunk_period,
         "bout_length": bout_length_window,
@@ -262,20 +260,22 @@ def train_on_historic_data(
         forward_pass,
         prices=data_dict["prices"],
         static_dict=Hashabledict(base_static_dict),
-        pool=pool
+        pool=pool,
     )
     partial_forward_pass_nograd_batch = Partial(
         forward_pass_nograd,
         prices=data_dict["prices"],
         static_dict=Hashabledict(base_static_dict),
-        pool=pool
+        pool=pool,
     )
 
     returns_train_static_dict = base_static_dict.copy()
     returns_train_static_dict["return_val"] = "returns_over_hodl"
     returns_train_static_dict["bout_length"] = data_dict["bout_length"]
     partial_forward_pass_nograd_batch_returns_train = Partial(
-        forward_pass_nograd, static_dict=Hashabledict(returns_train_static_dict), pool=pool
+        forward_pass_nograd,
+        static_dict=Hashabledict(returns_train_static_dict),
+        pool=pool,
     )
 
     returns_test_static_dict = base_static_dict.copy()
@@ -284,7 +284,7 @@ def train_on_historic_data(
     partial_forward_pass_nograd_batch_returns_test = Partial(
         forward_pass_nograd,
         static_dict=Hashabledict(returns_test_static_dict),
-        pool=pool
+        pool=pool,
     )
 
     nograd_in_axes = [params_in_axes_dict, None, None]
@@ -333,7 +333,10 @@ def train_on_historic_data(
     if run_fingerprint["optimisation_settings"]["method"] == "gradient_descent":
         if run_fingerprint["optimisation_settings"]["optimiser"] == "adam":
             import optax
-            opt = optax.inject_hyperparams(optax.adam)(learning_rate=local_learning_rate)
+
+            opt = optax.inject_hyperparams(optax.adam)(
+                learning_rate=local_learning_rate
+            )
             raise NotImplementedError
         elif run_fingerprint["optimisation_settings"]["optimiser"] != "sgd":
             raise NotImplementedError
@@ -422,25 +425,33 @@ def train_on_historic_data(
     elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
         import optuna
         import jax.numpy as jnp
+
         # define optuna study
-        assert run_fingerprint["optimisation_settings"]["n_parameter_sets"] == 1, "Optuna only supports single parameter sets"
+        assert (
+            run_fingerprint["optimisation_settings"]["n_parameter_sets"] == 1
+        ), "Optuna only supports single parameter sets"
+
         # create objective function
         def objective(trial):
             trial_params = {}
             for key, value in params.items():
                 if key != "subsidary_params":
                     trial_params[key] = jnp.array(
-                            [trial.suggest_float(key + f"_{i}", -10, 10) for i in range(value.shape[1])]
+                        [
+                            trial.suggest_float(key + f"_{i}", -10, 10)
+                            for i in range(value.shape[1])
+                        ]
                     )
                 #     trial_params[key] = jnp.array(
                 #         [trial.suggest_float(key, -10, 10)] * value.shape[1]
                 # )
-            print("return over hodl: ",
+            print(
+                "return over hodl: ",
                 partial_forward_pass_nograd_batch_returns_train(
                     trial_params,
                     (data_dict["start_idx"], 0),
                     data_dict["prices"],
-                )
+                ),
             )
             value = partial_forward_pass_nograd_batch(
                 trial_params, (data_dict["start_idx"], 0)
@@ -450,10 +461,12 @@ def train_on_historic_data(
                 value,
             )
             return -value
+
         study = optuna.create_study(sampler=optuna.samplers.TPESampler())
-        study.optimize(objective, n_trials=2000) 
+        study.optimize(objective, n_trials=2000)
     else:
         raise NotImplementedError
+
 
 def do_run_on_historic_data(
     run_fingerprint,
@@ -655,12 +668,10 @@ def do_run_on_historic_data(
         reserves_values_test_static_dict = base_static_dict.copy()
         reserves_values_test_static_dict["return_val"] = "reserves_and_values"
         reserves_values_test_static_dict["bout_length"] = data_dict["bout_length_test"]
-        partial_forward_pass_nograd_batch_reserves_values_test = (
-            Partial(
-                forward_pass_nograd,
-                static_dict=Hashabledict(reserves_values_test_static_dict),
-                pool=pool,
-            )
+        partial_forward_pass_nograd_batch_reserves_values_test = Partial(
+            forward_pass_nograd,
+            static_dict=Hashabledict(reserves_values_test_static_dict),
+            pool=pool,
         )
 
     # Ensure params is a list

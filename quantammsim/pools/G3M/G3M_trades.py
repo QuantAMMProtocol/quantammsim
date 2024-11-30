@@ -72,8 +72,10 @@ def wrapped_G3M_trade_function(reserves, weights, trade, gamma):
         reserves, weights, trade[0], trade[1], trade[2], gamma
     )
 
+
 def zero_trade_function_G3M(reserves, weights, trade, gamma):
     return jnp.zeros(reserves.shape)
+
 
 # Create a jitted function that includes the cond, for lazy evaluation
 @jit
