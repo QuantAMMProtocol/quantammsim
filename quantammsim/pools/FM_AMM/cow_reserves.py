@@ -10,6 +10,7 @@ from jax.tree_util import Partial
 import numpy as np
 
 from functools import partial
+
 np.seterr(all="raise")
 np.seterr(under="print")
 import math
@@ -144,6 +145,7 @@ def align_FMAMM_jax(reserves, price):
         ]
     )
     return align_reserves
+
 
 @jit
 def align_FMAMM_onearb_jax(reserves, price):
@@ -313,7 +315,11 @@ def _jax_calc_cowamm_reserves_with_weights_with_fees_scan_function(
         align_price,
     )
     # calc align reserves including added trading fees paid to reserves
-    align_reserves = align_FMAMM_jax(prev_reserves * weights[::-1] * 2.0, align_price) - prev_reserves * weights[::-1] * 2.0 + prev_reserves
+    align_reserves = (
+        align_FMAMM_jax(prev_reserves * weights[::-1] * 2.0, align_price)
+        - prev_reserves * weights[::-1] * 2.0
+        + prev_reserves
+    )
     align_reserves += (
         jnp.maximum(0, align_reserves - prev_reserves) * (1 - gamma) / gamma
     )
@@ -327,6 +333,7 @@ def _jax_calc_cowamm_reserves_with_weights_with_fees_scan_function(
 def _jax_calc_cowamm_reserves_under_attack_with_fees_scan_function(
     carry_list,
     prices,
+    weight=0.5,
     gamma=0.997,
     arb_thresh=0.0,
     arb_fees=0.0,
@@ -344,6 +351,8 @@ def _jax_calc_cowamm_reserves_under_attack_with_fees_scan_function(
         List containing the previous prices and reserves.
     prices : jnp.ndarray
         Array containing the current prices.
+    weight : float, optional
+        Weight of the first token (must be between 0 and 1, assumes second token's weight is one minus this). Defaults to 0.5 (equal weights).
     gamma : float, optional
         Fee factor for no-arbitrage bounds, by default 0.997.
     arb_thresh : float, optional
@@ -386,20 +395,23 @@ def _jax_calc_cowamm_reserves_under_attack_with_fees_scan_function(
     # change in reserves[0] < 0
     # change in reserves[1] > 0
 
-    delta_reserves_0_case1 = 0.5 * (
-        prev_reserves[0] - (jnp.sqrt(prev_product / (gamma * scalar_price)))
+    # TODO: MW needs to check this over one more time
+    delta_reserves_0_case1 = (1.0 - weight) * prev_reserves[0] - weight * (
+        jnp.sqrt(prev_product / (gamma * scalar_price))
     )
-    delta_reserves_1_case1 = 0.5 * (
-        prev_reserves[1] / gamma - (jnp.sqrt(prev_product * scalar_price / (gamma)))
-    )
-    case_1_trade = jnp.array([delta_reserves_0_case1, delta_reserves_1_case1])
 
-    delta_reserves_0_case2 = 0.5 * (
-        prev_reserves[0] / gamma - (jnp.sqrt(prev_product / (gamma * scalar_price)))
+    delta_reserves_1_case1 = (1.0 - weight) * prev_reserves[1] / gamma - weight * (
+        jnp.sqrt(prev_product * scalar_price / (gamma))
     )
-    delta_reserves_1_case2 = 0.5 * (
-        prev_reserves[1] - (jnp.sqrt(prev_product * scalar_price / (gamma)))
+
+    case_1_trade = jnp.array([delta_reserves_0_case1, delta_reserves_1_case1])
+    delta_reserves_0_case2 = (1.0 - weight) * prev_reserves[0] / gamma - weight * (
+        jnp.sqrt(prev_product / (gamma * scalar_price))
     )
+    delta_reserves_1_case2 = (1.0 - weight) * prev_reserves[1] - weight * (
+        jnp.sqrt(prev_product * scalar_price / (gamma))
+    )
+
     case_2_trade = jnp.array([delta_reserves_0_case2, delta_reserves_1_case2])
 
     overall_trades = jnp.array(
@@ -433,6 +445,7 @@ def _jax_calc_cowamm_reserves_under_attack_with_fees_scan_function(
 def _jax_calc_cowamm_reserves_under_attack_zero_fees_scan_function(
     carry_list,
     prices,
+    weight=0.5,
     arb_thresh=0.0,
     arb_fees=0.0,
 ):
@@ -449,6 +462,8 @@ def _jax_calc_cowamm_reserves_under_attack_zero_fees_scan_function(
         List containing the previous reserves.
     prices : jnp.ndarray
         Array containing the current prices.
+    weight : float, optional
+        Weight of the first token (must be between 0 and 1, assumes second token's weight is one minus this). Defaults to 0.5 (equal weights).
     arb_thresh : float, optional
         Threshold for profitable arbitrage, by default 0.0.
     arb_fees : float, optional
@@ -486,15 +501,14 @@ def _jax_calc_cowamm_reserves_under_attack_zero_fees_scan_function(
     # change in reserves[0] < 0
     # change in reserves[1] > 0
 
-    delta_reserves_0 = 0.5 * (
+    delta_reserves_0 = weight * (
         prev_reserves[0] - (jnp.sqrt(prev_product / (scalar_price)))
     )
-    delta_reserves_1 = 0.5 * (
-        prev_reserves[1] - (jnp.sqrt(prev_product * scalar_price )))
-
-    overall_trade = jnp.array(
-        [-delta_reserves_0, -delta_reserves_1]
+    delta_reserves_1 = weight * (
+        prev_reserves[1] - (jnp.sqrt(prev_product * scalar_price))
     )
+
+    overall_trade = jnp.array([-delta_reserves_0, -delta_reserves_1])
     profit = -(overall_trade * prices).sum(-1)
 
     align_reserves = prev_reserves + overall_trade
@@ -512,7 +526,7 @@ def _jax_calc_cowamm_reserves_under_attack_zero_fees_scan_function(
 
 @jit
 def _jax_calc_cowamm_reserves_under_attack_with_fees(
-    initial_reserves, prices, fees=0.003, arb_thresh=0.0, arb_fees=0.0
+    initial_reserves, prices, weight=0.5, fees=0.003, arb_thresh=0.0, arb_fees=0.0
 ):
     """
     Calculate AMM reserves considering fees for CowAMM
@@ -527,6 +541,8 @@ def _jax_calc_cowamm_reserves_under_attack_with_fees(
         Initial reserves at the start of the calculation.
     prices : jnp.ndarray
         Two-dimensional array of asset prices over time.
+    weight : float, optional
+        Weight of the first token (must be between 0 and 1, assumes second token's weight is one minus this). Defaults to 0.5 (equal weights).
     fees : float, optional
         Swap fee charged on transactions, by default 0.003.
     arb_thresh : float, optional
@@ -551,6 +567,7 @@ def _jax_calc_cowamm_reserves_under_attack_with_fees(
 
     scan_fn = Partial(
         _jax_calc_cowamm_reserves_under_attack_with_fees_scan_function,
+        weight=weight,
         gamma=gamma,
         arb_thresh=arb_thresh,
         arb_fees=arb_fees,
@@ -564,7 +581,7 @@ def _jax_calc_cowamm_reserves_under_attack_with_fees(
 
 @jit
 def _jax_calc_cowamm_reserves_under_attack_zero_fees(
-    initial_reserves, prices, arb_thresh=0.0, arb_fees=0.0
+    initial_reserves, prices, weight=0.5, arb_thresh=0.0, arb_fees=0.0
 ):
     """
     Calculate AMM reserves considering fees for CowAMM
@@ -579,8 +596,8 @@ def _jax_calc_cowamm_reserves_under_attack_zero_fees(
         Initial reserves at the start of the calculation.
     prices : jnp.ndarray
         Two-dimensional array of asset prices over time.
-    fees : float, optional
-        Swap fee charged on transactions, by default 0.003.
+    weight : float, optional
+        Weight of the first token (must be between 0 and 1, assumes second token's weight is one minus this). Defaults to 0.5 (equal weights).
     arb_thresh : float, optional
         Threshold for profitable arbitrage, by default 0.0.
     arb_fees : float, optional
@@ -601,6 +618,7 @@ def _jax_calc_cowamm_reserves_under_attack_zero_fees(
 
     scan_fn = Partial(
         _jax_calc_cowamm_reserves_under_attack_zero_fees_scan_function,
+        weight=weight,
         arb_thresh=arb_thresh,
         arb_fees=arb_fees,
     )
@@ -663,7 +681,7 @@ def _jax_calc_cowamm_reserve_ratio_n_assets(prev_prices, weights, prices, n=2):
     """
     This is an experimental function, who's output cannot be guaranteed to be correct.
     This function is not used in the codebase, and its implementation is not stable.
-    
+
     Calculate reserves ratio changes for a single timestep.
 
     This function computes the changes in reserves for an automated market maker (FM-AMM) model
@@ -985,7 +1003,10 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades(
 
     gamma = 1.0 - fees
 
-    scan_fn = Partial(_jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function, do_trades=do_trades)
+    scan_fn = Partial(
+        _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function,
+        do_trades=do_trades,
+    )
 
     carry_list_init = [initial_prices, initial_reserves]
     carry_list_end, reserves = scan(
@@ -1001,20 +1022,15 @@ if __name__ == "__main__":
     import jax.numpy as jnp
 
     # Set up test inputs
-    carry_list = [
-        jnp.array([100.0, 100.0]) # Previous reserves
-    ]
-    prices = jnp.array([20.0, 1.0]) # Current prices
+    carry_list = [jnp.array([100.0, 100.0])]  # Previous reserves
+    prices = jnp.array([20.0, 1.0])  # Current prices
     gamma = 0.997
     arb_thresh = 0.0
     arb_fees = 0.0
 
     # Run test
     result = _jax_calc_cowamm_reserves_under_attack_zero_fees_scan_function(
-        carry_list,
-        prices,
-        arb_thresh=arb_thresh,
-        arb_fees=arb_fees
+        carry_list, prices, arb_thresh=arb_thresh, arb_fees=arb_fees
     )
 
     print("Test _jax_calc_cowamm_reserves_under_attack_zero_fees_scan_function:")
@@ -1025,17 +1041,18 @@ if __name__ == "__main__":
     from quantammsim.pools.G3M.balancer.balancer_reserves import (
         _jax_calc_balancer_reserve_ratio,
     )
+
     # Test balancer reserve ratio calculation
     print("\nTest _jax_calc_balancer_reserve_ratio:")
     prev_prices = jnp.array([1.0, 1.0])  # Previous prices
-    weights = jnp.array([0.5, 0.5])      # Equal weights
-    prices = jnp.array([20.0, 1.0])       # Current prices
+    weights = jnp.array([0.5, 0.5])  # Equal weights
+    prices = jnp.array([20.0, 1.0])  # Current prices
 
     result = _jax_calc_balancer_reserve_ratio(prev_prices, weights, prices)
     initial_reserves = jnp.array([100.0, 100.0])
     balancer_reserves = initial_reserves * result
     print(f"Previous prices: {prev_prices}")
-    print(f"Weights: {weights}") 
+    print(f"Weights: {weights}")
     print(f"Current prices: {prices}")
     print(f"Reserves: {balancer_reserves}")
     print(f"Reserves: {0.5*(balancer_reserves - initial_reserves)}")
@@ -1046,7 +1063,7 @@ if __name__ == "__main__":
             result = _jax_calc_cowamm_reserves_under_attack_zero_fees_scan_function(
                 carry_list, prices, arb_thresh=arb_thresh, arb_fees=arb_fees
             )[-1]
-            profit = -((result - initial_reserves)*prices).sum()
+            profit = -((result - initial_reserves) * prices).sum()
         else:
             result = _jax_calc_cowamm_reserves_under_attack_with_fees_scan_function(
                 [prev_prices, initial_reserves],

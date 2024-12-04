@@ -29,6 +29,8 @@ from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.pools.FM_AMM.cow_reserves import (
     _jax_calc_cowamm_reserve_ratio_vmapped,
     _jax_calc_cowamm_reserves_with_weights_with_fees,
+    _jax_calc_cowamm_reserves_under_attack_zero_fees,
+    _jax_calc_cowamm_reserves_under_attack_with_fees,
 )
 from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 
@@ -61,14 +63,33 @@ class CowPoolWeights(AbstractPool):
         initial_value_per_token = weights * initial_pool_value
         initial_reserves = initial_value_per_token / local_prices[0]
 
-        reserves = _jax_calc_cowamm_reserves_with_weights_with_fees(
-            initial_reserves,
-            weights,
-            arb_acted_upon_local_prices,
-            fees=run_fingerprint["fees"],
-            arb_thresh=run_fingerprint["gas_cost"],
-            arb_fees=run_fingerprint["arb_fees"],
-        )
+        if run_fingerprint["do_arb"]:
+            reserves_with_perfect_arbs = _jax_calc_cowamm_reserves_with_weights_with_fees(
+                initial_reserves,
+                arb_acted_upon_local_prices,
+                weights[0],
+                fees=run_fingerprint["fees"],
+                arb_thresh=run_fingerprint["gas_cost"],
+                arb_fees=run_fingerprint["arb_fees"],
+            )
+            # now we need to calculate the reserves with imperfect arbs
+            # we do this by taking the perfect arbs and then applying a small
+            # amount of noise to the weights
+            reserves_with_one_arb = _jax_calc_cowamm_reserves_under_attack_with_fees(
+                initial_reserves,
+                arb_acted_upon_local_prices,
+                weights[0],
+                fees=run_fingerprint["fees"],
+                arb_thresh=run_fingerprint["gas_cost"],
+                arb_fees=run_fingerprint["arb_fees"],
+            )
+            reserves = (
+                run_fingerprint["arb_quality"] * reserves_with_perfect_arbs
+                + (1.0 - run_fingerprint["arb_quality"]) * reserves_with_one_arb
+            )
+        else:
+            reserves = jnp.broadcast_to(initial_reserves, local_prices.shape)
+
         return reserves
 
     @partial(jit, static_argnums=(2))
@@ -97,18 +118,31 @@ class CowPoolWeights(AbstractPool):
         initial_value_per_token = weights * initial_pool_value
         initial_reserves = initial_value_per_token / local_prices[0]
 
-        reserve_ratios = _jax_calc_cowamm_reserve_ratio_vmapped(
-            arb_acted_upon_local_prices[:-1], arb_acted_upon_local_prices[1:]
-        )
-
-        # calculate the reserves by cumprod of reserve ratios
-        reserves = jnp.vstack(
-            [
+        if run_fingerprint["do_arb"]:
+            reserves_with_perfect_arbs = (
+                jax_calc_cowamm_reserves_with_weights_with_fees(
+                    initial_reserves,
+                    arb_acted_upon_local_prices,
+                    weights,
+                    fees=0.0,
+                    arb_thresh=run_fingerprint["gas_cost"],
+                    arb_fees=run_fingerprint["arb_fees"],
+                )
+            )
+            reserves_with_one_arb = _jax_calc_cowamm_reserves_under_attack_zero_fees(
                 initial_reserves,
-                initial_reserves * jnp.cumprod(reserve_ratios, axis=0),
-            ]
-        )
-        return reserves * weights * 2.0
+                arb_acted_upon_local_prices,
+                weights=weights[0],
+                arb_thresh=run_fingerprint["gas_cost"],
+                arb_fees=run_fingerprint["arb_fees"],
+            )
+            reserves = (
+                run_fingerprint["arb_quality"] * reserves_with_perfect_arbs
+                + (1.0 - run_fingerprint["arb_quality"]) * reserves_with_one_arb
+            )
+        else:
+            reserves = jnp.broadcast_to(initial_reserves, local_prices.shape)
+        return reserves
 
     @partial(jit, static_argnums=(2))
     def calculate_reserves_with_dynamic_inputs(

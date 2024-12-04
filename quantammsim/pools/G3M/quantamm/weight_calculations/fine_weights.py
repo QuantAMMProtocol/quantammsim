@@ -412,6 +412,8 @@ def _jax_calc_coarse_weight_scan_function(
         minimum_weight (float): Minimum weight value.
         asset_arange (ndarray): Array of asset indices.
         n_assets (int): Number of assets.
+        alt_lamb (float): Alternative lambda value.
+        mvpt (bool): Whether to use minimum variance targeting.
 
     Returns:
         list: List containing the final weights.
