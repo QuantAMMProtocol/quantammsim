@@ -1,12 +1,6 @@
-# BATCH_SIZE=32
-# os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count='+str(BATCH_SIZE)
-
-# again, this only works on startup!
 from jax import config
 
 config.update("jax_enable_x64", True)
-# config.update("jax_debug_nans", True)
-# config.update('jax_disable_jit', True)
 from jax.lib.xla_bridge import default_backend
 from jax import devices
 
@@ -19,8 +13,6 @@ else:
     GPU_DEVICE = devices("cpu")[0]
     config.update("jax_platform_name", "cpu")
 
-# jax.set_cpu_device_count(n)
-# print(devices("cpu"))
 
 import jax.numpy as jnp
 from jax import jit, vmap, devices
@@ -33,8 +25,6 @@ from functools import partial
 
 np.seterr(all="raise")
 np.seterr(under="print")
-
-# TODO above is all from jax utils, tidy up required
 
 
 def _calculate_max_drawdown(value_over_time, duration=7 * 24 * 60):
@@ -204,7 +194,7 @@ def forward_pass(
 
     This function models the behavior of a liquidity pool over a given period, 
     considering various factors such as fees, gas costs, and arbitrage fees.
-     It calculates reserves and other metrics based on the provided parameters and market prices.
+    It calculates reserves and other metrics based on the provided parameters and market prices.
 
     Parameters
     ----------

@@ -122,9 +122,7 @@ def align_position(
     if "align_price" not in locals():
         print(current_price, price, amm_fee, ext_fee)
 
-    #TODO MW review
     if align_price == 0.0:
-        print(current_price, price, amm_fee, ext_fee)
         return reserves
 
     align_reserves = align_function(reserves, align_price)

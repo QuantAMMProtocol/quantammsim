@@ -30,15 +30,12 @@ class MomentumDynamicFeeHook(BaseDynamicFeeHook):
             Check if the momentum fee hook is trainable.
     """
 
-    #TODO MW: This is a bug, you should not have two __init__ methods
     def __init__(self):
         """
-        Initialize a new TFMMBasePool instance.
+        Initialize a new MomentumDynamicFeeHook instance.
         """
         super().__init__()
 
-    def __init__(self):
-        BaseDynamicFeeHook.__init__(self)
 
     def calculate_dynamic_fees(
         self,

@@ -291,9 +291,9 @@ def calc_alt_lamb(update_rule_parameter_dict):
 
     Args:
         update_rule_parameter_dict (dict): A dictionary containing the update rule parameters.
-            Expected keys are:
-                - "logit_lamb": The logit lambda value.
-                - "logit_delta_lamb": The logit delta lambda value.
+        Expected keys are:
+            - "logit_lamb": The logit lambda value.
+            - "logit_delta_lamb": The logit delta lambda value.
 
     Returns:
         float: The calculated alternative lambda value.
@@ -314,10 +314,6 @@ def calc_alt_lamb(update_rule_parameter_dict):
     logit_alt_lamb = logit_delta_lamb + logit_lamb
     alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
     return alt_lamb
-
-    # lamb = jnp.clip(lamb, a_min=0.0, a_max=1.0-eps)
-    # og_memory_days = jnp.cbrt(6 * lamb / ((1 - lamb) ** 3)) * 2 * chunk_period / 1440
-    # memory_days = jnp.clip(og_memory_days, a_min=0.0, a_max=max_memory_days)
 
 
 def init_params_singleton(
@@ -660,7 +656,6 @@ def load_result_array(run_location, key="objective", recalc_hess=False):
         if recalc_hess is True:
             if "hessian_trace" not in params[0].keys():
                 for i, param in enumerate(params):
-                    #TODO MW review
                     params[i]["hessian_trace"] = calc_hessian_from_loaded_params(
                         params[i]
                     )
@@ -692,7 +687,7 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         - "best_train_objective": Return set with highest training objective
         - "best_test_objective": Return set with highest test objective
         - "best_train_min_test_objective": Return set with highest training objective meeting 
-            minimum test threshold
+        minimum test threshold
         Defaults to "last"
     recalc_hess : bool, optional
         Whether to recalculate Hessian trace values, defaults to False
@@ -736,6 +731,7 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
 
         if load_method == "last":
             index = -1
+            context = None
         elif load_method == "best_objective":
             objectives = [p["objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
@@ -793,7 +789,6 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
             return best_objective, set_with_best_test_index
         else:
             raise NotImplementedError
-        #TODO MW review
         return params[index], context
 
 
@@ -975,6 +970,7 @@ def load(
             )
         if load_method == "last":
             index = -1
+            context = None
         elif load_method == "best_objective":
             objectives = [p["objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
@@ -991,7 +987,6 @@ def load(
         ]
     else:
         raise FileNotFoundError(f"File not found: {run_location}")
-    #TODO MW review
     return params, context
 
 
@@ -1098,137 +1093,6 @@ def create_product_of_arrays(params, keys_arrays):
         param_combinations.append(param_combination)
 
     return param_combinations
-
-#TODO MW review not used
-def generate_params_combinations(
-    initial_values_dict,
-    n_tokens,
-    n_subsidary_rules,
-    chunk_period,
-    k_per_day_range,
-    memory_days_range,
-    num_points_k_per_day=10,
-    num_points_memory_days=10,
-    log_for_k=True,
-):
-    """
-    Generate parameter combinations with linearly-spaced values of k_per_day and memory_days.
-
-    Args:
-        initial_values_dict (dict): The initial values dictionary.
-        n_tokens (int): The number of tokens.
-        n_subsidary_rules (int): The number of subsidary rules.
-        chunk_period (int): The chunk period.
-        n_parameter_sets (int): The number of parameter sets.
-        k_per_day_range (tuple): The range (low, high) for k_per_day.
-        memory_days_range (tuple): The range (low, high) for memory_days.
-        num_points_k_per_day (int, optional): The number of points for k_per_day linspace. 
-        Defaults to 10.
-        num_points_memory_days (int, optional): The number of points for memory_days linspace. 
-        Defaults to 10.
-
-    Returns:
-        list: A list of dictionaries with all combinations of parameter values.
-    """
-    # Initialize base params
-    # base_params = init_params_singleton(
-    #     initial_values_dict, n_tokens, n_subsidary_rules, chunk_period
-    # )
-
-    # Define keys ranges for linspace generation
-    keys_ranges = {
-        "initial_k_per_day": k_per_day_range,
-        "initial_memory_length": memory_days_range,
-    }
-
-    # Define number of points for each key
-    num_points_per_key = {
-        "initial_k_per_day": num_points_k_per_day,
-        "initial_memory_length": num_points_memory_days,
-    }
-
-    # Generate param combinations
-    initial_values_dict_combinations = create_product_of_linspaces(
-        initial_values_dict.copy(), keys_ranges, num_points_per_key
-    )
-
-    # Fill in missing values from initial values
-    filled_param_combinations = [
-        fill_in_missing_values_from_init_singleton(
-            {},
-            i_v_d,
-            n_tokens,
-            n_subsidary_rules,
-            chunk_period,
-            log_for_k,
-        )
-        for i_v_d in initial_values_dict_combinations
-    ]
-    return filled_param_combinations, initial_values_dict_combinations
-
-#TODO MW review not used
-def generate_random_params_combinations(
-    initial_values_dict,
-    n_tokens,
-    n_subsidary_rules,
-    chunk_period,
-    k_per_day_range,
-    memory_days_range,
-    n_random_samples=5,
-    log_for_k=True,
-    scalar=False,
-):
-    """
-    Generate parameter combinations with uniformly-sampled 
-    random values of k_per_day and memory_days.
-
-    Args:
-        initial_values_dict (dict): The initial values dictionary.
-        n_tokens (int): The number of tokens.
-        n_subsidary_rules (int): The number of subsidary rules.
-        chunk_period (int): The chunk period.
-        n_parameter_sets (int): The number of parameter sets.
-        k_per_day_range (tuple): The range (low, high) for k_per_day.
-        memory_days_range (tuple): The range (low, high) for memory_days.
-        n_random_samples (int, optional): The number of points to sample. Defaults to 5.
-        log_for_k (bool, optional): If the logarithm of k should be used, including for sampling
-
-    Returns:
-        list: A list of dictionaries with all combinations of parameter values.
-    """
-
-    # not written to handle subsidary runs:
-    if n_subsidary_rules > 0:
-        raise NotImplementedError
-    # Fill in missing values from initial values
-    initial_params = fill_in_missing_values_from_init_singleton(
-        {},
-        initial_values_dict,
-        n_tokens,
-        n_subsidary_rules,
-        chunk_period,
-        log_for_k,
-    )
-    filled_param_combinations = []
-    for i in range(n_random_samples):
-        if scalar:
-            memory_days = np.random.uniform(*memory_days_range, 1) * np.ones(n_tokens)
-            k = np.random.uniform(*k_per_day_range, 1) * np.ones(n_tokens)
-        else:
-            memory_days = np.random.uniform(*memory_days_range, n_tokens)
-            k = np.random.uniform(*k_per_day_range, n_tokens)
-        local_params = initial_params.copy()
-        if log_for_k:
-            local_params["log_k"] = jnp.array(np.log2(k))
-        else:
-            local_params["k"] = jnp.array(k)
-        lamb = memory_days_to_lamb(memory_days, chunk_period)
-        logit_lamb_np = np.log(lamb / (1.0 - lamb))
-        logit_lamb = jnp.array(logit_lamb_np)
-        local_params["logit_lamb"] = logit_lamb
-        filled_param_combinations.append(local_params)
-
-    return filled_param_combinations
 
 
 def generate_run_fingerprint_combinations(

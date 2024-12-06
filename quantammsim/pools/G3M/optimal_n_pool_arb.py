@@ -4,15 +4,8 @@ from itertools import product
 
 from functools import partial
 
-# again, this only works on startup!
 from jax import config, jit, vmap
 import jax.numpy as jnp
-
-#TODO MW review 
-#from quantammsim.core_amm_arbitrage.optimal_n_pool_arb import (
-#    sig_to_tokens_to_keep,
-#    sig_to_direction_jnp,
-#)
 
 config.update("jax_enable_x64", True)
 

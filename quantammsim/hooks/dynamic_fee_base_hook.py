@@ -110,7 +110,6 @@ class BaseDynamicFeeHook(ABC):
         )
         dynamic_fees = raw_dynamic_fees.repeat(chunk_period, axis=0).squeeze()
         # Use existing dynamic inputs infrastructure
-        #TODO MW review
         return self.calculate_reserves_with_dynamic_inputs(
             params,
             run_fingerprint,

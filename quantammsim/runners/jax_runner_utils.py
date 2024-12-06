@@ -1,5 +1,3 @@
-
-
 import numpy as np
 import pandas as pd
 
@@ -202,9 +200,8 @@ def split_list(lst, num_splits):
     result = []
     start_idx = 0
 
-    #TODO MW review
     # Iterate over the number of sublists
-    for i in range(num_splits):
+    for _ in range(num_splits):
         # Calculate the end index of the sublist
         end_idx = start_idx + sub_len
 
@@ -393,12 +390,12 @@ def get_trades_and_fees(
             else None
         )
 
-    #TODO MW review names?
     gas_cost_array = (
         raw_fee_like_amounts_to_fee_like_array(
             gas_cost_df,
             run_fingerprint["startDateString"],
             run_fingerprint["endDateString"],
+            names=["trade_gas_cost_usd"],
             fill_method="ffill",
         )
         if gas_cost_df is not None
@@ -410,6 +407,7 @@ def get_trades_and_fees(
                 gas_cost_df,
                 run_fingerprint["endDateString"],
                 run_fingerprint["endTestDateString"],
+                names=["trade_gas_cost_usd"],
                 fill_method="ffill",
             )
             if gas_cost_df is not None
@@ -421,6 +419,7 @@ def get_trades_and_fees(
             arb_fees_df,
             run_fingerprint["startDateString"],
             run_fingerprint["endDateString"],
+            names=["arb_fees"],
             fill_method="ffill",
         )
         if arb_fees_df is not None
@@ -432,6 +431,7 @@ def get_trades_and_fees(
                 arb_fees_df,
                 run_fingerprint["endDateString"],
                 run_fingerprint["endTestDateString"],
+                names=["arb_fees"],
                 fill_method="ffill",
             )
             if arb_fees_df is not None
