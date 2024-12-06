@@ -1,11 +1,12 @@
 import time
 from datetime import timedelta
 
-from flask import Flask, jsonify, request, send_from_directory, redirect
+from flask import Flask, jsonify, request, send_from_directory, redirect, Response
 import json
 import jsonpickle
 from json import JSONEncoder
 from functools import wraps
+import msgpack
 
 from flask_jwt_extended import create_access_token, verify_jwt_in_request
 from flask_jwt_extended import jwt_required
@@ -185,10 +186,13 @@ def runSimulation():
     dto = SimulationRunDto(request_data)
     result = run_pool_simulation(dto)
 
-    resultJSON = jsonpickle.encode(SimulationResult(result), unpicklable=False)
-    jsonString = json.dumps(resultJSON, indent=4)
+    # Convert to JSON and then to a dictionary
+    result_dict = json.loads(json.dumps(result, default=lambda o: o.__dict__))
 
-    return jsonString
+    # Encode the result as MessagePack
+    result_msgpack = msgpack.packb(result_dict.to_dict())
+    
+    return Response(result_msgpack, content_type='application/x-msgpack')
 
 
 @app.route("/runFinancialAnalysis", methods=["POST"])
@@ -227,10 +231,14 @@ def runFinancialAnalysis():
         benchmarks_returns=benchmark_returns,
     )
 
-    resultJSON = jsonpickle.encode(FinancialAnalysisResult(result), unpicklable=False)
-    jsonString = json.dumps(resultJSON, indent=4)
+    # Convert to JSON and then to a dictionary
+    result_dict = json.loads(
+        json.dumps(FinancialAnalysisResult(result), default=lambda o: o.__dict__))
+    
+    # Encode the result as MessagePack
+    result_msgpack = msgpack.packb(result_dict.to_dict())
 
-    return jsonString
+    return Response(result_msgpack, content_type='application/x-msgpack')
 
 
 @app.route("/loadHistoricDailyPrices", methods=["POST"])
@@ -253,8 +261,11 @@ def loadHistoricDailyPrices():
     historic = get_historic_daily_csv_data([dto.coinCode], root)
     result = historic.to_json(orient="records")
     parsed = json.loads(result)
-    jsonString = json.dumps(parsed)
-    return jsonString
+
+    # Encode the result as MessagePack
+    result_msgpack = msgpack.packb(parsed.to_dict())  # Convert to dict if necessary
+
+    return Response(result_msgpack, content_type='application/x-msgpack')
 
 @app.route("/loadCoinComparisonData", methods=["POST"])
 def loadCoinComparisonData():

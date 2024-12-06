@@ -17,6 +17,7 @@ setup(
         "tqdm",
         "optuna",
         "pyarrow",
+        "msgpack"
     ],
     extras_require={
         "dev": [
