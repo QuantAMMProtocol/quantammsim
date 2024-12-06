@@ -161,5 +161,3 @@ class SimulationResultTimestepDto(object):
         self.timeStepTotal = timeStepTotal
 
 
-if __name__ == "__main__":
-    print("module")

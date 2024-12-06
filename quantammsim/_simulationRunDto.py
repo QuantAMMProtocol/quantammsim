@@ -60,6 +60,3 @@ class SimulationResultTimestepDto(object):
         self.coinsHeld = coinsHeld
         self.timeStepTotal = timeStepTotal
 
-
-if __name__ == "__main__":
-    print("module")

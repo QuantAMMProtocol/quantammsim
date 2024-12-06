@@ -51,7 +51,3 @@ def lamb_to_memory_days(lamb, chunk_period=60):
     memory_days = np.clip(memory_days, a_min=0.0, a_max=365.0)
     return memory_days
 
-
-if __name__ == "__main__":
-    lamb = force_mem_to_lamb([5], 60)
-    lamb_ex = memory_days_to_lamb(5, 60)
