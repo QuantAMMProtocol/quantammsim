@@ -1,29 +1,17 @@
+from typing import Dict, Any, Optional
+from functools import partial
+import numpy as np
+
 # again, this only works on startup!
-from jax import config
+from jax import config, devices, jit
 
-config.update("jax_enable_x64", True)
 from jax.lib.xla_bridge import default_backend
-from jax import local_device_count, devices
-
-DEFAULT_BACKEND = default_backend()
-CPU_DEVICE = devices("cpu")[0]
-if DEFAULT_BACKEND != "cpu":
-    GPU_DEVICE = devices("gpu")[0]
-    config.update("jax_platform_name", "gpu")
-else:
-    GPU_DEVICE = devices("cpu")[0]
-    config.update("jax_platform_name", "cpu")
 
 import jax.numpy as jnp
-from jax import jit, vmap
-from jax import device_put
+from jax import jit
 from jax import tree_util
 from jax.lax import stop_gradient, dynamic_slice
 from jax.nn import softmax
-
-from typing import Dict, Any, Optional, Callable
-from functools import partial
-import numpy as np
 
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.pools.FM_AMM.cow_reserves import (
@@ -33,11 +21,58 @@ from quantammsim.pools.FM_AMM.cow_reserves import (
 from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 
 
+DEFAULT_BACKEND = default_backend()
+CPU_DEVICE = devices("cpu")[0]
+if DEFAULT_BACKEND != "cpu":
+    GPU_DEVICE = devices("gpu")[0]
+    config.update("jax_platform_name", "gpu")
+else:
+    GPU_DEVICE = devices("cpu")[0]
+    config.update("jax_platform_name", "cpu")
+config.update("jax_enable_x64", True)
+
+
 class CowPoolWeights(AbstractPool):
+    """
+    CowPoolWeights is a class that extends AbstractPool and provides methods to calculate reserves
+    with and without fees, as well as initializing base parameters and calculating weights.
+
+    Methods
+    -------
+    __init__():
+        Initializes the CowPoolWeights instance.
+
+    calculate_reserves_with_fees(params, run_fingerprint, prices, 
+    start_index, additional_oracle_input=None):
+        Calculates the reserves with fees applied.
+
+    calculate_reserves_zero_fees(params, run_fingerprint, prices, 
+    start_index, additional_oracle_input=None):
+        Calculates the reserves without any fees applied.
+
+    calculate_reserves_with_dynamic_inputs(params, run_fingerprint, 
+    prices, start_index, fees_array, arb_thresh_array, arb_fees_array, 
+    trade_array, additional_oracle_input=None):
+        Raises NotImplementedError as this method is not yet implemented.
+
+    _init_base_parameters(initial_values_dict, run_fingerprint, n_assets, 
+    n_parameter_sets=1, noise="gaussian"):
+        Initializes the base parameters for the pool.
+
+    calculate_weights(params, *args, **kwargs):
+        Calculates the weights based on the initial weights logits.
+
+    make_vmap_in_axes(params, n_repeats_of_recurred=0):
+        Creates a vmap in_axes dictionary for the given parameters.
+
+    is_trainable():
+        Returns False indicating that the model is not trainable.
+    """
+
     def __init__(self):
         super().__init__()
 
-    @partial(jit, static_argnums=(2))
+    @partial(jit, static_argnums=2)
     def calculate_reserves_with_fees(
         self,
         params: Dict[str, Any],
@@ -52,7 +87,9 @@ class CowPoolWeights(AbstractPool):
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
 
         if run_fingerprint["arb_frequency"] != 1:
-            arb_acted_upon_local_prices = local_prices[:: run_fingerprint["arb_frequency"]]
+            arb_acted_upon_local_prices = local_prices[
+                :: run_fingerprint["arb_frequency"]
+            ]
         else:
             arb_acted_upon_local_prices = local_prices
 
@@ -71,7 +108,7 @@ class CowPoolWeights(AbstractPool):
         )
         return reserves
 
-    @partial(jit, static_argnums=(2))
+    @partial(jit, static_argnums=2)
     def calculate_reserves_zero_fees(
         self,
         params: Dict[str, Any],
@@ -110,7 +147,7 @@ class CowPoolWeights(AbstractPool):
         )
         return reserves * weights * 2.0
 
-    @partial(jit, static_argnums=(2))
+    @partial(jit, static_argnums=2)
     def calculate_reserves_with_dynamic_inputs(
         self,
         params: Dict[str, Any],
@@ -123,7 +160,9 @@ class CowPoolWeights(AbstractPool):
         trade_array: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-        raise NotImplementedError("CowPoolWeights does not yet implement calculate_reserves_with_dynamic_inputs")
+        raise NotImplementedError(
+            "CowPoolWeights does not yet implement calculate_reserves_with_dynamic_inputs"
+        )
 
     def _init_base_parameters(
         self,
@@ -154,7 +193,8 @@ class CowPoolWeights(AbstractPool):
                         return initial_value
                     else:
                         raise ValueError(
-                            f"{key} must be a singleton or a vector of length n_assets or a matrix of shape (n_parameter_sets, n_assets)"
+                            f"{key} must be a singleton or a vector of" +  
+                            "length n_assets or a matrix of shape (n_parameter_sets, n_assets)"
                         )
                 else:
                     return np.array([[initial_value] * n_assets] * n_parameter_sets)

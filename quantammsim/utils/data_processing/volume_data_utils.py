@@ -1,5 +1,6 @@
 import pandas as pd
 
+
 def calculate_daily_volume_from_minute_data(price_data, ticker):
     """
     Calculate the daily dollar volume from minute-level trading data

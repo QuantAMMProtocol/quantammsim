@@ -5,8 +5,12 @@ import os
 import glob
 import json
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
-from quantammsim.utils.data_processing.historic_data_utils import get_historic_csv_data, get_historic_csv_data_w_versions
+from quantammsim.utils.data_processing.historic_data_utils import (
+    get_historic_csv_data,
+    get_historic_csv_data_w_versions,
+)
 from quantammsim.core_simulator.param_utils import default_set
+
 
 def check_if_run_fingerprints_have_same_values(list_of_run_fingerprints, keys_to_check):
     """
@@ -154,4 +158,3 @@ def load_price_data_if_fingerprints_in_dir_match(
     return load_price_data_if_fingerprints_match(
         run_fingerprints, base_keys_to_check, optimisation_keys_to_check, root, verbose
     )
-

@@ -1,7 +1,12 @@
 import numpy as np
 import pandas as pd
 from Historic_Crypto import HistoricalData
-from quantammsim.utils.data_processing.datetime_utils import datetime_to_unixtimestamp, pddatetime_to_unixtimestamp, unixtimestamp_to_precise_datetime
+from quantammsim.utils.data_processing.datetime_utils import (
+    datetime_to_unixtimestamp,
+    pddatetime_to_unixtimestamp,
+    unixtimestamp_to_precise_datetime,
+)
+
 
 def import_historic_coinbase_data(
     token,
@@ -133,16 +138,20 @@ def import_historic_coinbase_data(
 def clean_up_coinbase_df(df):
     clean_data = df.loc[:0].iloc[:-1]
     clean_data = clean_data[["low", "high", "open", "close", "volume"]]
-    clean_datetime = pd.Series([pd.Timestamp(d) for d in clean_data.index], name='date')
+    clean_datetime = pd.Series([pd.Timestamp(d) for d in clean_data.index], name="date")
     clean_data.index = clean_datetime
     unsorted_data = df.loc[0:]
-    unsorted_data_timestamps = pd.Series([pd.Timestamp(d) for d in unsorted_data["date"]])
+    unsorted_data_timestamps = pd.Series(
+        [pd.Timestamp(d) for d in unsorted_data["date"]]
+    )
     unsorted_data["date"] = unsorted_data_timestamps
     # unsorted_data.assign(date=unsorted_data_timestamps)
-    unsorted_data=unsorted_data.set_index("date")
-    unsorted_data_filtered = unsorted_data[["low", "high", "open", "close", "Volume USD"]].rename(columns={"Volume USD": "volume"})
-    merged_data=pd.concat([clean_data,unsorted_data_filtered])
-    merged_data=merged_data.sort_index()
+    unsorted_data = unsorted_data.set_index("date")
+    unsorted_data_filtered = unsorted_data[
+        ["low", "high", "open", "close", "Volume USD"]
+    ].rename(columns={"Volume USD": "volume"})
+    merged_data = pd.concat([clean_data, unsorted_data_filtered])
+    merged_data = merged_data.sort_index()
     merged_data["unix"] = pddatetime_to_unixtimestamp(merged_data.index) * 1000
     return merged_data
 
@@ -247,17 +256,19 @@ def _cleaned_up_coinbase_data(
     print("3")
     return cleaned_prices
 
+
 import os
+
 
 def fill_missing_rows_with_coinbase_data(concatenated_df, token1, root):
 
-    file_path = root + 'coinbase_data/' + token1 + '_cb_sorted_.csv'
+    file_path = root + "coinbase_data/" + token1 + "_cb_sorted_.csv"
     if not os.path.exists(file_path):
         return concatenated_df, []
     # Load Coinbase data
     coinbase_data = pd.read_csv(file_path)
     # Set the 'Unix' column as the index for Coinbase data
-    coinbase_data.set_index('unix', inplace=True)
+    coinbase_data.set_index("unix", inplace=True)
 
     # Identify missing timestamps in the concatenated DataFrame
 
@@ -269,9 +280,6 @@ def fill_missing_rows_with_coinbase_data(concatenated_df, token1, root):
     filled_in_df.sort_index(inplace=True)
     filled_unix_values = missing_timestamps.tolist()
     # Drop duplicate indexes, the first are from the concatenated data, the second are from the Coinbase data
-    filled_in_df = filled_in_df[~filled_in_df.index.duplicated(keep='first')]
+    filled_in_df = filled_in_df[~filled_in_df.index.duplicated(keep="first")]
     filled_unix_values = filled_in_df.index.tolist()
     return filled_in_df, filled_unix_values
-
-
-
