@@ -396,22 +396,20 @@ def _jax_calc_cowamm_reserves_under_attack_with_fees_scan_function(
     # change in reserves[1] > 0
 
     # TODO: MW needs to check this over one more time
-    delta_reserves_0_case1 = (1.0 - weight) * prev_reserves[0] - weight * (
-        jnp.sqrt(prev_product / (gamma * scalar_price))
+    delta_reserves_0_case1 = weight * (
+        prev_reserves[0] - (jnp.sqrt(prev_product / (gamma * scalar_price)))
     )
-
-    delta_reserves_1_case1 = (1.0 - weight) * prev_reserves[1] / gamma - weight * (
-        jnp.sqrt(prev_product * scalar_price / (gamma))
+    delta_reserves_1_case1 = weight * (
+        prev_reserves[1] / gamma - (jnp.sqrt(prev_product * scalar_price / (gamma)))
     )
-
     case_1_trade = jnp.array([delta_reserves_0_case1, delta_reserves_1_case1])
-    delta_reserves_0_case2 = (1.0 - weight) * prev_reserves[0] / gamma - weight * (
-        jnp.sqrt(prev_product / (gamma * scalar_price))
-    )
-    delta_reserves_1_case2 = (1.0 - weight) * prev_reserves[1] - weight * (
-        jnp.sqrt(prev_product * scalar_price / (gamma))
-    )
 
+    delta_reserves_0_case2 = weight * (
+        prev_reserves[0] / gamma - (jnp.sqrt(prev_product / (gamma * scalar_price)))
+    )
+    delta_reserves_1_case2 = weight * (
+        prev_reserves[1] - (jnp.sqrt(prev_product * scalar_price / (gamma)))
+    )
     case_2_trade = jnp.array([delta_reserves_0_case2, delta_reserves_1_case2])
 
     overall_trades = jnp.array(

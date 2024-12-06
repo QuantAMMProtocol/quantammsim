@@ -70,7 +70,11 @@ class BaseDynamicFeeHook(ABC):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-
+        if not hasattr(self, 'calculate_reserves_with_dynamic_inputs'):
+            raise NotImplementedError(
+                "The method 'calculate_reserves_with_dynamic_inputs' must be implemented in the pool class."
+            )
+    
         # Calculate dynamic fees based on price/oracle input
         raw_dynamic_fees = self.calculate_dynamic_fees(
             params, run_fingerprint, prices, start_index, additional_oracle_input

@@ -133,14 +133,8 @@ def create_pool(rule):
         base_pool = MeanReversionChannelPool()
     elif base_rule == "hodl":
         base_pool = HODLPool()
-    elif base_rule == "cow_5050":
-        base_pool = CowPool()
-    elif base_rule == "cow_one_arb":
-        base_pool = CowPoolOneArb()
-    elif base_rule == "cow_weights":
+    elif base_rule == "cow":
         base_pool = CowPoolWeights()
-    elif base_rule == "cow_8020":
-        base_pool = CowPool8020()
     else:
         raise NotImplementedError(f"Unknown base pool type: {base_rule}")
 

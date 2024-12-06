@@ -639,6 +639,8 @@ def do_run_on_historic_data(
         "startDateString": run_fingerprint["startDateString"],
         "endDateString": run_fingerprint["endDateString"],
         "endTestDateString": run_fingerprint["endTestDateString"],
+        "do_arb": run_fingerprint["do_arb"],
+        "arb_quality": run_fingerprint["arb_quality"],
     }
 
     # Create static dictionaries for training and testing

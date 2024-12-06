@@ -67,7 +67,7 @@ class CowPoolWeights(AbstractPool):
             reserves_with_perfect_arbs = _jax_calc_cowamm_reserves_with_weights_with_fees(
                 initial_reserves,
                 arb_acted_upon_local_prices,
-                weights[0],
+                weights,
                 fees=run_fingerprint["fees"],
                 arb_thresh=run_fingerprint["gas_cost"],
                 arb_fees=run_fingerprint["arb_fees"],
@@ -120,7 +120,7 @@ class CowPoolWeights(AbstractPool):
 
         if run_fingerprint["do_arb"]:
             reserves_with_perfect_arbs = (
-                jax_calc_cowamm_reserves_with_weights_with_fees(
+                _jax_calc_cowamm_reserves_with_weights_with_fees(
                     initial_reserves,
                     arb_acted_upon_local_prices,
                     weights,
@@ -132,7 +132,7 @@ class CowPoolWeights(AbstractPool):
             reserves_with_one_arb = _jax_calc_cowamm_reserves_under_attack_zero_fees(
                 initial_reserves,
                 arb_acted_upon_local_prices,
-                weights=weights[0],
+                weight=weights[0],
                 arb_thresh=run_fingerprint["gas_cost"],
                 arb_fees=run_fingerprint["arb_fees"],
             )
