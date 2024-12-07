@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import glob
+import os
 
 def concat_csv_files(root, save_root, token1, token2, prefix, postfix, years_array_str):
     print("concatenating files")
@@ -11,6 +12,9 @@ def concat_csv_files(root, save_root, token1, token2, prefix, postfix, years_arr
 
     for filename in filenames:
         file_path = filename
+        if not os.path.isfile(file_path):
+            print(f"File {file_path} does not exist. Skipping.")
+            continue
 
         # Read the first line to check if it contains the unwanted string
         with open(file_path, 'r') as file:
@@ -93,6 +97,29 @@ def concat_csv_files(root, save_root, token1, token2, prefix, postfix, years_arr
                     f"Volume {token1}",
                     f"Volume {token2}",
                     "tradecount",
+                ],
+                "rename_cols": {
+                    "Unix": "unix",
+                    "Date": "date",
+                    "Symbol": "symbol",
+                    "Open": "open",
+                    "High": "high",
+                    "Low": "low",
+                    "Close": "close",
+                    f"Volume {token2}": "Volume USD",
+                },
+            },
+            {
+                "base_cols": [
+                    "unix",
+                    "date",
+                    "symbol",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    f"Volume {token1}",
+                    f"Volume {token2}",
                 ],
                 "rename_cols": {
                     "Unix": "unix",

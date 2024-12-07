@@ -248,7 +248,6 @@ def _cleaned_up_coinbase_data(
     return cleaned_prices
 
 import os
-
 def fill_missing_rows_with_coinbase_data(concatenated_df, token1, root):
 
     file_path = root + 'coinbase_data/' + token1 + '_cb_sorted_.csv'

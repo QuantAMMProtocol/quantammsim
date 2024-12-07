@@ -37,7 +37,7 @@ tokens = [
     #"XLM",
     #"XMR",
     #"XRP",
-    "DAI",
+    "USDC",
 ]
 
 

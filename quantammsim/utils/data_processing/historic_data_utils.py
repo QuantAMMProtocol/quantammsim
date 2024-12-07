@@ -80,6 +80,20 @@ def start_and_end_calcs(
         remainder_idx,
     )
 
+def fill_in_missing_rows_with_exchange_data(concatenated_df, token1, root, raw_data_folder, prefix):
+    years_array_str = ["2018", "2019", "2020", "2021", "2022", "2023"]
+    concated_df = concat_csv_files(
+        root=root + raw_data_folder,
+        save_root=root + "concat_" + raw_data_folder,
+        token1=token1,
+        token2="USD",
+        prefix=prefix,
+        postfix="_minute",
+        years_array_str=years_array_str,
+    )
+
+    filled_unix_values = concated_df[~concated_df.index.isin(concatenated_df.index)].index.tolist()
+    return concatenated_df.combine_first(concated_df).reset_index(), filled_unix_values
 
 def update_historic_data(token, root):
     outputPath = root + "combined_data/"
@@ -119,7 +133,11 @@ def update_historic_data(token, root):
             )
     else:
         concated_df = pd.read_csv(root + "concat_binance_data/" + token + "_USD.csv")
-    out = fill_missing_rows_with_coinbase_data(concated_df, token)
+
+    concated_df, filled_gemini__unix_values = fill_in_missing_rows_with_exchange_data(concated_df, token, root, 'raw_gemini_data/', 'Gemini_')
+
+    concated_df, filled_bitstamp_unix_values = fill_in_missing_rows_with_exchange_data(concated_df, token, root, 'raw_bitstamp_data/', 'Bitstamp_')
+
     #if max(np.diff(np.array(out.index))) > 60000:
     #    raise Exception
     concated_df.to_csv(root + "concat_binance_data/" + token + "_USD.csv")
@@ -145,14 +163,9 @@ def update_historic_data(token, root):
             columns=["tradecount"]
         )  # TODO do we need to drop or just not read?
 
-    print("sorting")
-    csvData = csvData.sort_values(by="unix", ascending=True)
-    print("sorted")
-    prevRow = csvData.iloc[0]
-    notFirstRow = False
     totalMissingUnixPoints = list()
     totalMissingClosePoints = list()
-
+    
     # Print rows with an index or unix value of 1606716420000
     # Reindex on minute unix
     concat_csv.set_index('unix', inplace=True)
@@ -187,7 +200,24 @@ def update_historic_data(token, root):
     # Retrieve the unix values where the date column is null
     missing_date_unix_values = csvData[csvData['date'].isnull()].index
     totalMissingClosePoints = csvData[csvData.index.isin(totalMissingUnixPoints)]["close"].tolist()
+    # Identify continuous gaps and print the first unix value of the gap and the length
+    gap_start = None
+    gap_length = 0
+    for i in range(1, len(totalMissingUnixPoints)):
+        if totalMissingUnixPoints[i] - totalMissingUnixPoints[i - 1] == 60000:
+            if gap_start is None:
+                gap_start = totalMissingUnixPoints[i - 1]
+            gap_length += 1
+        else:
+            if gap_start is not None:
+                print(f"Gap starts at unix: {gap_start}, Length: {gap_length + 1} minutes")
+                gap_start = None
+                gap_length = 0
 
+    # Print the last gap if it ends at the end of the list
+    if gap_start is not None:
+        print(f"Gap starts at unix: {gap_start}, Length: {gap_length + 1} minutes")
+    
     # Generate dates in the new dataframe given the unix values
     missing_dates_df = pd.DataFrame({
         'unix': missing_date_unix_values,
@@ -211,11 +241,25 @@ def update_historic_data(token, root):
         plt.plot(pd.to_datetime(coinbase_filled_data['unix'], unit='ms'), 
                  coinbase_filled_data['close'], 
                  label='Coinbase Minute Data', linestyle='None', marker='o', markersize=0.5)
-
+        
+    # Gemini filled data
+    if filled_gemini__unix_values:
+        gemini_filled_data = csvData[csvData['unix'].isin(filled_gemini__unix_values)]
+        plt.plot(pd.to_datetime(gemini_filled_data['unix'], unit='ms'),
+                 gemini_filled_data['close'], 
+                 label='Gemini Minute Data', linestyle='None', marker='o', markersize=0.5)
+        
+    # Bitstamp filled data
+    if filled_bitstamp_unix_values:
+        bitstamp_filled_data = csvData[csvData['unix'].isin(filled_bitstamp_unix_values)]
+        plt.plot(pd.to_datetime(bitstamp_filled_data['unix'], unit='ms'),
+                 bitstamp_filled_data['close'], 
+                 label='Bitstamp Minute Data', linestyle='None', marker='o', markersize=0.5)
+        
     # Total missing unix points data
     if len(totalMissingUnixPoints) > 0:
-        plt.plot(pd.to_datetime(totalMissingUnixPoints, unit='ms'), 
-                 totalMissingClosePoints, 
+        plt.plot(pd.to_datetime(totalMissingUnixPoints, unit='ms'),
+                 totalMissingClosePoints,
                  label='Forward Filled Data', linestyle='None', marker='o', markersize=0.5)
 
     plt.xlabel('Date (YY-MM-DD)')
@@ -315,9 +359,24 @@ def update_historic_data(token, root):
     plt.savefig(price_pct_plot_filename)
 
     plt.close()
+<<<<<<< Updated upstream
     csvData[csvData["date"].str.contains("05:00:00")].to_csv(
         dailyPath, mode="w", index=False
     )
+=======
+    
+    # Aggregate volume data for daily rows
+    daily_data = csvData[csvData['date'].str.contains(":01:00:00")].copy()
+    daily_data.set_index('unix', inplace=True)
+    
+    ## Aggregate volume columns over the day
+    #volume_columns = [col for col in csvData.columns if col.startswith('Volume')]
+    #for col in volume_columns:
+    #    daily_data[col] = csvData.resample('D', on='unix')[col].sum().reindex(daily_data.index)
+
+    # Save the daily data to CSV
+    daily_data.to_csv(dailyPath, mode="w", index=False)
+>>>>>>> Stashed changes
 
 
 def createMissingDataFrameFromClosePrices(startUnix, closePrices, token):
