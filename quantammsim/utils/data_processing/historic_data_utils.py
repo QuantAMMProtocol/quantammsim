@@ -137,7 +137,8 @@ def update_historic_data(token, root):
     concated_df, filled_gemini__unix_values = fill_in_missing_rows_with_exchange_data(concated_df, token, root, 'raw_gemini_data/', 'Gemini_')
 
     concated_df, filled_bitstamp_unix_values = fill_in_missing_rows_with_exchange_data(concated_df, token, root, 'raw_bitstamp_data/', 'Bitstamp_')
-
+    
+    print(concated_df)
     #if max(np.diff(np.array(out.index))) > 60000:
     #    raise Exception
     concated_df.to_csv(root + "concat_binance_data/" + token + "_USD.csv")
@@ -359,11 +360,6 @@ def update_historic_data(token, root):
     plt.savefig(price_pct_plot_filename)
 
     plt.close()
-<<<<<<< Updated upstream
-    csvData[csvData["date"].str.contains("05:00:00")].to_csv(
-        dailyPath, mode="w", index=False
-    )
-=======
     
     # Aggregate volume data for daily rows
     daily_data = csvData[csvData['date'].str.contains(":01:00:00")].copy()
@@ -376,7 +372,6 @@ def update_historic_data(token, root):
 
     # Save the daily data to CSV
     daily_data.to_csv(dailyPath, mode="w", index=False)
->>>>>>> Stashed changes
 
 
 def createMissingDataFrameFromClosePrices(startUnix, closePrices, token):
