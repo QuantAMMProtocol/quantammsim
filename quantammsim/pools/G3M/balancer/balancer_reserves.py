@@ -237,15 +237,9 @@ def _jax_calc_balancer_reserves_with_fees_using_precalcs(
     jnp.ndarray
         The reserves array, indicating the changes in reserves over time.
     """
-    # initial_weights = coarse_weights[0]
-    # initial_i = 0
     n_assets = weights.shape[0]
 
-    # We do this like a block, so first there is the new
-    # weight value and THEN we get new prices by the end of
-    # the block.
-
-    # So, for first weight, we have initial reserves, weights and
+    # or first weight, we have initial reserves, weights and
     # prices, so the change is 1
 
     n = prices.shape[0]
@@ -498,11 +492,7 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
     """
     n_assets = weights.shape[0]
 
-    # We do this like a block, so first there is the new
-    # weight value and THEN we get new prices by the end of
-    # the block.
-
-    # So, for first weight, we have initial reserves, weights and
+    # or first weight, we have initial reserves, weights and
     # prices, so the change is 1
 
     n = prices.shape[0]
