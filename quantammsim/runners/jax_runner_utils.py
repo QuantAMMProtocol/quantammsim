@@ -372,7 +372,6 @@ def get_trades_and_fees(
             run_fingerprint["startDateString"],
             run_fingerprint["endDateString"],
             names=["fees"],
-            names=["fees"],
             fill_method="ffill",
         )
         if fees_df is not None
@@ -421,7 +420,6 @@ def get_trades_and_fees(
             run_fingerprint["startDateString"],
             run_fingerprint["endDateString"],
             names=["arb_fees"],
-            names=["arb_fees"],
             fill_method="ffill",
         )
         if arb_fees_df is not None
@@ -433,7 +431,6 @@ def get_trades_and_fees(
                 arb_fees_df,
                 run_fingerprint["endDateString"],
                 run_fingerprint["endTestDateString"],
-                names=["arb_fees"],
                 names=["arb_fees"],
                 fill_method="ffill",
             )
