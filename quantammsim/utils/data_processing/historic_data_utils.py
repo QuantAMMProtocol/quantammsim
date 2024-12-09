@@ -17,6 +17,7 @@ from bidask import edge
 from quantammsim.utils.data_processing.binance_data_utils import concat_csv_files
 from quantammsim.utils.data_processing.coinbase_data_utils import _cleaned_up_coinbase_data, fill_missing_rows_with_coinbase_data
 from quantammsim.utils.data_processing.minute_daily_conversion_utils import calculate_annualised_daily_volatility_from_minute_data, expand_daily_to_minute_data, resample_minute_level_OHLC_data_to_daily
+import gc
 from quantammsim.utils.data_processing.datetime_utils import (
     datetime_to_unixtimestamp,
     unixtimestamp_to_datetime,
@@ -93,7 +94,8 @@ def fill_in_missing_rows_with_exchange_data(concatenated_df, token1, root, raw_d
     )
 
     filled_unix_values = concated_df[~concated_df.index.isin(concatenated_df.index)].index.tolist()
-    return concatenated_df.combine_first(concated_df).reset_index(), filled_unix_values
+    combined = concatenated_df.combine_first(concated_df)
+    return combined, filled_unix_values
 
 def update_historic_data(token, root):
     outputPath = root + "combined_data/"
@@ -138,7 +140,6 @@ def update_historic_data(token, root):
 
     concated_df, filled_bitstamp_unix_values = fill_in_missing_rows_with_exchange_data(concated_df, token, root, 'raw_bitstamp_data/', 'Bitstamp_')
     
-    print(concated_df)
     #if max(np.diff(np.array(out.index))) > 60000:
     #    raise Exception
     concated_df.to_csv(root + "concat_binance_data/" + token + "_USD.csv")
@@ -170,6 +171,7 @@ def update_historic_data(token, root):
     # Print rows with an index or unix value of 1606716420000
     # Reindex on minute unix
     concat_csv.set_index('unix', inplace=True)
+
     print("fill with coinbase")
     if os.path.exists(root + 'coinbase_data/' + token + '_cb_sorted_.csv'):        
         csvData, coinbaseFilledUnixVals = fill_missing_rows_with_coinbase_data(concat_csv, token, root)
@@ -177,7 +179,6 @@ def update_historic_data(token, root):
         csvData = concat_csv
         csvData["unix"] = concat_csv.index
         coinbaseFilledUnixVals = []
-
     concat_csv["unix"] = concat_csv.index
     # Reindex on minute unix
     # Create a new DataFrame with unix index and minute rows between csvData min and max
@@ -188,47 +189,33 @@ def update_historic_data(token, root):
     new_csvData = pd.DataFrame(index=new_index)
     new_csvData.index.name = 'unix'
     new_csvData['unix'] = new_csvData.index
-
+    print("joining")
     # Populate the new DataFrame with the data from the original csvData
     csvData = new_csvData.join(csvData, how='left', lsuffix='_left', rsuffix='_right')
+    del new_csvData
+    gc.collect()
     # Save the total unix with empty rows
     totalMissingUnixPoints = csvData[csvData.isnull().any(axis=1)].index.tolist()
-
+    print("forward filling")
     # Forward fill the empty rows
     # Forward fill all rows apart from columns 'date' and 'unix'
     columns_to_ffill = csvData.columns.difference(['date', 'unix'])
-    csvData[columns_to_ffill] = csvData[columns_to_ffill].ffill()
+    csvData[columns_to_ffill].ffill(inplace=True)
     # Retrieve the unix values where the date column is null
     missing_date_unix_values = csvData[csvData['date'].isnull()].index
     totalMissingClosePoints = csvData[csvData.index.isin(totalMissingUnixPoints)]["close"].tolist()
-    # Identify continuous gaps and print the first unix value of the gap and the length
-    gap_start = None
-    gap_length = 0
-    for i in range(1, len(totalMissingUnixPoints)):
-        if totalMissingUnixPoints[i] - totalMissingUnixPoints[i - 1] == 60000:
-            if gap_start is None:
-                gap_start = totalMissingUnixPoints[i - 1]
-            gap_length += 1
-        else:
-            if gap_start is not None:
-                print(f"Gap starts at unix: {gap_start}, Length: {gap_length + 1} minutes")
-                gap_start = None
-                gap_length = 0
 
-    # Print the last gap if it ends at the end of the list
-    if gap_start is not None:
-        print(f"Gap starts at unix: {gap_start}, Length: {gap_length + 1} minutes")
-    
     # Generate dates in the new dataframe given the unix values
     missing_dates_df = pd.DataFrame({
         'unix': missing_date_unix_values,
         'date': pd.to_datetime(missing_date_unix_values, unit='ms').strftime('%Y-%m-%d %H:%M:%S')
     })
-
+    print("update")
     # Merge the date column from the new dataframe into csvData
     csvData.update(missing_dates_df.set_index('unix'))
 
     csvData["unix"] = csvData.index
+    print("plotting")
     # Plotting the data
     plt.figure(figsize=(14, 7))
     # Original csvData

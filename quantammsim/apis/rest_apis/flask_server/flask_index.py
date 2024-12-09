@@ -251,7 +251,6 @@ def loadHistoricDailyPrices():
     dto = LoadPriceHistoryRequestDto(request_data)
     root = "../../../../quantammsim/data/"
     historic = get_historic_daily_csv_data([dto.coinCode], root)
-    result = historic.to_json(orient="records")
     parsed = json.loads(result)
     jsonString = json.dumps(parsed)
     return jsonString
