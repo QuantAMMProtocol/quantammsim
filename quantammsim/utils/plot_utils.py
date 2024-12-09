@@ -87,7 +87,9 @@ def calc_pool_returns(
 
     # profit from arb trade is sum of profits from weight changes and price changes
     if results_dict.get("profit_weights") is not None:
-        arb_profit = np.sum(results_dict["profit_weights"] + results_dict["profit_prices"])
+        arb_profit = np.sum(
+            results_dict["profit_weights"] + results_dict["profit_prices"]
+        )
     else:
         arb_profit = 0
     pool_profit_from_arb_swaps = arb_profit * swap_fee
@@ -189,18 +191,17 @@ def plot_pool_returns_trad(
     new_colors_order = sns.color_palette()
     new_colors_order[0], new_colors_order[1] = new_colors_order[1], new_colors_order[0]
 
-
     plot_data = np.array(plot_data).T
     plot_data = plot_data
     df = pd.DataFrame(
-        100.0*(plot_data / plot_data[0] - 1.0),
+        100.0 * (plot_data / plot_data[0] - 1.0),
         columns=["$$\mathrm{" + name + "}$$" for name in names],
     )
-    df = df.set_index([pd.Index(np.arange(len(df))*7 / (30))])
+    df = df.set_index([pd.Index(np.arange(len(df)) * 7 / (30))])
     fig, ax = plt.subplots()
     sns.lineplot(data=df, ax=ax, palette=new_colors_order)
     # .set_title(
-        # "$$\mathrm{QuantAMM} \,|\, \mathrm{CEX}  \,\mathrm{value} \,\,\mathrm{over}\,\, \mathrm{Market}\,\,\mathrm{Supercycle}$$"
+    # "$$\mathrm{QuantAMM} \,|\, \mathrm{CEX}  \,\mathrm{value} \,\,\mathrm{over}\,\, \mathrm{Market}\,\,\mathrm{Supercycle}$$"
     # )
     plt.legend(prop={"size": 10})
     plt.xlabel("$$\mathrm{Time}\,\mathrm{(/months)}$$")
@@ -219,11 +220,11 @@ def plot_pool_returns_trad(
     raw_ticks[1].set_text(start_date_latex)
     raw_ticks[-2].set_text(end_date_latex)
     plt.xticks(
-        [raw_ticks[1].get_position()[0], 12.0, 7*len(df) / (30)],
+        [raw_ticks[1].get_position()[0], 12.0, 7 * len(df) / (30)],
         [start_date_latex, "$$12$$", end_date_latex],
     )
-    y_value=['$$+'+'{:,.1f}'.format(x) + '\%$$' for x in ax.get_yticks()]
-    y_value[1]='$$0\\%$$'
+    y_value = ["$$+" + "{:,.1f}".format(x) + "\%$$" for x in ax.get_yticks()]
+    y_value[1] = "$$0\\%$$"
     ax.set_yticklabels(y_value)
     plt.savefig(
         "./plots/" + run_string + "_returns.png",
@@ -278,7 +279,7 @@ def plot_vals(
     exp_xaxis=False,
     bandw=False,
     plot_type="alpha",
-    litepaper_plot=False
+    litepaper_plot=False,
 ):
     if plot_type == "alpha":
         title_prefix = "$\\alpha"
@@ -322,7 +323,7 @@ def plot_vals(
                 ["$" + str(item) + "$" for item in df_wide.index],
                 name=df_wide.index.name,
             )
-        rounding_axes_fn = lambda x: int(x) if x%1==0 else x
+        rounding_axes_fn = lambda x: int(x) if x % 1 == 0 else x
         if window_size_estimate_xaxis:
             # cut last column of datafram
             if crop_heatmap:
@@ -354,12 +355,16 @@ def plot_vals(
             )
         elif log_xaxis == False and window_size_estimate_xaxis == False:
             x_axis_labels = [item for item in df_wide.columns]
-            rounding_degree = int(np.ceil(-np.log10(x_axis_labels[1]-x_axis_labels[0])))+1
+            rounding_degree = (
+                int(np.ceil(-np.log10(x_axis_labels[1] - x_axis_labels[0]))) + 1
+            )
             # if window_size_estimate > 2.7:
             #     window_size_estimate = np.around(window_size_estimate, 1)
             # if window_size_estimate > 10:
             #     window_size_estimate = np.around(window_size_estimate, 0)
-            rounded_axis_cols = [np.round(float(item), rounding_degree) for item in df_wide.columns]
+            rounded_axis_cols = [
+                np.round(float(item), rounding_degree) for item in df_wide.columns
+            ]
             rounded_axis_cols = np.array(rounded_axis_cols)
             x_axis_labels = np.array(x_axis_labels)
             rounded_axis_cols[x_axis_labels < 1] = x_axis_labels[x_axis_labels < 1]
@@ -378,12 +383,16 @@ def plot_vals(
             )
         elif log_yaxis == False and window_size_estimate_yaxis == False:
             y_axis_labels = [item for item in df_wide.index]
-            rounding_degree = int(np.ceil(-np.log10(y_axis_labels[1]-y_axis_labels[0])))
+            rounding_degree = int(
+                np.ceil(-np.log10(y_axis_labels[1] - y_axis_labels[0]))
+            )
             # if window_size_estimate > 2.7:
             #     window_size_estimate = np.around(window_size_estimate, 1)
             # if window_size_estimate > 10:
             #     window_size_estimate = np.around(window_size_estimate, 0)
-            rounded_axis_rows = [np.round(float(item), rounding_degree) for item in df_wide.index]
+            rounded_axis_rows = [
+                np.round(float(item), rounding_degree) for item in df_wide.index
+            ]
             rounded_axis_rows = np.array(rounded_axis_rows)
             y_axis_labels = np.array(y_axis_labels)
             rounded_axis_rows[y_axis_labels < 1] = y_axis_labels[y_axis_labels < 1]
@@ -402,6 +411,7 @@ def plot_vals(
             # cut first row of datafram
             df_wide = df_wide.iloc[1:, :]
         return df_wide
+
     df_wide = get_dfwise(df)
 
     plt.style.use("default")
@@ -440,10 +450,13 @@ def plot_vals(
                 item.set_rotation(0)
         for item in ax.get_yticklabels():
             item.set_rotation(0)
-        if litepaper_plot==True:
+        if litepaper_plot == True:
             ax.set(yticklabels=[])
             ax.set(xticklabels=[])
-            ax.set(xlabel="$\\mathrm{Aggressiveness}\\,\\,\\mathrm{parameter}$", ylabel="$\\mathrm{Time}\\,\\,\\mathrm{parameter}$")
+            ax.set(
+                xlabel="$\\mathrm{Aggressiveness}\\,\\,\\mathrm{parameter}$",
+                ylabel="$\\mathrm{Time}\\,\\,\\mathrm{parameter}$",
+            )
         plt.savefig(
             "./plots/" + plot_type + "_" + run_string + "_light_rg.png",
             dpi=700,
@@ -479,10 +492,13 @@ def plot_vals(
                 item.set_rotation(0)
         for item in ax.get_yticklabels():
             item.set_rotation(0)
-        if litepaper_plot==True:
+        if litepaper_plot == True:
             ax.set(yticklabels=[])
             ax.set(xticklabels=[])
-            ax.set(xlabel="$\\mathrm{Aggressiveness}\\,\\,\\mathrm{parameter}$", ylabel="$\\mathrm{Time}\\,\\,\\mathrm{parameter}$")
+            ax.set(
+                xlabel="$\\mathrm{Aggressiveness}\\,\\,\\mathrm{parameter}$",
+                ylabel="$\\mathrm{Time}\\,\\,\\mathrm{parameter}$",
+            )
         plt.savefig(
             "./plots/" + plot_type + "_" + run_string + "_light_rg.png",
             dpi=700,
@@ -517,10 +533,13 @@ def plot_vals(
             item.set_rotation(0)
     for item in ax.get_yticklabels():
         item.set_rotation(0)
-    if litepaper_plot==True:
+    if litepaper_plot == True:
         ax.set(yticklabels=[])
         ax.set(xticklabels=[])
-        ax.set(xlabel="$\\mathrm{Aggressiveness}\\,\\,\\mathrm{parameter}$", ylabel="$\\mathrm{Time}\\,\\,\\mathrm{parameter}$")
+        ax.set(
+            xlabel="$\\mathrm{Aggressiveness}\\,\\,\\mathrm{parameter}$",
+            ylabel="$\\mathrm{Time}\\,\\,\\mathrm{parameter}$",
+        )
     plt.savefig(
         "./plots/" + plot_type + "_" + run_string + "_dark_rg.png",
         dpi=700,
@@ -618,7 +637,9 @@ def plot_hist_of_returns(
     plt.close()
 
 
-def calc_jensens_alpha(pool_values, balancer_values, hodl_values, pre_agg=False, annual_risk_free_rate=0.0):
+def calc_jensens_alpha(
+    pool_values, balancer_values, hodl_values, pre_agg=False, annual_risk_free_rate=0.0
+):
     ## calculates Jensen's alpha of pool returns
     # given hour-level values as input
     # relative to Balancer and HODL with a 0 risk free rate.
@@ -643,10 +664,14 @@ def calc_jensens_alpha(pool_values, balancer_values, hodl_values, pre_agg=False,
     hodl_overall_returns = calc_overall_returns_from_values(hodl_values.sum(-1)) * 100
     if pre_agg:
         # pre_agg being True means Monthly data
-        overall_risk_free_return = (((annual_risk_free_rate + 1.0) ** (len(pool_values)/12.0)) - 1.0) * 100
+        overall_risk_free_return = (
+            ((annual_risk_free_rate + 1.0) ** (len(pool_values) / 12.0)) - 1.0
+        ) * 100
     else:
         # pre_agg being False means Daily data
-        overall_risk_free_return = (((annual_risk_free_rate + 1.0) ** (len(pool_values)/365.25)) - 1.0) * 100
+        overall_risk_free_return = (
+            ((annual_risk_free_rate + 1.0) ** (len(pool_values) / 365.25)) - 1.0
+        ) * 100
 
     # now calculate beta, covariance between pool and reference market values
     # divided by reference market variance
@@ -660,8 +685,16 @@ def calc_jensens_alpha(pool_values, balancer_values, hodl_values, pre_agg=False,
     pool_hodl_beta = pool_to_hodl_cov / hold_var
 
     # now can calc Jensen's alpha
-    pool_bal_alpha = pool_overall_returns - overall_risk_free_return - pool_bal_beta * (balancer_overall_returns - overall_risk_free_return)
-    pool_hodl_alpha = pool_overall_returns - overall_risk_free_return - pool_hodl_beta * (hodl_overall_returns - overall_risk_free_return)
+    pool_bal_alpha = (
+        pool_overall_returns
+        - overall_risk_free_return
+        - pool_bal_beta * (balancer_overall_returns - overall_risk_free_return)
+    )
+    pool_hodl_alpha = (
+        pool_overall_returns
+        - overall_risk_free_return
+        - pool_hodl_beta * (hodl_overall_returns - overall_risk_free_return)
+    )
     excess_return = pool_overall_returns - hodl_overall_returns
 
     return pool_bal_alpha, pool_hodl_alpha, excess_return
@@ -676,7 +709,7 @@ def calc_values_from_results(
     pre_agg=False,
     round_window=True,
     value="alpha",
-    annual_risk_free_rate=0.0
+    annual_risk_free_rate=0.0,
 ):
     results_to_return = list()
     for i in range(len(list_of_results)):
@@ -694,7 +727,13 @@ def calc_values_from_results(
                 pool_bal_alpha,
                 pool_hodl_alpha,
                 excess_returns_over_hodl,
-            ) = calc_jensens_alpha(pool_values, balancer_values, hodl_values, pre_agg, annual_risk_free_rate)
+            ) = calc_jensens_alpha(
+                pool_values,
+                balancer_values,
+                hodl_values,
+                pre_agg,
+                annual_risk_free_rate,
+            )
             results_to_return[-1].append(pool_bal_alpha)
             results_to_return[-1].append(pool_hodl_alpha)
         elif value == "returns":
@@ -753,7 +792,19 @@ def calc_values_from_results(
             results_to_return[-1].append(window_size_estimate)
     return np.array(results_to_return)
 
-def plot_lineplot(x, y, x_name, y_name, title, save_location, label=None, y_percentage=True, y_marks=None, symlog=False):
+
+def plot_lineplot(
+    x,
+    y,
+    x_name,
+    y_name,
+    title,
+    save_location,
+    label=None,
+    y_percentage=True,
+    y_marks=None,
+    symlog=False,
+):
     fig, ax = plt.subplots()
     if label is not None:
         sns.lineplot(x=x, y=y, ax=ax, label=label).set_title(title)
@@ -773,13 +824,10 @@ def plot_lineplot(x, y, x_name, y_name, title, save_location, label=None, y_perc
     else:
         plt.legend([], [], frameon=False)
     if symlog:
-        plt.xscale('symlog')
+        plt.xscale("symlog")
     if y_percentage:
         y_value = ["$$+" + "{:,.1f}".format(x) + "\%$$" for x in ax.get_yticks()]
         y_value = [yv.replace("$$+0\\%$$", "$$0\\%$$") for yv in y_value]
         ax.set_yticklabels(y_value)
-    plt.savefig(
-        save_location,
-        dpi=700,
-        bbox_inches="tight")
+    plt.savefig(save_location, dpi=700, bbox_inches="tight")
     plt.close()

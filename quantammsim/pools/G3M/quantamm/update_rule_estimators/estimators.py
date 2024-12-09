@@ -91,7 +91,9 @@ def calc_gradients(
     ## which means we have to re-jit every step, which we probably dont want to do!
 
     if DEFAULT_BACKEND != "cpu":
-        ewma_kernel = make_ewma_kernel(lamb, safety_margin_max_memory_days, chunk_period)
+        ewma_kernel = make_ewma_kernel(
+            lamb, safety_margin_max_memory_days, chunk_period
+        )
         a_kernel = make_a_kernel(lamb, safety_margin_max_memory_days, chunk_period)
         padded_chunkwise_price_values = jnp.vstack(
             [
@@ -212,8 +214,8 @@ def calc_alt_ewma_padded(
     alt_memory_days = jnp.clip(alt_memory_days, a_min=0.0, a_max=max_memory_days)
 
     alt_ewma_kernel = make_ewma_kernel(
-            alt_lamb, safety_margin_max_memory_days, chunk_period
-        )
+        alt_lamb, safety_margin_max_memory_days, chunk_period
+    )
     padded_chunkwise_price_values = jnp.vstack(
         [
             jnp.ones(
@@ -233,7 +235,13 @@ def calc_alt_ewma_padded(
     return alt_ewma_padded
 
 
-def calc_return_variances(update_rule_parameter_dict, chunkwise_price_values, chunk_period, max_memory_days, cap_lamb):
+def calc_return_variances(
+    update_rule_parameter_dict,
+    chunkwise_price_values,
+    chunk_period,
+    max_memory_days,
+    cap_lamb,
+):
     lamb = calc_lamb(update_rule_parameter_dict)
     if cap_lamb:
         max_lamb = memory_days_to_lamb(max_memory_days, chunk_period)
@@ -270,13 +278,28 @@ def calc_return_variances(update_rule_parameter_dict, chunkwise_price_values, ch
 
     return variances
 
-def calc_return_precision_based_weights(update_rule_parameter_dict, chunkwise_price_values, chunk_period, max_memory_days, cap_lamb):
-    variances = calc_return_variances(update_rule_parameter_dict, chunkwise_price_values, chunk_period, max_memory_days, cap_lamb)
+
+def calc_return_precision_based_weights(
+    update_rule_parameter_dict,
+    chunkwise_price_values,
+    chunk_period,
+    max_memory_days,
+    cap_lamb,
+):
+    variances = calc_return_variances(
+        update_rule_parameter_dict,
+        chunkwise_price_values,
+        chunk_period,
+        max_memory_days,
+        cap_lamb,
+    )
     # ewma_padded = calc_ewma_padded(update_rule_parameter_dict, chunkwise_price_values, chunk_period, max_memory_days, cap_lamb)
     # ewma = ewma_padded[-(len(chunkwise_price_values) - 1):]
     # variances = _jax_variance_at_infinity_via_conv(chunkwise_price_values, ewma, cov_kernel, lamb)
     precision_based_weights = 1.0 / variances
-    precision_based_weights = precision_based_weights / precision_based_weights.sum(axis=-1, keepdims=True)
+    precision_based_weights = precision_based_weights / precision_based_weights.sum(
+        axis=-1, keepdims=True
+    )
     return precision_based_weights
 
     # cov_kernel = make_cov_kernel(lamb, safety_margin_max_memory_days, chunk_period)
@@ -290,6 +313,7 @@ def calc_return_precision_based_weights(update_rule_parameter_dict, chunkwise_pr
     # precision_based_weights = precision_based_weights / precision_based_weights.sum(
     #     axis=-1, keepdims=True
     # )
+
 
 def calc_k(update_rule_parameter_dict, memory_days):
     if update_rule_parameter_dict.get("log_k") is not None:

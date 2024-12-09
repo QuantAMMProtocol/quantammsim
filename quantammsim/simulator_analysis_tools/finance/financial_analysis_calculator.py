@@ -1,4 +1,5 @@
 from datetime import datetime
+
 # from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
 #     SimulationResultTimestepDto,
 #     SimulationResultTimeseries,
@@ -36,10 +37,10 @@ def convert_simulation_timeseries_to_run_metric(
 
     Notes
     -----
-    This function converts a timeseries array into a list of timestep DTOs with proper Unix 
+    This function converts a timeseries array into a list of timestep DTOs with proper Unix
     timestamps based on the timeSeriesName. It handles different time intervals:
     - Daily (86400 seconds)
-    - Weekly (604800 seconds) 
+    - Weekly (604800 seconds)
     - Monthly (2628000 seconds)
     - Yearly (31536000 seconds)
 
@@ -266,7 +267,7 @@ def perform_return_analysis(returns, dailyRfValues):
         dict: Dictionary containing various return metrics including:
             - Absolute Return (%)
             - Sharpe Ratio
-            - Annualized Sharpe Ratio 
+            - Annualized Sharpe Ratio
             - Annualized Sortino Ratio
             - Annualized Calmar Ratio
             - Annualized Omega Ratio

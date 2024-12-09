@@ -1,9 +1,23 @@
+from typing import Dict, Any, Optional
+
 # again, this only works on startup!
 from jax import config
 
-config.update("jax_enable_x64", True)
 from jax.lib.xla_bridge import default_backend
-from jax import local_device_count, devices
+from jax import devices
+
+import jax.numpy as jnp
+from jax import tree_util
+from jax.lax import dynamic_slice
+
+from quantammsim.pools.FM_AMM.cow_pool import CowPool
+from quantammsim.pools.FM_AMM.cow_reserves import (
+    _jax_calc_cowamm_reserves_under_attack_zero_fees,
+    _jax_calc_cowamm_reserves_under_attack_with_fees,
+)
+from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
+
+config.update("jax_enable_x64", True)
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -14,25 +28,78 @@ else:
     GPU_DEVICE = devices("cpu")[0]
     config.update("jax_platform_name", "cpu")
 
-import jax.numpy as jnp
-from jax import jit, vmap
-from jax import device_put
-from jax import tree_util
-from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
-
-from typing import Dict, Any, Optional, Callable
-import numpy as np
-
-from quantammsim.pools.FM_AMM.cow_pool import CowPool
-from quantammsim.pools.FM_AMM.cow_reserves import (
-    _jax_calc_cowamm_reserves_under_attack_zero_fees,
-    _jax_calc_cowamm_reserves_under_attack_with_fees,
-)
-from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
-
-
 class CowPoolOneArb(CowPool):
+    """
+    CowPoolOneArb is a subclass of CowPool that represents a pool with a single arbitrageur.
+    
+    Methods
+    -------
+    __init__():
+        Initializes the CowPoolOneArb instance.
+    
+    calculate_reserves_with_fees(params, run_fingerprint, prices, start_index, 
+    additional_oracle_input=None):
+        Calculates the reserves of the pool considering fees.
+        
+        Parameters:
+        - params (Dict[str, Any]): Parameters for the pool.
+        - run_fingerprint (Dict[str, Any]): Run-specific parameters.
+        - prices (jnp.ndarray): Array of prices.
+        - start_index (jnp.ndarray): Starting index for slicing prices.
+        - additional_oracle_input (Optional[jnp.ndarray]): Additional input for the oracle.
+        
+        Returns:
+        - jnp.ndarray: Calculated reserves.
+    
+    calculate_reserves_zero_fees(params, run_fingerprint, prices, start_index, 
+    additional_oracle_input=None):
+        Calculates the reserves of the pool without considering fees.
+        
+        Parameters:
+        - params (Dict[str, Any]): Parameters for the pool.
+        - run_fingerprint (Dict[str, Any]): Run-specific parameters.
+        - prices (jnp.ndarray): Array of prices.
+        - start_index (jnp.ndarray): Starting index for slicing prices.
+        - additional_oracle_input (Optional[jnp.ndarray]): Additional input for the oracle.
+        
+        Returns:
+        - jnp.ndarray: Calculated reserves.
+    
+    calculate_reserves_with_dynamic_inputs(params, run_fingerprint, prices, start_index, 
+    fees_array, arb_thresh_array, arb_fees_array, trade_array, additional_oracle_input=None):
+        Raises NotImplementedError as dynamic inputs are not implemented 
+        for COW pools with only a single arbitrageur.
+        
+        Parameters:
+        - params (Dict[str, Any]): Parameters for the pool.
+        - run_fingerprint (Dict[str, Any]): Run-specific parameters.
+        - prices (jnp.ndarray): Array of prices.
+        - start_index (jnp.ndarray): Starting index for slicing prices.
+        - fees_array (jnp.ndarray): Array of fees.
+        - arb_thresh_array (jnp.ndarray): Array of arbitrage thresholds.
+        - arb_fees_array (jnp.ndarray): Array of arbitrage fees.
+        - trade_array (jnp.ndarray): Array of trades.
+        - additional_oracle_input (Optional[jnp.ndarray]): Additional input for the oracle.
+        
+        Returns:
+        - jnp.ndarray: Calculated reserves.
+    
+    make_vmap_in_axes(params, n_repeats_of_recurred=0):
+        Creates a dictionary for vectorized mapping of input axes.
+        
+        Parameters:
+        - params (Dict[str, Any]): Parameters for the pool.
+        - n_repeats_of_recurred (int): Number of repeats of recurred.
+        
+        Returns:
+        - dict: Dictionary for vectorized mapping of input axes.
+    
+    is_trainable():
+        Indicates whether the pool is trainable.
+        
+        Returns:
+        - bool: False, as the pool is not trainable.
+    """
     def __init__(self):
         super().__init__()
 
@@ -122,13 +189,16 @@ class CowPoolOneArb(CowPool):
     ) -> jnp.ndarray:
         # Cow pools have no parameters and are only defined for 2 assets
         assert run_fingerprint["n_assets"] == 2
-        raise NotImplementedError("Dynamic inputs not implemented for COW pools with only a single arbitrageur.")
+        raise NotImplementedError(
+            "Dynamic inputs not implemented for COW pools with only a single arbitrageur."
+        )
 
     def make_vmap_in_axes(self, params: Dict[str, Any], n_repeats_of_recurred: int = 0):
         return make_vmap_in_axes_dict(params, 0, [], [], n_repeats_of_recurred)
 
     def is_trainable(self):
         return False
+
 
 tree_util.register_pytree_node(
     CowPoolOneArb,

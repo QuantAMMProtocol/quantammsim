@@ -15,8 +15,15 @@ from quantammsim import data
 from pathlib import Path
 from bidask import edge
 from quantammsim.utils.data_processing.binance_data_utils import concat_csv_files
-from quantammsim.utils.data_processing.coinbase_data_utils import _cleaned_up_coinbase_data, fill_missing_rows_with_coinbase_data
-from quantammsim.utils.data_processing.minute_daily_conversion_utils import calculate_annualised_daily_volatility_from_minute_data, expand_daily_to_minute_data, resample_minute_level_OHLC_data_to_daily
+from quantammsim.utils.data_processing.coinbase_data_utils import (
+    _cleaned_up_coinbase_data,
+    fill_missing_rows_with_coinbase_data,
+)
+from quantammsim.utils.data_processing.minute_daily_conversion_utils import (
+    calculate_annualised_daily_volatility_from_minute_data,
+    expand_daily_to_minute_data,
+    resample_minute_level_OHLC_data_to_daily,
+)
 from quantammsim.utils.data_processing.datetime_utils import (
     datetime_to_unixtimestamp,
     unixtimestamp_to_datetime,
@@ -27,6 +34,7 @@ from quantammsim.utils.data_processing.datetime_utils import (
 )
 
 mc_data_available_for = ["ETH", "BTC"]
+
 
 def default_set_or_get(dictionary, key, default, augment=True):
     value = dictionary.get(key)
@@ -57,7 +65,7 @@ def start_and_end_calcs(
         # prep prices/oracle_values/unix_values so that prices naturally get chunked into bit starting at midnight
         remainder_idx = start_idx % 1440
         unix_values = unix_values[remainder_idx:]
-    
+
         if prices is not None:
             prices = prices[remainder_idx:]
         if oracle_values is not None:
@@ -91,10 +99,7 @@ def update_historic_data(token, root):
 
     long_years_array_str = ["2020", "2021", "2022", "2023", "2024"]
     short_years_array_str = long_years_array_str[1:]
-    if (
-        os.path.isfile(root + "concat_binance_data/" + token + "_USD.csv")
-        is False
-    ):
+    if os.path.isfile(root + "concat_binance_data/" + token + "_USD.csv") is False:
         print(token)
         try:
             concated_df = concat_csv_files(
@@ -120,10 +125,10 @@ def update_historic_data(token, root):
     else:
         concated_df = pd.read_csv(root + "concat_binance_data/" + token + "_USD.csv")
     out = fill_missing_rows_with_coinbase_data(concated_df, token)
-    #if max(np.diff(np.array(out.index))) > 60000:
+    # if max(np.diff(np.array(out.index))) > 60000:
     #    raise Exception
     concated_df.to_csv(root + "concat_binance_data/" + token + "_USD.csv")
-        
+
     concat_csv = pd.read_csv(
         path,
         dtype={
@@ -155,10 +160,12 @@ def update_historic_data(token, root):
 
     # Print rows with an index or unix value of 1606716420000
     # Reindex on minute unix
-    concat_csv.set_index('unix', inplace=True)
+    concat_csv.set_index("unix", inplace=True)
     print("fill with coinbase")
-    if os.path.exists(root + 'coinbase_data/' + token + '_cb_sorted_.csv'):        
-        csvData, coinbaseFilledUnixVals = fill_missing_rows_with_coinbase_data(concat_csv, token, root)
+    if os.path.exists(root + "coinbase_data/" + token + "_cb_sorted_.csv"):
+        csvData, coinbaseFilledUnixVals = fill_missing_rows_with_coinbase_data(
+            concat_csv, token, root
+        )
     else:
         csvData = concat_csv
         csvData["unix"] = concat_csv.index
@@ -167,73 +174,110 @@ def update_historic_data(token, root):
     concat_csv["unix"] = concat_csv.index
     # Reindex on minute unix
     # Create a new DataFrame with unix index and minute rows between csvData min and max
-    new_index = pd.date_range(start=pd.to_datetime(csvData.index.min(), unit='ms'), 
-                              end=pd.to_datetime(csvData.index.max(), unit='ms'), 
-                              freq='T').astype(int) // 10**6
-    
+    new_index = (
+        pd.date_range(
+            start=pd.to_datetime(csvData.index.min(), unit="ms"),
+            end=pd.to_datetime(csvData.index.max(), unit="ms"),
+            freq="T",
+        ).astype(int)
+        // 10**6
+    )
+
     new_csvData = pd.DataFrame(index=new_index)
-    new_csvData.index.name = 'unix'
-    new_csvData['unix'] = new_csvData.index
+    new_csvData.index.name = "unix"
+    new_csvData["unix"] = new_csvData.index
 
     # Populate the new DataFrame with the data from the original csvData
-    csvData = new_csvData.join(csvData, how='left', lsuffix='_left', rsuffix='_right')
+    csvData = new_csvData.join(csvData, how="left", lsuffix="_left", rsuffix="_right")
     # Save the total unix with empty rows
     totalMissingUnixPoints = csvData[csvData.isnull().any(axis=1)].index.tolist()
 
     # Forward fill the empty rows
     # Forward fill all rows apart from columns 'date' and 'unix'
-    columns_to_ffill = csvData.columns.difference(['date', 'unix'])
+    columns_to_ffill = csvData.columns.difference(["date", "unix"])
     csvData[columns_to_ffill] = csvData[columns_to_ffill].ffill()
     # Retrieve the unix values where the date column is null
-    missing_date_unix_values = csvData[csvData['date'].isnull()].index
-    totalMissingClosePoints = csvData[csvData.index.isin(totalMissingUnixPoints)]["close"].tolist()
+    missing_date_unix_values = csvData[csvData["date"].isnull()].index
+    totalMissingClosePoints = csvData[csvData.index.isin(totalMissingUnixPoints)][
+        "close"
+    ].tolist()
 
     # Generate dates in the new dataframe given the unix values
-    missing_dates_df = pd.DataFrame({
-        'unix': missing_date_unix_values,
-        'date': pd.to_datetime(missing_date_unix_values, unit='ms').strftime('%Y-%m-%d %H:%M:%S')
-    })
+    missing_dates_df = pd.DataFrame(
+        {
+            "unix": missing_date_unix_values,
+            "date": pd.to_datetime(missing_date_unix_values, unit="ms").strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+        }
+    )
 
     # Merge the date column from the new dataframe into csvData
-    csvData.update(missing_dates_df.set_index('unix'))
+    csvData.update(missing_dates_df.set_index("unix"))
 
     csvData["unix"] = csvData.index
     # Plotting the data
     plt.figure(figsize=(14, 7))
     # Original csvData
-    plt.plot(pd.to_datetime(csvData[csvData['unix'].isin(original_unix_values)]['unix'], unit='ms'), 
-             csvData[csvData['unix'].isin(original_unix_values)]['close'], 
-             label='Binance Minute Data', linestyle='None', marker='o', markersize=0.5)
+    plt.plot(
+        pd.to_datetime(
+            csvData[csvData["unix"].isin(original_unix_values)]["unix"], unit="ms"
+        ),
+        csvData[csvData["unix"].isin(original_unix_values)]["close"],
+        label="Binance Minute Data",
+        linestyle="None",
+        marker="o",
+        markersize=0.5,
+    )
 
-    if 'coinbaseFilledUnixVals' in locals():
-        coinbase_filled_data = csvData[csvData['unix'].isin(coinbaseFilledUnixVals) & ~csvData['unix'].isin(concat_csv['unix'])]
+    if "coinbaseFilledUnixVals" in locals():
+        coinbase_filled_data = csvData[
+            csvData["unix"].isin(coinbaseFilledUnixVals)
+            & ~csvData["unix"].isin(concat_csv["unix"])
+        ]
 
-        plt.plot(pd.to_datetime(coinbase_filled_data['unix'], unit='ms'), 
-                 coinbase_filled_data['close'], 
-                 label='Coinbase Minute Data', linestyle='None', marker='o', markersize=0.5)
+        plt.plot(
+            pd.to_datetime(coinbase_filled_data["unix"], unit="ms"),
+            coinbase_filled_data["close"],
+            label="Coinbase Minute Data",
+            linestyle="None",
+            marker="o",
+            markersize=0.5,
+        )
 
     # Total missing unix points data
     if len(totalMissingUnixPoints) > 0:
-        plt.plot(pd.to_datetime(totalMissingUnixPoints, unit='ms'), 
-                 totalMissingClosePoints, 
-                 label='Forward Filled Data', linestyle='None', marker='o', markersize=0.5)
+        plt.plot(
+            pd.to_datetime(totalMissingUnixPoints, unit="ms"),
+            totalMissingClosePoints,
+            label="Forward Filled Data",
+            linestyle="None",
+            marker="o",
+            markersize=0.5,
+        )
 
-    plt.xlabel('Date (YY-MM-DD)')
-    plt.ylabel('Close Price')
-    plt.title(f'{token} Close Price Over Time')
+    plt.xlabel("Date (YY-MM-DD)")
+    plt.ylabel("Close Price")
+    plt.title(f"{token} Close Price Over Time")
     plt.legend()
     # Save the plot to a file
     plot_filename = outputPath + f"{token}_close_price_over_time.png"
     plt.savefig(plot_filename)
-    
+
     csvData = csvData.reset_index(drop=True).sort_values(by="unix", ascending=True)
 
     # Plotting the final data
     plt.figure(figsize=(14, 7))
-    plt.plot(pd.to_datetime(csvData['unix'], unit='ms'), csvData['close'], label='Close Price', marker='o', markersize=0.5)
-    plt.xlabel('Date (YY-MM-DD)')
-    plt.ylabel('Close Price')
-    plt.title(f'{token} Close Price Over Unix Time')
+    plt.plot(
+        pd.to_datetime(csvData["unix"], unit="ms"),
+        csvData["close"],
+        label="Close Price",
+        marker="o",
+        markersize=0.5,
+    )
+    plt.xlabel("Date (YY-MM-DD)")
+    plt.ylabel("Close Price")
+    plt.title(f"{token} Close Price Over Unix Time")
     plt.legend()
     # Save the plot to a file
     final_plot_filename = outputPath + f"{token}_final_close_price_over_unix_time.png"
@@ -271,44 +315,66 @@ def update_historic_data(token, root):
     #        print(e)
 
     csvData.to_csv(outputMinutePath, mode="w", index=False)
-    csvData.to_parquet(parquetPath, engine='pyarrow')
+    csvData.to_parquet(parquetPath, engine="pyarrow")
     csvData[csvData["date"].str.contains(":00:00")].to_csv(
         hourlyPath, mode="w", index=False
     )
     # Create a minute level csv from the hourly data
-    hourly_data = csvData[csvData['date'].str.contains(":00:00")]
-    hourly_data.set_index('unix', inplace=True)
-    hourly_data = hourly_data[~hourly_data.index.duplicated(keep='first')]
-    hourly_data = hourly_data.reindex(pd.date_range(start=pd.to_datetime(hourly_data.index.min(), unit='ms'), 
-                                                    end=pd.to_datetime(hourly_data.index.max(), unit='ms'), 
-                                                    freq='H').astype(int) // 10**6)
-    hourly_data['unix'] = hourly_data.index
-    hourly_data['close'] = hourly_data['close'].interpolate(method='linear')
+    hourly_data = csvData[csvData["date"].str.contains(":00:00")]
+    hourly_data.set_index("unix", inplace=True)
+    hourly_data = hourly_data[~hourly_data.index.duplicated(keep="first")]
+    hourly_data = hourly_data.reindex(
+        pd.date_range(
+            start=pd.to_datetime(hourly_data.index.min(), unit="ms"),
+            end=pd.to_datetime(hourly_data.index.max(), unit="ms"),
+            freq="H",
+        ).astype(int)
+        // 10**6
+    )
+    hourly_data["unix"] = hourly_data.index
+    hourly_data["close"] = hourly_data["close"].interpolate(method="linear")
 
     # Create a new DataFrame with minute level data
-    minute_index = pd.date_range(start=pd.to_datetime(hourly_data.index.min(), unit='ms'), 
-                                 end=pd.to_datetime(hourly_data.index.max(), unit='ms'), 
-                                 freq='T').astype(int) // 10**6
+    minute_index = (
+        pd.date_range(
+            start=pd.to_datetime(hourly_data.index.min(), unit="ms"),
+            end=pd.to_datetime(hourly_data.index.max(), unit="ms"),
+            freq="T",
+        ).astype(int)
+        // 10**6
+    )
     minute_data = pd.DataFrame(index=minute_index)
-    minute_data.index.name = 'unix'
-    minute_data['unix'] = minute_data.index
+    minute_data.index.name = "unix"
+    minute_data["unix"] = minute_data.index
 
     # Populate the new DataFrame with the data from the hourly_data
-    minute_data = minute_data.join(hourly_data['close'], how='left')
-    minute_data['close'] = minute_data['close'].interpolate(method='linear')
+    minute_data = minute_data.join(hourly_data["close"], how="left")
+    minute_data["close"] = minute_data["close"].interpolate(method="linear")
 
     # Calculate the average price % difference between the actual original minute level prices and the new linear interpolated minute prices
     csvData_reset = csvData.reset_index(drop=True)
     minute_data_reset = minute_data.reset_index(drop=True)
-    merged_data = csvData_reset[['unix', 'close']].merge(minute_data_reset[['unix', 'close']], on='unix', suffixes=('_original', '_interpolated'))
-    merged_data['price_pct_diff'] = ((merged_data['close_original'] / merged_data['close_interpolated']) * 100) - 100
+    merged_data = csvData_reset[["unix", "close"]].merge(
+        minute_data_reset[["unix", "close"]],
+        on="unix",
+        suffixes=("_original", "_interpolated"),
+    )
+    merged_data["price_pct_diff"] = (
+        (merged_data["close_original"] / merged_data["close_interpolated"]) * 100
+    ) - 100
 
     # Plot the average price % difference
     plt.figure(figsize=(14, 7))
-    plt.plot(pd.to_datetime(merged_data['unix'], unit='ms'), merged_data['price_pct_diff'], label='avg % deviation from interpolated price')
-    plt.xlabel('Date (YY-MM-DD)')
-    plt.ylabel('% deviation from interpolated price')
-    plt.title(f'{token} Minute Price average % deviation from Interpolated Price Over Time')
+    plt.plot(
+        pd.to_datetime(merged_data["unix"], unit="ms"),
+        merged_data["price_pct_diff"],
+        label="avg % deviation from interpolated price",
+    )
+    plt.xlabel("Date (YY-MM-DD)")
+    plt.ylabel("% deviation from interpolated price")
+    plt.title(
+        f"{token} Minute Price average % deviation from Interpolated Price Over Time"
+    )
     plt.legend()
     # Save the plot to a file
     price_pct_plot_filename = outputPath + f"{token}_price_pct_diff_over_time.png"
@@ -361,8 +427,10 @@ def createMissingDataFrameFromClosePrices(startUnix, closePrices, token):
             "Volume " + token: totalMissingCoinVolumePoints,
         }
     )
+
+
 def get_historic_parquet_data(
-        list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
+    list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
 ):
     firstTicker = list_of_tickers[0]
     # print('cwd: ', os.getcwd())
@@ -374,7 +442,7 @@ def get_historic_parquet_data(
         inp_file = impresources.files(data) / filename
     with inp_file.open("rb") as f:
         # path = root + firstTicker + "_USD.csv"
-        csvData = pd.read_parquet(f, engine='pyarrow')
+        csvData = pd.read_parquet(f, engine="pyarrow")
         csvData = csvData.filter(items=["unix"] + renamedCols)
     if len(list_of_tickers) > 1:
         for ticker in list_of_tickers[1:]:
@@ -386,7 +454,9 @@ def get_historic_parquet_data(
             else:
                 inp_file = impresources.files(data) / filename
             with inp_file.open("rb") as f:
-                newCsvData = pd.read_parquet(f, engine='pyarrow').filter(items=["unix"] + renamedCols)
+                newCsvData = pd.read_parquet(f, engine="pyarrow").filter(
+                    items=["unix"] + renamedCols
+                )
             csvData = csvData.join(newCsvData)
     csvData = csvData.dropna()
     if start_time_unix is not None and end_time_unix is not None:
@@ -394,7 +464,7 @@ def get_historic_parquet_data(
         return csvData
     else:
         return csvData
-    
+
 
 def get_historic_csv_data(
     list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
@@ -522,7 +592,7 @@ def get_data_dict(
     list_of_tickers.sort()
 
     chunk_period = run_fingerprint["chunk_period"]
-    
+
     startDate = (
         datetime_to_unixtimestamp(start_date_string, str_format="%Y-%m-%d %H:%M:%S")
         * 1000
@@ -665,20 +735,22 @@ def get_data_dict(
                 if np.isnan(per_ticker_spread[-1]):
                     per_ticker_spread[-1] = 0.0
             spread.append(np.array(per_ticker_spread))
-            per_ticker_annualised_daily_volatility = (
-                np.array(calculate_annualised_daily_volatility_from_minute_data(
+            per_ticker_annualised_daily_volatility = np.array(
+                calculate_annualised_daily_volatility_from_minute_data(
                     price_data_filtered.copy(), ticker
                 )
-            ))
+            )
             # per_ticker_daily_volume = calculate_daily_volume_from_minute_data(
             #     price_data_filtered, ticker
             # )
             annualised_daily_volatility.append(per_ticker_annualised_daily_volatility)
             # daily_volume.append(per_ticker_daily_volume)
-            daily_OHLC_data=resample_minute_level_OHLC_data_to_daily(price_data_filtered.copy(),ticker)
-            daily_volume.append(np.array(daily_OHLC_data["Volume USD_"+ticker]))
-        spread = np.repeat(np.array(spread).T,1440,axis=0)
-        daily_volume =  np.repeat(np.array(daily_volume).T,1440,axis=0)
+            daily_OHLC_data = resample_minute_level_OHLC_data_to_daily(
+                price_data_filtered.copy(), ticker
+            )
+            daily_volume.append(np.array(daily_OHLC_data["Volume USD_" + ticker]))
+        spread = np.repeat(np.array(spread).T, 1440, axis=0)
+        daily_volume = np.repeat(np.array(daily_volume).T, 1440, axis=0)
         annualised_daily_volatility = np.repeat(
             np.array(annualised_daily_volatility).T, 1440, axis=0
         )
@@ -690,8 +762,8 @@ def get_data_dict(
     prices_rebased = prices_rebased[: int(n_chunks) * chunk_period]
     unix_values_rebased = unix_values_rebased[: int(n_chunks) * chunk_period]
 
-        # if return_slippage:
-        #     spread_rebased = spread[: int(n_chunks) * chunk_period]
+    # if return_slippage:
+    #     spread_rebased = spread[: int(n_chunks) * chunk_period]
     if return_gas_prices:
         if root is not None:
             inp_file = Path(root) / "export-AvgGasPrice.csv"
@@ -704,9 +776,9 @@ def get_data_dict(
                 .filter(items=["UnixTimeStamp", "Value (Wei)"])
                 .rename(columns={"UnixTimeStamp": "unix", "Value (Wei)": "gas_cost"})
             )
-        eth_price = prices_rebased[:,list_of_tickers.index("ETH")]
+        eth_price = prices_rebased[:, list_of_tickers.index("ETH")]
         # gas_price is daily, expland to minute
-        gas_prices_minute = expand_daily_to_minute_data(gas_prices, scale='s')
+        gas_prices_minute = expand_daily_to_minute_data(gas_prices, scale="s")
         eth_price = pd.dataframe([unix_values_rebased, eth_price]).join(
             gas_prices_minute.set_index("unix")
         )
@@ -766,6 +838,7 @@ def get_data_dict(
             spread_test = spread_test[: int(n_chunks) * chunk_period]
             data_dict["spread_test"] = spread_test
     return data_dict
+
 
 def get_historic_daily_csv_data(list_of_tickers, root):
     firstTicker = list_of_tickers[0]
@@ -885,86 +958,3 @@ def get_historic_data(
 
     return np.array(cleaned_data).T
 
-
-if __name__ == "__main__":
-
-    run_fingerprint_defaults = {
-        "freq": "minute",
-        "startDateString": "2021-02-03 00:00:00",
-        # "endDateString": "2021-02-22 00:00:00",
-        # "endTestDateString": "2021-03-03 00:00:00",
-        "endDateString": "2022-06-03 00:00:00",
-        "endTestDateString": "2022-07-03 00:00:00",
-        "tokens": ["BTC", "DAI", "ETH"],
-        "rule": "mean_reversion_channel",
-        "optimisation_settings": {
-            "base_lr": 0.01,
-            "optimiser": "sgd",
-            "decay_lr_ratio": 0.8,
-            "decay_lr_plateau": 100,
-            "batch_size": 1,
-            "train_on_hessian_trace": False,
-            "min_lr": 1e-6,
-            "n_iterations": 1000,
-            "n_cycles": 5,
-            "sample_method": "uniform",
-            "n_parameter_sets": 3,
-            "training_data_kind": "historic",
-            "include_flipped_training_data": False,
-        },
-        "initial_memory_length": 10.0,
-        "initial_memory_length_delta": 0.0,
-        "initial_k_per_day": 20,
-        "bout_offset": 30 * 24 * 60 * 6,
-        # "bout_offset": 24 * 60,
-        "initial_weights_logits": 1.0,
-        "initial_log_amplitude": -10.0,
-        "initial_raw_width": -8.0,
-        "initial_raw_exponents": 0.0,
-        "subsidary_pools": [
-            # {
-            #     "tokens": ["BTC", "DAI"],
-            #     "update_rule": "anti_momentum",
-            #     "initial_memory_length": 5,
-            #     "initial_k_per_day": 50,
-            # },
-            # {
-            #     "tokens": ["BTC", "DAI"],
-            #     "update_rule": "momentum",
-            #     "initial_memory_length": 5,
-            #     "initial_k_per_day": 50,
-            # },
-        ],
-        "maximum_change": 3e-4,
-        "chunk_period": 60,
-        "weight_interpolation_period": 60,
-        "return_val": "sharpe",
-        "initial_pool_value": 1000000.0,
-        "fees": 0.0,
-        "use_alt_lamb": True,
-        "use_pre_exp_scaling": True,
-        "weight_interpolation_method": "linear",
-    }
-
-    # out_mc = get_data_dict(
-    #     ["ETH", "BTC", "DAI"],
-    #     run_fingerprint_defaults,
-    #     data_kind="mc",
-    #     root="../data/",
-    #     max_memory_days=365.0,
-    #     start_date_string=run_fingerprint_defaults["startDateString"],
-    #     end_time_string=run_fingerprint_defaults["endDateString"],
-    #     start_time_test_string=run_fingerprint_defaults["endDateString"],
-    #     end_time_test_string=run_fingerprint_defaults["endTestDateString"],
-    # )
-    # out = get_data_dict(
-    #     ["ETH", "BTC", "DAI"],
-    #     run_fingerprint_defaults,
-    #     data_kind="historic",
-    #     root="../data/",
-    #     max_memory_days=365.0,
-    #     start_date_string=run_fingerprint_defaults["startDateString"],
-    #     end_time_string=run_fingerprint_defaults["endDateString"],
-    #     start_time_test_string=run_fingerprint_defaults["endDateString"],
-    #     end_time_test_string=run_fingerprint_defaults["endTestDateString"],
-    # )

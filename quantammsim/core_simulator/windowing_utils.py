@@ -1,3 +1,7 @@
+
+import numpy as np
+import pandas as pd
+
 # again, this only works on startup!
 from jax import config
 
@@ -5,8 +9,7 @@ config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
 from jax import random
-import pandas as pd
-import numpy as np
+
 
 def get_indices(
     start_index,
@@ -14,7 +17,7 @@ def get_indices(
     len_prices,
     key,
     optimisation_settings,
-):  
+):
     """
     Get indices for sampling data windows during training.
 
@@ -79,7 +82,6 @@ def get_indices(
         )
 
     elif sample_method == "uniform":
-        # start_indexes[:, 0] = start_index + np.random.choice(range_, size=batch_size, replace=False)
         start_indexes = start_indexes.at[:, 0].set(
             start_index
             + random.choice(subkey, range_, shape=sample_shape, replace=False)
@@ -105,7 +107,8 @@ def raw_trades_to_trade_array(raw_trades, start_date_string, end_date_string, to
     Parameters
     ----------
     raw_trades : pandas df
-        Raw trades, where each trade is a row containing unix, token_in (str), token_out (str), amount_in).
+        Raw trades, where each trade is a row containing unix_timestamp, 
+        token_in (str), token_out (str), amount_in).
     start_time : str
         The start date time in format "%Y-%m-%d %H:%M:%S".
     end_time : str
@@ -159,14 +162,14 @@ def raw_fee_like_amounts_to_fee_like_array(
     """
     Convert raw fee-like data to a structured fee-like array.
 
-    Takes raw fee-like data (fees, gas costs, arb fees) and converts it into a pandas 
+    Takes raw fee-like data (fees, gas costs, arb fees) and converts it into a pandas
     DataFrame with a continuous range of Unix timestamps. Each row represents a minute,
     with trades mapped to their corresponding timestamps.
 
     Parameters
     ----------
     raw_inputs : pandas.DataFrame
-        Raw fee-like data, where each row contains unix and the fee-like
+        Raw fee-like data, where each row contains unix_timestamp and the fee-like
         amount with given column name
     start_time : str
         The start date time in format "%Y-%m-%d %H:%M:%S"
@@ -205,7 +208,9 @@ def raw_fee_like_amounts_to_fee_like_array(
     # Apply fill method
     if fill_method == "ffill":
         for name in names:
-            full_index_df[name] = full_index_df[name].replace(to_replace=0, method="ffill")
+            full_index_df[name] = full_index_df[name].replace(
+                to_replace=0, method="ffill"
+            )
     # If fill_method is 'base', we don't need to do anything as zeros are already in place
     elif fill_method == "base":
         pass

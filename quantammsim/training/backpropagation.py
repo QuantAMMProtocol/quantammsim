@@ -47,22 +47,23 @@ np.seterr(under="print")
 
 def objective_factor(partial_training_step):
     """Creates a JIT-compiled objective function from a partial training step.
-    
-    This function wraps a partial training step into a simple objective function that can be 
+
+    This function wraps a partial training step into a simple objective function that can be
     used for optimization. The resulting function is JIT-compiled for performance.
-    
+
     Parameters
     ----------
     partial_training_step : callable
         A function that takes parameters and start indexes as input and returns some output
         to be optimized.
-    
+
     Returns
     -------
     callable
         A JIT-compiled objective function that takes parameters and start indexes as input
         and returns the output of the partial training step.
     """
+
     @jit
     def objective(params, start_indexes):
         output = partial_training_step(params, start_indexes)
@@ -112,6 +113,7 @@ def batched_objective_factory(batched_partial_training_step):
         A JIT-compiled objective function that takes parameters and start indexes as input
         and returns the mean output across the batch.
     """
+
     @jit
     def batched_objective(params, start_indexes):
         output = batched_partial_training_step(params, start_indexes)
@@ -152,6 +154,7 @@ def batched_objective_with_hessian_factory(
     endLine: 26
     ```
     """
+
     @partial(jit, static_argnums=(2,))
     def batched_objective_with_hessian(params, start_indexes, weighting=1e-4):
         output = batched_partial_training_step(params, start_indexes)
@@ -184,6 +187,7 @@ def update_factory(batched_objective):
         - Original parameters (before update)
         - Computed gradients
     """
+
     @jit
     def update(params, start_indexes, learning_rate):
         grads = grad(batched_objective)(params, start_indexes)
@@ -218,6 +222,7 @@ def update_with_hessian_factory(batched_objective_with_hessian):
         - Original parameters (before update)
         - Computed gradients
     """
+
     @jit
     def update_with_hessian(params, start_indexes, learning_rate):
         grads = grad(batched_objective_with_hessian)(params, start_indexes)
@@ -252,6 +257,7 @@ def update_singleton_factory(objective):
         - Original parameters (before update)
         - Computed gradients
     """
+
     @jit
     def update_singleton(params, start_indexes, learning_rate):
         grads = grad(objective)(params, start_indexes)
