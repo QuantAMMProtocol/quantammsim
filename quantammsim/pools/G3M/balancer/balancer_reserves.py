@@ -341,10 +341,20 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
             Array containing the fees associated with arbitrage.
         trades: jnp.ndarray
             Array containing the indexs of the in and out tokens and the in amount for trades at each time.
+    weights : jnp.ndarray
+        Array of asset weights.
     all_sig_variations : jnp.ndarray
         Array of all signature variations used for arbitrage calculations.
+    tokens_to_drop : jnp.ndarray
+        Array indicating which tokens should be excluded from arbitrage calculations.
+    active_trade_directions : jnp.ndarray
+        Array indicating which trade directions are allowed.
     n : int
         Number of tokens or assets.
+    do_trades : bool
+        Flag indicating whether to process trades.
+    do_arb : bool 
+        Flag indicating whether to process arbitrage.
 
     Returns
     -------

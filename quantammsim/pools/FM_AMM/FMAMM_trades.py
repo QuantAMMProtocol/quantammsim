@@ -27,7 +27,12 @@ def zero_trade_function_FMAMM(reserves, trade, gamma):
 
 
 def _jax_calc_FMAMM_trade_from_exact_out_given_in(
-    reserves, token_in, token_out, amount_in, gamma=0.997
+    reserves,
+    token_in,
+    token_out,
+    amount_in,
+    gamma=0.997,
+    weight=0.5,
 ):
     """
     Calculate the post-trade reserves from a trade of exact amount
@@ -45,6 +50,8 @@ def _jax_calc_FMAMM_trade_from_exact_out_given_in(
         Amount of token_in to be swapped.
     gamma : float, optional
         Fee parameter, where (1 - gamma) is the fee percentage. Default is 0.997.
+    weight : jnp.ndarray
+        Current proportional weight of first token in the AMM. Default is 0.5.
 
     Returns:
     --------
@@ -75,7 +82,7 @@ def _jax_calc_FMAMM_trade_from_exact_out_given_in(
     # Note are using non-pythonic indexing here, in keeping with the TFMM papers.
 
     # Calculate the new reserves for token_out
-    amount_out = reserves[token_out] * amount_in / ((reserves[token_in] / gamma) + 2 * amount_in)
+    amount_out = reserves[token_out] * amount_in / ((reserves[token_in] / gamma) + amount_in / weight)
     overall_trade = jnp.zeros(len(reserves))
     overall_trade = overall_trade.at[token_in].set(amount_in)
     overall_trade = overall_trade.at[token_out].set(-amount_out)
@@ -84,15 +91,15 @@ def _jax_calc_FMAMM_trade_from_exact_out_given_in(
 
 # version of _jax_calc_G3M_trade_from_exact_out_given_in that
 # in 'trade' as one single input. Useful for lazy evaluation
-def wrapped_FMAMM_trade_function(reserves, trade, gamma):
+def wrapped_FMAMM_trade_function(reserves, trade, gamma, weight=0.5):
     return _jax_calc_FMAMM_trade_from_exact_out_given_in(
-        reserves, trade[0], trade[1], trade[2], gamma
+        reserves, trade[0], trade[1], trade[2], gamma, weight
     )
 
 
 # Create a jitted function that includes the cond, for lazy evaluation
 @jit
-def jitted_FMAMM_cond_trade(condition, reserves, trade, gamma):
+def jitted_FMAMM_cond_trade(condition, reserves, trade, gamma, weight=0.5):
     return jax.lax.cond(
         condition,
         wrapped_FMAMM_trade_function,
@@ -100,6 +107,7 @@ def jitted_FMAMM_cond_trade(condition, reserves, trade, gamma):
         reserves,
         trade,
         gamma,
+        weight,
     )
 
 

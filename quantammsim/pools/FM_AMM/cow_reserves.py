@@ -18,114 +18,6 @@ from typing import List, Tuple, Callable, Dict, Any
 from quantammsim.pools.FM_AMM.FMAMM_trades import jitted_FMAMM_cond_trade
 
 
-def align_CPAMM(reserves: List[float], price: float) -> List[float]:
-    """
-    Calculate the new CPAMM reserves at the align price.
-
-    Args:
-        reserves (List[float]): A list of two values representing the current reserves of the CPAMM.
-        price (float): The new price to align the reserves with.
-
-    Returns:
-        List[float]: A list of two values representing the new reserves of the CPAMM after the alignment.
-    """
-
-    # Calculate new reserves according to the constant product formula
-    align_reserves = [
-        math.sqrt(reserves[0] * reserves[1]) / math.sqrt(price),
-        math.sqrt(reserves[0] * reserves[1]) * math.sqrt(price),
-    ]
-
-    return align_reserves
-
-
-def align_FMAMM(reserves: List[float], price: float) -> List[float]:
-    """
-    Calculate the new reserves of a FMAMM based on the align price.
-
-    Args:
-        reserves (List[float]): A list of two values representing the current reserves of FMAMM.
-        price (float): The new price to align the reserves with.
-
-    Returns:
-        List[float]: A list of two values representing the new reserves of FMAMM after the alignment.
-    """
-
-    # Calculate new reserves s.t. the rebalancing price and the final reserve ratio equal the new price
-    align_reserves = [
-        0.5 * reserves[0] + 0.5 * reserves[1] / price,
-        0.5 * reserves[0] * price + 0.5 * reserves[1],
-    ]
-
-    return align_reserves
-
-
-def align_position(
-    reserves: List[float],
-    price: float,
-    align_function: Callable,
-    amm_fee: float = 0.0,
-    ext_fee: float = 0.0,
-    ext_thresh: float = 0.0,
-) -> List[float]:
-    """
-    Return new AMM position reserves the it has been aligned to a new price through an arbitrage trade.
-
-    Args:
-        reserves (List[float]): A list of two values representing the current reserves of the AMM.
-        price (float): The new price to align the reserves with: Either a single value or a list of two values representing the bid and ask price.
-        align_function (callable): A function used to calculate the new reserves based on the align price.
-        amm_fee (float, optional): The trading fee that the AMM charges. Default is 0.0.
-        ext_fee (float, optional): An additional external fee the arbitrageur needs to pay (could e.g. a fee on the external exchange). Default is 0.0.
-
-    Returns:
-        List[float]: A list of two values representing the new reserves of AMM after the alignment.
-    """
-
-    # if price is a tuple, calculate the average price
-    if isinstance(price, tuple):
-        bid_price = price[0]
-        ask_price = price[1]
-    else:
-        bid_price = ask_price = price
-
-    current_price = reserves[1] / reserves[0]
-
-    # Check if the current reserves are already within the no-arbitrage price range
-    if bid_price * (1 - amm_fee) * (
-        1 - ext_fee
-    ) <= current_price and current_price <= ask_price / (1 - amm_fee) / (1 - ext_fee):
-        return reserves
-
-    # If the current reserves are below the no-arbitrage price range, calculate the align price
-    if current_price < bid_price * (1 - amm_fee) * (1 - ext_fee):
-        align_price = bid_price * (1 - amm_fee) * (1 - ext_fee)
-
-    # If the current reserves are above the no-arbitrage price range, calculate the align price
-    if ask_price / (1 - amm_fee) / (1 - ext_fee) < current_price:
-        align_price = ask_price / (1 - amm_fee) / (1 - ext_fee)
-
-    # Calculate the new reserves based on the align price using the provided align_function
-
-    # check if align_price is defined
-    if "align_price" not in locals():
-        print(current_price, price, amm_fee, ext_fee)
-
-    if align_price == 0.0:
-        print(current_price, price, amm_fee, ext_fee)
-        return reserves
-
-    align_reserves = align_function(reserves, align_price)
-
-    # Add trading fees paid to reserves
-    for i in [0, 1]:
-        align_reserves[i] += (
-            max(0.0, align_reserves[i] - reserves[i]) * amm_fee / (1 - amm_fee)
-        )
-
-    return align_reserves
-
-
 @jit
 def align_FMAMM_jax(reserves, price):
     """
@@ -168,6 +60,13 @@ def align_FMAMM_onearb_jax(reserves, price):
     )
     return align_reserves
 
+@jit
+def align_FMAMM_onearb_jax_with_weights_with_fees(reserves, price, weight=0.5, gamma=0.997):
+    align_reserves = align_FMAMM_onearb_jax(reserves, price)
+    align_reserves += (
+        jnp.maximum(0, align_reserves - reserves) * (1 - gamma) / gamma
+    )
+    return align_reserves
 
 @jit
 def _jax_calc_cowamm_reserves_with_fees_scan_function(
@@ -523,7 +422,7 @@ def _jax_calc_cowamm_reserves_under_attack_zero_fees_scan_function(
 
 
 @jit
-def _jax_calc_cowamm_reserves_under_attack_with_fees(
+def _jax_calc_cowamm_reserves_with_weights_under_attack_with_fees(
     initial_reserves, prices, weight=0.5, fees=0.003, arb_thresh=0.0, arb_fees=0.0
 ):
     """
@@ -576,6 +475,11 @@ def _jax_calc_cowamm_reserves_under_attack_with_fees(
 
     return reserves
 
+
+_jax_calc_cowamm_reserves_under_attack_with_fees = partial(
+    _jax_calc_cowamm_reserves_with_weights_under_attack_with_fees,
+    weight=0.5,
+)
 
 @jit
 def _jax_calc_cowamm_reserves_under_attack_zero_fees(
@@ -873,9 +777,9 @@ def _jax_calc_cowamm_reserves_with_weights_with_fees(
     return reserves
 
 
-@partial(jit, static_argnums=(2))
-def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
-    carry_list, input_list, do_trades
+@partial(jit, static_argnums=(3,4))
+def _jax_calc_cowamm_reserves_with_weights_with_dynamic_fees_and_trades_scan_function(
+    carry_list, input_list, weight=0.5, do_trades=True, do_arb=True
 ):
     """
     Calculate changes in COW AMM (FM-AMM) reserves considering fees and arbitrage opportunities.
@@ -898,6 +802,10 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
             Threshold for profitable arbitrage, by default 0.0.
         arb_fees : float, optional
             Fees associated with arbitrage, by default 0.0.
+    do_trades : bool
+        Whether to execute trades.
+    do_arb : bool 
+        Whether to execute arbitrage trades.
 
     Returns
     -------
@@ -953,7 +861,7 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
         jnp.maximum(0, align_reserves - prev_reserves) * (1 - gamma) / gamma
     )
 
-    reserves = jnp.where(outside_no_arb_region, align_reserves, prev_reserves)
+    reserves = jnp.where(outside_no_arb_region * do_arb, align_reserves, prev_reserves)
 
     # apply trade if trade is present
     if do_trades:
@@ -962,9 +870,9 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
     return [prices, reserves], reserves
 
 
-@partial(jit, static_argnums=(6))
-def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades(
-    initial_reserves, prices, fees, arb_thresh, arb_fees, trades=None, do_trades=False
+@partial(jit, static_argnums=(6,7))
+def _jax_calc_cowamm_reserves_with_weights_with_dynamic_fees_and_trades(
+    initial_reserves, prices, fees, arb_thresh, arb_fees, weight=0.5, trades=None, do_trades=True, do_arb=True
 ):
     """
     Calculate AMM reserves considering fees for CowAMM
@@ -985,6 +893,17 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades(
         Threshold for profitable arbitrage over time
     arb_fees : jnp.ndarray
         Fees associated with arbitrage over time
+    weight : float, optional
+        Weight parameter for the pool, by default 0.5
+    trades : jnp.ndarray, optional
+        Array of trades for each timestep. Format for each row:
+        trades[0] = index of token to trade in to pool
+        trades[1] = index of token to trade out of pool 
+        trades[2] = amount of 'token in' to trade
+    do_trades : bool, optional
+        Whether to process trades, by default False
+    do_arb : bool, optional
+        Whether to process arbitrage, by default True
 
     Returns
     -------
@@ -1002,13 +921,150 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades(
     gamma = 1.0 - fees
 
     scan_fn = Partial(
-        _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function,
+        _jax_calc_cowamm_reserves_with_weights_with_dynamic_fees_and_trades_scan_function,
+        weights=0.5,
         do_trades=do_trades,
+        do_arb=do_arb,
     )
 
     carry_list_init = [initial_prices, initial_reserves]
     carry_list_end, reserves = scan(
         scan_fn, carry_list_init, [prices, gamma, arb_thresh, arb_fees, trades]
+    )
+
+    return reserves
+
+_jax_calc_cowamm_reserves_with_dynamic_fees_and_trades = partial(
+    _jax_calc_cowamm_reserves_with_weights_with_dynamic_fees_and_trades,
+    weight=0.5,
+)
+
+@partial(jit, static_argnums=(8,9,))
+def _jax_calc_balancer_reserves_with_dynamic_inputs(
+    initial_reserves,
+    weights,
+    prices,
+    fees,
+    arb_thresh,
+    arb_fees,
+    all_sig_variations=None,
+    trades=None,
+    do_trades=False,
+    do_arb=True,
+):
+    """
+    Calculate AMM reserves considering fees and arbitrage opportunities using signature variations,
+    using the approach given in https://arxiv.org/abs/2402.06731.
+
+    This function computes the changes in reserves for an automated market maker (AMM) model
+    considering dynamic transaction fees, dynamic arbitrage costs, external trades and
+    potential arbitrage opportunities.
+    It uses a scan operation to apply these calculations over multiple timesteps.
+
+    Parameters
+    ----------
+    initial_reserves : jnp.ndarray
+        Initial reserves at the start of the calculation.
+    weights : jnp.ndarray
+        Two-dimensional array of asset weights over time.
+    prices : jnp.ndarray
+        Two-dimensional array of asset prices over time.
+    fees : float / jnp.ndarray
+        Swap fee charged on transactions, by default 0.003.
+    arb_thresh : jnp.ndarray
+        Threshold for profitable arbitrage, by default 0.0.
+    arb_fees : jnp.ndarray
+        Fees associated with arbitrage, by default 0.0.
+    trades :  jnp.ndarray, optional
+        array of trades for each timestep.
+        format, for each row:
+            trades[0] = index of token to trade in to pool
+            trades[1] = index of token to trade out to pool
+            trades[2] = amount of 'token in' to trade
+    all_sig_variations : jnp.ndarray, optional
+        Array of all signature variations used for arbitrage calculations.
+    do_trades : bool, optional
+        Whether or not to apply the trades, by default False
+    do_arb : bool, optional
+        Whether or not to apply the arbitrage, by default True
+
+    Returns
+    -------
+    jnp.ndarray
+        The reserves array, indicating the changes in reserves over time.
+    """
+    n_assets = weights.shape[0]
+
+    # or first weight, we have initial reserves, weights and
+    # prices, so the change is 1
+
+    n = prices.shape[0]
+
+    initial_prices = prices[0]
+
+    initial_weights = weights
+
+    gamma = jnp.where(
+        fees.size == 1, jnp.full(prices.shape[0], 1.0 - fees), 1.0 - fees
+    )
+
+    arb_thresh = jnp.where(
+        arb_thresh.size == 1, jnp.full(prices.shape[0], arb_thresh), arb_thresh
+    )
+
+    arb_fees = jnp.where(
+        arb_fees.size == 1, jnp.full(prices.shape[0], arb_fees), arb_fees
+    )
+
+    # pre-calculate some values that are repeatedly used in optimal arb calculations
+
+    array_of_trues = jnp.ones((n_assets,), dtype=bool)
+
+    tokens_to_keep, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
+        precalc_shared_values_for_all_signatures(all_sig_variations, n_assets)
+    )
+
+    # calculate values that can be done in parallel
+
+    active_initial_weights, per_asset_ratios, all_other_assets_ratios = (
+        precalc_components_of_optimal_trade_across_prices_and_dynamic_fees(
+            weights,
+            prices,
+            gamma,
+            tokens_to_drop,
+            active_trade_directions,
+            leave_one_out_idxs,
+        )
+    )
+    scan_fn = Partial(
+        _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using_precalcs,
+        weights=weights,
+        n=n_assets,
+        all_sig_variations=all_sig_variations,
+        tokens_to_drop=tokens_to_drop,
+        active_trade_directions=active_trade_directions,
+        do_trades=do_trades,
+        do_arb=do_arb,
+    )
+
+    carry_list_init = [
+        initial_prices,
+        initial_reserves,
+        0,
+    ]
+    carry_list_end, reserves = scan(
+        scan_fn,
+        carry_list_init,
+        [
+            prices,
+            active_initial_weights,
+            per_asset_ratios,
+            all_other_assets_ratios,
+            gamma,
+            arb_thresh,
+            arb_fees,
+            trades,
+        ],
     )
 
     return reserves
@@ -1069,8 +1125,8 @@ if __name__ == "__main__":
                 gamma=1.0 - fees,
                 arb_thresh=arb_thresh,
                 arb_fees=arb_fees,
-            )[-2]
-            profit = result[-1]
+            )[-1]
+            profit = -((result - initial_reserves) * prices).sum()
         value = (result * prices).sum()
         print(f"Reserves from feeding {fees} fees into fees: {result}")
         print(f"Value from feeding {fees} fees into fees: {value}")
