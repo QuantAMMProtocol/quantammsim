@@ -1,4 +1,5 @@
 from datetime import datetime
+
 # from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
 #     SimulationResultTimestepDto,
 #     SimulationResultTimeseries,
@@ -36,10 +37,10 @@ def convert_simulation_timeseries_to_run_metric(
 
     Notes
     -----
-    This function converts a timeseries array into a list of timestep DTOs with proper Unix 
+    This function converts a timeseries array into a list of timestep DTOs with proper Unix
     timestamps based on the timeSeriesName. It handles different time intervals:
     - Daily (86400 seconds)
-    - Weekly (604800 seconds) 
+    - Weekly (604800 seconds)
     - Monthly (2628000 seconds)
     - Yearly (31536000 seconds)
 
@@ -266,7 +267,7 @@ def perform_return_analysis(returns, dailyRfValues):
         dict: Dictionary containing various return metrics including:
             - Absolute Return (%)
             - Sharpe Ratio
-            - Annualized Sharpe Ratio 
+            - Annualized Sharpe Ratio
             - Annualized Sortino Ratio
             - Annualized Calmar Ratio
             - Annualized Omega Ratio
@@ -429,10 +430,10 @@ def perform_porfolio_financial_analysis(
 
 
 def perform_financial_analysis(
-    portfolio_returns, hodl_returns, dailyRfValues, btc_returns=None
+    portfolio_returns, hodl_returns, dailyRfValues
 ):
     """
-    Performs comprehensive financial analysis comparing portfolio performance against HODL and BTC benchmarks.
+    Performs comprehensive financial analysis comparing portfolio performance against HODL benchmarks.
 
     Calculates various risk-adjusted return metrics, ratios, and statistics including:
     - Sharpe, Sortino, Calmar, and Omega ratios
@@ -446,13 +447,11 @@ def perform_financial_analysis(
         portfolio_returns (numpy.ndarray): Array of portfolio returns
         hodl_returns (numpy.ndarray): Array of HODL strategy returns
         dailyRfValues (numpy.ndarray): Array of daily risk-free rates
-        btc_returns (numpy.ndarray, optional): Array of BTC returns. Defaults to None.
 
     Returns:
         dict: Dictionary containing analysis results with keys:
             - portfolio: Portfolio metrics and statistics
             - hodl: HODL benchmark metrics
-            - btc: BTC benchmark metrics (if btc_returns provided)
             Each contains nested dicts of ratios, risk metrics, drawdowns etc.
     """
 
@@ -510,25 +509,6 @@ def perform_financial_analysis(
     portfolio_cumulative_returns = (1 + portfolio_returns).cumprod()
     hodl_cumulative_returns = (1 + hodl_returns).cumprod()
 
-    btc_cumulative_returns = (1 + btc_returns).cumprod()
-    btc_alpha = faf.calculate_jensens_alpha(
-        portfolio_returns, dailyRfValues, btc_returns
-    )
-    btc_distribution = faf.calculate_distribution_statistics(btc_returns)
-    btc_drawdown = faf.calculate_drawdown_statistics(btc_returns, dailyRfValues)
-    risk_metrics_btc_rb = faf.calculate_portfolio_risk_metrics(
-        portfolio_returns, dailyRfValues, btc_returns
-    )
-    porfolio_capture_btc = faf.calculate_capture_ratios(portfolio_returns, btc_returns)
-    btc_sharpe = faf.calculate_sharpe_ratio(btc_returns, dailyRfValues)
-    btc_sortino = faf.calculate_sortino_ratio(btc_returns, dailyRfValues)
-    btc_calmar = faf.calculate_calmar_ratio(btc_returns, dailyRfValues)
-    btc_omega = faf.calculate_omega_ratio(btc_returns, dailyRfValues)
-    btc_information_ratio = faf.calculate_tracking_error_and_information_ratio(
-        portfolio_returns, btc_returns
-    )
-    btc_rov = faf.calculate_return_on_VaR(btc_returns, dailyRfValues)
-
     # Return the results
     return {
         "portfolio": {
@@ -539,13 +519,9 @@ def perform_financial_analysis(
             "omega": porfolio_omega,
             "rov": porfolio_rov,
             "capture_hodl_rb": porfolio_capture_hodl,
-            "capture_btc_rb": porfolio_capture_btc,
             "information_ratio_hodl_rb": hodl_information_ratio,
-            "information_ratio_btc_rb": btc_information_ratio,
             "risk_metrics_hodl_rb": risk_metrics_hodl_rb,
-            "risk_metrics_btc_rb": risk_metrics_btc_rb,
             "alpha_hodl_rb": hodl_alpha,
-            "alpha_btc_rb": btc_alpha,
             "drawdown": porfolio_drawdown,
             "distribution": porfolio_distribution,
         },
@@ -558,15 +534,5 @@ def perform_financial_analysis(
             "rov": hodl_rov,
             "distribution": hodl_distribution,
             "drawdown": hodl_drawdown,
-        },
-        "btc": {
-            "return": btc_cumulative_returns[-1] - 1,
-            "sharpe": btc_sharpe,
-            "sortino": btc_sortino,
-            "calmar": btc_calmar,
-            "omega": btc_omega,
-            "rov": btc_rov,
-            "distribution": btc_distribution,
-            "drawdown": btc_drawdown,
-        },
+        }
     }

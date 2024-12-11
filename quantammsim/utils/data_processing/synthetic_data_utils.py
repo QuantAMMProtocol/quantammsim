@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def make_sinuisoid_data(
     n_time_steps=200,
     n_tokens=4,

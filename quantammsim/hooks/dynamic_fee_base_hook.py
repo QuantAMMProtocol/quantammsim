@@ -3,13 +3,15 @@ from typing import Dict, Any, Optional
 import jax.numpy as jnp
 from jax.lax import dynamic_slice
 
+
 class BaseDynamicFeeHook(ABC):
     """Mixin class to add dynamic fee calculation capabilities to pools.
 
     Parameters
     ----------
     params_init_dict
-        Dict that gives the names of the parameters needed by the hook and their initialisatio method
+        Dict that gives the names of the parameters needed 
+        by the hook and their initialisatio method
 
     Attributes
     ----------
@@ -17,24 +19,27 @@ class BaseDynamicFeeHook(ABC):
 
     Methods
     -------
-    calculate_dynamic_fees(params, run_fingerprint, prices, start_index, additional_oracle_input)
+    calculate_dynamic_fees(params, run_fingerprint, prices, start_index, 
+        additional_oracle_input)
         Abstract method that must be implemented to define fee calculation logic
-    calculate_reserves_with_fees(params, run_fingerprint, prices, start_index, additional_oracle_input)
-        Combines dynamic fee calculation with reserve updates
+    calculate_reserves_with_fees(params, run_fingerprint, prices, 
+        start_index, additional_oracle_input)
+    Combines dynamic fee calculation with reserve updates
 
     Notes
     -----
-    This mixin provides functionality for pools to dynamically adjust their fees based on market conditions,
-    oracle inputs, and other parameters. It is designed to be used with AMM (Automated Market Maker) pool
-    implementations.
+    This mixin provides functionality for pools to dynamically adjust 
+    their fees based on market conditions, oracle inputs, and other parameters. 
+    It is designed to be used with AMM (Automated Market Maker) pool implementations.
 
-    The mixin assumes the existence of calculate_reserves_with_dynamic_inputs() in the pool class it will 
-    be used with. Fee calculations should only use current and historical data to avoid look-ahead bias.
+    The mixin assumes the existence of calculate_reserves_with_dynamic_inputs() 
+    in the pool class it will be used with. Fee calculations should only use 
+    current and historical data to avoid look-ahead bias.
     All calculations should be vectorized (i.e. use jax.vmap) where possible for performance.
 
     Features:
     - Supports time-varying fees based on market conditions
-    - Integrates with existing pool infrastructure for reserve calculations  
+    - Integrates with existing pool infrastructure for reserve calculations
     - Handles gas costs and arbitrage fees
 
     Examples
@@ -44,6 +49,7 @@ class BaseDynamicFeeHook(ABC):
     ...         # Custom fee calculation logic here
     ...         return computed_fees
     """
+
     def __init__(self):
         pass
 
@@ -60,7 +66,6 @@ class BaseDynamicFeeHook(ABC):
 
         Take care when implementing this method to ensure that there is no look ahead bias.
         """
-        pass
 
     def calculate_reserves_with_fees(
         self,
@@ -70,6 +75,23 @@ class BaseDynamicFeeHook(ABC):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
+        """
+        Calculate reserves with dynamic fees applied.
+
+        This function calculates the reserves by applying dynamic fees based on the provided
+        parameters, run fingerprint, prices, and optional additional oracle input.
+
+        Args:
+            params (Dict[str, Any]): Parameters for the calculation.
+            run_fingerprint (Dict[str, Any]): Metadata and configuration for the run.
+            prices (jnp.ndarray): Array of prices.
+            start_index (jnp.ndarray): Starting index for the calculation.
+            additional_oracle_input (Optional[jnp.ndarray], optional): 
+            Additional input from oracle. Defaults to None.
+
+        Returns:
+            jnp.ndarray: The calculated reserves with dynamic fees applied.
+        """
 
         # Calculate dynamic fees based on price/oracle input
         raw_dynamic_fees = self.calculate_dynamic_fees(
@@ -109,4 +131,3 @@ class BaseDynamicFeeHook(ABC):
         n_parameter_sets: int,
     ) -> Dict[str, Any]:
         """Extend base parameters with dynamic fee parameters."""
-        pass
