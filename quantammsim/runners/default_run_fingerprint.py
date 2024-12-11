@@ -44,6 +44,7 @@ run_fingerprint_defaults = {
     "use_pre_exp_scaling": True,
     "weight_interpolation_method": "linear",
     "arb_frequency": 1,
+    "arb_quality": 1.0,
     "do_trades": False,
     "do_arb": True,
 }
