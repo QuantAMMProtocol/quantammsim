@@ -131,15 +131,15 @@ def raw_trades_to_trade_array(raw_trades, start_date_string, end_date_string, to
             end=pd.to_datetime(end_date_string, format="%Y-%m-%d %H:%M:%S"),
             freq="T",
         ).astype(int)
-        // 10**9
+        // 10**6
     )
     full_index_df = pd.DataFrame(
-        index=full_index, columns=["token in", "token out", "amount in"], data=0
+        index=full_index, columns=["token_in", "token_out", "amount_in"], data=0
     )
     # Create a dictionary to map token strings to their numerical indexes
     token_to_index = {token: index for index, token in enumerate(tokens)}
     for index, row in raw_trades.iterrows():
-        unix_timestamp = row["unix_timestamp"]
+        unix_timestamp = row["unix"]
         token_in = row["token_in"]
         token_out = row["token_out"]
         amount_in = row["amount_in"]
@@ -196,16 +196,15 @@ def raw_fee_like_amounts_to_fee_like_array(
             end=pd.to_datetime(end_date_string, format="%Y-%m-%d %H:%M:%S"),
             freq="T",
         ).astype(int)
-        // 10**9
+        // 10**6
     )
     full_index_df = pd.DataFrame(index=full_index[:-1], columns=names, data=0)
     # Map raw data to the full index DataFrame
     for index, row in raw_inputs.iterrows():
-        unix_timestamp = row["unix_timestamp"]
+        unix_timestamp = int(row["unix"])
         if unix_timestamp in full_index_df.index:
             for name in names:
                 full_index_df.loc[unix_timestamp, name] = row[name]
-
     # Apply fill method
     if fill_method == "ffill":
         for name in names:
@@ -218,6 +217,6 @@ def raw_fee_like_amounts_to_fee_like_array(
     else:
         raise NotImplementedError
     if len(names) == 1:
-        return np.array(full_index_df)[:, 0]
+        return np.array(full_index_df, dtype=np.float64)[:,0]
     else:
-        return np.array(full_index_df)
+        return np.array(full_index_df, dtype=np.float64)

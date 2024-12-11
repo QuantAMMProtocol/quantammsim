@@ -86,4 +86,4 @@ def convert_to_parquet(token_name):
 
 
 for token in tokens:
-    convert_to_parquet(token)
+    process_token(token)

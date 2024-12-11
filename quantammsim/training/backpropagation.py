@@ -33,11 +33,8 @@ from jax import devices
 
 import sys
 
-sys.path.append("../../simulatorMocks/")
-
 import numpy as np
 
-# from simulationRunDto import LiquidityPoolCoinDto, SimulationResultTimestepDto
 from quantammsim.training.hessian_trace import hessian_trace
 from functools import partial
 
