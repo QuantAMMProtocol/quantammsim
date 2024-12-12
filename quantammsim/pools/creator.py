@@ -3,10 +3,10 @@ from quantammsim.pools.G3M.quantamm.momentum_pool import MomentumPool
 from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
 from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import MeanReversionChannelPool
 from quantammsim.pools.hodl_pool import HODLPool
+# from quantammsim.pools.FM_AMM.cow_pool import CowPool
+# from quantammsim.pools.FM_AMM.cow_pool_one_arb import CowPoolOneArb
 from quantammsim.pools.FM_AMM.cow_pool import CowPool
-from quantammsim.pools.FM_AMM.cow_pool_one_arb import CowPoolOneArb
-from quantammsim.pools.FM_AMM.cow_pool_weights import CowPoolWeights
-from quantammsim.pools.FM_AMM.cow_pool_8020 import CowPool8020
+# from quantammsim.pools.FM_AMM.cow_pool_8020 import CowPool8020
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.hooks.momentum_dynamic_fee_hook import MomentumDynamicFeeHook
 from quantammsim.hooks.versus_rebalancing import (
@@ -134,7 +134,7 @@ def create_pool(rule):
     elif base_rule == "hodl":
         base_pool = HODLPool()
     elif base_rule == "cow":
-        base_pool = CowPoolWeights()
+        base_pool = CowPool()
     else:
         raise NotImplementedError(f"Unknown base pool type: {base_rule}")
 

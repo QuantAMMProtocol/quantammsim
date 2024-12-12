@@ -7,7 +7,6 @@ from .G3M.quantamm.antimomentum_pool import AntiMomentumPool
 from .G3M.quantamm.power_channel_pool import PowerChannelPool
 from .G3M.quantamm.mean_reversion_channel_pool import MeanReversionChannelPool
 from .FM_AMM.cow_pool import CowPool
-from .FM_AMM.cow_pool_one_arb import CowPoolOneArb
 
 __all__ = [
     "BasePool",
@@ -19,6 +18,5 @@ __all__ = [
     "AntiMomentumPool",
     "PowerChannelPool",
     "MeanReversionChannelPool",
-    "CowPool",
-    "CowPoolOneArb",
+    "CowPoolWeighted",
 ]
