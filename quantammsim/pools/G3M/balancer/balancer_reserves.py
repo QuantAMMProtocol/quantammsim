@@ -1,19 +1,17 @@
+from functools import partial
+
 # again, this only works on startup!
 from jax import config
 
-config.update("jax_enable_x64", True)
-
-# TODO above is all from jax utils, tidy up required
-
 import jax.numpy as jnp
 
-from jax import jit, vmap
-from jax import devices
+from jax import jit, vmap, devices
 from jax.tree_util import Partial
 from jax.lax import scan
-from jax.debug import print as dprint
+
+from jax.lib.xla_bridge import default_backend
+
 from quantammsim.pools.G3M.optimal_n_pool_arb import (
-    optimal_trade_sifter,
     precalc_shared_values_for_all_signatures,
     precalc_components_of_optimal_trade_across_prices,
     precalc_components_of_optimal_trade_across_prices_and_dynamic_fees,
@@ -21,11 +19,8 @@ from quantammsim.pools.G3M.optimal_n_pool_arb import (
 )
 from quantammsim.pools.G3M.G3M_trades import jitted_G3M_cond_trade
 
-import jax
-from functools import partial
 
-from jax.lib.xla_bridge import default_backend
-from jax import local_device_count, devices
+config.update("jax_enable_x64", True)
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -77,7 +72,7 @@ def _jax_calc_balancer_reserves_with_fees_scan_function_using_precalcs(
     carry_list,
     prices_and_precalcs,
     weights,
-    all_sig_variations,
+    _,
     tokens_to_drop,
     active_trade_directions,
     n,
@@ -86,7 +81,8 @@ def _jax_calc_balancer_reserves_with_fees_scan_function_using_precalcs(
     arb_fees=0.0,
 ):
     """
-    Calculate changes in AMM reserves considering fees and arbitrage opportunities using signature variations.
+    Calculate changes in AMM reserves considering fees 
+    and arbitrage opportunities using signature variations.
 
     This function extends the basic reserve calculation by incorporating transaction fees
     and potential arbitrage opportunities, following the methodology described in
@@ -120,9 +116,6 @@ def _jax_calc_balancer_reserves_with_fees_scan_function_using_precalcs(
     jnp.ndarray
         Array of reserves changes.
     """
-
-    # carry_list[0] is previous prices
-    prev_prices = carry_list[0]
 
     # carry_list[1] is previous reserves
     prev_reserves = carry_list[1]
@@ -174,7 +167,6 @@ def _jax_calc_balancer_reserves_with_fees_scan_function_using_precalcs(
     # delta = post_price_reserves - prev_reserves
     # is this delta a good deal for the arb?
     profit_to_arb = -(optimal_arb_trade * prices).sum() - arb_thresh
-    profit_prices = profit_to_arb
 
     arb_external_rebalance_cost = (
         0.5 * arb_fees * (jnp.abs(optimal_arb_trade) * prices).sum()
@@ -242,17 +234,13 @@ def _jax_calc_balancer_reserves_with_fees_using_precalcs(
     # or first weight, we have initial reserves, weights and
     # prices, so the change is 1
 
-    n = prices.shape[0]
-
     initial_prices = prices[0]
-
-    initial_weights = weights[0]
 
     gamma = 1.0 - fees
 
     # pre-calculate some values that are repeatedly used in optimal arb calculations
 
-    tokens_to_keep, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
+    _, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
         precalc_shared_values_for_all_signatures(all_sig_variations, n_assets)
     )
 
@@ -286,7 +274,7 @@ def _jax_calc_balancer_reserves_with_fees_using_precalcs(
         initial_reserves,
         0,
     ]
-    carry_list_end, reserves = scan(
+    _, reserves = scan(
         scan_fn,
         carry_list_init,
         [
@@ -305,7 +293,7 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
     carry_list,
     input_list,
     weights,
-    all_sig_variations,
+    _,
     tokens_to_drop,
     active_trade_directions,
     n,
@@ -313,7 +301,8 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
     do_arb
 ):
     """
-    Calculate changes in AMM reserves considering fees and arbitrage opportunities using signature variations.
+    Calculate changes in AMM reserves considering fees 
+    and arbitrage opportunities using signature variations.
 
     This function extends the basic reserve calculation by incorporating transaction fees
     and potential arbitrage opportunities, following the methodology described in
@@ -363,9 +352,6 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
     jnp.ndarray
         Array of reserves changes.
     """
-
-    # carry_list[0] is previous prices
-    prev_prices = carry_list[0]
 
     # carry_list[1] is previous reserves
     prev_reserves = carry_list[1]
@@ -420,7 +406,6 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
     # delta = post_price_reserves - prev_reserves
     # is this delta a good deal for the arb?
     profit_to_arb = -(optimal_arb_trade * prices).sum() - arb_thresh
-    profit_prices = profit_to_arb
 
     arb_external_rebalance_cost = (
         0.5 * arb_fees * (jnp.abs(optimal_arb_trade) * prices).sum()
@@ -505,15 +490,9 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
     # or first weight, we have initial reserves, weights and
     # prices, so the change is 1
 
-    n = prices.shape[0]
-
     initial_prices = prices[0]
 
-    initial_weights = weights
-
-    gamma = jnp.where(
-        fees.size == 1, jnp.full(prices.shape[0], 1.0 - fees), 1.0 - fees
-    )
+    gamma = jnp.where(fees.size == 1, jnp.full(prices.shape[0], 1.0 - fees), 1.0 - fees)
 
     arb_thresh = jnp.where(
         arb_thresh.size == 1, jnp.full(prices.shape[0], arb_thresh), arb_thresh
@@ -524,10 +503,7 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
     )
 
     # pre-calculate some values that are repeatedly used in optimal arb calculations
-
-    array_of_trues = jnp.ones((n_assets,), dtype=bool)
-
-    tokens_to_keep, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
+    _, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
         precalc_shared_values_for_all_signatures(all_sig_variations, n_assets)
     )
 
@@ -559,7 +535,7 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
         initial_reserves,
         0,
     ]
-    carry_list_end, reserves = scan(
+    _, reserves = scan(
         scan_fn,
         carry_list_init,
         [

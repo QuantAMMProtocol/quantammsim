@@ -1,9 +1,23 @@
+from typing import Dict, Any, Optional
+from functools import partial
+import numpy as np
+
 # again, this only works on startup!
-from jax import config
+from jax import config, devices, jit, tree_util
+from jax.lib.xla_bridge import default_backend
+import jax.numpy as jnp
+from jax.lax import stop_gradient, dynamic_slice
+from jax.nn import softmax
+
+from quantammsim.pools.base_pool import AbstractPool
+from quantammsim.pools.G3M.balancer.balancer_reserves import (
+    _jax_calc_balancer_reserve_ratios,
+    _jax_calc_balancer_reserves_with_fees_using_precalcs,
+    _jax_calc_balancer_reserves_with_dynamic_inputs,
+)
+from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 
 config.update("jax_enable_x64", True)
-from jax.lib.xla_bridge import default_backend
-from jax import local_device_count, devices
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -14,31 +28,12 @@ else:
     GPU_DEVICE = devices("cpu")[0]
     config.update("jax_platform_name", "cpu")
 
-import jax.numpy as jnp
-from jax import jit, vmap
-from jax import device_put
-from jax import tree_util
-from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
-
-from typing import Dict, Any, Optional, Callable
-from functools import partial
-import numpy as np
-
-from quantammsim.pools.base_pool import AbstractPool
-from quantammsim.pools.G3M.balancer.balancer_reserves import (
-    _jax_calc_balancer_reserve_ratios,
-    _jax_calc_balancer_reserves_with_fees_using_precalcs,
-    _jax_calc_balancer_reserves_with_dynamic_inputs,
-)
-from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
-
 
 class BalancerPool(AbstractPool):
     def __init__(self):
         super().__init__()
 
-    @partial(jit, static_argnums=(2))
+    @partial(jit, static_argnums=2)
     def calculate_reserves_with_fees(
         self,
         params: Dict[str, Any],
@@ -53,7 +48,9 @@ class BalancerPool(AbstractPool):
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
 
         if run_fingerprint["arb_frequency"] != 1:
-            arb_acted_upon_local_prices = local_prices[:: run_fingerprint["arb_frequency"]]
+            arb_acted_upon_local_prices = local_prices[
+                :: run_fingerprint["arb_frequency"]
+            ]
         else:
             arb_acted_upon_local_prices = local_prices
 
@@ -73,7 +70,7 @@ class BalancerPool(AbstractPool):
         )
         return reserves
 
-    @partial(jit, static_argnums=(2))
+    @partial(jit, static_argnums=2)
     def calculate_reserves_zero_fees(
         self,
         params: Dict[str, Any],
@@ -114,7 +111,7 @@ class BalancerPool(AbstractPool):
         )
         return reserves
 
-    @partial(jit, static_argnums=(2))
+    @partial(jit, static_argnums=2)
     def calculate_reserves_with_dynamic_inputs(
         self,
         params: Dict[str, Any],
@@ -134,7 +131,9 @@ class BalancerPool(AbstractPool):
         weights = self.calculate_weights(params)
 
         if run_fingerprint["arb_frequency"] != 1:
-            arb_acted_upon_local_prices = local_prices[:: run_fingerprint["arb_frequency"]]
+            arb_acted_upon_local_prices = local_prices[
+                :: run_fingerprint["arb_frequency"]
+            ]
         else:
             arb_acted_upon_local_prices = local_prices
 
@@ -152,9 +151,15 @@ class BalancerPool(AbstractPool):
         # Broadcast input arrays to match the maximum leading dimension.
         # If they are singletons, this will just repeat them for the length of the bout.
         # If they are arrays of length bout_length, this will cause no change.
-        fees_array_broadcast = jnp.broadcast_to(fees_array, (max_len,) + fees_array.shape[1:])
-        arb_thresh_array_broadcast = jnp.broadcast_to(arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:])
-        arb_fees_array_broadcast = jnp.broadcast_to(arb_fees_array, (max_len,) + arb_fees_array.shape[1:])
+        fees_array_broadcast = jnp.broadcast_to(
+            fees_array, (max_len,) + fees_array.shape[1:]
+        )
+        arb_thresh_array_broadcast = jnp.broadcast_to(
+            arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:]
+        )
+        arb_fees_array_broadcast = jnp.broadcast_to(
+            arb_fees_array, (max_len,) + arb_fees_array.shape[1:]
+        )
         # if we are doing trades, the trades array must be of the same length as the other arrays
         if run_fingerprint["do_trades"]:
             assert trade_array.shape[0] == max_len
@@ -201,7 +206,8 @@ class BalancerPool(AbstractPool):
                         return initial_value
                     else:
                         raise ValueError(
-                            f"{key} must be a singleton or a vector of length n_assets or a matrix of shape (n_parameter_sets, n_assets)"
+                            f"{key} must be a singleton or a vector of length n_assets"
+                             +  "or a matrix of shape (n_parameter_sets, n_assets)"
                         )
                 else:
                     return np.array([[initial_value] * n_assets] * n_parameter_sets)

@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
 
-def expand_daily_to_minute_data(daily_data, scale='ms'):
+
+def expand_daily_to_minute_data(daily_data, scale="ms"):
     """
     Expand daily data to minute-level data by repeating daily values for each minute.
 
@@ -18,16 +19,18 @@ def expand_daily_to_minute_data(daily_data, scale='ms'):
     daily_data.set_index("datetime", inplace=True)
 
     # Create a date range with minute frequency
-    minute_range = pd.date_range(start=daily_data.index.min(), end=daily_data.index.max(), freq='T')
+    minute_range = pd.date_range(
+        start=daily_data.index.min(), end=daily_data.index.max(), freq="T"
+    )
 
     # Reindex the daily data to the minute range, forward filling the values
-    minute_data = daily_data.reindex(minute_range, method='ffill')
+    minute_data = daily_data.reindex(minute_range, method="ffill")
 
     # Reset index to get 'datetime' back as a column
     minute_data.reset_index(inplace=True)
 
     # Rename the 'index' column to 'datetime'
-    minute_data.rename(columns={'index': 'datetime'}, inplace=True)
+    minute_data.rename(columns={"index": "datetime"}, inplace=True)
 
     # Convert 'datetime' back to unix timestamp
     minute_data["unix"] = minute_data["datetime"].astype(np.int64) // 10**6
@@ -51,19 +54,27 @@ def resample_minute_level_OHLC_data_to_daily(OHLC_df, ticker):
     OHLC_df.set_index("datetime", inplace=True)
 
     # Resample to daily data
-    daily_OHLC = OHLC_df.resample("D").agg({
-        'open_'+ticker: 'first',
-        'high_'+ticker: 'max',
-        'low_'+ticker: 'min',
-        'close_'+ticker: 'last',
-        'Volume USD_'+ticker: 'sum'
-    })
+    daily_OHLC = OHLC_df.resample("D").agg(
+        {
+            "open_" + ticker: "first",
+            "high_" + ticker: "max",
+            "low_" + ticker: "min",
+            "close_" + ticker: "last",
+            "Volume USD_" + ticker: "sum",
+        }
+    )
 
     return daily_OHLC
 
-def gkyz_var(open, high, low, close, close_tm1): # Garman Klass Yang Zhang extension OHLC volatility estimate
-    return np.log(open/close_tm1)**2 + 0.5*(np.log(high/low)**2) \
-        - (2*np.log(2)-1)*(np.log(close/open)**2)
+
+def gkyz_var(
+    open, high, low, close, close_tm1
+):  # Garman Klass Yang Zhang extension OHLC volatility estimate
+    return (
+        np.log(open / close_tm1) ** 2
+        + 0.5 * (np.log(high / low) ** 2)
+        - (2 * np.log(2) - 1) * (np.log(close / open) ** 2)
+    )
 
 
 def calculate_annualised_daily_volatility_from_minute_data(price_data, ticker):
@@ -91,4 +102,3 @@ def calculate_annualised_daily_volatility_from_minute_data(price_data, ticker):
     daily_volatility = price_data["log_return"].resample("D").std()
 
     return daily_volatility * np.sqrt(365.25)
-

@@ -182,11 +182,11 @@ def calc_fine_weight_output(
 
 calc_fine_weight_output_from_weight_changes = jit(
     Partial(calc_fine_weight_output, raw_weight_outputs_are_themselves_weights=False),
-    static_argnums=(2,)
+    static_argnums=(2,),
 )
 calc_fine_weight_output_from_weights = jit(
     Partial(calc_fine_weight_output, raw_weight_outputs_are_themselves_weights=True),
-    static_argnums=(2,)
+    static_argnums=(2,),
 )
 
 
@@ -436,7 +436,7 @@ def _jax_calc_coarse_weight_scan_function(
     ## weights we WISH to have at the ith moment, using
     ## all information available at the (i-1)th moment
     if mvpt:
-        raw_weights = alt_lamb * prev_weights + (1-alt_lamb)*raw_weight_outputs
+        raw_weights = alt_lamb * prev_weights + (1 - alt_lamb) * raw_weight_outputs
     else:
         raw_weights = prev_weights + raw_weight_outputs
     ## calc normed weights

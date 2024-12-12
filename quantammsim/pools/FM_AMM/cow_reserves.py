@@ -1,22 +1,22 @@
-# again, this only works on startup!
-from jax import config
 
-config.update("jax_enable_x64", True)
+from functools import partial
+
+import math
+from typing import List, Callable
+import numpy as np
+
+
+# again, this only works on startup!
+from jax import config, jit, vmap
 import jax.numpy as jnp
-from jax import jit, vmap
 from jax.lax import scan
 from jax.tree_util import Partial
 
-import numpy as np
 
 from functools import partial
 
 np.seterr(all="raise")
 np.seterr(under="print")
-import math
-from typing import List, Tuple, Callable, Dict, Any
-from quantammsim.pools.FM_AMM.FMAMM_trades import jitted_FMAMM_cond_trade
-
 
 def align_CPAMM(reserves: List[float], price: float) -> List[float]:
     """
@@ -49,7 +49,7 @@ def align_FMAMM(reserves: List[float], price: float) -> List[float]:
         price (float): The new price to align the reserves with.
 
     Returns:
-        List[float]: A list of two values representing
+        List[float]: A list of two values representing 
         the new reserves of FMAMM after the alignment.
     """
 
@@ -72,20 +72,20 @@ def align_position(
     ext_thresh: float = 0.0,
 ) -> List[float]:
     """
-    Return new AMM position reserves the it has been aligned
+    Return new AMM position reserves the it has been aligned 
     to a new price through an arbitrage trade.
 
     Args:
-        reserves (List[float]):
+        reserves (List[float]): 
             A list of two values representing the current reserves of the AMM.
-        price (float): The new price to align the reserves with:
+        price (float): The new price to align the reserves with: 
             Either a single value or a list of two values representing the bid and ask price.
-        align_function (callable):
+        align_function (callable): 
             A function used to calculate the new reserves based on the align price.
-        amm_fee (float, optional):
+        amm_fee (float, optional): 
             The trading fee that the AMM charges. Default is 0.0.
-        ext_fee (float, optional):
-            An additional external fee the arbitrageur needs to pay
+        ext_fee (float, optional): 
+            An additional external fee the arbitrageur needs to pay 
             (could e.g. a fee on the external exchange). Default is 0.0.
 
     Returns:
@@ -142,11 +142,13 @@ def align_FMAMM_jax(reserves, price):
     assumes weights of 0.5 for both tokens.
 
     Args:
-        reserves (jnp.ndarray): A JAX array of two values representing the current reserves of FMAMM.
+        reserves (jnp.ndarray): 
+            A JAX array of two values representing the current reserves of FMAMM.
         price (jnp.ndarray): The new price to align the reserves with.
 
     Returns:
-        jnp.ndarray: A JAX array of two values representing the new reserves of FMAMM after the alignment.
+        jnp.ndarray: A JAX array of two values representing 
+            the new reserves of FMAMM after the alignment.
     """
     align_reserves = jnp.array(
         [
@@ -164,11 +166,13 @@ def align_FMAMM_onearb_jax(reserves, price):
     This function assumes weights of 0.5 for both tokens.
 
     Args:
-        reserves (jnp.ndarray): A JAX array of two values representing the current reserves of FMAMM.
-        price (jnp.ndarray): The new price to align the reserves with.
+        reserves (jnp.ndarray): 
+            A JAX array of two values representing the current reserves of FMAMM.
+            price (jnp.ndarray): The new price to align the reserves with.
 
     Returns:
-        jnp.ndarray: A JAX array of two values representing the new reserves of FMAMM after the alignment.
+        jnp.ndarray: A JAX array of two values representing 
+            the new reserves of FMAMM after the alignment.
     """
     constant = reserves[0] * reserves[1]
     align_reserves = jnp.array(
@@ -213,10 +217,6 @@ def _jax_calc_cowamm_reserves_with_fees_scan_function(
     jnp.ndarray
         Array of reserves.
     """
-
-    # carry_list[0] is previous prices
-    prev_prices = carry_list[0]
-
     # carry_list[1] is previous reserves
     prev_reserves = carry_list[1]
 
@@ -360,9 +360,6 @@ def _jax_calc_cowamm_reserves_one_arb_with_fees_scan_function(
     """
     # NOTE: MAYBE THIS SHOULD BE DONE IN LOG SPACE?
 
-    # carry_list[0] is previous prices
-    prev_prices = carry_list[0]
-
     # carry_list[1] is previous reserves
     prev_reserves = carry_list[1]
 
@@ -385,7 +382,6 @@ def _jax_calc_cowamm_reserves_one_arb_with_fees_scan_function(
     delta_reserves_1_case1 = weight * (
         prev_reserves[1] / gamma - (jnp.sqrt(prev_product * scalar_price / (gamma)))
     )
-    case_1_trade = jnp.array([delta_reserves_0_case1, delta_reserves_1_case1])
 
     delta_reserves_0_case2 = weight * (
         prev_reserves[0] / gamma - (jnp.sqrt(prev_product / (gamma * scalar_price)))
@@ -393,7 +389,6 @@ def _jax_calc_cowamm_reserves_one_arb_with_fees_scan_function(
     delta_reserves_1_case2 = weight * (
         prev_reserves[1] - (jnp.sqrt(prev_product * scalar_price / (gamma)))
     )
-    case_2_trade = jnp.array([delta_reserves_0_case2, delta_reserves_1_case2])
 
     overall_trades = jnp.array(
         [
@@ -588,8 +583,6 @@ def _jax_calc_cowamm_reserves_one_arb_zero_fees(
     n_assets = prices.shape[1]
     assert n_assets == 2
 
-    n = prices.shape[0]
-
     initial_prices = prices[0]
 
     scan_fn = Partial(
@@ -675,16 +668,12 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
         Array of reserves.
     """
 
-    # carry_list[0] is previous prices
-    prev_prices = carry_list[0]
-
     # carry_list[1] is previous reserves
     prev_reserves = carry_list[1]
 
     # input_list[0] is prices
     prices = input_list[0]
     gamma = input_list[1]
-    arb_thresh = input_list[2]
     arb_fees = input_list[3]
 
     # first find quoted price
@@ -875,8 +864,6 @@ def _jax_calc_cowamm_reserves_with_dynamic_inputs(
     n_assets = prices.shape[1]
     assert n_assets == 2
 
-    n = prices.shape[0]
-
     initial_prices = prices[0]
 
     gamma = 1.0 - fees
@@ -890,7 +877,7 @@ def _jax_calc_cowamm_reserves_with_dynamic_inputs(
     )
 
     carry_list_init = [initial_prices, initial_reserves]
-    carry_list_end, reserves = scan(
+    _, reserves = scan(
         scan_fn, carry_list_init, [prices, gamma, arb_thresh, arb_fees, trades]
     )
 

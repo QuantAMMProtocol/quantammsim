@@ -1,18 +1,10 @@
 # again, this only works on startup!
-from jax import config
-
-config.update("jax_enable_x64", True)
+from jax import config, jit,devices
+from jax.lib.xla_bridge import default_backend
 
 import jax.numpy as jnp
 
-from jax import jit, vmap
-from jax import devices
-from jax.tree_util import Partial
-from jax.lax import scan
-from jax.lib.xla_bridge import default_backend
-from jax import local_device_count, devices
-
-from functools import partial
+config.update("jax_enable_x64", True)
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -22,7 +14,18 @@ else:
     GPU_DEVICE = devices("cpu")[0]
 
 
-def zero_trade_function_FMAMM(reserves, trade, gamma):
+def zero_trade_function_FMAMM(reserves, _unused_trade, _unused_gamma):
+    """
+    Generates a zero-filled array with the same shape as the input reserves.
+
+    Args:
+        reserves (jnp.ndarray): The current reserves of the AMM.
+        trade (Any): The trade details (not used in this function).
+        gamma (Any): A parameter (not used in this function).
+
+    Returns:
+        jnp.ndarray: An array of zeros with the same shape as the input reserves.
+    """
     return jnp.zeros(reserves.shape)
 
 
