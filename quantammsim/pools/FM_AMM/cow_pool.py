@@ -1,4 +1,3 @@
-
 from typing import Dict, Any, Optional
 
 # again, this only works on startup!
@@ -14,7 +13,7 @@ from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.pools.FM_AMM.cow_reserves import (
     _jax_calc_cowamm_reserve_ratio_vmapped,
     _jax_calc_cowamm_reserves_with_fees,
-    _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades,
+    _jax_calc_cowamm_reserves_with_dynamic_inputs,
 )
 from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 
@@ -330,4 +329,3 @@ tree_util.register_pytree_node(
     CowPool._tree_flatten,
     CowPool._tree_unflatten,
 )
-
