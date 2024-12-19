@@ -1,9 +1,24 @@
+
+from typing import Dict, Any, Optional
+
 # again, this only works on startup!
 from jax import config
 
-config.update("jax_enable_x64", True)
 from jax.lib.xla_bridge import default_backend
-from jax import local_device_count, devices
+from jax import devices, tree_util
+
+import jax.numpy as jnp
+from jax.lax import dynamic_slice
+
+from quantammsim.pools.base_pool import AbstractPool
+from quantammsim.pools.FM_AMM.cow_reserves import (
+    _jax_calc_cowamm_reserve_ratio_vmapped,
+    _jax_calc_cowamm_reserves_with_fees,
+    _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades,
+)
+from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
+
+config.update("jax_enable_x64", True)
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -14,26 +29,46 @@ else:
     GPU_DEVICE = devices("cpu")[0]
     config.update("jax_platform_name", "cpu")
 
-import jax.numpy as jnp
-from jax import jit, vmap
-from jax import device_put
-from jax import tree_util
-from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
-
-from typing import Dict, Any, Optional, Callable
-import numpy as np
-
-from quantammsim.pools.base_pool import AbstractPool
-from quantammsim.pools.FM_AMM.cow_reserves import (
-    _jax_calc_cowamm_reserve_ratio_vmapped,
-    _jax_calc_cowamm_reserves_with_fees,
-    _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades,
-)
-from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
-
 
 class CowPool(AbstractPool):
+    """
+    A class representing a CowPool, which is a type of automated market maker (AMM) pool
+     with specific characteristics.
+
+    Methods
+    -------
+    __init__():
+        Initializes the CowPool instance.
+
+    calculate_reserves_with_fees(params, run_fingerprint, prices, 
+    start_index, additional_oracle_input=None) -> jnp.ndarray:
+        Calculates the reserves of the pool considering fees.
+
+    calculate_reserves_zero_fees(params, run_fingerprint, prices, 
+    start_index, additional_oracle_input=None) -> jnp.ndarray:
+        Calculates the reserves of the pool without considering fees.
+
+    calculate_reserves_with_dynamic_inputs(params, run_fingerprint, prices, 
+    start_index, fees_array, arb_thresh_array, arb_fees_array, trade_array, 
+    additional_oracle_input=None) -> jnp.ndarray:
+        Calculates the reserves of the pool with dynamic inputs for fees, 
+        arbitrage thresholds, arbitrage fees, and trades.
+
+    _init_base_parameters(initial_values_dict, run_fingerprint, n_assets, 
+    n_parameter_sets=1, noise="gaussian") -> Dict[str, Any]:
+        Initializes the base parameters for the pool. Cow pools have no parameters.
+
+    calculate_weights(params, *args, **kwargs) -> jnp.ndarray:
+        Calculates the weights for the assets in the pool. For CowPool, 
+        the weights are always [0.5, 0.5].
+
+    make_vmap_in_axes(params, n_repeats_of_recurred=0):
+        Creates the vmap in_axes for the parameters.
+
+    is_trainable() -> bool:
+        Indicates whether the pool is trainable. For CowPool, this is always False.
+    """
+
     def __init__(self):
         super().__init__()
 
@@ -101,7 +136,7 @@ class CowPool(AbstractPool):
         initial_reserves = initial_value_per_token / local_prices[0]
 
         reserve_ratios = _jax_calc_cowamm_reserve_ratio_vmapped(
-                    arb_acted_upon_local_prices[:-1], arb_acted_upon_local_prices[1:]
+            arb_acted_upon_local_prices[:-1], arb_acted_upon_local_prices[1:]
         )
         reserves = jnp.vstack(
             [

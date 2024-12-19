@@ -1,10 +1,36 @@
-
 class TrainingResult:
-    def __init__(self, alphabetic, bout_offset, chunk_period, endDateString, endDateUnix, endTestDateString, fees,
-                 filename_override, freq, initial_k, initial_k_per_day, initial_log_amplitude, initial_memory_length,
-                 initial_memory_length_delta, initial_pool_value, initial_raw_exponents, initial_raw_width,
-                 initial_weights_logits, maximum_change, optimisation_settings, return_val, rule, startDateString,
-                 startDateUnix, subsidary_pools, tokens, use_alt_lamb, use_pre_exp_scaling, weight_interpolation_period):
+    def __init__(
+        self,
+        alphabetic,
+        bout_offset,
+        chunk_period,
+        endDateString,
+        endDateUnix,
+        endTestDateString,
+        fees,
+        filename_override,
+        freq,
+        initial_k,
+        initial_k_per_day,
+        initial_log_amplitude,
+        initial_memory_length,
+        initial_memory_length_delta,
+        initial_pool_value,
+        initial_raw_exponents,
+        initial_raw_width,
+        initial_weights_logits,
+        maximum_change,
+        optimisation_settings,
+        return_val,
+        rule,
+        startDateString,
+        startDateUnix,
+        subsidary_pools,
+        tokens,
+        use_alt_lamb,
+        use_pre_exp_scaling,
+        weight_interpolation_period,
+    ):
         self.alphabetic = alphabetic
         self.bout_offset = bout_offset
         self.chunk_period = chunk_period

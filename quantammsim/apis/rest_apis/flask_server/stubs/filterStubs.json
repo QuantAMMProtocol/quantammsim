@@ -1,0 +1,38 @@
+[
+    {
+        "chain": [
+            "mainnet",
+            "arbitrum",
+            "avalanche",
+            "optimism",
+            "base"
+        ]
+    },
+    {
+        "tokenType": [
+            "topMarketCap",
+            "highMarketCap",
+            "gaming",
+            "dex",
+            "infra",
+            "defi",
+            "stables"
+        ]
+    },
+    {
+        "strategy": [
+            "momentum",
+            "antiMomentum",
+            "minimumVariance",
+            "channelFollowing",
+            "powerChannel"
+        ]
+    },
+    {
+        "frequency": [
+            "daily",
+            "hourly",
+            "likelyHourly"
+        ]
+    }
+]

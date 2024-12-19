@@ -1,36 +1,59 @@
 import os
-
-# again, this only works on startup!
-from jax import config
-
-config.update("jax_enable_x64", True)
-from quantammsim.training.hessian_trace import hessian_trace
-
-import jax.numpy as jnp
-from jax import jit
-
-import numpy as np
-from itertools import product
-
-from copy import deepcopy
-
 import json
 import hashlib
+from copy import deepcopy
+from itertools import product
+
+import numpy as np
+import jax.numpy as jnp
+from jax import jit
+from jax import config
+
+from quantammsim.training.hessian_trace import hessian_trace
+
+# again, this only works on startup!
+config.update("jax_enable_x64", True)
 
 np.seterr(all="raise")
 np.seterr(under="print")
 
+
 def default_set_or_get(dictionary, key, default, augment=True):
+    """
+    Retrieves the value for a given key from a dictionary. If the key does not exist,
+    it sets the key to a default value and returns the default value.
+
+    Args:
+        dictionary (dict): The dictionary to search for the key.
+        key: The key to look up in the dictionary.
+        default: The default value to set and return if the key is not found.
+        augment (bool, optional): If True, the default value is added to the dictionary
+                                  if the key is not found. Defaults to True.
+
+    Returns:
+        The value associated with the key if it exists, otherwise the default value.
+    """
     value = dictionary.get(key)
     if value is None:
         if augment:
             dictionary[key] = default
         return default
-    else:
-        return value
+
+    return value
 
 
 def default_set(dictionary, key, default):
+    """
+    Sets a default value for a given key in a dictionary if the key does not already exist.
+
+    Args:
+        dictionary (dict): The dictionary to update.
+        key: The key to check in the dictionary.
+        default: The default value to set if the key is not present.
+
+    Returns:
+        None
+    """
     value = dictionary.get(key)
     if value is None:
         dictionary[key] = default
@@ -39,16 +62,16 @@ def default_set(dictionary, key, default):
 class NumpyEncoder(json.JSONEncoder):
     """Special json encoder for numpy types"""
 
-    def default(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        elif isinstance(obj, np.floating):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        # elif isinstance(obj, dict):
-        #     return default(obj)
-        return json.JSONEncoder.default(self, obj)
+    def default(self, o):
+        if isinstance(o, np.integer):
+            return int(o)
+        elif isinstance(o, np.floating):
+            return float(o)
+        elif isinstance(o, np.ndarray):
+            return o.tolist()
+        # elif isinstance(o, dict):
+        #     return default(o)
+        return json.JSONEncoder.default(self, o)
 
 
 def get_run_location(run_fingerprint):
@@ -166,8 +189,10 @@ def memory_days_to_logit_lamb(memory_days, chunk_period=60):
     """
     Convert memory days to logit lambda value.
 
-    This function takes a memory days value and a chunk period, and returns the corresponding logit lambda value.
-    The logit lambda value is a transformed version of the lambda value, which is a measure of the memory of the system.
+    This function takes a memory days value and a chunk period,
+    and returns the corresponding logit lambda value.
+    The logit lambda value is a transformed version of the lambda value,
+    which is a measure of the memory of the system.
     The chunk period is the time period over which the memory is calculated.
 
     Args:
@@ -196,6 +221,7 @@ def lamb_to_memory_days(lamb, chunk_period):
     """
     memory_days = jnp.cbrt(6 * lamb / ((1 - lamb) ** 3.0)) * 2 * chunk_period / 1440
     return memory_days
+
 
 @jit
 def jax_logit_lamb_to_lamb(logit_lamb):
@@ -235,31 +261,59 @@ def lamb_to_memory_days_clipped(lamb, chunk_period, max_memory_days):
 
 
 def calc_lamb(update_rule_parameter_dict):
+    """
+    Calculate the lambda value from the given update rule parameter dictionary.
+
+    This function extracts the "logit_lamb" value from the provided dictionary,
+    applies the logistic function to it, and returns the resulting lambda value.
+
+    Args:
+        update_rule_parameter_dict (dict): A dictionary containing the update rule parameters.
+            It must include the key "logit_lamb".
+
+    Returns:
+        float: The calculated lambda value.
+
+    Raises:
+        Exception: If the "logit_lamb" key is not found in the update_rule_parameter_dict.
+    """
     if update_rule_parameter_dict.get("logit_lamb") is not None:
         logit_lamb = update_rule_parameter_dict["logit_lamb"]
         lamb = jnp.exp(logit_lamb) / (1 + jnp.exp(logit_lamb))
     else:
-        raise Exception
+        raise KeyError("logit_lamb key not found in update_rule_parameter_dict")
     return lamb
 
 
 def calc_alt_lamb(update_rule_parameter_dict):
+    """
+    Calculate the alternative lambda value based on the provided update rule parameters.
+
+    Args:
+        update_rule_parameter_dict (dict): A dictionary containing the update rule parameters.
+        Expected keys are:
+            - "logit_lamb": The logit lambda value.
+            - "logit_delta_lamb": The logit delta lambda value.
+
+    Returns:
+        float: The calculated alternative lambda value.
+
+    Raises:
+        Exception: If "logit_lamb" or "logit_delta_lamb" is not found
+        in the update_rule_parameter_dict.
+    """
     if update_rule_parameter_dict.get("logit_lamb") is not None:
         logit_lamb = update_rule_parameter_dict["logit_lamb"]
     else:
-        raise Exception
-    raise Exception
+        raise KeyError("logit_lamb key not found in update_rule_parameter_dict")
+
     if update_rule_parameter_dict.get("logit_delta_lamb") is not None:
         logit_delta_lamb = update_rule_parameter_dict["logit_delta_lamb"]
     else:
-        raise Exception
+        raise KeyError("logit_delta_lamb key not found in update_rule_parameter_dict")
     logit_alt_lamb = logit_delta_lamb + logit_lamb
     alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
-    return lamb
-
-    # lamb = jnp.clip(lamb, a_min=0.0, a_max=1.0-eps)
-    # og_memory_days = jnp.cbrt(6 * lamb / ((1 - lamb) ** 3)) * 2 * chunk_period / 1440
-    # memory_days = jnp.clip(og_memory_days, a_min=0.0, a_max=max_memory_days)
+    return alt_lamb
 
 
 def init_params_singleton(
@@ -278,7 +332,7 @@ def init_params_singleton(
         dict: The initialized parameters.
     """
     n_pool_members = n_tokens + n_subsidary_rules
-    
+
     if log_for_k:
         log_k = jnp.array(
             [np.log2(initial_values_dict["initial_k_per_day"])] * n_pool_members
@@ -347,9 +401,7 @@ def init_params_singleton(
         }
     else:
         params = {
-            "k": jnp.array(
-                [initial_values_dict["initial_k_per_day"]] * n_pool_members
-            ),
+            "k": jnp.array([initial_values_dict["initial_k_per_day"]] * n_pool_members),
             "logit_lamb": logit_lamb,
             "logit_delta_lamb": logit_delta_lamb,
             "initial_weights_logits": initial_weights_logits,
@@ -368,8 +420,7 @@ def fill_in_missing_values_from_init_singleton(
     n_tokens,
     n_subsidary_rules=0,
     chunk_period=60,
-    n_parameter_sets=1,
-    log_for_k=True
+    log_for_k=True,
 ):
     """
     Fill in missing values in parameters from initial values.
@@ -388,9 +439,9 @@ def fill_in_missing_values_from_init_singleton(
     initial_params = init_params_singleton(
         initial_values_dict, n_tokens, n_subsidary_rules, chunk_period, log_for_k
     )
-    for key in initial_params:
-        if params.get(key) == None:
-            params[key] = initial_params[key]
+    for key, value in initial_params.items():
+        if params.get(key) is None:
+            params[key] = value
     return params
 
 
@@ -495,16 +546,14 @@ def init_params(
 
     if n_parameter_sets > 1:
         if noise == "gaussian":
-            for key in params.keys():
+            for key, value in params.items():
                 if key != "subsidary_params":
                     # Leave first row of each jax parameter unaltered, add
                     # gaussian noise to subsequent rows.
-                    params[key][1:] = params[key][1:] + np.random.randn(
-                        *params[key][1:].shape
-                    )
-    for key in params.keys():
+                    value[1:] = value[1:] + np.random.randn(*value[1:].shape)
+    for key, value in params.items():
         if key != "subsidary_params":
-            params[key] = jnp.array(params[key])
+            params[key] = jnp.array(value)
     return params
 
 
@@ -537,9 +586,9 @@ def fill_in_missing_values_from_init(
         chunk_period,
         n_parameter_sets=n_parameter_sets,
     )
-    for key in initial_params:
-        if params.get(key) == None:
-            params[key] = initial_params[key]
+    for key, value in initial_params.items():
+        if params.get(key) is None:
+            params[key] = value
     return params
 
 
@@ -549,7 +598,8 @@ def calc_hessian_from_loaded_params(params, partial_fixed_training_step):
 
     Args:
         params (dict): A dictionary of parameters.
-        partial_fixed_training_step (function): A function representing the partial fixed training step.
+        partial_fixed_training_step (function): 
+            A function representing the partial fixed training step.
 
     Returns:
         numpy.ndarray: The Hessian matrix calculated from the loaded parameters.
@@ -598,14 +648,14 @@ def load_result_array(run_location, key="objective", recalc_hess=False):
     If recalc_hess=True, will recalculate Hessian trace values for each parameter set
     """
     if os.path.isfile(run_location):
-        with open(run_location) as json_file:
+        with open(run_location, encoding='utf-8') as json_file:
             params = json.load(json_file)
             # if params:
             #     calc()
             params = json.loads(params)
-        if recalc_hess == True:
+        if recalc_hess is True:
             if "hessian_trace" not in params[0].keys():
-                for i in range(len(params)):
+                for i, param in enumerate(params):
                     params[i]["hessian_trace"] = calc_hessian_from_loaded_params(
                         params[i]
                     )
@@ -636,7 +686,8 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         - "best_objective": Return set with highest overall objective
         - "best_train_objective": Return set with highest training objective
         - "best_test_objective": Return set with highest test objective
-        - "best_train_min_test_objective": Return set with highest training objective meeting minimum test threshold
+        - "best_train_min_test_objective": Return set with highest training objective meeting 
+        minimum test threshold
         Defaults to "last"
     recalc_hess : bool, optional
         Whether to recalculate Hessian trace values, defaults to False
@@ -659,14 +710,14 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
     selecting best training objective.
     """
     if os.path.isfile(run_location):
-        with open(run_location) as json_file:
+        with open(run_location, encoding='utf-8') as json_file:
             params = json.load(json_file)
             # if params:
 
             #     calc()
 
             params = json.loads(params)
-        if recalc_hess == True:
+        if recalc_hess is True:
             if "hessian_trace" not in params[0].keys():
                 for i in range(len(params)):
                     params[i]["hessian_trace"] = calc_hessian_from_loaded_params(
@@ -675,11 +726,12 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
 
                 dumped = json.dumps(params, cls=NumpyEncoder)
 
-                with open(run_location, "w") as json_file:
+                with open(run_location, "w", encoding='utf-8') as json_file:
                     json.dump(dumped, json_file)
 
         if load_method == "last":
             index = -1
+            context = None
         elif load_method == "best_objective":
             objectives = [p["objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
@@ -767,10 +819,12 @@ def load_or_init(
         load_method (str, optional): The method to use for loading. Defaults to "last".
         n_parameter_sets (int, optional): The number of parameter sets. Defaults to 1.
         results_dir (str, optional): The directory for results. Defaults to "./results/".
-        partial_fixed_training_step (None, optional): The partial fixed training step. Defaults to None.
+        partial_fixed_training_step (None, optional): The partial fixed training step. 
+        Defaults to None.
 
     Returns:
-        tuple: A tuple containing the parameters and a boolean indicating whether they were loaded or initialized.
+        tuple: A tuple containing the parameters and a boolean indicating 
+        whether they were loaded or initialized.
     """
 
     run_location = results_dir + get_run_location(run_fingerprint) + ".json"
@@ -784,12 +838,12 @@ def load_or_init(
         )
         loaded = False
     elif os.path.isfile(run_location):
-        with open(run_location) as json_file:
+        with open(run_location, encoding='utf-8') as json_file:
             params = json.load(json_file)
             # if params:
             #     calc()
             params = json.loads(params)
-        if recalc_hess == True:
+        if recalc_hess is True:
             if "hessian_trace" not in params[0].keys():
                 for i in range(len(params)):
                     params[i]["hessian_trace"] = calc_hessian_from_loaded_params(
@@ -805,9 +859,9 @@ def load_or_init(
                         params[i]["hessian_trace"],
                     )
                 dumped = json.dumps(params, cls=NumpyEncoder)
-                with open(run_location, "w") as json_file:
+                with open(run_location, "w", encoding='utf-8') as json_file:
                     json.dump(dumped, json_file, indent=4)
-        if type(params) == list:
+        if isinstance(params, list):
             params = [
                 fill_in_missing_values_from_init(
                     p,
@@ -890,10 +944,10 @@ def load(
     """
 
     if os.path.isfile(run_location):
-        with open(run_location) as json_file:
+        with open(run_location, encoding='utf-8') as json_file:
             params = json.load(json_file)
             params = json.loads(params)
-        if type(params) == list:
+        if isinstance(params, list):
             params = [
                 fill_in_missing_values_from_init(
                     p,
@@ -916,6 +970,7 @@ def load(
             )
         if load_method == "last":
             index = -1
+            context = None
         elif load_method == "best_objective":
             objectives = [p["objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
@@ -931,7 +986,7 @@ def load(
             dict_of_np_to_jnp(sp) for sp in params["subsidary_params"]
         ]
     else:
-        raise Exception
+        raise FileNotFoundError(f"File not found: {run_location}")
     return params, context
 
 
@@ -946,7 +1001,8 @@ def make_composite_run_params(
 
     Args:
         composite_params (dict): The composite parameters for the AMM simulator.
-        list_of_subsidary_pool_run_dicts (list): A list of dictionaries containing the parameters for each subsidiary pool run.
+        list_of_subsidary_pool_run_dicts (list): A list of dictionaries containing 
+        the parameters for each subsidiary pool run.
         initial_values_dict (dict): The initial values dictionary for the AMM simulator.
         n_parameter_sets (int): The number of parameter sets.
 
@@ -1012,9 +1068,8 @@ def create_product_of_linspaces(
 
     return param_combinations
 
-def create_product_of_arrays(
-    params, keys_arrays
-):
+
+def create_product_of_arrays(params, keys_arrays):
     """
     Create a product of arrays for chosen keys in the params dict.
 
@@ -1040,138 +1095,6 @@ def create_product_of_arrays(
     return param_combinations
 
 
-def generate_params_combinations(
-    initial_values_dict,
-    n_tokens,
-    n_subsidary_rules,
-    chunk_period,
-    n_parameter_sets,
-    k_per_day_range,
-    memory_days_range,
-    num_points_k_per_day=10,
-    num_points_memory_days=10,
-    log_for_k=True
-):
-    """
-    Generate parameter combinations with linearly-spaced values of k_per_day and memory_days.
-
-    Args:
-        initial_values_dict (dict): The initial values dictionary.
-        n_tokens (int): The number of tokens.
-        n_subsidary_rules (int): The number of subsidary rules.
-        chunk_period (int): The chunk period.
-        n_parameter_sets (int): The number of parameter sets.
-        k_per_day_range (tuple): The range (low, high) for k_per_day.
-        memory_days_range (tuple): The range (low, high) for memory_days.
-        num_points_k_per_day (int, optional): The number of points for k_per_day linspace. Defaults to 10.
-        num_points_memory_days (int, optional): The number of points for memory_days linspace. Defaults to 10.
-
-    Returns:
-        list: A list of dictionaries with all combinations of parameter values.
-    """
-    # Initialize base params
-    # base_params = init_params_singleton(
-    #     initial_values_dict, n_tokens, n_subsidary_rules, chunk_period
-    # )
-
-    # Define keys ranges for linspace generation
-    keys_ranges = {
-        "initial_k_per_day": k_per_day_range,
-        "initial_memory_length": memory_days_range,
-    }
-
-    # Define number of points for each key
-    num_points_per_key = {
-        "initial_k_per_day": num_points_k_per_day,
-        "initial_memory_length": num_points_memory_days,
-    }
-
-    # Generate param combinations
-    initial_values_dict_combinations = create_product_of_linspaces(
-        initial_values_dict.copy(), keys_ranges, num_points_per_key
-    )
-
-    # Fill in missing values from initial values
-    filled_param_combinations = [
-        fill_in_missing_values_from_init_singleton(
-            {},
-            i_v_d,
-            n_tokens,
-            n_subsidary_rules,
-            chunk_period,
-            n_parameter_sets,
-            log_for_k,
-        )
-        for i_v_d in initial_values_dict_combinations
-    ]
-    return filled_param_combinations, initial_values_dict_combinations
-
-
-def generate_random_params_combinations(
-    initial_values_dict,
-    n_tokens,
-    n_subsidary_rules,
-    chunk_period,
-    n_parameter_sets,
-    k_per_day_range,
-    memory_days_range,
-    n_random_samples=5,
-    log_for_k=True,
-    scalar=False
-):
-    """
-    Generate parameter combinations with uniformly-sampled random values of k_per_day and memory_days.
-
-    Args:
-        initial_values_dict (dict): The initial values dictionary.
-        n_tokens (int): The number of tokens.
-        n_subsidary_rules (int): The number of subsidary rules.
-        chunk_period (int): The chunk period.
-        n_parameter_sets (int): The number of parameter sets.
-        k_per_day_range (tuple): The range (low, high) for k_per_day.
-        memory_days_range (tuple): The range (low, high) for memory_days.
-        n_random_samples (int, optional): The number of points to sample. Defaults to 5.
-        log_for_k (bool, optional): If the logarithm of k should be used, including for sampling
-
-    Returns:
-        list: A list of dictionaries with all combinations of parameter values.
-    """
-
-    # not written to handle subsidary runs:
-    if n_subsidary_rules > 0:
-        raise NotImplementedError
-    # Fill in missing values from initial values
-    initial_params = fill_in_missing_values_from_init_singleton(
-            {},
-            initial_values_dict,
-            n_tokens,
-            n_subsidary_rules,
-            chunk_period,
-            n_parameter_sets,
-            log_for_k,
-        )
-    filled_param_combinations = []
-    for i in range(n_random_samples):
-        if scalar:
-            memory_days = np.random.uniform(*memory_days_range,1) * np.ones(n_tokens)
-            k = np.random.uniform(*k_per_day_range, 1) * np.ones(n_tokens)
-        else:
-            memory_days = np.random.uniform(*memory_days_range,n_tokens)
-            k = np.random.uniform(*k_per_day_range, n_tokens)
-        local_params = initial_params.copy()
-        if log_for_k:
-            local_params["log_k"] = jnp.array(np.log2(k))
-        else:
-            local_params["k"] = jnp.array(k)
-        lamb = memory_days_to_lamb(memory_days, chunk_period)
-        logit_lamb_np = np.log(lamb / (1.0 - lamb))
-        logit_lamb = jnp.array(logit_lamb_np)
-        local_params["logit_lamb"] = logit_lamb
-        filled_param_combinations.append(local_params)
-
-    return filled_param_combinations
-
-
 def generate_run_fingerprint_combinations(
     run_fingerprint,
     keys_ranges=None,
@@ -1185,7 +1108,8 @@ def generate_run_fingerprint_combinations(
         run_fingerprint (dict): The base run fingerprint.
         keys_ranges (dict, optional): The dictionary containing high and low values for each key.
             Defaults to logarithmic ranges for 'arb_frequency'.
-        num_points_per_key (dict, optional): The dictionary containing the number of points for each key.
+        num_points_per_key (dict, optional): The dictionary containing the number of 
+            points for each key.
             Defaults to 10 points for each key.
         inverse_funcs (dict, optional): A dictionary of inverse functions for each key.
             Defaults to logarithmic scaling for 'arb_frequency'.
@@ -1193,9 +1117,6 @@ def generate_run_fingerprint_combinations(
     Returns:
         list: A list of dictionaries with all combinations of run fingerprint values.
     """
-
-    def log_scale(x):
-        return np.exp(x)
 
     # Default keys ranges
     if keys_ranges is None:
@@ -1219,9 +1140,21 @@ def generate_run_fingerprint_combinations(
 
     return run_fingerprint_combinations
 
+
 def make_log_range_with_zero(x):
-    y = np.exp(x)
-    if x==0:
+    """
+    Compute the exponential of a given value, with a special case for zero.
+
+    This function takes an input value `x` and returns the exponential of `x`.
+    If `x` is zero, the function returns zero instead of the exponential of zero.
+
+    Parameters:
+    x (float): The input value for which the exponential is to be computed.
+
+    Returns:
+    float: The exponential of the input value `x`, or zero if `x` is zero.
+    """
+    if x == 0:
         return 0
     else:
         return np.exp(x)
@@ -1306,7 +1239,7 @@ def split_param_combinations(param_combinations):
 
 def make_vmap_in_axes_dict(
     input_dict, in_axes, keys_to_recur_on, keys_with_no_vamp=[], n_repeats_of_recurred=0
-):  
+):
     """
     Create a dictionary specifying vmap axes for input parameters for use in function
     quantammsim.core_simulator.forward_pass.forward_pass.
@@ -1323,7 +1256,7 @@ def make_vmap_in_axes_dict(
     """
 
     in_axes_dict = dict()
-    for key, value in input_dict.items():
+    for key, in input_dict.items():
         in_axes_dict[key] = in_axes
     for key in keys_to_recur_on:
         in_axes_dict[key] = [

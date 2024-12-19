@@ -1,23 +1,35 @@
+import hashlib
+import json
 import os
 
-# again, this only works on startup!
+import numpy as np
 from jax import config
 
+from quantammsim.core_simulator.param_utils import NumpyEncoder, dict_of_jnp_to_np
+
+# again, this only works on startup!
 config.update("jax_enable_x64", True)
-
-import numpy as np
-
-import json
-import hashlib
-
-from quantammsim.core_simulator.param_utils import dict_of_jnp_to_np, NumpyEncoder
 
 np.seterr(all="raise")
 np.seterr(under="print")
 
 # TODO above is all from jax utils, tidy up required
 
+
 def get_run_location(run_fingerprint):
+    """
+    Generates a unique run location string based on the provided run fingerprint.
+
+    The function takes a dictionary representing the run fingerprint, converts it to a JSON string,
+    and then computes its SHA-256 hash. The resulting hash is used to create a unique run location
+    string prefixed with "run_".
+
+    Args:
+        run_fingerprint (dict): A dictionary representing the run fingerprint.
+
+    Returns:
+        str: A unique run location string based on the SHA-256 hash of the run fingerprint.
+    """
     run_location = "run_" + str(
         hashlib.sha256(
             json.dumps(run_fingerprint, sort_keys=True).encode("utf-8"),
@@ -28,7 +40,22 @@ def get_run_location(run_fingerprint):
 
 
 def append_json(new_data, filename):
-    with open(filename, "r+") as file:
+    """
+    Append new data to a JSON file.
+
+    This function reads the existing data from a JSON file, appends the new data to it,
+    and then writes the updated data back to the file.
+
+    Args:
+        new_data (dict): The new data to be appended to the JSON file.
+        filename (str): The path to the JSON file.
+
+    Raises:
+        FileNotFoundError: If the specified file does not exist.
+        json.JSONDecodeError: If the file contains invalid JSON.
+
+    """
+    with open(filename, "r+", encoding="utf-8") as file:
         # First we load existing data into a dict.
         file_data = json.load(file)
         file_data = json.loads(file_data)
@@ -42,7 +69,22 @@ def append_json(new_data, filename):
 
 
 def append_list_json(new_data, filename):
-    with open(filename, "r+") as file:
+    """
+    Append new data to a JSON file.
+
+    This function reads the existing data from a JSON file, appends the new data to it,
+    and then writes the updated data back to the file.
+
+    Args:
+        new_data (list): The new data to be appended to the JSON file.
+        filename (str): The path to the JSON file.
+
+    Raises:
+        FileNotFoundError: If the specified file does not exist.
+        json.JSONDecodeError: If the file contains invalid JSON.
+
+    """
+    with open(filename, "r+", encoding="utf-8") as file:
         # First we load existing data into a dict.
         file_data = json.load(file)
         file_data = json.loads(file_data)
@@ -65,7 +107,7 @@ def save_multi_params(
     iterations_since_improvement,
     steps,
     sorted_tokens=True,
-):  
+):
     """
     Save multiple parameter sets along with their associated metrics to a JSON file.
 
@@ -77,7 +119,7 @@ def save_multi_params(
         List of parameter dictionaries to save
     test_objective : list
         List of objective values on test set for each parameter set
-    train_objective : list 
+    train_objective : list
         List of objective values on training set for each parameter set
     objective : list
         List of overall objective values for each parameter set
@@ -97,25 +139,25 @@ def save_multi_params(
     Converts JAX arrays to numpy arrays before saving
     """
     run_location = "./results/" + get_run_location(run_fingerprint) + ".json"
-    for i in range(len(params)):
-        if params[i].get("subsidary_params") is not None:
-            params[i]["subsidary_params"] = [
-                dict_of_jnp_to_np(sp) for sp in params[i]["subsidary_params"]
-        ]
-        params[i]["step"] = steps[i]
-        params[i]["test_objective"] = test_objective[i]
-        params[i]["train_objective"] = train_objective[i]
-        params[i]["objective"] = objective[i]
-        params[i]["hessian_trace"] = 0
-        params[i]["local_learning_rate"] = local_learning_rate[i]
-        params[i]["iterations_since_improvement"] = iterations_since_improvement[i]
-        params[i] = dict_of_jnp_to_np(params[i])
+    for i, param in enumerate(params):
+        if param.get("subsidary_params") is not None:
+            param["subsidary_params"] = [
+                dict_of_jnp_to_np(sp) for sp in param["subsidary_params"]
+            ]
+        param["step"] = steps[i]
+        param["test_objective"] = test_objective[i]
+        param["train_objective"] = train_objective[i]
+        param["objective"] = objective[i]
+        param["hessian_trace"] = 0
+        param["local_learning_rate"] = local_learning_rate[i]
+        param["iterations_since_improvement"] = iterations_since_improvement[i]
+        params[i] = dict_of_jnp_to_np(param)
     if sorted_tokens:
         run_fingerprint["alphabetic"] = True
     if os.path.isfile(run_location) is False:
         results = [run_fingerprint] + params
         dumped = json.dumps(results, cls=NumpyEncoder, sort_keys=True)
-        with open(run_location, "w") as json_file:
+        with open(run_location, "w", encoding="utf-8") as json_file:
             json.dump(dumped, json_file, indent=4)
     else:
         append_list_json(params, run_location)
@@ -132,7 +174,7 @@ def save_params(
     local_learning_rate,
     iterations_since_improvement,
     sorted_tokens=True,
-):  
+):
     """
     Save optimization parameters and results to a JSON file.
 
@@ -147,7 +189,7 @@ def save_params(
     test_objective : float
         Objective function value on test data
     train_objective : float
-        Objective function value on training data 
+        Objective function value on training data
     objective : float
         Overall objective function value
     hess : float
@@ -183,7 +225,7 @@ def save_params(
         run_fingerprint["alphabetic"] = True
     if os.path.isfile(run_location) is False:
         dumped = json.dumps([run_fingerprint, params], cls=NumpyEncoder, sort_keys=True)
-        with open(run_location, "w") as json_file:
+        with open(run_location, "w", encoding="utf-8") as json_file:
             json.dump(dumped, json_file)
     else:
         append_json(params, run_location)

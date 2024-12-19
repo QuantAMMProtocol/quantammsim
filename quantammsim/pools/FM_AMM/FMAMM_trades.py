@@ -1,18 +1,10 @@
 # again, this only works on startup!
-from jax import config
-
-config.update("jax_enable_x64", True)
+from jax import config, jit,devices
+from jax.lib.xla_bridge import default_backend
 
 import jax.numpy as jnp
 
-from jax import jit, vmap
-from jax import devices
-from jax.tree_util import Partial
-from jax.lax import scan
-from jax.lib.xla_bridge import default_backend
-from jax import local_device_count, devices
-
-from functools import partial
+config.update("jax_enable_x64", True)
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -22,7 +14,18 @@ else:
     GPU_DEVICE = devices("cpu")[0]
 
 
-def zero_trade_function_FMAMM(reserves, trade, gamma):
+def zero_trade_function_FMAMM(reserves, _unused_trade, _unused_gamma):
+    """
+    Generates a zero-filled array with the same shape as the input reserves.
+
+    Args:
+        reserves (jnp.ndarray): The current reserves of the AMM.
+        trade (Any): The trade details (not used in this function).
+        gamma (Any): A parameter (not used in this function).
+
+    Returns:
+        jnp.ndarray: An array of zeros with the same shape as the input reserves.
+    """
     return jnp.zeros(reserves.shape)
 
 
@@ -75,7 +78,9 @@ def _jax_calc_FMAMM_trade_from_exact_out_given_in(
     # Note are using non-pythonic indexing here, in keeping with the TFMM papers.
 
     # Calculate the new reserves for token_out
-    amount_out = reserves[token_out] * amount_in / ((reserves[token_in] / gamma) + 2 * amount_in)
+    amount_out = (
+        reserves[token_out] * amount_in / ((reserves[token_in] / gamma) + 2 * amount_in)
+    )
     overall_trade = jnp.zeros(len(reserves))
     overall_trade = overall_trade.at[token_in].set(amount_in)
     overall_trade = overall_trade.at[token_out].set(-amount_out)
@@ -85,6 +90,21 @@ def _jax_calc_FMAMM_trade_from_exact_out_given_in(
 # version of _jax_calc_G3M_trade_from_exact_out_given_in that
 # in 'trade' as one single input. Useful for lazy evaluation
 def wrapped_FMAMM_trade_function(reserves, trade, gamma):
+    """
+    Executes a trade on the FM-AMM (Fixed Market Automated Market Maker) by wrapping the 
+    _jax_calc_FMAMM_trade_from_exact_out_given_in function.
+
+    Parameters:
+    reserves (list or array-like): The current reserves in the AMM.
+    trade (tuple): A tuple containing the trade details. It should include:
+        - trade[0]: The amount of input token.
+        - trade[1]: The amount of output token.
+        - trade[2]: The direction of the trade (e.g., input to output or vice versa).
+    gamma (float): A parameter that affects the trade calculation, possibly related to slippage or fee.
+
+    Returns:
+    result: The result of the trade calculation from _jax_calc_FMAMM_trade_from_exact_out_given_in.
+    """
     return _jax_calc_FMAMM_trade_from_exact_out_given_in(
         reserves, trade[0], trade[1], trade[2], gamma
     )

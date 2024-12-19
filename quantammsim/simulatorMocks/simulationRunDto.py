@@ -158,6 +158,3 @@ class SimulationResultTimeseries(object):
         self.metricName = metricName
         self.benchmarkName = benchmarkName
 
-
-if __name__ == "__main__":
-    print("module")

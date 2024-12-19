@@ -9,17 +9,17 @@ Core Concepts
 Weight Vectors and Pool Composition
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-At its heart, a TFMM pool is defined by its weight vector. For a pool with n tokens, the weight vector w = (w₁, ..., wₙ) determines:
+At its heart, a TFMM pool is defined by its weight vector. For a pool with n tokens, the weight vector :math:`\mathbf{w} = (w_1, \ldots, w_n)` determines:
 
 1. The desired ratio of value held in each token
 2. The prices at which the pool will trade
 
 For example, in a BTC/DAI pool:
-- w = (0.5, 0.5) means the pool wants equal value in both tokens
-- w = (0.7, 0.3) means the pool wants 70% of its value in BTC, 30% in DAI
+- :math:`\mathbf{w} = (0.5, 0.5)` means the pool wants equal value in both tokens
+- :math:`\mathbf{w} = (0.7, 0.3)` means the pool wants 70% of its value in BTC, 30% in DAI
 
 .. note::
-   Weights must always sum to 1.0, and each weight must stay above a minimum threshold (typically 0.1 or 10%).
+   Weights must always sum to 1.0, and each weight must stay above a minimum threshold (typically around 0.02 or 2%).
 
 From Weights to Trading
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -30,16 +30,16 @@ When a pool's actual token composition differs from its weight vector, it create
 
    .. math::
 
-      P_{i,j} = \frac{w_i}{w_j} \cdot \frac{B_j}{B_i}
+      P_{i,j} = \frac{w_i}{w_j} \cdot \frac{R_j}{R_i}
 
-   where B_i and B_j are the token balances.
+   where :math:`R_i` and :math:`R_j` are the token reserves.
 
 2. If this price differs from the market price, arbitrageurs can profit by trading with the pool.
 
 3. These trades naturally move the pool's composition toward its target weights.
 
 Example:
-   If w = (0.6, 0.4) but the pool holds equal values of tokens, arbitrageurs will:
+   If :math:`\mathbf{w} = (0.6, 0.4)` but the pool holds equal values of tokens, arbitrageurs will:
    - Buy token 1 from the pool (it's undervalued according to weights)
    - Sell token 2 to the pool (it's overvalued according to weights)
    Until the value ratio matches 60:40
@@ -84,7 +84,7 @@ Constraints and Normalization
 
 All weight changes must respect certain constraints:
 
-1. Minimum weight bounds (e.g., no weight below 0.1)
+1. Minimum weight bounds (e.g., no weight below 0.02)
 2. Maximum change speed (to prevent extreme shifts)
 3. Weights must sum to 1.0
 
@@ -105,7 +105,7 @@ Creating Custom Rules
 To create a custom update rule:
 
 1. Inherit from TFMMBasePool
-2. Implement calculate_raw_weights_outputs()
+2. Implement method ``calculate_raw_weights_outputs()``
 3. (Optional) Add custom parameters
 
 
@@ -186,7 +186,7 @@ Monitor key metrics:
 
 Next Steps
 ----------
-- Study the TFMM paper for mathematical foundations
+- Study the `TFMM paper <https://quantamm.fi/research>`_ for mathematical foundations
 - Examine existing strategy implementations
 - Start with simple rules and gradually add complexity
 - Test across different market conditions

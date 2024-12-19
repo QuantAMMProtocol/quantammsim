@@ -1,25 +1,24 @@
+from abc import ABC
+from typing import Dict, Any, Optional
+from copy import deepcopy
+
 # again, this only works on startup!
 from jax import config
-
-config.update("jax_enable_x64", True)
 
 # TODO above is all from jax utils, tidy up required
 
 import jax.numpy as jnp
-from jax import jit, vmap
-from jax import devices
+from jax import jit
 from jax.tree_util import Partial
 from jax.lax import scan
 from jax.lax import dynamic_slice
-from jax.debug import print as dprint
 
-from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
-from functools import partial
-from copy import deepcopy
 
 from quantammsim.utils.data_processing.historic_data_utils import get_data_dict
 
+
+
+config.update("jax_enable_x64", True)
 @jit
 def calc_rvr_trade_cost(
     trade,
@@ -103,9 +102,6 @@ def _jax_calc_rvr_scan_function(
     # carry_list[0] is previous weights
     prev_weights = carry_list[0]
 
-    # carry_list[1] is previous prices
-    prev_prices = carry_list[1]
-
     # carry_list[2] is previous reserves
     prev_reserves = carry_list[2]
 
@@ -117,7 +113,6 @@ def _jax_calc_rvr_scan_function(
     cex_spread = input_list[4]
 
     # First calculate change in reserves from new prices
-    prev_value = jnp.sum(prev_reserves * prev_prices)
     temp_price_value = jnp.sum(prev_reserves * prices)
     temp_price_reserves = prev_weights * temp_price_value / prices
 
@@ -285,9 +280,6 @@ def _jax_calc_lvr_reserve_change_scan_function(carry_list, weights_and_prices, t
     # carry_list[0] is previous weights
     prev_weights = carry_list[0]
 
-    # carry_list[1] is previous prices
-    prev_prices = carry_list[1]
-
     # carry_list[2] is previous reserves
     prev_reserves = carry_list[2]
 
@@ -296,7 +288,6 @@ def _jax_calc_lvr_reserve_change_scan_function(carry_list, weights_and_prices, t
     prices = weights_and_prices[1]
 
     # First calculate change in reserves from new prices
-    prev_value = jnp.sum(prev_reserves * prev_prices)
     temp_price_value = jnp.sum(prev_reserves * prices)
     temp_price_reserves = prev_weights * temp_price_value / prices
 
@@ -391,7 +382,7 @@ def _jax_calc_lvr_reserve_change(initial_reserves, weights, prices, gamma=0.998)
     scan_fn = Partial(_jax_calc_lvr_reserve_change_scan_function, tau=1.0 - gamma)
 
     carry_list_init = [weights[0], prices[0], initial_reserves]
-    carry_list_end, reserves = scan(scan_fn, carry_list_init, [weights, prices])
+    _, reserves = scan(scan_fn, carry_list_init, [weights, prices])
     return reserves
 
 
@@ -412,11 +403,12 @@ class CalculateLossVersusRebalancing(ABC):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-
         n_assets = run_fingerprint["n_assets"]
 
         # Calculate loss versus rebalancing reserve changes
-        weights = self.calculate_weights(params, run_fingerprint, prices, start_index, additional_oracle_input)
+        weights = self.calculate_weights(
+            params, run_fingerprint, prices, start_index, additional_oracle_input
+        )
 
         # some pools might return a single weight vector, not a time series
         weights = jnp.broadcast_to(
@@ -432,9 +424,26 @@ class CalculateLossVersusRebalancing(ABC):
         initial_reserves = initial_value_per_token / local_prices[0]
 
         # Use existing dynamic inputs infrastructure
-        return _jax_calc_lvr_reserve_change(initial_reserves, weights, local_prices, gamma=1-run_fingerprint["fees"])
+        return _jax_calc_lvr_reserve_change(
+            initial_reserves, weights, local_prices, gamma=1 - run_fingerprint["fees"]
+        )
 
     def calculate_reserves_with_dynamic_inputs(self, *args, **kwargs):
+        """
+        Calculate reserves with dynamic inputs.
+
+        This method is intended to calculate the reserves for a pool with dynamic inputs.
+        However, it is not implemented for LVR pools and will raise a NotImplementedError
+        if called.
+
+        Args:
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Raises:
+            NotImplementedError: This method is not implemented for LVR pools.
+        """
+
         raise NotImplementedError("This method is not implemented for LVR pools.")
 
     def calculate_reserves_zero_fees(
@@ -446,8 +455,10 @@ class CalculateLossVersusRebalancing(ABC):
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         local_run_fingerprint = deepcopy(run_fingerprint)
-        local_run_fingerprint["fees"] = 0   
-        return self.calculate_reserves_with_fees(params, local_run_fingerprint, prices, start_index, additional_oracle_input)
+        local_run_fingerprint["fees"] = 0
+        return self.calculate_reserves_with_fees(
+            params, local_run_fingerprint, prices, start_index, additional_oracle_input
+        )
 
 
 class CalculateRebalancingVersusRebalancing(ABC):
@@ -488,13 +499,19 @@ class CalculateRebalancingVersusRebalancing(ABC):
         )
 
         volatilities = data_dict["annualised_daily_volatility"][
-            data_dict["start_idx"] : data_dict["start_idx"] + data_dict["bout_length"] - 1
+            data_dict["start_idx"] : data_dict["start_idx"]
+            + data_dict["bout_length"]
+            - 1
         ]
         cex_volumes = data_dict["daily_volume"][
-            data_dict["start_idx"] : data_dict["start_idx"] + data_dict["bout_length"] - 1
+            data_dict["start_idx"] : data_dict["start_idx"]
+            + data_dict["bout_length"]
+            - 1
         ]
         cex_spread = data_dict["spread"][
-            data_dict["start_idx"] : data_dict["start_idx"] + data_dict["bout_length"] - 1
+            data_dict["start_idx"] : data_dict["start_idx"]
+            + data_dict["bout_length"]
+            - 1
         ]
 
         n_assets = run_fingerprint["n_assets"]
@@ -529,6 +546,20 @@ class CalculateRebalancingVersusRebalancing(ABC):
         )[0]
 
     def calculate_reserves_with_dynamic_inputs(self, *args, **kwargs):
+        """
+        Calculate reserves with dynamic inputs.
+
+        This method is intended to calculate the reserves for RVR pools using 
+        dynamic inputs provided through *args and **kwargs. However, it is 
+        currently not implemented and will raise a NotImplementedError if called.
+
+        Args:
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Raises:
+            NotImplementedError: This method is not implemented for RVR pools.
+        """
         raise NotImplementedError("This method is not implemented for RVR pools.")
 
     def calculate_reserves_zero_fees(

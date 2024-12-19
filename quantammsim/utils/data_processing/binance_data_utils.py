@@ -3,11 +3,14 @@ import pandas as pd
 import glob
 import os
 
+
 def concat_csv_files(root, save_root, token1, token2, prefix, postfix, years_array_str):
     print("concatenating files")
     filenames = []
     for year in years_array_str:
-        filenames = filenames + glob.glob(root + prefix + token1 + token2 + "_" + year + postfix + "*.csv")
+        filenames = filenames + glob.glob(
+            root + prefix + token1 + token2 + "_" + year + postfix + "*.csv"
+        )
     dataframes = []
 
     for filename in filenames:
@@ -17,7 +20,7 @@ def concat_csv_files(root, save_root, token1, token2, prefix, postfix, years_arr
             continue
 
         # Read the first line to check if it contains the unwanted string
-        with open(file_path, 'r') as file:
+        with open(file_path, "r") as file:
             first_line = file.readline().strip()
 
         # Load the file into a DataFrame, skipping the first line if necessary
@@ -135,29 +138,29 @@ def concat_csv_files(root, save_root, token1, token2, prefix, postfix, years_arr
         ]
 
         reduced_columns = [
-                "unix",
-                "date",
-                "symbol",
-                "open",
-                "high",
-                "low",
-                "close",
-                "Volume USD",
-                "Volume " + token1,
-                # "tradecount",
-            ]
+            "unix",
+            "date",
+            "symbol",
+            "open",
+            "high",
+            "low",
+            "close",
+            "Volume USD",
+            "Volume " + token1,
+            # "tradecount",
+        ]
         df_cols_list = df.columns.tolist()
         base_columns = [ecv["base_cols"] for ecv in expected_columns_variations]
         rename_columns = [ecv["rename_cols"] for ecv in expected_columns_variations]
         if df_cols_list in base_columns:
             cols_index = base_columns.index(df_cols_list)
-            df=df.rename(columns=rename_columns[cols_index])
-            df=df.filter(reduced_columns)
+            df = df.rename(columns=rename_columns[cols_index])
+            df = df.filter(reduced_columns)
         else:
             raise ValueError(f"Unexpected columns in file {filename}")
 
         # Set the 'Unix' column as the index
-        df.set_index('unix', inplace=True)
+        df.set_index("unix", inplace=True)
         df = df[::-1]
         df.sort_index(inplace=True)
 
@@ -174,11 +177,18 @@ def concat_csv_files(root, save_root, token1, token2, prefix, postfix, years_arr
 
 
 def report_gaps(concatenated_df, gaps_output_file=None):
-        
+
     # Create a DataFrame with a continuous range of Unix timestamps
     start_unix = concatenated_df.index.min()
     end_unix = concatenated_df.index.max()
-    full_index = pd.date_range(start=pd.to_datetime(start_unix, unit='ms'), end=pd.to_datetime(end_unix, unit='ms'), freq='T').astype(int) // 10**9
+    full_index = (
+        pd.date_range(
+            start=pd.to_datetime(start_unix, unit="ms"),
+            end=pd.to_datetime(end_unix, unit="ms"),
+            freq="T",
+        ).astype(int)
+        // 10**9
+    )
     full_index_df = pd.DataFrame(index=full_index)
 
     # Identify missing timestamps
@@ -198,7 +208,7 @@ def report_gaps(concatenated_df, gaps_output_file=None):
                 gap_length = 1
         gaps.append((gap_start, gap_length))  # Add the last gap
     # Write gaps to CSV
-    gaps_df = pd.DataFrame(gaps, columns=['Gap Start Unix', 'Gap Duration (minutes)'])
+    gaps_df = pd.DataFrame(gaps, columns=["Gap Start Unix", "Gap Duration (minutes)"])
     if gaps_output_file is not None:
         gaps_df.to_csv(gaps_output_file, index=False)
     return gaps_df
@@ -208,17 +218,20 @@ def get_gaps(df, gaps_df):
     gap_data = []
     for i in range(len(gaps_df)):
         start_idx = gaps_df["Gap Start Unix"].iloc[i]
-        end_idx = gaps_df["Gap Start Unix"].iloc[i] + gaps_df["Gap Duration (minutes)"].iloc[i] * 60
+        end_idx = (
+            gaps_df["Gap Start Unix"].iloc[i]
+            + gaps_df["Gap Duration (minutes)"].iloc[i] * 60
+        )
         gap = df.loc[start_idx:end_idx]
         gap_data.append(gap)
     return gap_data
+
 
 def get_gap_ratio(gaps1, gaps2):
     assert len(gaps1) == len(gaps2)
     out = []
     for i in range(len(gaps1)):
-        if len(gaps1[i]) >0 and len(gaps2[i]) >0:
+        if len(gaps1[i]) > 0 and len(gaps2[i]) > 0:
             assert len(gaps1[i]) == len(gaps2[i])
             out.append(np.array(gaps2[i]) / np.array(gaps1[i]) - 1.0)
     return out
-
