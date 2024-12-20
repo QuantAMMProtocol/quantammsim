@@ -46,3 +46,60 @@ run_fingerprint_defaults = {
     "arb_frequency": 1,
     "do_trades": False,
 }
+
+
+optuna_settings = {
+    "study_name": None,  # Will be auto-generated if None
+    "storage": {
+        "type": "sqlite",  # or "mysql", "postgresql"
+        "url": None,  # e.g., "sqlite:///studies.db"
+    },
+    "n_trials": 2000,
+    "n_jobs": 4,  # Number of parallel workers
+    "timeout": 7200,  # Maximum optimization time in seconds
+    "n_startup_trials": 10,
+    "early_stopping": {
+        "enabled": True,
+        "patience": 100,  # Trials without improvement
+        "min_improvement": 0.001,  # Minimum relative improvement
+    },
+    "parameter_config": {
+        "memory_length": {
+            "low": 1,
+            "high": 365,
+            "log_scale": True,
+        },
+        "memory_length_delta": {
+            "low": 0.1,
+            "high": 100,
+            "log_scale": True,
+        },
+        "k_per_day": {
+            "low": 0.1,
+            "high": 1000,
+            "log_scale": True,
+        },
+        "weights_logits": {
+            "low": -10,
+            "high": 10,
+            "log_scale": False,
+        },
+        "log_amplitude": {
+            "low": -10,
+            "high": 10,
+            "log_scale": False,
+        },
+        "raw_width": {
+            "low": -10,
+            "high": 10,
+            "log_scale": False,
+        },
+        "raw_exponents": {
+            "low": -10,
+            "high": 10,
+            "log_scale": False,
+        },
+    },
+}
+
+run_fingerprint_defaults["optimisation_settings"]["optuna"] = optuna_settings

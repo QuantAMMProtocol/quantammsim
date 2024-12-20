@@ -21,6 +21,200 @@ from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
 
 config.update("jax_enable_x64", True)
 
+import os
+import optuna
+import logging
+from datetime import datetime
+from pathlib import Path
+import plotly.graph_objects as go
+from optuna.visualization import plot_optimization_history, plot_param_importances
+
+
+class OptunaManager:
+    def __init__(self, run_fingerprint, output_dir=None):
+        self.run_fingerprint = run_fingerprint
+        self.optuna_settings = run_fingerprint["optimisation_settings"]["optuna"]
+        self.output_dir = output_dir or Path("optuna_studies")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.study = None
+        self.logger = self._setup_logger()
+
+    def _setup_logger(self):
+        """Configure logging for the optimization process."""
+        logger = logging.getLogger(f"optuna_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        logger.setLevel(logging.INFO)
+
+        # File handler
+        fh = logging.FileHandler(self.output_dir / "optimization.log")
+        fh.setLevel(logging.INFO)
+
+        # Console handler
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+
+        # Formatter
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        fh.setFormatter(formatter)
+        ch.setFormatter(formatter)
+
+        logger.addHandler(fh)
+        logger.addHandler(ch)
+
+        return logger
+
+    def setup_study(self):
+        """Create and configure the Optuna study."""
+        study_name = (
+            self.optuna_settings["study_name"]
+            or f"quantamm_{self.run_fingerprint['rule']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+
+        # Setup storage
+        storage = None
+        if self.optuna_settings["storage"]["url"]:
+            storage = optuna.storages.RDBStorage(
+                url=self.optuna_settings["storage"]["url"]
+            )
+
+        # Custom sampler with multivariate TPE
+        sampler = optuna.samplers.TPESampler(
+            n_startup_trials=self.optuna_settings["n_startup_trials"], multivariate=True
+        )
+
+        # Custom pruner
+        pruner = optuna.pruners.MedianPruner(
+            n_startup_trials=5,
+            n_warmup_steps=20,
+            interval_steps=1,
+        )
+
+        self.study = optuna.create_study(
+            study_name=study_name,
+            storage=storage,
+            sampler=sampler,
+            pruner=pruner,
+            direction="maximize",
+        )
+
+    def early_stopping_callback(self, study, trial):
+        """Callback to implement early stopping."""
+        if not self.optuna_settings["early_stopping"]["enabled"]:
+            return
+
+        patience = self.optuna_settings["early_stopping"]["patience"]
+        min_improvement = self.optuna_settings["early_stopping"]["min_improvement"]
+
+        if len(study.trials) < patience:
+            return
+
+        # Get best value up to current trial
+        best_value = study.best_value
+        recent_trials = study.trials[-patience:]
+        recent_best = max(t.value for t in recent_trials if t.value is not None)
+
+        relative_improvement = (recent_best - best_value) / abs(best_value)
+
+        if relative_improvement < min_improvement:
+            self.logger.info(
+                f"Stopping study: No improvement > {min_improvement} in last {patience} trials"
+            )
+            study.stop()
+
+    def save_results(self):
+        """Save optimization results and visualizations."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        study_dir = self.output_dir / f"study_{timestamp}"
+        study_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save study statistics
+        stats = {
+            "best_value": self.study.best_value,
+            "best_params": self.study.best_params,
+            "n_trials": len(self.study.trials),
+            "datetime": timestamp,
+            "run_fingerprint": self.run_fingerprint,
+        }
+
+        with open(study_dir / "study_results.json", "w") as f:
+            json.dump(stats, f, indent=2)
+
+        # Save visualization plots
+        fig_history = plot_optimization_history(self.study)
+        fig_history.write_html(str(study_dir / "optimization_history.html"))
+
+        fig_importance = plot_param_importances(self.study)
+        fig_importance.write_html(str(study_dir / "param_importance.html"))
+
+        # Save trial data
+        trial_data = []
+        for trial in self.study.trials:
+            if trial.state == optuna.trial.TrialState.COMPLETE:
+                trial_data.append(
+                    {
+                        "number": trial.number,
+                        "value": trial.value,
+                        "params": trial.params,
+                        "datetime_start": trial.datetime_start.isoformat(),
+                        "datetime_complete": trial.datetime_complete.isoformat(),
+                    }
+                )
+
+        with open(study_dir / "trial_data.json", "w") as f:
+            json.dump(trial_data, f, indent=2)
+
+    def optimize(self, objective):
+        """Run the optimization process with error handling and parallel execution."""
+        try:
+            self.study.optimize(
+                objective,
+                n_trials=self.optuna_settings["n_trials"],
+                timeout=self.optuna_settings["timeout"],
+                n_jobs=self.optuna_settings["n_jobs"],
+                callbacks=[self.early_stopping_callback],
+                catch=(Exception,),
+            )
+        except KeyboardInterrupt:
+            self.logger.info("Optimization interrupted by user")
+        except Exception as e:
+            self.logger.error(f"Optimization failed: {str(e)}")
+        finally:
+            self.save_results()
+
+    def early_stopping_callback(self, study, trial):
+        """Enhanced callback to implement early stopping using both training and validation metrics."""
+        if not self.optuna_settings["early_stopping"]["enabled"]:
+            return
+
+        patience = self.optuna_settings["early_stopping"]["patience"]
+        min_improvement = self.optuna_settings["early_stopping"]["min_improvement"]
+
+        if len(study.trials) < patience:
+            return
+
+        # Get best validation value up to current trial
+        completed_trials = [
+            t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE
+        ]
+        if not completed_trials:
+            return
+
+        validation_values = [
+            t.user_attrs.get("validation_value", float("-inf"))
+            for t in completed_trials
+        ]
+        best_validation = max(validation_values)
+
+        recent_trials = completed_trials[-patience:]
+        recent_best_validation = max(
+            t.user_attrs.get("validation_value", float("-inf")) for t in recent_trials
+        )
+
+        relative_improvement = (recent_best_validation - best_validation) / abs(
+            best_validation
+        )
+
 
 class Hashabledict(dict):
     """A hashable dictionary class that enables using dictionaries as dictionary keys.
