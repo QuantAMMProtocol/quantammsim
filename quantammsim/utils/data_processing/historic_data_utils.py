@@ -14,10 +14,14 @@ from importlib import resources as impresources
 from quantammsim import data
 from pathlib import Path
 from bidask import edge
-from quantammsim.utils.data_processing.binance_data_utils import concat_csv_files
+from quantammsim.utils.data_processing.binance_data_utils import concat_csv_files, plot_exchange_data
 from quantammsim.utils.data_processing.coinbase_data_utils import (
     _cleaned_up_coinbase_data,
     fill_missing_rows_with_coinbase_data,
+)
+from quantammsim.utils.data_processing.amalgamated_data_utils import (
+    fill_missing_rows_with_historical_data,
+    forward_fill_ohlcv_data,
 )
 from quantammsim.utils.data_processing.minute_daily_conversion_utils import (
     calculate_annualised_daily_volatility_from_minute_data,
@@ -32,7 +36,7 @@ from quantammsim.utils.data_processing.datetime_utils import (
     unixtimestamp_to_precise_datetime,
     pddatetime_to_unixtimestamp,
 )
-
+import gc
 mc_data_available_for = ["ETH", "BTC"]
 
 
@@ -88,23 +92,106 @@ def start_and_end_calcs(
         remainder_idx,
     )
 
-def fill_in_missing_rows_with_exchange_data(concatenated_df, token1, root, raw_data_folder, prefix):
-    years_array_str = ["2018", "2019", "2020", "2021", "2022", "2023"]
-    concated_df = concat_csv_files(
+
+def get_available_years(root, exchange_directory, token, numeraire, prefix):
+    """Check which years of data are available for a given token.
+    
+    Args:
+        root (str): Root directory path
+        exchange_directory (str): Exchange directory name in root
+        token (str): Token symbol
+        numeraire (str): Numeraire symbol
+        prefix (str): File prefix (e.g., 'Binance_')
+    
+    Returns:
+        list: List of years with available data
+    """
+    available_years = []
+    for year in range(2018, datetime.now().year + 1):
+        filename = f"{prefix}{token}{numeraire}_{year}_minute.csv"
+        if os.path.exists(os.path.join(root, exchange_directory, filename)):
+            available_years.append(str(year))
+    return available_years
+
+
+def fill_in_missing_rows_with_exchange_data(
+    concatenated_df, token1, numeraire, root, raw_data_folder, prefix
+):
+    """Fill missing rows with data from another exchange.
+
+    Args:
+        concatenated_df (pd.DataFrame): Original dataframe
+        token1 (str): Token symbol
+        numeraire (str): Numeraire symbol
+        root (str): Root directory path
+        raw_data_folder (str): Folder containing raw exchange data
+        prefix (str): Exchange prefix for filenames
+
+    Returns:
+        tuple: (filled DataFrame, list of filled timestamps or None)
+    """
+    # Check if exchange data exists
+    available_years = get_available_years(root, raw_data_folder, token1, numeraire, prefix)
+    if not available_years:
+        print(f"No {prefix.strip('_')} data available for {token1}")
+        return concatenated_df, None
+
+    # Load exchange data
+    exchange_data = concat_csv_files(
         root=root + raw_data_folder,
         save_root=root + "concat_" + raw_data_folder,
         token1=token1,
         token2="USD",
         prefix=prefix,
         postfix="_minute",
-        years_array_str=years_array_str,
+        years_array_str=available_years,
     )
 
-    filled_unix_values = concated_df[~concated_df.index.isin(concatenated_df.index)].index.tolist()
-    combined = concatenated_df.combine_first(concated_df)
-    return combined, filled_unix_values
+    if exchange_data.empty:
+        print(f"No valid {prefix.strip('_')} data found for {token1}")
+        return concatenated_df, None
 
-def update_historic_data(token, root):
+    # Ensure proper index setup
+    if exchange_data.index.name != "unix":
+        exchange_data.set_index("unix", inplace=True)
+
+    # Standardize timestamp format
+    if len(str(int(exchange_data.index.max()))) <= 10:
+        exchange_data.index = (exchange_data.index * 1000).astype(int)
+
+    if len(concatenated_df.index) > 0:
+        if len(str(int(concatenated_df.index.max()))) <= 10:
+            concatenated_df.index = (concatenated_df.index * 1000).astype(int)
+
+    # Create visualization of exchange data
+    plot_success = plot_exchange_data(
+        exchange_data,
+        token1,
+        os.path.join(root, "concat_" + raw_data_folder, f"exchange_data_{token1}.png"),
+    )
+    if not plot_success:
+        print(
+            f"Warning: Could not create visualization for {token1} {prefix.strip('_')} data"
+        )
+
+    # Find and fill missing data
+    missing_timestamps = exchange_data.index.difference(concatenated_df.index)
+    if missing_timestamps.empty:
+        print(f"No missing timestamps to fill from {prefix.strip('_')}")
+        return concatenated_df, None
+
+    # Get missing rows and combine data
+    missing_data = exchange_data.loc[missing_timestamps]
+    filled_in_df = pd.concat([concatenated_df, missing_data])
+
+    # Clean up the combined data
+    filled_in_df.sort_index(inplace=True)
+    filled_in_df = filled_in_df[~filled_in_df.index.duplicated(keep="first")]
+
+    return filled_in_df, missing_timestamps.tolist()
+
+
+def update_historic_data_old(token, root):
     outputPath = root + "combined_data/"
     outputMinutePath = outputPath + token + "_USD.csv"
     parquetPath = outputPath + token + "_USD.parquet"
@@ -137,14 +224,21 @@ def update_historic_data(token, root):
                 postfix="_minute",
                 years_array_str=short_years_array_str,
             )
+
     else:
+        print("reading from csv")
         concated_df = pd.read_csv(root + "concat_binance_data/" + token + "_USD.csv")
 
     concated_df, filled_gemini__unix_values = fill_in_missing_rows_with_exchange_data(concated_df, token, root, 'raw_gemini_data/', 'Gemini_')
 
     concated_df, filled_bitstamp_unix_values = fill_in_missing_rows_with_exchange_data(concated_df, token, root, 'raw_bitstamp_data/', 'Bitstamp_')
-    
-    #if max(np.diff(np.array(out.index))) > 60000:
+
+    # Add historical data filling
+    concated_df, filled_historical_unix_values = fill_missing_rows_with_historical_data(
+        concated_df, token, root + "historical_data/"
+    )
+    # filled_bitstamp_unix_values = None
+    # if max(np.diff(np.array(out.index))) > 60000:
     #    raise Exception
     concated_df.to_csv(root + "concat_binance_data/" + token + "_USD.csv")
 
@@ -171,7 +265,7 @@ def update_historic_data(token, root):
 
     totalMissingUnixPoints = list()
     totalMissingClosePoints = list()
-    
+
     # Print rows with an index or unix value of 1606716420000
     # Reindex on minute unix
     concat_csv.set_index('unix', inplace=True)
@@ -199,10 +293,11 @@ def update_historic_data(token, root):
 
     new_csvData = pd.DataFrame(index=new_index)
     new_csvData.index.name = 'unix'
-    new_csvData['unix'] = new_csvData.index
     print("joining")
+    # TODO CHECKOUT
     # Populate the new DataFrame with the data from the original csvData
     csvData = new_csvData.join(csvData, how='left', lsuffix='_left', rsuffix='_right')
+    csvData["unix"] = csvData.index
     del new_csvData
     gc.collect()
     # Save the total unix with empty rows
@@ -256,21 +351,21 @@ def update_historic_data(token, root):
         plt.plot(pd.to_datetime(coinbase_filled_data['unix'], unit='ms'), 
                  coinbase_filled_data['close'], 
                  label='Coinbase Minute Data', linestyle='None', marker='o', markersize=0.5)
-        
+
     # Gemini filled data
     if filled_gemini__unix_values:
         gemini_filled_data = csvData[csvData['unix'].isin(filled_gemini__unix_values)]
         plt.plot(pd.to_datetime(gemini_filled_data['unix'], unit='ms'),
                  gemini_filled_data['close'], 
                  label='Gemini Minute Data', linestyle='None', marker='o', markersize=0.5)
-        
+
     # Bitstamp filled data
     if filled_bitstamp_unix_values:
         bitstamp_filled_data = csvData[csvData['unix'].isin(filled_bitstamp_unix_values)]
         plt.plot(pd.to_datetime(bitstamp_filled_data['unix'], unit='ms'),
                  bitstamp_filled_data['close'], 
                  label='Bitstamp Minute Data', linestyle='None', marker='o', markersize=0.5)
-        
+
     # Total missing unix points data
     if len(totalMissingUnixPoints) > 0:
         plt.plot(
@@ -340,7 +435,16 @@ def update_historic_data(token, root):
     #    except  Exception as e:
     #        print(e)
 
+    csvData["unix"] = csvData["unix"].astype(int)
+    cols = csvData.columns.tolist()
+    cols.remove("unix")
+    cols = ["unix"] + cols
+    csvData = csvData[cols]
+
     csvData.to_csv(outputMinutePath, mode="w", index=False)
+
+    plot_exchange_data(csvData.set_index("unix"), token, outputMinutePath[:-4] + ".png")
+
     csvData.to_parquet(parquetPath, engine="pyarrow")
     csvData[csvData["date"].str.contains(":00:00")].to_csv(
         hourlyPath, mode="w", index=False
@@ -407,18 +511,226 @@ def update_historic_data(token, root):
     plt.savefig(price_pct_plot_filename)
 
     plt.close()
-    
+
     # Aggregate volume data for daily rows
     daily_data = csvData[csvData['date'].str.contains(":01:00:00")].copy()
     daily_data.set_index('unix', inplace=True)
-    
+
     ## Aggregate volume columns over the day
-    #volume_columns = [col for col in csvData.columns if col.startswith('Volume')]
-    #for col in volume_columns:
+    # volume_columns = [col for col in csvData.columns if col.startswith('Volume')]
+    # for col in volume_columns:
     #    daily_data[col] = csvData.resample('D', on='unix')[col].sum().reindex(daily_data.index)
 
     # Save the daily data to CSV
     daily_data.to_csv(dailyPath, mode="w", index=False)
+
+
+def update_historic_data(token, root):
+    """Update historic data for a given token, handling reruns gracefully.
+
+    Args:
+        token (str): Token symbol (e.g., 'BTC', 'ETH')
+        root (str): Root directory path
+    """
+    outputPath = root + "combined_data/"
+    outputMinutePath = outputPath + token + "_USD.csv"
+    parquetPath = outputPath + token + "_USD.parquet"
+    path = root + "concat_binance_data/" + token + "_USD.csv"
+    minutePath = outputPath + token + "_USD.csv"
+    dailyPath = outputPath + token + "_USD_daily.csv"
+    hourlyPath = outputPath + token + "_USD_hourly.csv"
+
+    # Create output directories if they don't exist
+    os.makedirs(outputPath, exist_ok=True)
+    os.makedirs(root + "concat_binance_data/", exist_ok=True)
+
+    # if os.path.isfile(path):
+    if False:
+        print(f"Reading existing Binance data for {token}")
+        concated_df = pd.read_csv(path)
+        concated_df.set_index("unix", inplace=True)
+    else:
+        print(f"Fetching new Binance data for {token}")
+        available_years = get_available_years(root, "raw_binance_data", token, "USDT", "Binance_")
+
+        if not available_years:
+            # Try getting historical data years as fallback
+            historical_years = get_available_years(root, "historical_data", token, "USD", "")
+            if historical_years:
+                print(f"Found historical data years for {token}: {historical_years}")
+                available_years = historical_years
+                concated_df = import_crypto_historical_data(token, root + "historical_data/")
+            else:
+                print(f"No historical data years found for {token}")
+                # Create empty DataFrame with correct columns and format
+                concated_df = pd.DataFrame(columns=[
+                    'date', 'symbol', 'open', 'high', 'low', 'close',
+                    'Volume USD', f'Volume {token}',
+                ])
+                concated_df.index.name = 'unix'
+                concated_df['symbol'] = f'{token}/USD'
+        else:
+            concated_df = concat_csv_files(
+                root=root + "raw_binance_data/",
+                save_root=root + "concat_binance_data/",
+                token1=token,
+                token2="USDT",
+                prefix="Binance_",
+                postfix="_minute",
+                years_array_str=available_years,
+            )
+    # Ensure proper index setup
+    if "unix" in concated_df.columns:
+        concated_df.set_index("unix", inplace=True)
+    # Fill missing data from different sources
+
+    filled_timestamps = {}
+
+    print("Filling gaps with Coinbase data")
+    if os.path.exists(root + "coinbase_data/" + token + "_cb_sorted_.csv"):
+        concated_df, coinbaseFilledUnixVals = fill_missing_rows_with_coinbase_data(
+            concated_df, token, root
+        )
+        # concated_df = concated_df.reset_index()
+        filled_timestamps["Coinbase"] = coinbaseFilledUnixVals
+    else:
+        print(f"No Coinbase data available for {token}")
+        coinbaseFilledUnixVals = []
+
+    sources = [
+        ("Gemini", "raw_gemini_data/", "Gemini_", "USD"),
+        ("Bitstamp", "raw_bitstamp_data/", "Bitstamp_", "USD"),
+    ]
+
+    for source_name, data_folder, prefix, numeraire in sources:
+        print(f"Filling gaps with {source_name} data")
+        concated_df, filled_unix_values = fill_in_missing_rows_with_exchange_data(
+            concated_df.copy(), token, numeraire, root, data_folder, prefix
+        )
+        if filled_unix_values:
+            filled_timestamps[source_name] = filled_unix_values
+
+    # Fill with historical data
+    print("Filling remaining gaps with historical data")
+    concated_df, filled_historical_unix_values = fill_missing_rows_with_historical_data(
+        concated_df.copy(), token, root + "historical_data/"
+    )
+    if filled_historical_unix_values:
+        filled_timestamps["Historical"] = filled_historical_unix_values
+
+    # Ensure data is properly sorted and has no duplicates
+    concated_df = concated_df.sort_index()
+    concated_df = concated_df[~concated_df.index.duplicated(keep="first")]
+
+    # Reset index for CSV export
+    concated_df = concated_df.reset_index()
+
+    # Save the processed data
+    print(f"Saving processed data for {token}")
+    concated_df = forward_fill_ohlcv_data(concated_df.copy(), token).reset_index()
+    # Check that all unix timestamp differences are 60000 ms (1 minute)
+    unix_diffs = np.diff(concated_df['unix'].values)
+    if not np.all(unix_diffs == 60000):
+        invalid_diffs = np.where(unix_diffs != 60000)[0]
+        first_invalid = invalid_diffs[0]
+        invalid_time = pd.to_datetime(concated_df['unix'].iloc[first_invalid], unit='ms')
+        raise Exception(f"Invalid unix timestamp difference found at index {first_invalid} ({invalid_time}). All differences should be 60000ms (1 minute).")
+    concated_df.to_csv(minutePath, index=False)
+    # Create visualization of the data sources
+    print(f"Creating visualizations for {token}")
+    plot_exchange_data(concated_df.set_index("unix"), token, minutePath[:-4] + ".png")
+
+    plt.figure(figsize=(14, 7))
+
+    # Plot original Binance data
+    plt.plot(
+        pd.to_datetime(concated_df["unix"], unit="ms"),
+        concated_df["close"],
+        label="Binance Minute Data",
+        linestyle="None",
+        marker="o",
+        markersize=0.5,
+        color="yellow",
+    )
+
+    # Plot filled data from each source
+    colors = {"Gemini": "green", "Bitstamp": "red", "Historical": "purple", "Coinbase": "blue"}
+    for source, timestamps in filled_timestamps.items():
+        if timestamps:
+            source_data = concated_df[concated_df["unix"].isin(timestamps)]
+            plt.plot(
+                pd.to_datetime(source_data["unix"], unit="ms"),
+                source_data["close"],
+                label=f"{source} Minute Data",
+                linestyle="None",
+                marker="o",
+                markersize=0.5,
+                color=colors.get(source, "blue"),
+            )
+
+    plt.xlabel("Date (YY-MM-DD)")
+    plt.ylabel("Close Price")
+    plt.title(f"{token} Close Price Over Time")
+    plt.legend()
+    plt.savefig(outputPath + f"{token}_data_sources.png")
+    plt.close()
+
+    # Process for different time frequencies
+    print(f"Processing different time frequencies for {token}")
+
+    # Hourly data
+    concated_df_hourly = concated_df.copy()
+
+    # Debug: Print columns before processing
+
+    # Convert date to datetime
+    concated_df_hourly["date"] = pd.to_datetime(concated_df_hourly["date"])
+    concated_df_hourly = concated_df_hourly.set_index("date")
+
+    # Debug: Print columns after setting index
+
+    # Perform hourly resampling with only the columns that exist
+    agg_dict = {
+        "unix": "last",
+        "symbol": "last",
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "Volume USD": "sum",
+        f"Volume {token}": "sum",
+    }
+
+    # Filter aggregation dictionary to only include existing columns
+    agg_dict = {k: v for k, v in agg_dict.items() if k in concated_df_hourly.columns}
+
+    # Perform resampling
+    hourly_data = concated_df_hourly.resample("1H").agg(agg_dict).reset_index()
+
+    # Save hourly data
+    hourly_data.to_csv(hourlyPath, index=False)
+
+    # Daily data
+    concated_df_daily = concated_df.copy()
+    concated_df_daily["date"] = pd.to_datetime(concated_df_daily["date"])
+    concated_df_daily = concated_df_daily.set_index("date")
+
+    # Filter to only include existing columns
+    agg_dict = {k: v for k, v in agg_dict.items() if k in concated_df_daily.columns}
+
+    # Perform daily resampling
+    daily_data = concated_df_daily.resample("D").agg(agg_dict).reset_index()
+
+    # Save daily data
+    daily_data.to_csv(dailyPath, index=False)
+    # Save parquet format
+    concated_df["date"] = concated_df["date"].astype(str)
+    concated_df["symbol"] = concated_df["symbol"].astype(str)
+    # Try direct parquet save without conversion
+    concated_df.to_parquet(parquetPath, engine="pyarrow")
+
+    print(f"Completed processing for {token}")
+    return concated_df
 
 
 def createMissingDataFrameFromClosePrices(startUnix, closePrices, token):
@@ -983,4 +1295,3 @@ def get_historic_data(
         raise_exception = 1
 
     return np.array(cleaned_data).T
-
