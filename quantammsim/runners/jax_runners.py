@@ -38,11 +38,13 @@ from quantammsim.runners.jax_runner_utils import (
     Hashabledict,
     get_trades_and_fees,
     get_unique_tokens,
+    OptunaManager,
 )
 
 from quantammsim.pools.creator import create_pool
 
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
+import jax.numpy as jnp
 
 
 def train_on_historic_data(
@@ -396,47 +398,90 @@ def train_on_historic_data(
             print("final objective value: ", objective_value)
             print("best train params", best_train_params)
     elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
-        import optuna
-        import jax.numpy as jnp
+        assert run_fingerprint["optimisation_settings"]["n_parameter_sets"] == 1, \
+            "Optuna only supports single parameter sets"
 
-        # define optuna study
-        assert (
-            run_fingerprint["optimisation_settings"]["n_parameter_sets"] == 1
-        ), "Optuna only supports single parameter sets"
+        # Initialize Optuna manager
+        optuna_manager = OptunaManager(run_fingerprint)
+        optuna_manager.setup_study()
 
-        # create objective function
+        # Create objective with parameter configuration and validation
         def objective(trial):
-            trial_params = {}
-            for key, value in params.items():
-                if key != "subsidary_params":
+            try:
+                trial_params = {}
+                param_config = run_fingerprint["optimisation_settings"]["optuna_settings"][
+                    "parameter_config"
+                ]
+
+                for key, value in params.items():
+                    if key == "subsidary_params":
+                        continue
+
+                    config = param_config.get(key, {"low": -10, "high": 10, "log_scale": False})
                     trial_params[key] = jnp.array(
                         [
-                            trial.suggest_float(key + f"_{i}", -10, 10)
+                            trial.suggest_float(
+                                f"{key}_{i}",
+                                config["low"],
+                                config["high"],
+                                log=config["log_scale"],
+                            )
                             for i in range(value.shape[1])
                         ]
                     )
-                #     trial_params[key] = jnp.array(
-                #         [trial.suggest_float(key, -10, 10)] * value.shape[1]
-                # )
-            print(
-                "return over hodl: ",
-                partial_forward_pass_nograd_batch_returns_train(
+
+                # Training evaluation
+                train_returns = partial_forward_pass_nograd_batch_returns_train(
                     trial_params,
                     (data_dict["start_idx"], 0),
                     data_dict["prices"],
-                ),
-            )
-            value = partial_forward_pass_nograd_batch(
-                trial_params, (data_dict["start_idx"], 0)
-            )
-            print(
-                run_fingerprint["return_val"] + ": ",
-                value,
-            )
-            return -value
+                )
 
-        study = optuna.create_study(sampler=optuna.samplers.TPESampler())
-        study.optimize(objective, n_trials=2000)
+                train_value = partial_forward_pass_nograd_batch(
+                    trial_params, (data_dict["start_idx"], 0)
+                )
+
+                # Validation (test period) evaluation
+                validation_returns = partial_forward_pass_nograd_batch_returns_test(
+                    trial_params,
+                    (data_dict["start_idx_test"], 0),
+                    data_dict["prices_test"],
+                )
+
+                validation_value = partial_forward_pass_nograd_batch(
+                    trial_params, (data_dict["start_idx_test"], 0)
+                )
+
+                # Log both training and validation metrics
+                optuna_manager.logger.info(f"Trial {trial.number}:")
+                optuna_manager.logger.info(f"Training - Return over HODL: {train_returns}")
+                optuna_manager.logger.info(
+                    f"Training - {run_fingerprint['return_val']}: {train_value}"
+                )
+                optuna_manager.logger.info(
+                    f"Validation - Return over HODL: {validation_returns}"
+                )
+                optuna_manager.logger.info(
+                    f"Validation - {run_fingerprint['return_val']}: {validation_value}"
+                )
+
+                # Store validation value as a trial attribute
+                trial.set_user_attr("validation_value", -validation_value)
+
+                return -train_value  # Still optimize on training value
+
+            except Exception as e:
+                optuna_manager.logger.error(f"Trial {trial.number} failed: {str(e)}")
+                raise e
+
+        # Run optimization
+        optuna_manager.optimize(objective)
+
+        if verbose:
+            print("Best trial:")
+            print(f"  Training Value: {optuna_manager.study.best_value}")
+            print(f"  Validation Value: {optuna_manager.study.best_trial.user_attrs['validation_value']}")
+            print(f"  Params: {optuna_manager.study.best_params}")
     else:
         raise NotImplementedError
 

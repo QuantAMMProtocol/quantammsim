@@ -33,7 +33,7 @@ from optuna.visualization import plot_optimization_history, plot_param_importanc
 class OptunaManager:
     def __init__(self, run_fingerprint, output_dir=None):
         self.run_fingerprint = run_fingerprint
-        self.optuna_settings = run_fingerprint["optimisation_settings"]["optuna"]
+        self.optuna_settings = run_fingerprint["optimisation_settings"]["optuna_settings"]
         self.output_dir = output_dir or Path("optuna_studies")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.study = None
@@ -99,90 +99,6 @@ class OptunaManager:
         )
 
     def early_stopping_callback(self, study, trial):
-        """Callback to implement early stopping."""
-        if not self.optuna_settings["early_stopping"]["enabled"]:
-            return
-
-        patience = self.optuna_settings["early_stopping"]["patience"]
-        min_improvement = self.optuna_settings["early_stopping"]["min_improvement"]
-
-        if len(study.trials) < patience:
-            return
-
-        # Get best value up to current trial
-        best_value = study.best_value
-        recent_trials = study.trials[-patience:]
-        recent_best = max(t.value for t in recent_trials if t.value is not None)
-
-        relative_improvement = (recent_best - best_value) / abs(best_value)
-
-        if relative_improvement < min_improvement:
-            self.logger.info(
-                f"Stopping study: No improvement > {min_improvement} in last {patience} trials"
-            )
-            study.stop()
-
-    def save_results(self):
-        """Save optimization results and visualizations."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        study_dir = self.output_dir / f"study_{timestamp}"
-        study_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save study statistics
-        stats = {
-            "best_value": self.study.best_value,
-            "best_params": self.study.best_params,
-            "n_trials": len(self.study.trials),
-            "datetime": timestamp,
-            "run_fingerprint": self.run_fingerprint,
-        }
-
-        with open(study_dir / "study_results.json", "w") as f:
-            json.dump(stats, f, indent=2)
-
-        # Save visualization plots
-        fig_history = plot_optimization_history(self.study)
-        fig_history.write_html(str(study_dir / "optimization_history.html"))
-
-        fig_importance = plot_param_importances(self.study)
-        fig_importance.write_html(str(study_dir / "param_importance.html"))
-
-        # Save trial data
-        trial_data = []
-        for trial in self.study.trials:
-            if trial.state == optuna.trial.TrialState.COMPLETE:
-                trial_data.append(
-                    {
-                        "number": trial.number,
-                        "value": trial.value,
-                        "params": trial.params,
-                        "datetime_start": trial.datetime_start.isoformat(),
-                        "datetime_complete": trial.datetime_complete.isoformat(),
-                    }
-                )
-
-        with open(study_dir / "trial_data.json", "w") as f:
-            json.dump(trial_data, f, indent=2)
-
-    def optimize(self, objective):
-        """Run the optimization process with error handling and parallel execution."""
-        try:
-            self.study.optimize(
-                objective,
-                n_trials=self.optuna_settings["n_trials"],
-                timeout=self.optuna_settings["timeout"],
-                n_jobs=self.optuna_settings["n_jobs"],
-                callbacks=[self.early_stopping_callback],
-                catch=(Exception,),
-            )
-        except KeyboardInterrupt:
-            self.logger.info("Optimization interrupted by user")
-        except Exception as e:
-            self.logger.error(f"Optimization failed: {str(e)}")
-        finally:
-            self.save_results()
-
-    def early_stopping_callback(self, study, trial):
         """Enhanced callback to implement early stopping using both training and validation metrics."""
         if not self.optuna_settings["early_stopping"]["enabled"]:
             return
@@ -214,6 +130,87 @@ class OptunaManager:
         relative_improvement = (recent_best_validation - best_validation) / abs(
             best_validation
         )
+
+        if relative_improvement < min_improvement:
+            self.logger.info(
+                f"Stopping study: No validation improvement > {min_improvement} "
+                f"in last {patience} trials"
+            )
+            study.stop()
+
+    def save_results(self):
+        """Enhanced save_results to include validation metrics."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        study_dir = self.output_dir / f"study_{timestamp}"
+        study_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save study statistics
+        stats = {
+            "best_value": float(self.study.best_value),  # Convert to Python float
+            "best_params": {
+                k: float(v)
+                for k, v in self.study.best_params.items()  # Convert to Python float
+            },
+            "n_trials": len(self.study.trials),
+            "datetime": timestamp,
+            "run_fingerprint": self.run_fingerprint,
+        }
+
+        with open(study_dir / "study_results.json", "w") as f:
+            json.dump(stats, f, indent=2)
+
+        # Save visualization plots
+        # fig_history = plot_optimization_history(self.study)
+        # fig_history.write_html(str(study_dir / "optimization_history.html"))
+
+        # fig_importance = plot_param_importances(self.study)
+        # fig_importance.write_html(str(study_dir / "param_importance.html"))
+
+        # Save trial data with validation metrics
+        trial_data = []
+        for trial in self.study.trials:
+            if trial.state == optuna.trial.TrialState.COMPLETE:
+                trial_data.append(
+                    {
+                        "number": trial.number,
+                        "train_value": float(trial.value),  # Convert to Python float
+                        "validation_value": float(
+                            trial.user_attrs.get("validation_value", float("-inf"))
+                        ),
+                        "params": {
+                            k: float(v)
+                            for k, v in trial.params.items()  # Convert to Python float
+                        },
+                        "datetime_start": trial.datetime_start.isoformat(),
+                        "datetime_complete": trial.datetime_complete.isoformat(),
+                    }
+                )
+
+        with open(study_dir / "trial_data.json", "w") as f:
+            json.dump(trial_data, f, indent=2)
+
+        # Create and save training vs validation plot
+        # self._plot_train_vs_validation(trial_data, study_dir)
+        # # Create and save training vs validation plot
+        # self._plot_train_vs_validation(trial_data, study_dir)
+
+    def optimize(self, objective):
+        """Run the optimization process with error handling and parallel execution."""
+        try:
+            self.study.optimize(
+                objective,
+                n_trials=self.optuna_settings["n_trials"],
+                timeout=self.optuna_settings["timeout"],
+                n_jobs=self.optuna_settings["n_jobs"],
+                callbacks=[self.early_stopping_callback],
+                catch=(Exception,),
+            )
+        except KeyboardInterrupt:
+            self.logger.info("Optimization interrupted by user")
+        except Exception as e:
+            self.logger.error(f"Optimization failed: {str(e)}")
+        finally:
+            self.save_results()
 
 
 class Hashabledict(dict):

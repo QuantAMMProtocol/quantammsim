@@ -54,7 +54,7 @@ optuna_settings = {
         "type": "sqlite",  # or "mysql", "postgresql"
         "url": None,  # e.g., "sqlite:///studies.db"
     },
-    "n_trials": 2000,
+    "n_trials": 20,
     "n_jobs": 4,  # Number of parallel workers
     "timeout": 7200,  # Maximum optimization time in seconds
     "n_startup_trials": 10,
@@ -102,4 +102,4 @@ optuna_settings = {
     },
 }
 
-run_fingerprint_defaults["optimisation_settings"]["optuna"] = optuna_settings
+run_fingerprint_defaults["optimisation_settings"]["optuna_settings"] = optuna_settings

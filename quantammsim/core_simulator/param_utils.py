@@ -1256,7 +1256,7 @@ def make_vmap_in_axes_dict(
     """
 
     in_axes_dict = dict()
-    for key, in input_dict.items():
+    for key, _ in input_dict.items():
         in_axes_dict[key] = in_axes
     for key in keys_to_recur_on:
         in_axes_dict[key] = [
