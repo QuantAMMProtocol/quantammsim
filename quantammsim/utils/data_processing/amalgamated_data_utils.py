@@ -93,8 +93,9 @@ def fill_missing_rows_with_historical_data(concatenated_df, token, root_path):
         return concatenated_df, None
 
     # Standardize index format for concatenated_df
-    if len(str(int(concatenated_df.index.max()))) <= 10:
-        concatenated_df.index = (concatenated_df.index * 1000).astype(int)
+    if len(concatenated_df.index) > 0:
+        if len(str(int(concatenated_df.index.max()))) <= 10:
+            concatenated_df.index = (concatenated_df.index * 1000).astype(int)
 
     # Import historical data
     historical_data = import_crypto_historical_data(token, root_path)

@@ -5,6 +5,7 @@ from quantammsim.utils.data_processing.historic_data_utils import (
 )
 import debug
 tokens = [
+    "ARB"
     "AAVE",
     "ADA",
     "ATOM",
