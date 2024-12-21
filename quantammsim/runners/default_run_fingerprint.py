@@ -59,7 +59,7 @@ optuna_settings = {
     "timeout": 7200,  # Maximum optimization time in seconds
     "n_startup_trials": 10,
     "early_stopping": {
-        "enabled": True,
+        "enabled": False,
         "patience": 100,  # Trials without improvement
         "min_improvement": 0.001,  # Minimum relative improvement
     },

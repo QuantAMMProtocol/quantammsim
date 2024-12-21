@@ -26,7 +26,8 @@ from quantammsim.training.backpropagation import (
     update_from_partial_training_step_factory
 )
 from quantammsim.core_simulator.param_utils import (
-    default_set
+    recursive_default_set,
+    check_run_fingerprint,
 )
 
 from quantammsim.core_simulator.result_exporter import (
@@ -94,13 +95,12 @@ def train_on_historic_data(
     such as custom fee structures and different training data configurations.
     """
 
-    for key, value in run_fingerprint_defaults.items():
-        default_set(run_fingerprint, key, value)
-    for key, value in run_fingerprint_defaults["optimisation_settings"].items():
-        default_set(run_fingerprint["optimisation_settings"], key, value)
+    recursive_default_set(run_fingerprint, run_fingerprint_defaults)
+    check_run_fingerprint(run_fingerprint)
+    if run_fingerprint["optimisation_settings"]["method"] == "optuna":
+        run_fingerprint["bout_offset"]=0
     if verbose:
         print("Run Fingerprint: ", run_fingerprint)
-
     rule = run_fingerprint["rule"]
     chunk_period = run_fingerprint["chunk_period"]
     weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
@@ -398,8 +398,9 @@ def train_on_historic_data(
             print("final objective value: ", objective_value)
             print("best train params", best_train_params)
     elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
-        assert run_fingerprint["optimisation_settings"]["n_parameter_sets"] == 1, \
-            "Optuna only supports single parameter sets"
+        run_fingerprint["optimisation_settings"]["n_parameter_sets"] = 1
+        # assert run_fingerprint["optimisation_settings"]["n_parameter_sets"] == 1, \
+        #     "Optuna only supports single parameter sets"
 
         # Initialize Optuna manager
         optuna_manager = OptunaManager(run_fingerprint)
@@ -429,6 +430,7 @@ def train_on_historic_data(
                             for i in range(value.shape[1])
                         ]
                     )
+                    trial_params["initial_weights_logits"] = jnp.array([0.0]*n_assets)
 
                 # Training evaluation
                 train_returns = partial_forward_pass_nograd_batch_returns_train(
@@ -453,22 +455,24 @@ def train_on_historic_data(
                 )
 
                 # Log both training and validation metrics
-                optuna_manager.logger.info(f"Trial {trial.number}:")
-                optuna_manager.logger.info(f"Training - Return over HODL: {train_returns}")
+                # optuna_manager.logger.info(f"Trial {trial.number}:")
                 optuna_manager.logger.info(
-                    f"Training - {run_fingerprint['return_val']}: {train_value}"
+                    f"Training {trial.number}, Return over HODL: {train_returns}"
                 )
                 optuna_manager.logger.info(
-                    f"Validation - Return over HODL: {validation_returns}"
+                    f"Training {trial.number}, {run_fingerprint['return_val']}: {train_value}"
                 )
                 optuna_manager.logger.info(
-                    f"Validation - {run_fingerprint['return_val']}: {validation_value}"
+                    f"Validation {trial.number}, Return over HODL: {validation_returns}"
+                )
+                optuna_manager.logger.info(
+                    f"Validation {trial.number}, {run_fingerprint['return_val']}: {validation_value}"
                 )
 
                 # Store validation value as a trial attribute
-                trial.set_user_attr("validation_value", -validation_value)
+                trial.set_user_attr("validation_value", validation_value)
 
-                return -train_value  # Still optimize on training value
+                return train_value  # Still optimize on training value
 
             except Exception as e:
                 optuna_manager.logger.error(f"Trial {trial.number} failed: {str(e)}")
@@ -563,11 +567,7 @@ def do_run_on_historic_data(
     """
 
     # Set default values for run_fingerprint and its optimisation_settings
-    for key, value in run_fingerprint_defaults.items():
-        default_set(run_fingerprint, key, value)
-    for key, value in run_fingerprint_defaults["optimisation_settings"].items():
-        default_set(run_fingerprint["optimisation_settings"], key, value)
-
+    recursive_default_set(run_fingerprint, run_fingerprint_defaults)
     # Extract various settings from run_fingerprint
     chunk_period = run_fingerprint["chunk_period"]
     weight_interpolation_period = run_fingerprint["weight_interpolation_period"]

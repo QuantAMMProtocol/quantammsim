@@ -18,6 +18,15 @@ np.seterr(all="raise")
 np.seterr(under="print")
 
 
+def check_run_fingerprint(run_fingerprint):
+    """
+    Check that the run fingerprint is not malformed
+    """
+    assert (
+        run_fingerprint["weight_interpolation_period"]
+        <= run_fingerprint["chunk_period"]
+    )
+
 def default_set_or_get(dictionary, key, default, augment=True):
     """
     Retrieves the value for a given key from a dictionary. If the key does not exist,
@@ -57,6 +66,16 @@ def default_set(dictionary, key, default):
     value = dictionary.get(key)
     if value is None:
         dictionary[key] = default
+
+
+def recursive_default_set(target_dict, default_dict):
+    for key, value in default_dict.items():
+        if isinstance(value, dict):
+            if key not in target_dict:
+                target_dict[key] = {}
+            recursive_default_set(target_dict[key], value)
+        else:
+            default_set(target_dict, key, value)
 
 
 class NumpyEncoder(json.JSONEncoder):
