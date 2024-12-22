@@ -145,7 +145,7 @@ def create_pool(rule):
     elif base_rule == "cow_8020":
         base_pool = CowPool8020()
     elif rule == "gyroscope":
-        pool = GyroscopePool()
+        base_pool = GyroscopePool()
     elif base_rule == "difference_momentum":
         base_pool = DifferenceMomentumPool()
     else:

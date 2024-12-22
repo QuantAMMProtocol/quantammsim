@@ -1,7 +1,7 @@
 # again, this only works on startup!
 from jax import config, jit,devices
 from jax.lib.xla_bridge import default_backend
-
+from jax.lax import cond
 import jax.numpy as jnp
 
 config.update("jax_enable_x64", True)
@@ -113,7 +113,7 @@ def wrapped_FMAMM_trade_function(reserves, trade, gamma):
 # Create a jitted function that includes the cond, for lazy evaluation
 @jit
 def jitted_FMAMM_cond_trade(condition, reserves, trade, gamma):
-    return jax.lax.cond(
+    return cond(
         condition,
         wrapped_FMAMM_trade_function,
         zero_trade_function_FMAMM,

@@ -69,7 +69,7 @@ class GyroscopePool(AbstractPool):
             prices=arb_acted_upon_local_prices,
             alpha=params["alpha"],
             beta=params["beta"],
-            sin=jnp.cos(params["phi"]),
+            sin=jnp.sin(params["phi"]),
             cos=jnp.cos(params["phi"]),
             lam=params["lam"],
             fees=run_fingerprint["fees"],
@@ -115,7 +115,7 @@ class GyroscopePool(AbstractPool):
             prices=arb_acted_upon_local_prices,
             alpha=params["alpha"],
             beta=params["beta"],
-            sin=jnp.cos(params["phi"]),
+            sin=jnp.sin(params["phi"]),
             cos=jnp.cos(params["phi"]),
             lam=params["lam"],
         )
@@ -180,7 +180,7 @@ class GyroscopePool(AbstractPool):
             prices=arb_acted_upon_local_prices,
             alpha=params["alpha"],
             beta=params["beta"],
-            sin=jnp.cos(params["phi"]),
+            sin=jnp.sin(params["phi"]),
             cos=jnp.cos(params["phi"]),
             lam=params["lam"],
             fees=fees_array_broadcast,
@@ -191,8 +191,7 @@ class GyroscopePool(AbstractPool):
         )
         return reserves
 
-
-    def init_parameters(
+    def _init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
