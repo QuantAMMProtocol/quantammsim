@@ -1,11 +1,73 @@
+from typing import Type, TypeVar
+from abc import ABC
+
+from jax import tree_util
+
 from quantammsim.pools.G3M.balancer.balancer import BalancerPool
 from quantammsim.pools.G3M.quantamm.momentum_pool import MomentumPool
 from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
-from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import MeanReversionChannelPool
+from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import (
+    MeanReversionChannelPool,
+)
 from quantammsim.pools.hodl_pool import HODLPool
 from quantammsim.pools.FM_AMM.cow_pool import CowPool
 from quantammsim.pools.FM_AMM.cow_pool_one_arb import CowPoolOneArb
 from quantammsim.pools.ECLP.gyroscope import GyroscopePool
+from quantammsim.pools.FM_AMM.cow_pool_weights import CowPoolWeights
+from quantammsim.pools.FM_AMM.cow_pool_8020 import CowPool8020
+from quantammsim.pools.base_pool import AbstractPool
+from quantammsim.hooks.versus_rebalancing import (
+    CalculateLossVersusRebalancing,
+    CalculateRebalancingVersusRebalancing,
+)
+
+# Create a type variable bound to AbstractPool
+P = TypeVar("P", bound=AbstractPool)
+H = TypeVar("H", bound=ABC)  # For hooks
+
+
+def create_hooked_pool_instance(base_pool_class: Type[P], *hooks: Type) -> P:
+    """Create a pool instance with the specified hooks mixed in."""
+
+    # Hooks should be applied right-to-left to maintain correct MRO
+    hooks = hooks[::-1]
+
+    # Create the mixed class with hooks before base_pool_class
+    mixed_class = type("_HookedPool", (*hooks, base_pool_class), {})
+
+    # Verify MRO is correct by checking method resolution
+    mro = mixed_class.__mro__
+    hook_index = mro.index(hooks[0])
+    base_index = mro.index(base_pool_class)
+
+    assert hook_index < base_index, (
+        f"Hook {hooks[0].__name__} should come before {base_pool_class.__name__} in MRO. "
+        f"Current MRO: {[cls.__name__ for cls in mro]}"
+    )
+
+    def _tree_flatten(self):
+        all_static_params = {}
+        for cls in self.__class__.__mro__:
+            if hasattr(cls, "_static_params"):
+                all_static_params.update(getattr(cls, "_static_params", {}))
+        dynamics = ()
+        return dynamics, all_static_params
+
+    @classmethod
+    def _tree_unflatten(cls, aux_data, dynamics):
+        self = cls()
+        self._static_params = aux_data
+        return self
+
+    mixed_class._tree_flatten = _tree_flatten
+    mixed_class._tree_unflatten = _tree_unflatten
+
+    tree_util.register_pytree_node(
+        mixed_class, mixed_class._tree_flatten, mixed_class._tree_unflatten
+    )
+
+    return mixed_class()
+
 
 def create_pool(rule):
     """
@@ -23,7 +85,7 @@ def create_pool(rule):
         The identifier string for the desired pool type. Valid options are:
         - "balancer": Standard Balancer pool implementation
         - "momentum": Momentum-based G3M pool variant
-        - "power_channel": Power law G3M pool variant 
+        - "power_channel": Power law G3M pool variant
         - "mean_reversion_channel": Mean reversion G3M pool variant
         - "hodl": Basic HODL strategy pool
         - "cow": CoW AMM pool implementation
@@ -56,23 +118,46 @@ def create_pool(rule):
     >>> pool = create_pool("balancer")  # Creates a BalancerPool pool instance
     >>> pool = create_pool("momentum")  # Creates a MomentumPool pool instance
     """
-    # Create pool
-    if rule == "balancer":
-        pool = BalancerPool()
-    elif rule == "momentum":
-        pool = MomentumPool()
-    elif rule == "power_channel":
-        pool = PowerChannelPool()
-    elif rule == "mean_reversion_channel":
-        pool = MeanReversionChannelPool()
-    elif rule == "hodl":
-        pool = HODLPool()
-    elif rule == "cow_5050":
-        pool = CowPool()
-    elif rule == "cow_5050_one_arb":
-        pool = CowPoolOneArb()
+    # Split rule into hook_type and base_rule if double hyphen exists
+    hook_type = None
+    base_rule = rule
+    if "__" in rule:
+        hook_type, base_rule = rule.split("__")
+
+    # Create base pool instance
+    if base_rule == "balancer":
+        base_pool = BalancerPool()
+    elif base_rule == "momentum":
+        base_pool = MomentumPool()
+    elif base_rule == "power_channel":
+        base_pool = PowerChannelPool()
+    elif base_rule == "mean_reversion_channel":
+        base_pool = MeanReversionChannelPool()
+    elif base_rule == "hodl":
+        base_pool = HODLPool()
+    elif base_rule == "cow_5050":
+        base_pool = CowPool()
+    elif base_rule == "cow_one_arb":
+        base_pool = CowPoolOneArb()
+    elif base_rule == "cow_weights":
+        base_pool = CowPoolWeights()
+    elif base_rule == "cow_8020":
+        base_pool = CowPool8020()
     elif rule == "gyroscope":
         pool = GyroscopePool()
     else:
-        raise NotImplementedError
-    return pool
+        raise NotImplementedError(f"Unknown base pool type: {base_rule}")
+
+    # Apply hook if specified
+    if hook_type == "lvr":
+        return create_hooked_pool_instance(
+            base_pool.__class__, CalculateLossVersusRebalancing
+        )
+    elif hook_type == "rvr":
+        return create_hooked_pool_instance(
+            base_pool.__class__, CalculateRebalancingVersusRebalancing
+        )
+    elif hook_type is not None:
+        raise NotImplementedError(f"Unknown hook type: {hook_type}")
+
+    return base_pool

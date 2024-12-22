@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Callable
-import jax.numpy as jnp
+from typing import Dict, Any, Optional
 import numpy as np
+
+import jax.numpy as jnp
 from jax import tree_util
 
 
@@ -18,7 +19,8 @@ class AbstractPool(ABC):
     calculate_reserve_changes(params, run_fingerprint, prices, start_index, additional_oracle_input)
         Calculate changes in reserves based on weights, prices, and parameters.
 
-    calculate_reserve_changes_zero_fees(params, run_fingerprint, prices, start_index, additional_oracle_input)
+    calculate_reserve_changes_zero_fees(params, run_fingerprint, prices, 
+    start_index, additional_oracle_input)
         Calculate reserve changes assuming zero fees, based on weights, prices, and parameters.
 
     initialize_parameters(initial_values_dict, run_fingerprint, n_assets, n_parameter_sets, noise)
@@ -30,12 +32,18 @@ class AbstractPool(ABC):
     specific behaviors for different types of liquidity pools.
     """
 
-    # def __init__(self, pool_type: str, n_assets: int, n_parameter_sets: int = 1):
     def __init__(self):
         pass
-        # self.pool_type = pool_type
-        # self.n_assets = n_assets
-        # self.n_parameter_sets = n_parameter_sets
+
+    def extend_parameters(
+        self,
+        base_params: Dict[str, Any],
+        initial_values_dict: Dict[str, Any],
+        n_assets: int,
+        n_parameter_sets: int,
+    ) -> Dict[str, Any]:
+        """Default null implementation of parameter extension."""
+        return base_params
 
     @abstractmethod
     def calculate_reserves_with_fees(
@@ -80,7 +88,6 @@ class AbstractPool(ABC):
     ) -> jnp.ndarray:
         pass
 
-    @abstractmethod
     def init_parameters(
         self,
         initial_values_dict: Dict[str, Any],
@@ -89,6 +96,29 @@ class AbstractPool(ABC):
         n_parameter_sets: int = 1,
         noise: str = "gaussian",
     ) -> Dict[str, Any]:
+        """Initialize pool parameters and apply any extensions from mixins."""
+        # Get base parameters
+        params = self._init_base_parameters(
+            initial_values_dict, run_fingerprint, n_assets, n_parameter_sets, noise
+        )
+
+        # Apply any parameter extensions from mixins
+        params = self.extend_parameters(
+            params, initial_values_dict, n_assets, n_parameter_sets
+        )
+
+        return params
+
+    @abstractmethod
+    def _init_base_parameters(
+        self,
+        initial_values_dict: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        n_assets: int,
+        n_parameter_sets: int = 1,
+        noise: str = "gaussian",
+    ) -> Dict[str, Any]:
+        """Initialize base parameters specific to this pool type."""
         pass
 
     def add_noise(

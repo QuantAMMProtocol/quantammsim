@@ -4,10 +4,7 @@ import json
 # input root
 class SimulationRunDto(object):
     def __init__(self, jsonDto):
-        print("run const")
         self.pool = LiquidityPoolDto(jsonDto["pool"])
-        print(jsonDto["startUnix"])
-        print(jsonDto["endUnix"])
         self.startDate = jsonDto["startUnix"]
         self.endDate = jsonDto["endUnix"]
         self.startDateString = jsonDto["startDateString"]
@@ -16,7 +13,6 @@ class SimulationRunDto(object):
 
 class LiquidityPoolDto(object):
     def __init__(self, poolDto):
-        print("pool const")
         self.id = poolDto["id"]
         poolConstituents = list()
         for coin in poolDto["poolConstituents"]:
@@ -27,7 +23,6 @@ class LiquidityPoolDto(object):
 
 class UpdateRuleDto(object):
     def __init__(self, ruleDto):
-        print("rule const")
         self.name = ruleDto["name"]
         factors = list()
         for coin in ruleDto["updateRuleParameters"]:
@@ -65,6 +60,3 @@ class SimulationResultTimestepDto(object):
         self.coinsHeld = coinsHeld
         self.timeStepTotal = timeStepTotal
 
-
-if __name__ == "__main__":
-    print("module")

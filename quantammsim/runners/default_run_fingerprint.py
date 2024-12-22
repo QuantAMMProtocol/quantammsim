@@ -21,6 +21,7 @@ run_fingerprint_defaults = {
         "max_mc_version": 9,
         "include_flipped_training_data": False,
         "initial_random_key": 0,
+        "method": "gradient_descent",
     },
     "initial_memory_length": 10.0,
     "initial_memory_length_delta": 0.0,
@@ -30,8 +31,7 @@ run_fingerprint_defaults = {
     "initial_log_amplitude": -10.0,
     "initial_raw_width": -8.0,
     "initial_raw_exponents": 0.0,
-    "subsidary_pools": [
-    ],
+    "subsidary_pools": [],
     "maximum_change": 3e-4,
     "chunk_period": 60,
     "weight_interpolation_period": 60,

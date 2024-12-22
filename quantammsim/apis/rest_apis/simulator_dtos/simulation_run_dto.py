@@ -1,15 +1,12 @@
-import json
 
 
 class LoadPriceHistoryRequestDto(object):
     def __init__(self, jsonDto):
-        print("run const")
         self.coinCode = jsonDto["coinCode"]
 
 
 class TrainingParameterDto(object):
     def __init__(self, factorDto):
-        print(factorDto)
         self.name = factorDto["name"]
         self.value = factorDto["value"]
 
@@ -26,15 +23,24 @@ class FinancialAnalysisRequestDto(object):
 # input root
 class SimulationRunDto(object):
     def __init__(self, jsonDto):
-        print("run const")
-        print("jsonDto[pool]: ", jsonDto["pool"])
         self.pool = LiquidityPoolDto(jsonDto["pool"])
-        print(jsonDto["startUnix"])
-        print(jsonDto["endUnix"])
         self.startDate = jsonDto["startUnix"]
         self.endDate = jsonDto["endUnix"]
         self.startDateString = jsonDto["startDateString"]
         self.endDateString = jsonDto["endDateString"]
+        self.feeHooks = list()
+        for feeHook in jsonDto["feeHooks"]:
+            self.feeHooks.append(FeeHook(feeHook))
+        
+        self.swapImports = list()
+
+        for swapImport in jsonDto["swapImports"]:
+            self.swapImports.append(SwapImport(swapImport))
+        
+        self.gasSteps = list()
+
+        for gasStep in jsonDto["gasPriceImports"]:
+            self.gasSteps.append(GasStep(gasStep))
 
 
 class TrainingDto(object):
@@ -47,9 +53,6 @@ class TrainingDto(object):
 
         for opt in self.trainingParameters.trainingParameters:
             optimisation_settings[opt.name] = opt.value
-        print("convert to run fingerprint")
-        print(self.startDate)
-        print(self.endDate)
         return {
             "filename_override": "override",
             "startDateUnix": self.startDate,
@@ -97,15 +100,10 @@ class TrainingDto(object):
         }
 
     def __init__(self, jsonDto):
-        print("run const")
         self.trainingRunFilename = jsonDto["trainingRunFilename"]
         self.pool = LiquidityPoolDto(jsonDto["pool"])
-        print(jsonDto["startUnix"])
-        print(jsonDto["endUnix"])
         self.startDate = jsonDto["startUnix"]
         self.endDate = jsonDto["endUnix"]
-        print(self.startDate)
-        print(self.endDate)
         self.trainingParameters = TrainingParametersDto(jsonDto["trainingParameters"])
 
 
@@ -117,9 +115,52 @@ class TrainingParametersDto(object):
         self.trainingParameters = params
 
 
+class GasStep:
+    def __init__(self, gasStepDto):
+        self.unix = gasStepDto["unix"]
+        self.value = gasStepDto["value"]
+
+class SwapImport:
+    def __init__(self, swapImportDto):
+        self.unix = swapImportDto["unix"]
+        self.tokenIn = swapImportDto["tokenIn"]
+        self.tokenOut = swapImportDto["tokenOut"]
+        self.amountIn = swapImportDto["amountIn"]
+
+
+class SwapTimeseries:
+    def __init__(self, swapTimeSeriesDto):
+        self.timeSeriesName = swapTimeSeriesDto["timeSeriesName"]
+        self.swaps = list()
+        for swapImport in swapTimeSeriesDto["swaps"]:
+            self.swaps.append(SwapImport(swapImport))
+
+class FeeHookStep:
+    def __init__(self, feeHookStepDto):
+        self.unix = feeHookStepDto["unix"]
+        self.value = feeHookStepDto["value"]
+
+
+class FeeHook(object):
+    def __init__(self, feeHookDto):
+        print(feeHookDto)
+        self.hookName = feeHookDto["hookName"]
+        self.hookTargetTokens = list()
+        for token in feeHookDto["hookTargetTokens"]:
+            self.hookTargetTokens.append(token)
+
+        self.hookTimeSteps = list()
+
+        for step in feeHookDto["hookTimeSteps"]:
+            self.hookTimeSteps.append(FeeHookStep(step))
+            
+        self.minValue = feeHookDto["minValue"]
+        self.maxValue = feeHookDto["maxValue"]
+        self.unit = feeHookDto["unit"]
+
+
 class LiquidityPoolDto(object):
     def __init__(self, poolDto):
-        print("pool const")
         self.id = poolDto["id"]
         poolConstituents = list()
         for coin in poolDto["poolConstituents"]:
@@ -128,9 +169,9 @@ class LiquidityPoolDto(object):
         self.updateRule = UpdateRuleDto(poolDto["updateRule"])
 
 
+
 class UpdateRuleDto(object):
     def __init__(self, ruleDto):
-        print("rule const")
         self.name = ruleDto["name"]
         factors = list()
         for coin in ruleDto["UpdateRuleParameters"]:
@@ -178,5 +219,3 @@ class SimulationResultTimestepDto(object):
         self.timeStepTotal = timeStepTotal
 
 
-if __name__ == "__main__":
-    print("module")

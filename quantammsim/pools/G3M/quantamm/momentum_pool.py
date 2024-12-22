@@ -27,7 +27,10 @@ from quantammsim.core_simulator.param_utils import (
     lamb_to_memory_days_clipped,
     calc_lamb,
 )
-from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import calc_gradients, calc_k
+from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
+    calc_gradients,
+    calc_k,
+)
 
 from typing import Dict, Any, Optional
 from functools import partial
@@ -39,6 +42,7 @@ import numpy as np
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weight_changes,
 )
+
 
 @jit
 def _jax_momentum_weight_update(price_gradient, k):
@@ -156,7 +160,9 @@ class MomentumPool(TFMMBasePool):
         to be applied to the previous weights. These will be refined in subsequent steps.
         """
         memory_days = lamb_to_memory_days_clipped(
-            calc_lamb(params), run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"]
+            calc_lamb(params),
+            run_fingerprint["chunk_period"],
+            run_fingerprint["max_memory_days"],
         )
         k = calc_k(params, memory_days)
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
@@ -208,9 +214,11 @@ class MomentumPool(TFMMBasePool):
         refinement. The implementation of this function should handle details such as weight
         interpolation, maximum change limits, and ensuring weights sum to 1.
         """
-        return calc_fine_weight_output_from_weight_changes(raw_weight_output, initial_weights, run_fingerprint, params)
+        return calc_fine_weight_output_from_weight_changes(
+            raw_weight_output, initial_weights, run_fingerprint, params
+        )
 
-    def init_parameters(
+    def _init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -260,7 +268,9 @@ class MomentumPool(TFMMBasePool):
         # If a vector is provided in the inital values dict, we use
         # that, if only a singleton array is provided we expand it
         # to n_assets and use that vlaue for all assets.
-        def process_initial_values(initial_values_dict, key, n_assets, n_parameter_sets):
+        def process_initial_values(
+            initial_values_dict, key, n_assets, n_parameter_sets
+        ):
             if key in initial_values_dict:
                 initial_value = initial_values_dict[key]
                 if isinstance(initial_value, (np.ndarray, jnp.ndarray, list)):
@@ -280,11 +290,18 @@ class MomentumPool(TFMMBasePool):
             else:
                 raise ValueError(f"initial_values_dict must contain {key}")
 
-        initial_weights_logits = process_initial_values(initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets)
-        log_k = np.log2(process_initial_values(initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets))
+        initial_weights_logits = process_initial_values(
+            initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets
+        )
+        log_k = np.log2(
+            process_initial_values(
+                initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets
+            )
+        )
 
         initial_lamb = memory_days_to_lamb(
-            initial_values_dict["initial_memory_length"], run_fingerprint["chunk_period"]
+            initial_values_dict["initial_memory_length"],
+            run_fingerprint["chunk_period"],
         )
 
         logit_lamb_np = np.log(initial_lamb / (1.0 - initial_lamb))

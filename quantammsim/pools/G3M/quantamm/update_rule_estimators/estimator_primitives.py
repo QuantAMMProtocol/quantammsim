@@ -184,6 +184,7 @@ _jax_ewma_at_infinity_via_conv_padded = vmap(
     _jax_ewma_at_infinity_via_conv_1D_padded, in_axes=[-1, -1], out_axes=-1
 )
 
+
 # NOTE THE [1: ] slice here maybe should be a [0: ] slice BUT THIS SHOULD BE TESTED
 @jit
 def _jax_gradients_at_infinity_via_conv_1D_padded_with_alt_ewma(
@@ -201,6 +202,7 @@ _jax_gradients_at_infinity_via_conv_padded_with_alt_ewma = vmap(
     in_axes=[-1, -1, -1, -1, -1],
     out_axes=-1,
 )
+
 
 # NOTE THE [1: ] slice here maybe should be a [0: ] slice BUT THIS SHOULD BE TESTED
 @jit
@@ -223,7 +225,7 @@ def _jax_gradients_at_infinity_via_conv_1D_padded(arr_in, ewma, kernel, saturate
     ewma_diff = arr_in - ewma
     a = jnp.convolve(ewma_diff, kernel, mode="valid")
     # grad_conv = a[:98] / (saturated_b * ewma_conv.T[:,0])
-    grad = a[1:] / (saturated_b * ewma[-len(a)+1:])
+    grad = a[1:] / (saturated_b * ewma[-len(a) + 1 :])
     return grad[1:]
 
 
@@ -250,6 +252,7 @@ _jax_gradients_at_infinity_via_conv_with_alt_ewma = vmap(
     out_axes=-1,
 )
 
+
 # NOTE THE [1: ] slice here maybe should be a [0: ] slice BUT THIS SHOULD BE TESTED
 @jit
 def _jax_gradients_at_infinity_via_conv_1D_padded_with_alt_ewma(
@@ -258,7 +261,7 @@ def _jax_gradients_at_infinity_via_conv_1D_padded_with_alt_ewma(
     ewma_diff = arr_in - ewma
     a = jnp.convolve(ewma_diff, kernel, mode="valid")
     # grad_conv = a[:98] / (saturated_b * ewma_conv.T[:,0])
-    grad = a[1:] / (saturated_b * alt_ewma[-len(a)+1:])
+    grad = a[1:] / (saturated_b * alt_ewma[-len(a) + 1 :])
     return grad[1:]
 
 
@@ -267,6 +270,7 @@ _jax_gradients_at_infinity_via_conv_padded_with_alt_ewma = vmap(
     in_axes=[-1, -1, -1, -1, -1],
     out_axes=-1,
 )
+
 
 @partial(
     jit,

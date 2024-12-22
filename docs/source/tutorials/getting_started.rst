@@ -21,6 +21,8 @@ Let's create a simple momentum-based AMM pool and run a simulation:
 
     result = do_run_on_historic_data(run_fingerprint)
 
+Anything not set in the run_fingerprint will take on a default value
+
 Understanding the Results
 -------------------------
 

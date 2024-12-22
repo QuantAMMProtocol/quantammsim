@@ -82,7 +82,9 @@ class TFMMBasePool(AbstractPool):
         )
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_weights = weights[:: run_fingerprint["arb_frequency"]]
-            arb_acted_upon_local_prices = local_prices[:: run_fingerprint["arb_frequency"]]
+            arb_acted_upon_local_prices = local_prices[
+                :: run_fingerprint["arb_frequency"]
+            ]
         else:
             arb_acted_upon_weights = weights
             arb_acted_upon_local_prices = local_prices
@@ -121,7 +123,9 @@ class TFMMBasePool(AbstractPool):
         )
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_weights = weights[:: run_fingerprint["arb_frequency"]]
-            arb_acted_upon_local_prices = local_prices[:: run_fingerprint["arb_frequency"]]
+            arb_acted_upon_local_prices = local_prices[
+                :: run_fingerprint["arb_frequency"]
+            ]
         else:
             arb_acted_upon_weights = weights
             arb_acted_upon_local_prices = local_prices
@@ -169,7 +173,9 @@ class TFMMBasePool(AbstractPool):
         )
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_weights = weights[:: run_fingerprint["arb_frequency"]]
-            arb_acted_upon_local_prices = local_prices[:: run_fingerprint["arb_frequency"]]
+            arb_acted_upon_local_prices = local_prices[
+                :: run_fingerprint["arb_frequency"]
+            ]
         else:
             arb_acted_upon_weights = weights
             arb_acted_upon_local_prices = local_prices
@@ -188,9 +194,15 @@ class TFMMBasePool(AbstractPool):
         # Broadcast input arrays to match the maximum leading dimension.
         # If they are singletons, this will just repeat them for the length of the bout.
         # If they are arrays of length bout_length, this will cause no change.
-        fees_array_broadcast = jnp.broadcast_to(fees_array, (max_len,) + fees_array.shape[1:])
-        arb_thresh_array_broadcast = jnp.broadcast_to(arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:])
-        arb_fees_array_broadcast = jnp.broadcast_to(arb_fees_array, (max_len,) + arb_fees_array.shape[1:])
+        fees_array_broadcast = jnp.broadcast_to(
+            fees_array, (max_len,) + fees_array.shape[1:]
+        )
+        arb_thresh_array_broadcast = jnp.broadcast_to(
+            arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:]
+        )
+        arb_fees_array_broadcast = jnp.broadcast_to(
+            arb_fees_array, (max_len,) + arb_fees_array.shape[1:]
+        )
         # if we are doing trades, the trades array must be of the same length as the other arrays
         if run_fingerprint["do_trades"]:
             assert trade_array.shape[0] == max_len
@@ -227,7 +239,7 @@ class TFMMBasePool(AbstractPool):
     ) -> jnp.ndarray:
         pass
 
-    @partial(jit, static_argnums=(2,5))
+    @partial(jit, static_argnums=(2, 5))
     def calculate_weights(
         self,
         params: Dict[str, Any],
@@ -235,6 +247,8 @@ class TFMMBasePool(AbstractPool):
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
+        *args,
+        **kwargs,
     ) -> jnp.ndarray:
         """
         Calculate the weights of assets in the pool.
