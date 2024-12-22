@@ -9,6 +9,7 @@ from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
 from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import (
     MeanReversionChannelPool,
 )
+from quantammsim.pools.G3M.quantamm.difference_momentum_pool import DifferenceMomentumPool
 from quantammsim.pools.hodl_pool import HODLPool
 from quantammsim.pools.FM_AMM.cow_pool import CowPool
 from quantammsim.pools.FM_AMM.cow_pool_one_arb import CowPoolOneArb
@@ -145,6 +146,8 @@ def create_pool(rule):
         base_pool = CowPool8020()
     elif rule == "gyroscope":
         pool = GyroscopePool()
+    elif base_rule == "difference_momentum":
+        base_pool = DifferenceMomentumPool()
     else:
         raise NotImplementedError(f"Unknown base pool type: {base_rule}")
 
