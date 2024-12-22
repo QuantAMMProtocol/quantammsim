@@ -5,6 +5,7 @@ from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import MeanRever
 from quantammsim.pools.hodl_pool import HODLPool
 from quantammsim.pools.FM_AMM.cow_pool import CowPool
 from quantammsim.pools.FM_AMM.cow_pool_one_arb import CowPoolOneArb
+from quantammsim.pools.ECLP.gyroscope import GyroscopePool
 
 def create_pool(rule):
     """
@@ -70,6 +71,8 @@ def create_pool(rule):
         pool = CowPool()
     elif rule == "cow_5050_one_arb":
         pool = CowPoolOneArb()
+    elif rule == "gyroscope":
+        pool = GyroscopePool()
     else:
         raise NotImplementedError
     return pool

@@ -82,7 +82,7 @@ def _jax_calc_FMAMM_trade_from_exact_out_given_in(
     return jnp.where(amount_in != 0, overall_trade, 0)
 
 
-# version of _jax_calc_G3M_trade_from_exact_out_given_in that
+# version of _jax_calc_FMAMM_trade_from_exact_out_given_in that
 # in 'trade' as one single input. Useful for lazy evaluation
 def wrapped_FMAMM_trade_function(reserves, trade, gamma):
     return _jax_calc_FMAMM_trade_from_exact_out_given_in(
@@ -96,7 +96,7 @@ def jitted_FMAMM_cond_trade(condition, reserves, trade, gamma):
     return jax.lax.cond(
         condition,
         wrapped_FMAMM_trade_function,
-        zero_trade_function_fmamm,
+        zero_trade_function_FMAMM,
         reserves,
         trade,
         gamma,

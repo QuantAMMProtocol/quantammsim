@@ -350,6 +350,8 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
         Array of all signature variations used for arbitrage calculations.
     n : int
         Number of tokens or assets.
+    do_trades: bool
+        Whether not to perform trades
 
     Returns
     -------
