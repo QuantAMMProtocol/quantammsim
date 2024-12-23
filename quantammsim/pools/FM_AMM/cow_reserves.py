@@ -375,19 +375,19 @@ def _jax_calc_cowamm_reserves_one_arb_with_fees_scan_function(
     # case 2:
     # change in reserves[0] < 0
     # change in reserves[1] > 0
-
-    delta_reserves_0_case1 = weight * (
-        prev_reserves[0] - (jnp.sqrt(prev_product / (gamma * scalar_price)))
+    product_w = (1.0 - weight) * weight
+    delta_reserves_0_case1 = (1.0 - weight) * (
+        prev_reserves[0] - (jnp.sqrt(product_w * prev_product / (gamma * scalar_price)))
     )
     delta_reserves_1_case1 = weight * (
-        prev_reserves[1] / gamma - (jnp.sqrt(prev_product * scalar_price / (gamma)))
+        prev_reserves[1] / gamma - (jnp.sqrt(product_w * prev_product * scalar_price / (gamma)))
     )
 
-    delta_reserves_0_case2 = weight * (
-        prev_reserves[0] / gamma - (jnp.sqrt(prev_product / (gamma * scalar_price)))
+    delta_reserves_0_case2 = (1.0 - weight) * (
+        prev_reserves[0] / gamma - (jnp.sqrt(product_w * prev_product / (gamma * scalar_price)))
     )
     delta_reserves_1_case2 = weight * (
-        prev_reserves[1] - (jnp.sqrt(prev_product * scalar_price / (gamma)))
+        prev_reserves[1] - (jnp.sqrt(product_w * prev_product * scalar_price / (gamma)))
     )
 
     overall_trades = jnp.array(
