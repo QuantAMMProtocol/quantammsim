@@ -72,7 +72,6 @@ def _jax_calc_balancer_reserves_with_fees_scan_function_using_precalcs(
     carry_list,
     prices_and_precalcs,
     weights,
-    _,
     tokens_to_drop,
     active_trade_directions,
     n,
@@ -270,7 +269,6 @@ def _jax_calc_balancer_reserves_with_fees_using_precalcs(
         arb_thresh=arb_thresh,
         arb_fees=arb_fees,
         n=n_assets,
-        all_sig_variations=all_sig_variations,
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
     )
