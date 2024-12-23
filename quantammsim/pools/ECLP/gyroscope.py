@@ -31,7 +31,9 @@ from quantammsim.pools.ECLP.gyroscope_reserves import (
     _jax_calc_gyroscope_reserves_with_fees,
     _jax_calc_gyroscope_reserves_zero_fees,
     _jax_calc_gyroscope_reserves_with_dynamic_inputs,
+    initialise_gyroscope_reserves_given_value,
 )
+
 
 class GyroscopePool(AbstractPool):
     def __init__(self):
@@ -61,9 +63,15 @@ class GyroscopePool(AbstractPool):
 
         # calculate initial reserves
         initial_pool_value = run_fingerprint["initial_pool_value"]
-        initial_value_per_token = weights * initial_pool_value
-        initial_reserves = initial_value_per_token / local_prices[0]
-
+        initial_reserves = initialise_gyroscope_reserves_given_value(
+            initial_pool_value,
+            local_prices[0],
+            alpha=params["alpha"],
+            beta=params["beta"],
+            lam=params["lam"],
+            sin=jnp.sin(params["phi"]),
+            cos=jnp.cos(params["phi"]),
+        )
         reserves = _jax_calc_gyroscope_reserves_with_fees(
             initial_reserves,
             prices=arb_acted_upon_local_prices,
@@ -102,9 +110,15 @@ class GyroscopePool(AbstractPool):
 
         # calculate initial reserves
         initial_pool_value = run_fingerprint["initial_pool_value"]
-        initial_value_per_token = weights * initial_pool_value
-        initial_reserves = initial_value_per_token / local_prices[0]
-
+        initial_reserves = initialise_gyroscope_reserves_given_value(
+            initial_pool_value,
+            local_prices[0],
+            alpha=params["alpha"],
+            beta=params["beta"],
+            lam=params["lam"],
+            sin=jnp.sin(params["phi"]),
+            cos=jnp.cos(params["phi"]),
+        )
         # calculate initial reserves
         initial_pool_value = run_fingerprint["initial_pool_value"]
         initial_value_per_token = weights * initial_pool_value
@@ -149,9 +163,15 @@ class GyroscopePool(AbstractPool):
 
         # calculate initial reserves
         initial_pool_value = run_fingerprint["initial_pool_value"]
-        initial_value_per_token = weights * initial_pool_value
-        initial_reserves = initial_value_per_token / local_prices[0]
-
+        initial_reserves = initialise_gyroscope_reserves_given_value(
+            initial_pool_value,
+            local_prices[0],
+            alpha=params["alpha"],
+            beta=params["beta"],
+            lam=params["lam"],
+            sin=jnp.sin(params["phi"]),
+            cos=jnp.cos(params["phi"]),
+        )
         # any of fees_array, arb_thresh_array, arb_fees_array, trade_array
         # can be singletons, in which case we repeat them for the length of the bout
 
@@ -235,13 +255,12 @@ class GyroscopePool(AbstractPool):
         ValueError
             If n_assets is not 2 or if required initial values are missing
         """
+
         # We need to initialise the weights for each parameter set
         # If a vector is provided in the inital values dict, we use
         # that, if only a singleton array is provided we expand it
         # to n_assets and use that vlaue for all assets.
-        def process_initial_values(
-            initial_values_dict, key, n_parameter_sets
-        ):
+        def process_initial_values(initial_values_dict, key, n_parameter_sets):
             if key in initial_values_dict:
                 initial_value = initial_values_dict[key]
                 if isinstance(initial_value, (np.ndarray, jnp.ndarray, list)):
@@ -262,15 +281,9 @@ class GyroscopePool(AbstractPool):
         phi = process_initial_values(
             initial_values_dict, "rotation_angle", n_parameter_sets
         )
-        alpha = process_initial_values(
-            initial_values_dict, "alpha", n_parameter_sets
-        )
-        beta = process_initial_values(
-            initial_values_dict, "beta", n_parameter_sets
-        )
-        lam = process_initial_values(
-            initial_values_dict, "lam", n_parameter_sets
-        )
+        alpha = process_initial_values(initial_values_dict, "alpha", n_parameter_sets)
+        beta = process_initial_values(initial_values_dict, "beta", n_parameter_sets)
+        lam = process_initial_values(initial_values_dict, "lam", n_parameter_sets)
 
         params = {
             "phi": phi,

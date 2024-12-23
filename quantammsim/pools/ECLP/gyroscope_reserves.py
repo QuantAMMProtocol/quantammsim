@@ -41,6 +41,43 @@ def calculate_chi(A_matrix, A_matrix_inv, alpha, beta):
     chi = jnp.array([(A_matrix_inv @ tau_beta)[0], (A_matrix_inv @ tau_alpha)[1]])
     return chi
 
+def initialise_gyroscope_reserves_given_value(initial_pool_value,
+    initial_prices,
+    alpha,
+    beta,
+    lam,
+    sin,
+    cos):
+
+    current_prices = initial_prices[0] / initial_prices[1]  # use scalar prices
+
+    A_matrix_inv = calculate_A_matrix_inv(cos, sin, lam)
+    A_matrix = calculate_A_matrix(cos, sin, lam)
+
+    chi = calculate_chi(A_matrix, A_matrix_inv, alpha, beta)
+
+    tau_of_prices = calculate_tau(current_prices, A_matrix)
+
+    # Implements Proposition 9 & 10 of the E-CLP paper ("Initialisation
+    # from prices and portfolio value")
+
+    # first we impose a unit-value invariant, find the reserves for that invariant
+    # value for given prices (ersatz_reserves), then we proportionall scale the reserves
+    # so the reserves overall value is as required
+
+    initial_invariant = 1.0
+
+    # propoisition 9
+    ersatz_reserves = (
+        initial_invariant * (chi - A_matrix_inv @ tau_of_prices)
+    )
+
+    ersatz_pool_value = jnp.dot(ersatz_reserves, initial_prices)
+
+    scale_factor = initial_pool_value / ersatz_pool_value
+
+    return ersatz_reserves * scale_factor
+
 
 def _jax_calc_gyroscope_invariant(reserves, alpha, beta, A_matrix, A_matrix_inv):
     # This implements the expression in Proposition 8 of the E-CLP paper ("Initialisation
@@ -276,9 +313,7 @@ def _jax_calc_gyroscope_reserves_with_fees_scan_function(
     # if arb trade IS profitable
     # then reserves is equal to post_price_reserves, otherwise equal to prev_reserves
     do_arb_trade = arb_profitable
-    print("prev_reserve: ", prev_reserves)
     reserves = jnp.where(do_arb_trade, prev_reserves + overall_trade, prev_reserves)
-    print("reserves: ", reserves)
 
     return [reserves], reserves
 
@@ -374,8 +409,8 @@ def _jax_calc_ECLP_trade_from_exact_out_given_in(
     A_matrix,
     A_matrix_inv,
     lam,
-    s,
-    c,
+    sin,
+    cos,
     gamma=0.997,
 ):
     """
@@ -403,9 +438,9 @@ def _jax_calc_ECLP_trade_from_exact_out_given_in(
         Inverse rotation matrix.
     lam : float
         Lambda parameter controlling ellipse shape.
-    s : float
+    sin : float
         Sine of rotation angle phi.
-    c : float
+    cos : float
         Cosine of rotation angle phi.
     gamma : float, optional
         Fee parameter, where (1 - gamma) is the fee percentage. Default is 0.997.
@@ -445,18 +480,18 @@ def _jax_calc_ECLP_trade_from_exact_out_given_in(
 
     post_trade_in_reserves_with_fees_applied = t_prime[token_in] + amount_in * gamma
     s_c_lam_unsc_post_t_in_r = (
-        s * c * lam_underscore * post_trade_in_reserves_with_fees_applied
+        sin * cos * lam_underscore * post_trade_in_reserves_with_fees_applied
     )
     one_minus_lam_underscore_times_trig_squared = jnp.array(
-        [1 - lam_underscore * s**2.0, 1 - lam_underscore * c**2.0]
+        [1 - lam_underscore * (sin**2.0), 1 - lam_underscore * (cos**2.0)]
     )
     post_trade_t_prime_for_token_out = (
         -s_c_lam_unsc_post_t_in_r
         - jnp.sqrt(
             s_c_lam_unsc_post_t_in_r * 2.0
-            - (1 - lam_underscore * s**2.0)
+            - (1 - lam_underscore * (sin**2.0))
             * (
-                (1 - lam_underscore * c**2.0) * post_trade_in_reserves_with_fees_applied
+                (1 - lam_underscore * (cos**2.0)) * post_trade_in_reserves_with_fees_applied
                 - invariant**2.0
             )
         )
@@ -471,7 +506,7 @@ def _jax_calc_ECLP_trade_from_exact_out_given_in(
 # version of _jax_calc_ECLP_trade_from_exact_out_given_in that
 # in 'trade' as one single input. Useful for lazy evaluation
 def wrapped_ECLP_trade_function(
-    reserves, trade, alpha, beta, A_matrix, A_matrix_inv, lam, s, c, gamma
+    reserves, trade, alpha, beta, A_matrix, A_matrix_inv, lam, sin, cos, gamma
 ):
     return _jax_calc_ECLP_trade_from_exact_out_given_in(
         reserves,
@@ -483,8 +518,8 @@ def wrapped_ECLP_trade_function(
         A_matrix,
         A_matrix_inv,
         lam,
-        s,
-        c,
+        sin,
+        cos,
         gamma,
     )
 
@@ -495,7 +530,7 @@ def zero_trade_function_ECLP(*args, **kwargs):
 # Create a jitted function that includes the cond, for lazy evaluation
 @jit
 def jitted_ECLP_cond_trade(
-    condition, reserves, trade, alpha, beta, A_matrix, A_matrix_inv, lam, s, c, gamma
+    condition, reserves, trade, alpha, beta, A_matrix, A_matrix_inv, lam, sin, cos, gamma
 ):
     return cond(
         condition,
@@ -508,8 +543,8 @@ def jitted_ECLP_cond_trade(
         A_matrix,
         A_matrix_inv,
         lam,
-        s,
-        c,
+        sin,
+        cos,
         gamma,
     )
 
@@ -523,8 +558,8 @@ def _jax_calc_gyroscope_reserves_with_dynamic_fees_and_trades_scan_function_usin
     A_matrix,
     A_matrix_inv,
     lam,
-    s,
-    c,
+    sin,
+    cos,
     do_trades,
 ):
     """
@@ -559,9 +594,9 @@ def _jax_calc_gyroscope_reserves_with_dynamic_fees_and_trades_scan_function_usin
         The inverse of the A matrix.
     lam : float
         The lambda parameter controlling curve shape.
-    s : float
+    sin : float
         Sine of the rotation angle
-    c : float
+    cos : float
         Cosine of the rotation angle
     do_trades : bool
         Whether to execute trades or not.
@@ -579,6 +614,8 @@ def _jax_calc_gyroscope_reserves_with_dynamic_fees_and_trades_scan_function_usin
 
     # carry_list[1] is previous reserves
     prev_reserves = carry_list[1]
+
+    counter = carry_list[2]
 
     # input_list contains weights, prices, precalcs and fee/arb amounts
     prices = input_list[0]
@@ -605,6 +642,7 @@ def _jax_calc_gyroscope_reserves_with_dynamic_fees_and_trades_scan_function_usin
 
     # apply trade if trade is present
     if do_trades:
+        old_reserves = reserves
         reserves += jitted_ECLP_cond_trade(
             do_trades,
             reserves,
@@ -614,14 +652,20 @@ def _jax_calc_gyroscope_reserves_with_dynamic_fees_and_trades_scan_function_usin
             A_matrix,
             A_matrix_inv,
             lam,
-            s,
-            c,
+            sin,
+            cos,
             gamma,
         )
 
+    if jnp.any(reserves<0):
+        print("reserves", reserves)
+        print("old_reserves", old_reserves)
+        raise Exception
+    counter += 1
     return [
         prices,
         reserves,
+        counter
     ], reserves
 
 
@@ -710,14 +754,15 @@ def _jax_calc_gyroscope_reserves_with_dynamic_inputs(
         A_matrix=A_matrix,
         A_matrix_inv=A_matrix_inv,
         lam=lam,
-        s=sin,
-        c=cos,
+        sin=sin,
+        cos=cos,
         do_trades=do_trades,
     )
 
     carry_list_init = [
         initial_prices,
         initial_reserves,
+        0
     ]
     carry_list_end, reserves = scan(
         scan_fn,
@@ -764,6 +809,19 @@ if __name__ == "__main__":
     ) # Single timestep with equal prices
     # prices = jnp.array([[1.0, 2.0, 3.0, 2.0, 1.0], [1.0, 1.0, 1.0, 1.0, 1.0]]).T
     initial_reserves = jnp.array([10000.0, 10000.0])
+    initial_pool_value = 1e6
+    initial_reserves = initialise_gyroscope_reserves_given_value(
+        initial_pool_value, prices[0], alpha, beta, lam, sin, cos
+    )
+
+    initial_invariant = _jax_calc_gyroscope_invariant(
+        initial_reserves, alpha, beta, A_matrix, A_matrix_inv
+    )
+
+    initial_quoted_prices = _jax_calc_gyroscope_inner_price(
+        initial_reserves, alpha, beta, A_matrix, A_matrix_inv, initial_invariant
+    )
+    raise Exception
     test_reserves = _jax_calc_gyroscope_reserves_zero_fees(
         initial_reserves, alpha, beta, sin, cos, lam, prices
     )
