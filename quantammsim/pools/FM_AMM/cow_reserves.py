@@ -18,6 +18,7 @@ from quantammsim.pools.FM_AMM.FMAMM_trades import jitted_FMAMM_cond_trade
 np.seterr(all="raise")
 np.seterr(under="print")
 
+
 def align_CPAMM(reserves: List[float], price: float) -> List[float]:
     """
     Calculate the new CPAMM reserves at the align price.
@@ -49,7 +50,7 @@ def align_FMAMM(reserves: List[float], price: float) -> List[float]:
         price (float): The new price to align the reserves with.
 
     Returns:
-        List[float]: A list of two values representing 
+        List[float]: A list of two values representing
         the new reserves of FMAMM after the alignment.
     """
 
@@ -72,20 +73,20 @@ def align_position(
     ext_thresh: float = 0.0,
 ) -> List[float]:
     """
-    Return new AMM position reserves the it has been aligned 
+    Return new AMM position reserves the it has been aligned
     to a new price through an arbitrage trade.
 
     Args:
-        reserves (List[float]): 
+        reserves (List[float]):
             A list of two values representing the current reserves of the AMM.
-        price (float): The new price to align the reserves with: 
+        price (float): The new price to align the reserves with:
             Either a single value or a list of two values representing the bid and ask price.
-        align_function (callable): 
+        align_function (callable):
             A function used to calculate the new reserves based on the align price.
-        amm_fee (float, optional): 
+        amm_fee (float, optional):
             The trading fee that the AMM charges. Default is 0.0.
-        ext_fee (float, optional): 
-            An additional external fee the arbitrageur needs to pay 
+        ext_fee (float, optional):
+            An additional external fee the arbitrageur needs to pay
             (could e.g. a fee on the external exchange). Default is 0.0.
 
     Returns:
@@ -142,12 +143,12 @@ def align_FMAMM_jax(reserves, price):
     assumes weights of 0.5 for both tokens.
 
     Args:
-        reserves (jnp.ndarray): 
+        reserves (jnp.ndarray):
             A JAX array of two values representing the current reserves of FMAMM.
         price (jnp.ndarray): The new price to align the reserves with.
 
     Returns:
-        jnp.ndarray: A JAX array of two values representing 
+        jnp.ndarray: A JAX array of two values representing
             the new reserves of FMAMM after the alignment.
     """
     align_reserves = jnp.array(
@@ -166,12 +167,12 @@ def align_FMAMM_onearb_jax(reserves, price):
     This function assumes weights of 0.5 for both tokens.
 
     Args:
-        reserves (jnp.ndarray): 
+        reserves (jnp.ndarray):
             A JAX array of two values representing the current reserves of FMAMM.
             price (jnp.ndarray): The new price to align the reserves with.
 
     Returns:
-        jnp.ndarray: A JAX array of two values representing 
+        jnp.ndarray: A JAX array of two values representing
             the new reserves of FMAMM after the alignment.
     """
     constant = reserves[0] * reserves[1]
@@ -376,18 +377,18 @@ def _jax_calc_cowamm_reserves_one_arb_with_fees_scan_function(
     # change in reserves[0] < 0
     # change in reserves[1] > 0
     product_w = (1.0 - weight) * weight
-    delta_reserves_0_case1 = (1.0 - weight) * (
-        prev_reserves[0] - (jnp.sqrt(product_w * prev_product / (gamma * scalar_price)))
+    delta_reserves_0_case1 = (1.0 - weight) * prev_reserves[0] - (
+        jnp.sqrt(product_w * prev_product / (gamma * scalar_price))
     )
-    delta_reserves_1_case1 = weight * (
-        prev_reserves[1] / gamma - (jnp.sqrt(product_w * prev_product * scalar_price / (gamma)))
+    delta_reserves_1_case1 = weight * prev_reserves[1] / gamma - (
+        jnp.sqrt(product_w * prev_product * scalar_price / (gamma))
     )
 
-    delta_reserves_0_case2 = (1.0 - weight) * (
-        prev_reserves[0] / gamma - (jnp.sqrt(product_w * prev_product / (gamma * scalar_price)))
+    delta_reserves_0_case2 = (1.0 - weight) * prev_reserves[0] / gamma - (
+        jnp.sqrt(product_w * prev_product / (gamma * scalar_price))
     )
-    delta_reserves_1_case2 = weight * (
-        prev_reserves[1] - (jnp.sqrt(product_w * prev_product * scalar_price / (gamma)))
+    delta_reserves_1_case2 = weight * prev_reserves[1] - (
+        jnp.sqrt(product_w * prev_product * scalar_price / (gamma))
     )
 
     overall_trades = jnp.array(
@@ -522,12 +523,12 @@ def _jax_calc_cowamm_reserves_one_arb_zero_fees_scan_function(
     prev_product = prev_reserves[0] * prev_reserves[1]
 
     scalar_price = prices[0] / prices[1]
-
-    delta_reserves_0 = weight * (
-        prev_reserves[0] - (jnp.sqrt(prev_product / (scalar_price)))
+    product_w = weight * (1.0 - weight)
+    delta_reserves_0 = (1.0 - weight) * prev_reserves[0] - (
+        jnp.sqrt(product_w * prev_product / (scalar_price))
     )
-    delta_reserves_1 = weight * (
-        prev_reserves[1] - (jnp.sqrt(prev_product * scalar_price))
+    delta_reserves_1 = weight * prev_reserves[1] - (
+        jnp.sqrt(product_w * prev_product * scalar_price)
     )
 
     # Rather than explicitly checking no-arb bounds, we calculate the optimal trade and check
@@ -629,7 +630,13 @@ def _jax_calc_cowamm_reserve_ratio(prev_prices, prices):
 _jax_calc_cowamm_reserve_ratio_vmapped = vmap(_jax_calc_cowamm_reserve_ratio)
 
 
-@partial(jit, static_argnums=(4, 5,))
+@partial(
+    jit,
+    static_argnums=(
+        4,
+        5,
+    ),
+)
 def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
     carry_list, input_list, arb_quality, weights, do_trades=True, do_arb=True
 ):
@@ -694,14 +701,16 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
             arb_fees=arb_fees,
         )[-1]
 
-        reserves_with_one_arb = _jax_calc_cowamm_reserves_one_arb_with_fees_scan_function(
-            carry_list=carry_list,
-            prices=prices,
-            weight=weights[0],
-            gamma=gamma,
-            arb_thresh=arb_thresh,
-            arb_fees=arb_fees,
-        )[-1]
+        reserves_with_one_arb = (
+            _jax_calc_cowamm_reserves_one_arb_with_fees_scan_function(
+                carry_list=carry_list,
+                prices=prices,
+                weight=weights[0],
+                gamma=gamma,
+                arb_thresh=arb_thresh,
+                arb_fees=arb_fees,
+            )[-1]
+        )
 
         reserves = (
             arb_quality * reserves_with_perfect_arb
@@ -712,9 +721,7 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
 
     # apply trade if trade is present
     if do_trades:
-        reserves += jitted_FMAMM_cond_trade(
-            do_trades, reserves, weights, trade, gamma
-        )
+        reserves += jitted_FMAMM_cond_trade(do_trades, reserves, weights, trade, gamma)
 
     return [prices, reserves], reserves
 
