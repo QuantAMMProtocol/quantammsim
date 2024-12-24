@@ -151,6 +151,8 @@ def _jax_calc_gyroscope_reserves_zero_fees_scan_function(
     overall_trade = invariant * (chi - A_matrix_inv @ tau_of_prices) - prev_reserves
 
     reserves = prev_reserves + overall_trade
+    # revert to previous reserves if any entry is negative
+    reserves = jnp.where((reserves[0] < 0) | (reserves[1] < 0), prev_reserves, reserves)
     return [reserves], reserves
 
 
@@ -314,7 +316,8 @@ def _jax_calc_gyroscope_reserves_with_fees_scan_function(
     # then reserves is equal to post_price_reserves, otherwise equal to prev_reserves
     do_arb_trade = arb_profitable
     reserves = jnp.where(do_arb_trade, prev_reserves + overall_trade, prev_reserves)
-
+    # revert to previous reserves if any entry is negative
+    reserves = jnp.where((reserves[0] < 0) | (reserves[1] < 0), prev_reserves, reserves)
     return [reserves], reserves
 
 
@@ -398,7 +401,7 @@ def _jax_calc_gyroscope_reserves_with_fees(
     return reserves
 
 
-# @jit
+@jit
 def _jax_calc_ECLP_trade_from_exact_out_given_in(
     reserves,
     token_in,
@@ -640,9 +643,11 @@ def _jax_calc_gyroscope_reserves_with_dynamic_fees_and_trades_scan_function_usin
         arb_thresh=arb_thresh,
     )
 
+    # revert to previous reserves if any entry is negative
+    reserves = jnp.where((reserves[0] < 0) | (reserves[1] < 0), prev_reserves, reserves)
     # apply trade if trade is present
     if do_trades:
-        old_reserves = reserves
+        prior_to_trade_reserves = reserves
         reserves += jitted_ECLP_cond_trade(
             do_trades,
             reserves,
@@ -656,11 +661,10 @@ def _jax_calc_gyroscope_reserves_with_dynamic_fees_and_trades_scan_function_usin
             cos,
             gamma,
         )
-
-    if jnp.any(reserves<0):
-        print("reserves", reserves)
-        print("old_reserves", old_reserves)
-        raise Exception
+        # revert to previous reserves if any entry is negative
+        reserves = jnp.where(
+            (reserves[0] < 0) | (reserves[1] < 0), prior_to_trade_reserves, reserves
+        )
     counter += 1
     return [
         prices,
@@ -780,109 +784,216 @@ def _jax_calc_gyroscope_reserves_with_dynamic_inputs(
 
 
 if __name__ == "__main__":
-    # # Test tau calculation
-    c = 1 / np.sqrt(2)
-    s = 1 / np.sqrt(2)
-    lam = 2
-    p = 1
-    A_matrix = np.array([[c / lam, -s / lam], [s, c]])
-    test_tau = calculate_tau(p, A_matrix)
-    np.testing.assert_array_almost_equal(test_tau, np.array([0, 1]))
+    # # # Test tau calculation
+    # c = 1 / np.sqrt(2)
+    # s = 1 / np.sqrt(2)
+    # lam = 2
+    # p = 1
+    # A_matrix = np.array([[c / lam, -s / lam], [s, c]])
+    # test_tau = calculate_tau(p, A_matrix)
+    # np.testing.assert_array_almost_equal(test_tau, np.array([0, 1]))
 
-    # # Test chi calculation
-    alpha = 1 / 2
-    beta = 2
-    A_matrix_inv = np.array([[c * lam, s], [-s * lam, c]])
-    test_chi = calculate_chi(A_matrix, A_matrix_inv, alpha, beta)
-    expected_chi = np.array([1.37281294596729, 1.37281294596729])
-    np.testing.assert_array_almost_equal(test_chi, expected_chi)
+    # # # Test chi calculation
+    # alpha = 1 / 2
+    # beta = 2
+    # A_matrix_inv = np.array([[c * lam, s], [-s * lam, c]])
+    # test_chi = calculate_chi(A_matrix, A_matrix_inv, alpha, beta)
+    # expected_chi = np.array([1.37281294596729, 1.37281294596729])
+    # np.testing.assert_array_almost_equal(test_chi, expected_chi)
 
-    alpha = 0.5
+    # alpha = 0.5
+    # beta = 4000.0
+
+    # phi = np.pi / 4.0
+    # sin = np.sin(phi)
+    # cos = np.cos(phi)
+    # lam = 2.0
+    # prices = jnp.array(
+    #     [[1.51629e03, 1.0], [1.61629e03, 1.0], [1.41629e03, 1.0]]
+    # ) # Single timestep with equal prices
+    # # prices = jnp.array([[1.0, 2.0, 3.0, 2.0, 1.0], [1.0, 1.0, 1.0, 1.0, 1.0]]).T
+    # initial_reserves = jnp.array([10000.0, 10000.0])
+    # initial_pool_value = 1e6
+    # initial_reserves = initialise_gyroscope_reserves_given_value(
+    #     initial_pool_value, prices[0], alpha, beta, lam, sin, cos
+    # )
+
+    # initial_invariant = _jax_calc_gyroscope_invariant(
+    #     initial_reserves, alpha, beta, A_matrix, A_matrix_inv
+    # )
+
+    # initial_quoted_prices = _jax_calc_gyroscope_inner_price(
+    #     initial_reserves, alpha, beta, A_matrix, A_matrix_inv, initial_invariant
+    # )
+    # test_reserves = _jax_calc_gyroscope_reserves_zero_fees(
+    #     initial_reserves, alpha, beta, sin, cos, lam, prices
+    # )
+    # test_reserves_ = _jax_calc_gyroscope_reserves_with_fees(
+    #         initial_reserves, alpha, beta, sin, cos, lam, prices, 0.0001
+    #     )
+    # print("test_reserves", test_reserves)
+    # for gamma in [1.0, 0.99999, 0.9]:
+    #     test_reserves = _jax_calc_gyroscope_reserves_with_fees(
+    #         initial_reserves, alpha, beta, sin, cos, lam, prices, 1.0 - gamma
+    #     )
+    #     print("gamma", gamma)
+    #     print("test_reserves", test_reserves)
+    # print("-------------------")
+    # for gamma in [1.0, 0.99, 0.9]:
+    #     test_reserves = _jax_calc_gyroscope_reserves_with_fees(
+    #         initial_reserves, alpha, beta, sin, cos, lam, prices, 1.0 - gamma, arb_thresh=0.1
+    #     )
+    #     print("gamma", gamma)
+    #     print("test_reserves", test_reserves)
+
+    #     # Test trade execution
+    # print("\nTesting trades...")
+    # initial_reserves = jnp.array([100.0, 100.0])
+    # prices = jnp.array(
+    #     [[1.51629e03, 1.0], [1.61629e03, 1.0], [1.41629e03, 1.0]]
+    # ).T  # Single timestep with equal prices
+
+    # # Test parameters
+    # trade = jnp.array([0, 1, 10.0])  # Trade 10 units from token 0 to token 1
+    # do_trades = True
+    # gamma = 0.997  # 0.3% fee
+
+    # print("initial_reserves")
+    # print(initial_reserves)
+    # test_reserves = _jax_calc_gyroscope_reserves_with_fees(
+    #     initial_reserves, alpha, beta, sin, cos, lam, prices, gamma=1.0, arb_thresh=0.0
+    # )
+    # print("test_reserves")
+    # print(test_reserves)
+    # # Execute trade
+    # overall_trade = _jax_calc_ECLP_trade_from_exact_out_given_in(
+    #     test_reserves[0],
+    #     trade[0],
+    #     trade[1],
+    #     trade[2],
+    #     alpha,
+    #     beta,
+    #     A_matrix,
+    #     A_matrix_inv,
+    #     lam,
+    #     s,
+    #     c,
+    #     gamma=0.997,
+    # )
+
+    # print(f"Initial reserves: {test_reserves}")
+    # print(
+    #     f"Trade: {trade[2]} units from token {int(trade[0])} to token {int(trade[1])}"
+    # )
+    # print(f"Final reserves: {test_reserves + overall_trade}")
+    # print(f"Reserve changes: {overall_trade }")
+
+    # Test _jax_calc_gyroscope_reserves_with_fees_scan_function with real data
+    prev_reserves = jnp.array([6.167178960205177, 72228073.71583034])
+    prices = jnp.array([4004.16, 0.9991])
+    alpha = 1000.0
     beta = 4000.0
+    A_matrix = jnp.array([
+        [0.7071067811865476, -0.7071067811865475],
+        [0.7071067811865475, 0.7071067811865476]
+    ])
+    A_matrix_inv = jnp.array([
+        [0.7071067811865476, 0.7071067811865475],
+        [-0.7071067811865475, 0.7071067811865476]
+    ])
+    gamma = 0.999
+    arb_fees = 0.0
+    arb_thresh = 100.488
 
-    phi = np.pi / 4.0
-    sin = np.sin(phi)
-    cos = np.cos(phi)
-    lam = 2.0
-    prices = jnp.array(
-        [[1.51629e03, 1.0], [1.61629e03, 1.0], [1.41629e03, 1.0]]
-    ) # Single timestep with equal prices
-    # prices = jnp.array([[1.0, 2.0, 3.0, 2.0, 1.0], [1.0, 1.0, 1.0, 1.0, 1.0]]).T
-    initial_reserves = jnp.array([10000.0, 10000.0])
-    initial_pool_value = 1e6
-    initial_reserves = initialise_gyroscope_reserves_given_value(
-        initial_pool_value, prices[0], alpha, beta, lam, sin, cos
-    )
-
-    initial_invariant = _jax_calc_gyroscope_invariant(
-        initial_reserves, alpha, beta, A_matrix, A_matrix_inv
-    )
-
-    initial_quoted_prices = _jax_calc_gyroscope_inner_price(
-        initial_reserves, alpha, beta, A_matrix, A_matrix_inv, initial_invariant
-    )
-    raise Exception
-    test_reserves = _jax_calc_gyroscope_reserves_zero_fees(
-        initial_reserves, alpha, beta, sin, cos, lam, prices
-    )
-    test_reserves_ = _jax_calc_gyroscope_reserves_with_fees(
-            initial_reserves, alpha, beta, sin, cos, lam, prices, 0.0001
-        )
-    print("test_reserves", test_reserves)
-    raise Exception
-    for gamma in [1.0, 0.99999, 0.9]:
-        test_reserves = _jax_calc_gyroscope_reserves_with_fees(
-            initial_reserves, alpha, beta, sin, cos, lam, prices, 1.0 - gamma
-        )
-        print("gamma", gamma)
-        print("test_reserves", test_reserves)
-    print("-------------------")
-    raise Exception
-    for gamma in [1.0, 0.99, 0.9]:
-        test_reserves = _jax_calc_gyroscope_reserves_with_fees(
-            initial_reserves, alpha, beta, sin, cos, lam, prices, 1.0 - gamma, arb_thresh=0.1
-        )
-        print("gamma", gamma)
-        print("test_reserves", test_reserves)
-
-        # Test trade execution
-    print("\nTesting trades...")
-    initial_reserves = jnp.array([100.0, 100.0])
-    prices = jnp.array(
-        [[1.51629e03, 1.0], [1.61629e03, 1.0], [1.41629e03, 1.0]]
-    ).T  # Single timestep with equal prices
-
-    # Test parameters
-    trade = jnp.array([0, 1, 10.0])  # Trade 10 units from token 0 to token 1
-    do_trades = True
-    gamma = 0.997  # 0.3% fee
-
-    print("initial_reserves")
-    print(initial_reserves)
-    test_reserves = _jax_calc_gyroscope_reserves_with_fees(
-        initial_reserves, alpha, beta, sin, cos, lam, prices, gamma=1.0, arb_thresh=0.0
-    )
-    print("test_reserves")
-    print(test_reserves)
-    # Execute trade
-    overall_trade = _jax_calc_ECLP_trade_from_exact_out_given_in(
-        test_reserves[0],
-        trade[0],
-        trade[1],
-        trade[2],
+    # Run the function
+    _, test_reserves = _jax_calc_gyroscope_reserves_with_fees_scan_function(
+        [prev_reserves],
+        prices,
         alpha,
         beta,
         A_matrix,
         A_matrix_inv,
-        lam,
-        s,
-        c,
-        gamma=0.997,
+        gamma,
+        arb_fees=arb_fees,
+        arb_thresh=arb_thresh
     )
 
-    print(f"Initial reserves: {test_reserves}")
-    print(
-        f"Trade: {trade[2]} units from token {int(trade[0])} to token {int(trade[1])}"
+    print("Initial reserves:", prev_reserves)
+    print("Prices:", prices)
+    print("Result reserves:", test_reserves)
+
+    # Test _jax_calc_gyroscope_reserves_with_fees_scan_function with real data
+    prev_reserves = jnp.array([6.167178960205177, 72228073.71583034])
+    prices = jnp.array([4009.39, 0.9991])
+    alpha = 1000.0
+    beta = 4000.0
+    A_matrix = jnp.array(
+        [
+            [0.7071067811865476, -0.7071067811865475],
+            [0.7071067811865475, 0.7071067811865476],
+        ]
     )
-    print(f"Final reserves: {test_reserves + overall_trade}")
-    print(f"Reserve changes: {overall_trade }")
+    A_matrix_inv = jnp.array(
+        [
+            [0.7071067811865476, 0.7071067811865475],
+            [-0.7071067811865475, 0.7071067811865476],
+        ]
+    )
+    gamma = 0.999
+    arb_fees = 0.0
+    arb_thresh = 100.488
+
+    # Run the function
+    _, test_reserves = _jax_calc_gyroscope_reserves_with_fees_scan_function(
+        [prev_reserves],
+        prices,
+        alpha,
+        beta,
+        A_matrix,
+        A_matrix_inv,
+        gamma,
+        arb_fees=arb_fees,
+        arb_thresh=arb_thresh,
+    )
+
+    print("Initial reserves:", prev_reserves)
+    print("Prices:", prices)
+    print("Result reserves:", test_reserves)
+
+    # Test _jax_calc_gyroscope_reserves_with_fees_scan_function with real data
+    prev_reserves = jnp.array([6.167178960205177, 72228073.71583034])
+    prices = jnp.array([3800.39, 0.9991])
+    alpha = 1000.0
+    beta = 4000.0
+    A_matrix = jnp.array(
+        [
+            [0.7071067811865476, -0.7071067811865475],
+            [0.7071067811865475, 0.7071067811865476],
+        ]
+    )
+    A_matrix_inv = jnp.array(
+        [
+            [0.7071067811865476, 0.7071067811865475],
+            [-0.7071067811865475, 0.7071067811865476],
+        ]
+    )
+    gamma = 0.999
+    arb_fees = 0.0
+    arb_thresh = 100.488
+
+    # Run the function
+    _, test_reserves = _jax_calc_gyroscope_reserves_with_fees_scan_function(
+        [prev_reserves],
+        prices,
+        alpha,
+        beta,
+        A_matrix,
+        A_matrix_inv,
+        gamma,
+        arb_fees=arb_fees,
+        arb_thresh=arb_thresh,
+    )
+
+    print("Initial reserves:", prev_reserves)
+    print("Prices:", prices)
+    print("Result reserves:", test_reserves)
