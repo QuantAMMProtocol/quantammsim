@@ -235,6 +235,8 @@ def train_on_historic_data(
         "all_sig_variations": all_sig_variations,
         "weight_interpolation_method": weight_interpolation_method,
         "arb_frequency": arb_frequency,
+        "do_arb": run_fingerprint["do_arb"],
+        "arb_quality": run_fingerprint["arb_quality"],
     }
 
     partial_training_step = Partial(
