@@ -3,7 +3,6 @@ from jax.lax import scan, cond
 from jax.tree_util import Partial
 import jax.numpy as jnp
 import numpy as np
-import debug
 from functools import partial
 import jax
 config.update("jax_enable_x64", True)
