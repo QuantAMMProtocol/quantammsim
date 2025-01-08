@@ -1,23 +1,9 @@
-from typing import Dict, Any, Optional
-from functools import partial
-import numpy as np
-
 # again, this only works on startup!
-from jax import config, devices, jit, tree_util
-from jax.lib.xla_bridge import default_backend
-import jax.numpy as jnp
-from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
-
-from quantammsim.pools.base_pool import AbstractPool
-from quantammsim.pools.G3M.balancer.balancer_reserves import (
-    _jax_calc_balancer_reserve_ratios,
-    _jax_calc_balancer_reserves_with_fees_using_precalcs,
-    _jax_calc_balancer_reserves_with_dynamic_inputs,
-)
-from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
+from jax import config
 
 config.update("jax_enable_x64", True)
+from jax.lib.xla_bridge import default_backend
+from jax import local_device_count, devices
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -28,12 +14,31 @@ else:
     GPU_DEVICE = devices("cpu")[0]
     config.update("jax_platform_name", "cpu")
 
+import jax.numpy as jnp
+from jax import jit, vmap
+from jax import device_put
+from jax import tree_util
+from jax.lax import stop_gradient, dynamic_slice
+from jax.nn import softmax
 
-class BalancerPool(AbstractPool):
+from typing import Dict, Any, Optional, Callable
+import numpy as np
+
+from quantammsim.pools.base_pool import AbstractPool
+
+from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
+from quantammsim.pools.ECLP.gyroscope_reserves import (
+    _jax_calc_gyroscope_reserves_with_fees,
+    _jax_calc_gyroscope_reserves_zero_fees,
+    _jax_calc_gyroscope_reserves_with_dynamic_inputs,
+    initialise_gyroscope_reserves_given_value,
+)
+
+
+class GyroscopePool(AbstractPool):
     def __init__(self):
         super().__init__()
 
-    @partial(jit, static_argnums=2)
     def calculate_reserves_with_fees(
         self,
         params: Dict[str, Any],
@@ -42,6 +47,8 @@ class BalancerPool(AbstractPool):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
+        # Cow pools have no parameters and are only defined for 2 assets
+        assert run_fingerprint["n_assets"] == 2
         weights = self.calculate_weights(params)
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
@@ -56,21 +63,29 @@ class BalancerPool(AbstractPool):
 
         # calculate initial reserves
         initial_pool_value = run_fingerprint["initial_pool_value"]
-        initial_value_per_token = weights * initial_pool_value
-        initial_reserves = initial_value_per_token / local_prices[0]
-
-        reserves = _jax_calc_balancer_reserves_with_fees_using_precalcs(
+        initial_reserves = initialise_gyroscope_reserves_given_value(
+            initial_pool_value,
+            local_prices[0],
+            alpha=params["alpha"],
+            beta=params["beta"],
+            lam=params["lam"],
+            sin=jnp.sin(params["phi"]),
+            cos=jnp.cos(params["phi"]),
+        )
+        reserves = _jax_calc_gyroscope_reserves_with_fees(
             initial_reserves,
-            weights,
-            arb_acted_upon_local_prices,
+            prices=arb_acted_upon_local_prices,
+            alpha=params["alpha"],
+            beta=params["beta"],
+            sin=jnp.sin(params["phi"]),
+            cos=jnp.cos(params["phi"]),
+            lam=params["lam"],
             fees=run_fingerprint["fees"],
             arb_thresh=run_fingerprint["gas_cost"],
             arb_fees=run_fingerprint["arb_fees"],
-            all_sig_variations=jnp.array(run_fingerprint["all_sig_variations"]),
         )
         return reserves
 
-    @partial(jit, static_argnums=2)
     def calculate_reserves_zero_fees(
         self,
         params: Dict[str, Any],
@@ -79,6 +94,8 @@ class BalancerPool(AbstractPool):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
+        # Cow pools have no parameters and are only defined for 2 assets
+        assert run_fingerprint["n_assets"] == 2
         weights = self.calculate_weights(params)
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
@@ -93,25 +110,31 @@ class BalancerPool(AbstractPool):
 
         # calculate initial reserves
         initial_pool_value = run_fingerprint["initial_pool_value"]
+        initial_reserves = initialise_gyroscope_reserves_given_value(
+            initial_pool_value,
+            local_prices[0],
+            alpha=params["alpha"],
+            beta=params["beta"],
+            lam=params["lam"],
+            sin=jnp.sin(params["phi"]),
+            cos=jnp.cos(params["phi"]),
+        )
+        # calculate initial reserves
+        initial_pool_value = run_fingerprint["initial_pool_value"]
         initial_value_per_token = weights * initial_pool_value
         initial_reserves = initial_value_per_token / local_prices[0]
 
-        reserve_ratios = _jax_calc_balancer_reserve_ratios(
-            arb_acted_upon_local_prices[:-1],
-            weights,
-            arb_acted_upon_local_prices[1:],
-        )
-
-        # calculate the reserves by cumprod of reserve ratios
-        reserves = jnp.vstack(
-            [
-                initial_reserves,
-                initial_reserves * jnp.cumprod(reserve_ratios, axis=0),
-            ]
+        reserves = _jax_calc_gyroscope_reserves_zero_fees(
+            initial_reserves,
+            prices=arb_acted_upon_local_prices,
+            alpha=params["alpha"],
+            beta=params["beta"],
+            sin=jnp.sin(params["phi"]),
+            cos=jnp.cos(params["phi"]),
+            lam=params["lam"],
         )
         return reserves
 
-    @partial(jit, static_argnums=2)
     def calculate_reserves_with_dynamic_inputs(
         self,
         params: Dict[str, Any],
@@ -124,11 +147,12 @@ class BalancerPool(AbstractPool):
         trade_array: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
+        # Cow pools have no parameters and are only defined for 2 assets
+        assert run_fingerprint["n_assets"] == 2
+        weights = self.calculate_weights(params)
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
-
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
-        weights = self.calculate_weights(params)
 
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_local_prices = local_prices[
@@ -137,10 +161,17 @@ class BalancerPool(AbstractPool):
         else:
             arb_acted_upon_local_prices = local_prices
 
+        # calculate initial reserves
         initial_pool_value = run_fingerprint["initial_pool_value"]
-        initial_value_per_token = weights * initial_pool_value
-        initial_reserves = initial_value_per_token / arb_acted_upon_local_prices[0]
-
+        initial_reserves = initialise_gyroscope_reserves_given_value(
+            initial_pool_value,
+            local_prices[0],
+            alpha=params["alpha"],
+            beta=params["beta"],
+            lam=params["lam"],
+            sin=jnp.sin(params["phi"]),
+            cos=jnp.cos(params["phi"]),
+        )
         # any of fees_array, arb_thresh_array, arb_fees_array, trade_array
         # can be singletons, in which case we repeat them for the length of the bout
 
@@ -163,17 +194,20 @@ class BalancerPool(AbstractPool):
         # if we are doing trades, the trades array must be of the same length as the other arrays
         if run_fingerprint["do_trades"]:
             assert trade_array.shape[0] == max_len
-        reserves = _jax_calc_balancer_reserves_with_dynamic_inputs(
+
+        reserves = _jax_calc_gyroscope_reserves_with_dynamic_inputs(
             initial_reserves,
-            weights,
-            arb_acted_upon_local_prices,
-            fees_array_broadcast,
-            arb_thresh_array_broadcast,
-            arb_fees_array_broadcast,
-            jnp.array(run_fingerprint["all_sig_variations"]),
-            trade_array,
-            run_fingerprint["do_trades"],
-            run_fingerprint["do_arb"],
+            prices=arb_acted_upon_local_prices,
+            alpha=params["alpha"],
+            beta=params["beta"],
+            sin=jnp.sin(params["phi"]),
+            cos=jnp.cos(params["phi"]),
+            lam=params["lam"],
+            fees=fees_array_broadcast,
+            arb_thresh=arb_thresh_array_broadcast,
+            arb_fees=arb_fees_array_broadcast,
+            trades=trade_array,
+            do_trades=run_fingerprint["do_trades"],
         )
         return reserves
 
@@ -185,52 +219,85 @@ class BalancerPool(AbstractPool):
         n_parameter_sets: int = 1,
         noise: str = "gaussian",
     ) -> Dict[str, Any]:
-        np.random.seed(0)
+        """
+        Initialize parameters for an ECLP pool.
+
+        ECLP pools have four base parameters:
+        - rotation angle Phi: Controls the rotation of the ellipse
+        - scaling factor Lambda: Controls the eccentricity of the ellipse
+        - Lower price bound alpha: Minimum price ratio between assets
+        - Upper price bound beta: Maximum price ratio between assets
+
+        Parameters
+        ----------
+        initial_values_dict : Dict[str, Any]
+            Dictionary containing initial values for the parameters
+        run_fingerprint : Dict[str, Any]
+            Dictionary containing run configuration settings
+        n_assets : int
+            Number of assets in the pool (must be 2 for ECLP)
+        n_parameter_sets : int, optional
+            Number of parameter sets to initialize, by default 1
+        noise : str, optional
+            Type of noise to apply during initialization, by default "gaussian"
+
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary containing initialized parameters:
+            - phi: Rotation angle
+            - lambda: Scaling factor
+            - alpha: Lower price bound
+            - beta: Upper price bound
+
+        Raises
+        ------
+        ValueError
+            If n_assets is not 2 or if required initial values are missing
+        """
 
         # We need to initialise the weights for each parameter set
         # If a vector is provided in the inital values dict, we use
         # that, if only a singleton array is provided we expand it
         # to n_assets and use that vlaue for all assets.
-        def process_initial_values(
-            initial_values_dict, key, n_assets, n_parameter_sets
-        ):
+        def process_initial_values(initial_values_dict, key, n_parameter_sets):
             if key in initial_values_dict:
                 initial_value = initial_values_dict[key]
                 if isinstance(initial_value, (np.ndarray, jnp.ndarray, list)):
                     initial_value = np.array(initial_value)
-                    if initial_value.size == n_assets:
+                    if initial_value.size == 1:
                         return np.array([initial_value] * n_parameter_sets)
-                    elif initial_value.size == 1:
-                        return np.array([[initial_value] * n_assets] * n_parameter_sets)
-                    elif initial_value.shape == (n_parameter_sets, n_assets):
+                    elif initial_value.shape == (n_parameter_sets,):
                         return initial_value
                     else:
                         raise ValueError(
-                            f"{key} must be a singleton or a vector of length n_assets"
-                             +  "or a matrix of shape (n_parameter_sets, n_assets)"
+                            f"{key} must be a singleton or a vector of length n_parameter_sets"
                         )
                 else:
-                    return np.array([[initial_value] * n_assets] * n_parameter_sets)
+                    return np.array([initial_value] * n_parameter_sets)
             else:
                 raise ValueError(f"initial_values_dict must contain {key}")
 
-        initial_weights_logits = process_initial_values(
-            initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets
+        phi = process_initial_values(
+            initial_values_dict, "rotation_angle", n_parameter_sets
         )
+        alpha = process_initial_values(initial_values_dict, "alpha", n_parameter_sets)
+        beta = process_initial_values(initial_values_dict, "beta", n_parameter_sets)
+        lam = process_initial_values(initial_values_dict, "lam", n_parameter_sets)
+
         params = {
-            "initial_weights_logits": initial_weights_logits,
+            "phi": phi,
+            "alpha": alpha,
+            "beta": beta,
+            "lam": lam,
+            "subsidary_params": [],
         }
+
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
 
-    def calculate_weights(
-        self, params: Dict[str, jnp.ndarray], *args, **kwargs
-    ) -> jnp.ndarray:
-        initial_weights_logits = params.get("initial_weights_logits")
-        # we dont't want to change the weights during any training
-        # so wrap them in a stop_grad
-        weights = softmax(stop_gradient(initial_weights_logits))
-        return weights
+    def calculate_weights(self, params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
+        return jnp.array([0.5, 0.5])
 
     def make_vmap_in_axes(self, params: Dict[str, Any], n_repeats_of_recurred: int = 0):
         return make_vmap_in_axes_dict(params, 0, [], [], n_repeats_of_recurred)
@@ -240,7 +307,7 @@ class BalancerPool(AbstractPool):
 
 
 tree_util.register_pytree_node(
-    BalancerPool,
-    BalancerPool._tree_flatten,
-    BalancerPool._tree_unflatten,
+    GyroscopePool,
+    GyroscopePool._tree_flatten,
+    GyroscopePool._tree_unflatten,
 )
