@@ -228,15 +228,9 @@ def _jax_calc_balancer_reserves_with_fees_using_precalcs(
     jnp.ndarray
         The reserves array, indicating the changes in reserves over time.
     """
-    # initial_weights = coarse_weights[0]
-    # initial_i = 0
     n_assets = weights.shape[0]
 
-    # We do this like a block, so first there is the new
-    # weight value and THEN we get new prices by the end of
-    # the block.
-
-    # So, for first weight, we have initial reserves, weights and
+    # or first weight, we have initial reserves, weights and
     # prices, so the change is 1
 
     initial_prices = prices[0]
@@ -292,16 +286,17 @@ def _jax_calc_balancer_reserves_with_fees_using_precalcs(
     return reserves
 
 
-@partial(jit, static_argnums=(6, 7))
+@partial(jit, static_argnums=(6,7,8))
 def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using_precalcs(
     carry_list,
     input_list,
     weights,
-    _,
+    all_sig_variations,
     tokens_to_drop,
     active_trade_directions,
     n,
     do_trades,
+    do_arb
 ):
     """
     Calculate changes in AMM reserves considering fees 
@@ -332,12 +327,21 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
         arb_fees: jnp.ndarray
             Array containing the fees associated with arbitrage.
         trades: jnp.ndarray
-            Array containing the indexs of the in and out tokens 
-            and the in amount for trades at each time.
+            Array containing the indexs of the in and out tokens and the in amount for trades at each time.
+    weights : jnp.ndarray
+        Array of asset weights.
     all_sig_variations : jnp.ndarray
         Array of all signature variations used for arbitrage calculations.
+    tokens_to_drop : jnp.ndarray
+        Array indicating which tokens should be excluded from arbitrage calculations.
+    active_trade_directions : jnp.ndarray
+        Array indicating which trade directions are allowed.
     n : int
         Number of tokens or assets.
+    do_trades : bool
+        Flag indicating whether to process trades.
+    do_arb : bool 
+        Flag indicating whether to process arbitrage.
 
     Returns
     -------
@@ -409,7 +413,7 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
 
     # if arb trade IS profitable AND outside_no_arb_region IS true
     # then reserves is equal to post_price_reserves, otherwise equal to prev_reserves
-    do_price_arb_trade = arb_profitable
+    do_price_arb_trade = arb_profitable * do_arb
 
     reserves = jnp.where(do_price_arb_trade, post_price_reserves, prev_reserves)
 
@@ -425,7 +429,7 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
     ], reserves
 
 
-@partial(jit, static_argnums=(8,))
+@partial(jit, static_argnums=(8,9,))
 def _jax_calc_balancer_reserves_with_dynamic_inputs(
     initial_reserves,
     weights,
@@ -436,6 +440,7 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
     all_sig_variations=None,
     trades=None,
     do_trades=False,
+    do_arb=True,
 ):
     """
     Calculate AMM reserves considering fees and arbitrage opportunities using signature variations,
@@ -470,6 +475,8 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
         Array of all signature variations used for arbitrage calculations.
     do_trades : bool, optional
         Whether or not to apply the trades, by default False
+    do_arb : bool, optional
+        Whether or not to apply the arbitrage, by default True
 
     Returns
     -------
@@ -478,11 +485,7 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
     """
     n_assets = weights.shape[0]
 
-    # We do this like a block, so first there is the new
-    # weight value and THEN we get new prices by the end of
-    # the block.
-
-    # So, for first weight, we have initial reserves, weights and
+    # or first weight, we have initial reserves, weights and
     # prices, so the change is 1
 
     initial_prices = prices[0]
@@ -522,6 +525,7 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
         do_trades=do_trades,
+        do_arb=do_arb,
     )
 
     carry_list_init = [
