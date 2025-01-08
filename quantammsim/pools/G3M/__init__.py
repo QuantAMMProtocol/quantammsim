@@ -5,6 +5,8 @@ from .quantamm import (
     AntiMomentumPool,
     PowerChannelPool,
     MeanReversionChannelPool,
+    DifferenceMomentumPool,
+    SinusoidPool,
 )
 
 __all__ = [
@@ -14,4 +16,6 @@ __all__ = [
     "AntiMomentumPool",
     "PowerChannelPool",
     "MeanReversionChannelPool",
+    "DifferenceMomentumPool",
+    "SinusoidPool",
 ]

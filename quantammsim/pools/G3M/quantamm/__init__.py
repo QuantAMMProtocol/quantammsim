@@ -3,6 +3,8 @@ from .momentum_pool import MomentumPool
 from .antimomentum_pool import AntiMomentumPool
 from .power_channel_pool import PowerChannelPool
 from .mean_reversion_channel_pool import MeanReversionChannelPool
+from .difference_momentum_pool import DifferenceMomentumPool
+from .sinusoid_pool import SinusoidPool
 
 __all__ = [
     "TFMMBasePool",
@@ -10,4 +12,6 @@ __all__ = [
     "AntiMomentumPool",
     "PowerChannelPool",
     "MeanReversionChannelPool",
+    "DifferenceMomentumPool",
+    "SinusoidPool",
 ]

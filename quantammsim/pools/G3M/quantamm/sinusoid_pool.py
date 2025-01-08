@@ -1,0 +1,315 @@
+# again, this only works on startup!
+from jax import config
+
+config.update("jax_enable_x64", True)
+from jax.lib.xla_bridge import default_backend
+from jax import local_device_count, devices
+
+DEFAULT_BACKEND = default_backend()
+CPU_DEVICE = devices("cpu")[0]
+if DEFAULT_BACKEND != "cpu":
+    GPU_DEVICE = devices("gpu")[0]
+    config.update("jax_platform_name", "gpu")
+else:
+    GPU_DEVICE = devices("cpu")[0]
+    config.update("jax_platform_name", "cpu")
+
+import jax.numpy as jnp
+from jax import jit, vmap
+from jax import devices, device_put
+from jax import tree_util
+from jax.lax import stop_gradient, dynamic_slice
+from jax.nn import softmax
+
+from quantammsim.pools.G3M.quantamm.TFMM_base_pool import TFMMBasePool
+from quantammsim.core_simulator.param_utils import (
+    memory_days_to_lamb,
+    lamb_to_memory_days_clipped,
+    calc_lamb,
+)
+from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
+    calc_gradients,
+    calc_k,
+)
+
+from typing import Dict, Any, Optional
+from functools import partial
+from abc import abstractmethod
+import numpy as np
+
+# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# as this is False for momentum pools --- the strategy outputs weight _changes_
+from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
+    calc_fine_weight_output_from_weights
+)
+
+
+@jit
+def _jax_sinusoid_weight_update(prices, amplitude, frequency, phase, initial_weights):
+    """
+    Calculate a simple sinusoidal-based weight updates for assets.
+
+    Parameters
+    ----------
+    length : int
+        Length of the sinusoidal function.
+    amplitude : float or jnp.ndarray
+        Amplitude of the sinusoidal function.
+    frequency : float or jnp.ndarray
+        Frequency of the sinusoidal function.
+    phase : float or jnp.ndarray
+        Phase shift of the sinusoidal function.
+
+    Returns
+    -------
+    jnp.ndarray
+        Array of weights for each asset.
+
+    Notes
+    -----
+    The function performs the following steps:
+    1. Calculates an offset to ensure the sum of weight updates is zero.
+    2. Computes weight updates using the price gradients, k, and the offset.
+    3. Sets weight updates to zero for any asset where k is zero.
+
+    The function assumes that inputs are JAX arrays for efficient computation.
+    """
+    weights = initial_weights + amplitude * jnp.sin(frequency * jnp.arange(len(prices))[:, None] + phase)
+    # weights = weights / jnp.sum(weights, axis=-1, keepdims=True)
+    return weights
+
+
+class SinusoidPool(TFMMBasePool):
+    """
+    A class for sinusoidal strategies run as TFMM (Temporal Function Market Making) liquidity pools,
+    extending the TFMMBasePool class.
+
+    This class implements a sinusoidal-based strategy for asset allocation within a TFMM framework.
+    It uses price data to generate sinusoidal signals, which are then translated into weight adjustments.
+
+    Parameters
+    ----------
+    None
+
+    Methods
+    -------
+    calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
+        Calculate the raw weight outputs based on sinusoidal signals.
+    fine_weight_output(raw_weight_output, initial_weights, run_fingerprint, params)
+        Refine the raw weight outputs to produce final weights.
+    calculate_weights(params, run_fingerprint, prices, additional_oracle_input)
+        Orchestrate the weight calculation process.
+
+    Notes
+    -----
+    The class provides methods to calculate raw weight outputs based on sinusoidal signals and refine them
+    into final asset weights, taking into account various parameters and constraints defined in the pool setup.
+    """
+
+    def __init__(self):
+        """
+        Initialize a new SinusoidPool instance.
+
+        Parameters
+        ----------
+        None
+        """
+        super().__init__()
+
+    @partial(jit, static_argnums=(2))
+    def calculate_raw_weights_outputs(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+    ) -> jnp.ndarray:
+        """
+        Calculate the raw weight outputs based on sinusoidal signals.
+
+        This method computes the raw weight adjustments for the sinusoidal strategy. It processes
+        the input prices to calculate gradients, which are then used to determine weight updates.
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            A dictionary of strategy parameters.
+        run_fingerprint : Dict[str, Any]
+            A dictionary containing run-specific settings.
+        prices : jnp.ndarray
+            An array of asset prices over time.
+        additional_oracle_input : Optional[jnp.ndarray], optional
+            Additional input data, if any.
+
+        Returns
+        -------
+        jnp.ndarray
+            Raw weight outputs representing the suggested weight adjustments.
+
+        Notes
+        -----
+        The method performs the following steps:
+        1. Calculates the memory days based on the lambda parameter.
+        2. Computes the 'amplitude' and 'frequency' parameters which scale the weight updates.
+        3. Extracts chunkwise price values from the input prices.
+        4. Applies the sinusoidal weight update formula to get raw weight outputs.
+
+        The raw weight outputs are not the final weights, but rather the changes
+        to be applied to the previous weights. These will be refined in subsequent steps.
+        """
+        initial_weights = softmax(params["initial_weights_logits"])
+        raw_weight_outputs = _jax_sinusoid_weight_update(prices, params["amplitude"], params["frequency"], params["phase"], initial_weights)
+        return raw_weight_outputs
+
+    @partial(jit, static_argnums=(3))
+    def fine_weight_output(
+        self,
+        raw_weight_output: jnp.ndarray,
+        initial_weights: jnp.ndarray,
+        run_fingerprint: Dict[str, Any],
+        params: Dict[str, Any],
+    ) -> jnp.ndarray:
+        """
+        Refine raw weight outputs to produce final weights for the momentum pool.
+
+        This method takes the raw weight outputs calculated from momentum signals and refines
+        them into final asset weights. It applies various constraints and adjustments defined
+        in the pool parameters and run fingerprint.
+
+        Parameters
+        ----------
+        raw_weight_output : jnp.ndarray
+            Raw weight changes or outputs from momentum calculations.
+        initial_weights : jnp.ndarray
+            Initial weights of assets in the pool.
+        run_fingerprint : Dict[str, Any]
+            Dictionary containing run-specific parameters and settings.
+        params : Dict[str, Any]
+            Pool parameters.
+
+        Returns
+        -------
+        jnp.ndarray
+            Refined weights for each asset in the pool over the specified time period.
+
+        Notes
+        -----
+        Uses the `momentum_calc_fine_weight_output` function to perform the actual
+        refinement. The implementation of this function should handle details such as weight
+        interpolation, maximum change limits, and ensuring weights sum to 1.
+        """
+        # construct params such that raw_weight_output privides the weights themselves
+        params_for_direct_weight_output = {
+            "logit_lamb": jnp.zeros(params["initial_weights_logits"].shape),
+            "logit_delta_lamb": -20.0 * jnp.ones(params["initial_weights_logits"].shape),
+        }
+        return calc_fine_weight_output_from_weights(
+            raw_weight_output,
+            initial_weights,
+            run_fingerprint,
+            params_for_direct_weight_output,
+        )
+
+    def _init_base_parameters(
+        self,
+        initial_values_dict: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        n_assets: int,
+        n_parameter_sets: int = 1,
+        noise: str = "gaussian",
+    ) -> Dict[str, Any]:
+        """
+        Initialize parameters for the momentum pool.
+
+        This method sets up the initial parameters for the momentum pool strategy, including
+        weights, memory length (lambda), and the momentum factor (k).
+
+        Parameters
+        ----------
+        initial_values_dict : Dict[str, Any]
+            Dictionary containing initial values for various parameters.
+        run_fingerprint : Dict[str, Any]
+            Dictionary containing run-specific settings and parameters.
+        n_assets : int
+            The number of assets in the pool.
+        n_parameter_sets : int, optional
+            The number of parameter sets to initialize, by default 1.
+        noise : str, optional
+            The type of noise to apply during initialization, by default "gaussian".
+
+        Returns
+        -------
+        Dict[str, jnp.array]
+            Dictionary containing the initialized parameters for the momentum pool.
+
+        Raises
+        ------
+        ValueError
+            If required initial values are missing or in an incorrect format.
+
+        Notes
+        -----
+        This method handles the initialization of parameters for initial weights, lambda
+        (memory length parameter), and k (momentum factor) for each asset and parameter set.
+        It processes the initial values to ensure they are in the correct format and applies
+        any necessary transformations (e.g., logit transformations for lambda).
+        """
+        np.random.seed(0)
+
+        # We need to initialise the weights for each parameter set
+        # If a vector is provided in the inital values dict, we use
+        # that, if only a singleton array is provided we expand it
+        # to n_assets and use that vlaue for all assets.
+        def process_initial_values(
+            initial_values_dict, key, n_assets, n_parameter_sets
+        ):
+            if key in initial_values_dict:
+                initial_value = initial_values_dict[key]
+                if isinstance(initial_value, (np.ndarray, jnp.ndarray, list)):
+                    initial_value = np.array(initial_value)
+                    if initial_value.size == n_assets:
+                        return np.array([initial_value] * n_parameter_sets)
+                    elif initial_value.size == 1:
+                        return np.array([[initial_value] * n_assets] * n_parameter_sets)
+                    elif initial_value.shape == (n_parameter_sets, n_assets):
+                        return initial_value
+                    else:
+                        raise ValueError(
+                            f"{key} must be a singleton or a vector of length n_assets or a matrix of shape (n_parameter_sets, n_assets)"
+                        )
+                else:
+                    return np.array([[initial_value] * n_assets] * n_parameter_sets)
+            else:
+                raise ValueError(f"initial_values_dict must contain {key}")
+
+        initial_weights_logits = process_initial_values(
+            initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets
+        )
+
+        initial_values_dict["amplitude"] = 0.01
+        initial_values_dict["frequency"] = 2 * jnp.pi / (60 * 24)
+        initial_values_dict["phase"] = 0.0
+        amplitude = process_initial_values(
+            initial_values_dict, "amplitude", n_assets, n_parameter_sets
+        )
+        frequency = process_initial_values(
+            initial_values_dict, "frequency", n_assets, n_parameter_sets
+        )
+        phase = process_initial_values(
+            initial_values_dict, "phase", n_assets, n_parameter_sets
+        )
+        params = {
+            "amplitude": amplitude,
+            "frequency": frequency,
+            "phase": phase,
+            "initial_weights_logits": initial_weights_logits,
+            "subsidary_params": [],
+        }
+
+        params = self.add_noise(params, noise, n_parameter_sets)
+        return params
+
+
+tree_util.register_pytree_node(
+    SinusoidPool, SinusoidPool._tree_flatten, SinusoidPool._tree_unflatten
+)
