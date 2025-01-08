@@ -124,6 +124,7 @@ def loadHistoricDailyPrices():
     dto = LoadPriceHistoryRequestDto(request_data)
     root = "../../../../quantammsim/data/"
     historic = get_historic_daily_csv_data([dto.coinCode], root)
+    result = historic.to_json(orient="records") # Is this the right way to do this?
     parsed = json.loads(result)
     jsonString = json.dumps(parsed)
     return jsonString
@@ -191,4 +192,4 @@ def filters():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port="5001")
+    app.run(host="0.0.0.0", port="5001")
