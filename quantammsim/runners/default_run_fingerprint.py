@@ -65,6 +65,7 @@ optuna_settings = {
         "patience": 100,  # Trials without improvement
         "min_improvement": 0.001,  # Minimum relative improvement
     },
+    "multi_objective": False,
     "parameter_config": {
         "memory_length": {
             "low": 1,
