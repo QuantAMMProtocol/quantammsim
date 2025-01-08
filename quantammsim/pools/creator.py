@@ -1,4 +1,3 @@
-
 from typing import Type, TypeVar
 from abc import ABC
 
@@ -10,9 +9,11 @@ from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
 from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import (
     MeanReversionChannelPool,
 )
+from quantammsim.pools.G3M.quantamm.difference_momentum_pool import DifferenceMomentumPool
 from quantammsim.pools.hodl_pool import HODLPool
 from quantammsim.pools.FM_AMM.cow_pool import CowPool
 from quantammsim.pools.FM_AMM.cow_pool_one_arb import CowPoolOneArb
+from quantammsim.pools.ECLP.gyroscope import GyroscopePool
 from quantammsim.pools.FM_AMM.cow_pool_weights import CowPoolWeights
 from quantammsim.pools.FM_AMM.cow_pool_8020 import CowPool8020
 from quantammsim.pools.base_pool import AbstractPool
@@ -118,7 +119,6 @@ def create_pool(rule):
     >>> pool = create_pool("balancer")  # Creates a BalancerPool pool instance
     >>> pool = create_pool("momentum")  # Creates a MomentumPool pool instance
     """
-
     # Split rule into hook_type and base_rule if double hyphen exists
     hook_type = None
     base_rule = rule
@@ -144,6 +144,10 @@ def create_pool(rule):
         base_pool = CowPoolWeights()
     elif base_rule == "cow_8020":
         base_pool = CowPool8020()
+    elif rule == "gyroscope":
+        base_pool = GyroscopePool()
+    elif base_rule == "difference_momentum":
+        base_pool = DifferenceMomentumPool()
     else:
         raise NotImplementedError(f"Unknown base pool type: {base_rule}")
 

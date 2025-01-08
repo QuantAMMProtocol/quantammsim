@@ -1,7 +1,7 @@
 # again, this only works on startup!
 from jax import config, jit,devices
 from jax.lib.xla_bridge import default_backend
-
+from jax.lax import cond
 import jax.numpy as jnp
 
 config.update("jax_enable_x64", True)
@@ -87,7 +87,7 @@ def _jax_calc_FMAMM_trade_from_exact_out_given_in(
     return jnp.where(amount_in != 0, overall_trade, 0)
 
 
-# version of _jax_calc_G3M_trade_from_exact_out_given_in that
+# version of _jax_calc_FMAMM_trade_from_exact_out_given_in that
 # in 'trade' as one single input. Useful for lazy evaluation
 def wrapped_FMAMM_trade_function(reserves, trade, gamma):
     """
@@ -113,10 +113,10 @@ def wrapped_FMAMM_trade_function(reserves, trade, gamma):
 # Create a jitted function that includes the cond, for lazy evaluation
 @jit
 def jitted_FMAMM_cond_trade(condition, reserves, trade, gamma):
-    return jax.lax.cond(
+    return cond(
         condition,
         wrapped_FMAMM_trade_function,
-        zero_trade_function_fmamm,
+        zero_trade_function_FMAMM,
         reserves,
         trade,
         gamma,

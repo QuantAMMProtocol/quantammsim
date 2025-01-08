@@ -26,7 +26,8 @@ from quantammsim.training.backpropagation import (
     update_from_partial_training_step_factory
 )
 from quantammsim.core_simulator.param_utils import (
-    default_set
+    recursive_default_set,
+    check_run_fingerprint,
 )
 
 from quantammsim.core_simulator.result_exporter import (
@@ -38,11 +39,13 @@ from quantammsim.runners.jax_runner_utils import (
     Hashabledict,
     get_trades_and_fees,
     get_unique_tokens,
+    OptunaManager,
 )
 
 from quantammsim.pools.creator import create_pool
 
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
+import jax.numpy as jnp
 
 
 def train_on_historic_data(
@@ -92,13 +95,12 @@ def train_on_historic_data(
     such as custom fee structures and different training data configurations.
     """
 
-    for key, value in run_fingerprint_defaults.items():
-        default_set(run_fingerprint, key, value)
-    for key, value in run_fingerprint_defaults["optimisation_settings"].items():
-        default_set(run_fingerprint["optimisation_settings"], key, value)
+    recursive_default_set(run_fingerprint, run_fingerprint_defaults)
+    check_run_fingerprint(run_fingerprint)
+    if run_fingerprint["optimisation_settings"]["method"] == "optuna":
+        run_fingerprint["bout_offset"]=0
     if verbose:
         print("Run Fingerprint: ", run_fingerprint)
-
     rule = run_fingerprint["rule"]
     chunk_period = run_fingerprint["chunk_period"]
     weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
@@ -396,47 +398,94 @@ def train_on_historic_data(
             print("final objective value: ", objective_value)
             print("best train params", best_train_params)
     elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
-        import optuna
-        import jax.numpy as jnp
+        run_fingerprint["optimisation_settings"]["n_parameter_sets"] = 1
+        # assert run_fingerprint["optimisation_settings"]["n_parameter_sets"] == 1, \
+        #     "Optuna only supports single parameter sets"
 
-        # define optuna study
-        assert (
-            run_fingerprint["optimisation_settings"]["n_parameter_sets"] == 1
-        ), "Optuna only supports single parameter sets"
+        # Initialize Optuna manager
+        optuna_manager = OptunaManager(run_fingerprint)
+        optuna_manager.setup_study()
 
-        # create objective function
+        # Create objective with parameter configuration and validation
         def objective(trial):
-            trial_params = {}
-            for key, value in params.items():
-                if key != "subsidary_params":
+            try:
+                trial_params = {}
+                param_config = run_fingerprint["optimisation_settings"]["optuna_settings"][
+                    "parameter_config"
+                ]
+
+                for key, value in params.items():
+                    if key == "subsidary_params":
+                        continue
+
+                    config = param_config.get(key, {"low": -10, "high": 10, "log_scale": False})
                     trial_params[key] = jnp.array(
                         [
-                            trial.suggest_float(key + f"_{i}", -10, 10)
+                            trial.suggest_float(
+                                f"{key}_{i}",
+                                config["low"],
+                                config["high"],
+                                log=config["log_scale"],
+                            )
                             for i in range(value.shape[1])
                         ]
                     )
-                #     trial_params[key] = jnp.array(
-                #         [trial.suggest_float(key, -10, 10)] * value.shape[1]
-                # )
-            print(
-                "return over hodl: ",
-                partial_forward_pass_nograd_batch_returns_train(
+                    trial_params["initial_weights_logits"] = jnp.array([0.0]*n_assets)
+
+                # Training evaluation
+                train_returns = partial_forward_pass_nograd_batch_returns_train(
                     trial_params,
                     (data_dict["start_idx"], 0),
                     data_dict["prices"],
-                ),
-            )
-            value = partial_forward_pass_nograd_batch(
-                trial_params, (data_dict["start_idx"], 0)
-            )
-            print(
-                run_fingerprint["return_val"] + ": ",
-                value,
-            )
-            return -value
+                )
 
-        study = optuna.create_study(sampler=optuna.samplers.TPESampler())
-        study.optimize(objective, n_trials=2000)
+                train_value = partial_forward_pass_nograd_batch(
+                    trial_params, (data_dict["start_idx"], 0)
+                )
+
+                # Validation (test period) evaluation
+                validation_returns = partial_forward_pass_nograd_batch_returns_test(
+                    trial_params,
+                    (data_dict["start_idx_test"], 0),
+                    data_dict["prices_test"],
+                )
+
+                validation_value = partial_forward_pass_nograd_batch(
+                    trial_params, (data_dict["start_idx_test"], 0)
+                )
+
+                # Log both training and validation metrics
+                # optuna_manager.logger.info(f"Trial {trial.number}:")
+                optuna_manager.logger.info(
+                    f"Training {trial.number}, Return over HODL: {train_returns}"
+                )
+                optuna_manager.logger.info(
+                    f"Training {trial.number}, {run_fingerprint['return_val']}: {train_value}"
+                )
+                optuna_manager.logger.info(
+                    f"Validation {trial.number}, Return over HODL: {validation_returns}"
+                )
+                optuna_manager.logger.info(
+                    f"Validation {trial.number}, {run_fingerprint['return_val']}: {validation_value}"
+                )
+
+                # Store validation value as a trial attribute
+                trial.set_user_attr("validation_value", validation_value)
+
+                return train_value  # Still optimize on training value
+
+            except Exception as e:
+                optuna_manager.logger.error(f"Trial {trial.number} failed: {str(e)}")
+                raise e
+
+        # Run optimization
+        optuna_manager.optimize(objective)
+
+        if verbose:
+            print("Best trial:")
+            print(f"  Training Value: {optuna_manager.study.best_value}")
+            print(f"  Validation Value: {optuna_manager.study.best_trial.user_attrs['validation_value']}")
+            print(f"  Params: {optuna_manager.study.best_params}")
     else:
         raise NotImplementedError
 
@@ -518,11 +567,7 @@ def do_run_on_historic_data(
     """
 
     # Set default values for run_fingerprint and its optimisation_settings
-    for key, value in run_fingerprint_defaults.items():
-        default_set(run_fingerprint, key, value)
-    for key, value in run_fingerprint_defaults["optimisation_settings"].items():
-        default_set(run_fingerprint["optimisation_settings"], key, value)
-
+    recursive_default_set(run_fingerprint, run_fingerprint_defaults)
     # Extract various settings from run_fingerprint
     chunk_period = run_fingerprint["chunk_period"]
     weight_interpolation_period = run_fingerprint["weight_interpolation_period"]

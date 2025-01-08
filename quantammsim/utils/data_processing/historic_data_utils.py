@@ -774,6 +774,7 @@ def get_historic_parquet_data(
     # print('cwd: ', os.getcwd())
     filename = firstTicker + "_USD.parquet"
     renamedCols = [col + "_" + firstTicker for col in cols]
+    baseCols = [col for col in cols]
     if root is not None:
         inp_file = Path(root) / filename
     else:
@@ -781,10 +782,13 @@ def get_historic_parquet_data(
     with inp_file.open("rb") as f:
         # path = root + firstTicker + "_USD.csv"
         csvData = pd.read_parquet(f, engine="pyarrow")
-        csvData = csvData.filter(items=["unix"] + renamedCols)
+        csvData = csvData.filter(items=["unix"] + baseCols)
+        csvData = csvData.rename(columns=dict(zip(baseCols, renamedCols)))
+        csvData = csvData.set_index("unix")
     if len(list_of_tickers) > 1:
         for ticker in list_of_tickers[1:]:
             renamedCols = [col + "_" + ticker for col in cols]
+            baseCols = [col for col in cols]
             # path = root + ticker + "_USD.csv"
             filename = ticker + "_USD.parquet"
             if root is not None:
@@ -793,8 +797,10 @@ def get_historic_parquet_data(
                 inp_file = impresources.files(data) / filename
             with inp_file.open("rb") as f:
                 newCsvData = pd.read_parquet(f, engine="pyarrow").filter(
-                    items=["unix"] + renamedCols
+                    items=["unix"] + baseCols
                 )
+                newCsvData = newCsvData.rename(columns=dict(zip(baseCols, renamedCols)))
+                newCsvData = newCsvData.set_index("unix")
             csvData = csvData.join(newCsvData)
     csvData = csvData.dropna()
     if start_time_unix is not None and end_time_unix is not None:
