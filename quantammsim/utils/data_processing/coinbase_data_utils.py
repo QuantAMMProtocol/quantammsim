@@ -6,7 +6,8 @@ from quantammsim.utils.data_processing.datetime_utils import (
     pddatetime_to_unixtimestamp,
     unixtimestamp_to_precise_datetime,
 )
-
+import os
+from quantammsim.utils.data_processing.binance_data_utils import plot_exchange_data
 
 def import_historic_coinbase_data(
     token,
@@ -257,9 +258,6 @@ def _cleaned_up_coinbase_data(
     return cleaned_prices
 
 
-import os
-
-
 def fill_missing_rows_with_coinbase_data(concatenated_df, token1, root):
 
     file_path = root + "coinbase_data/" + token1 + "_cb_sorted_.csv"
@@ -274,12 +272,27 @@ def fill_missing_rows_with_coinbase_data(concatenated_df, token1, root):
 
     coinbase_data["symbol"] = concatenated_df.iloc[0]["symbol"]
 
+    # Create visualization of exchange data
+    plot_success = plot_exchange_data(
+        coinbase_data,
+        token1,
+        os.path.join(root +  "coinbase_data/", f"exchange_data_{token1}.png"),
+    )
+    if not plot_success:
+        print(
+            f"Warning: Could not create visualization for {token1} {prefix.strip('_')} data"
+        )
+
     missing_timestamps = coinbase_data.index.difference(concatenated_df.index)
+    if missing_timestamps.empty:
+        print(f"No missing timestamps to fill from {prefix.strip('_')}")
+        return concatenated_df, None
+
     filled_in_df = pd.concat([concatenated_df, coinbase_data.loc[missing_timestamps]])
     # Sort by 'Unix' index after filling missing rows
     filled_in_df.sort_index(inplace=True)
     filled_unix_values = missing_timestamps.tolist()
     # Drop duplicate indexes, the first are from the concatenated data, the second are from the Coinbase data
     filled_in_df = filled_in_df[~filled_in_df.index.duplicated(keep="first")]
-    filled_unix_values = filled_in_df.index.tolist()
+    # filled_unix_values = filled_in_df.index.tolist()
     return filled_in_df, filled_unix_values

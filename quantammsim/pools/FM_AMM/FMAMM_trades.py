@@ -110,7 +110,7 @@ def _jax_calc_FMAMM_trade_from_exact_out_given_in(
     return jnp.where(amount_in != 0, overall_trade, 0)
 
 
-# version of _jax_calc_G3M_trade_from_exact_out_given_in that
+# version of _jax_calc_FMAMM_trade_from_exact_out_given_in that
 # in 'trade' as one single input. Useful for lazy evaluation
 def wrapped_FMAMM_trade_function(reserves, weights, trade, gamma):
     return _jax_calc_FMAMM_trade_from_exact_out_given_in(
