@@ -17,6 +17,7 @@ setup(
         "tqdm",
         "optuna",
         "pyarrow",
+        "plotly",
     ],
     extras_require={
         "dev": [
