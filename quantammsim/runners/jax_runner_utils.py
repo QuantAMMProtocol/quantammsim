@@ -356,6 +356,48 @@ class Hashabledict(dict):
         return self.__key() == other.__key()
 
 
+class NestedHashabledict(dict):
+    """A hashable dictionary class that enables using dictionaries as dictionary keys.
+    Handles deeply nested dictionaries by recursively converting all nested dicts.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Recursively convert all nested dictionaries to NestedHashabledict
+        for key, value in self.items():
+            if isinstance(value, dict):
+                self[key] = NestedHashabledict(
+                    value
+                )  # Use NestedHashabledict instead of Hashabledict
+            elif isinstance(value, list):
+                self[key] = [
+                    NestedHashabledict(item) if isinstance(item, dict) else item
+                    for item in value
+                ]
+
+    def __key(self):
+        return tuple(
+            (k, tuple(v) if isinstance(v, list) else v) for k, v in sorted(self.items())
+        )
+
+    def __hash__(self):
+        try:
+            return hash(self.__key())
+        except TypeError as e:
+            # Debug info to help identify unhashable items
+            for k, v in self.items():
+                try:
+                    hash((k, v))
+                except TypeError:
+                    print(f"Unhashable item found - Key: {k}, Value type: {type(v)}")
+            raise e
+
+    def __eq__(self, other):
+        if not isinstance(other, dict):
+            return False
+        return self.__key() == NestedHashabledict(other).__key()
+
+
 def get_run_location(run_fingerprint):
     """Generate a unique run location identifier based on the run fingerprint.
 
