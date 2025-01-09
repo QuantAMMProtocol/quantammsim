@@ -103,7 +103,10 @@ class TFMMBasePool(AbstractPool):
                 all_sig_variations=jnp.array(run_fingerprint["all_sig_variations"]),
             )
         else:
-            reserves = jnp.broadcast_to(initial_reserves, weights.shape)
+            reserves = jnp.broadcast_to(
+                initial_reserves, arb_acted_upon_local_prices.shape
+            )
+
         return reserves
 
     @partial(jit, static_argnums=(2))
@@ -145,7 +148,6 @@ class TFMMBasePool(AbstractPool):
                 arb_acted_upon_local_prices[1:],
             )
 
-
             # calculate the reserves by cumprod of reserve ratios
             reserves = jnp.vstack(
                 [
@@ -154,7 +156,10 @@ class TFMMBasePool(AbstractPool):
                 ]
             )
         else:
-            reserves = jnp.broadcast_to(initial_reserves, weights.shape)
+            reserves = jnp.broadcast_to(
+                initial_reserves, arb_acted_upon_local_prices.shape
+            )
+
         return reserves
 
     @partial(jit, static_argnums=(2))

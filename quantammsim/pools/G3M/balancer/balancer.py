@@ -59,15 +59,21 @@ class BalancerPool(AbstractPool):
         initial_value_per_token = weights * initial_pool_value
         initial_reserves = initial_value_per_token / local_prices[0]
 
-        reserves = _jax_calc_balancer_reserves_with_fees_using_precalcs(
-            initial_reserves,
-            weights,
-            arb_acted_upon_local_prices,
-            fees=run_fingerprint["fees"],
-            arb_thresh=run_fingerprint["gas_cost"],
-            arb_fees=run_fingerprint["arb_fees"],
-            all_sig_variations=jnp.array(run_fingerprint["all_sig_variations"]),
-        )
+        if run_fingerprint["do_arb"]:
+            reserves = _jax_calc_balancer_reserves_with_fees_using_precalcs(
+                initial_reserves,
+                weights,
+                arb_acted_upon_local_prices,
+                fees=run_fingerprint["fees"],
+                arb_thresh=run_fingerprint["gas_cost"],
+                arb_fees=run_fingerprint["arb_fees"],
+                all_sig_variations=jnp.array(run_fingerprint["all_sig_variations"]),
+            )
+        else:
+            reserves = jnp.broadcast_to(
+                initial_reserves, arb_acted_upon_local_prices.shape
+            )
+
         return reserves
 
     @partial(jit, static_argnums=2)
@@ -96,19 +102,24 @@ class BalancerPool(AbstractPool):
         initial_value_per_token = weights * initial_pool_value
         initial_reserves = initial_value_per_token / local_prices[0]
 
-        reserve_ratios = _jax_calc_balancer_reserve_ratios(
-            arb_acted_upon_local_prices[:-1],
-            weights,
-            arb_acted_upon_local_prices[1:],
-        )
+        if run_fingerprint["do_arb"]:
+            reserve_ratios = _jax_calc_balancer_reserve_ratios(
+                arb_acted_upon_local_prices[:-1],
+                weights,
+                arb_acted_upon_local_prices[1:],
+            )
+            # calculate the reserves by cumprod of reserve ratios
+            reserves = jnp.vstack(
+                [
+                    initial_reserves,
+                    initial_reserves * jnp.cumprod(reserve_ratios, axis=0),
+                ]
+            )
+        else:
+            reserves = jnp.broadcast_to(
+                initial_reserves, arb_acted_upon_local_prices.shape
+            )
 
-        # calculate the reserves by cumprod of reserve ratios
-        reserves = jnp.vstack(
-            [
-                initial_reserves,
-                initial_reserves * jnp.cumprod(reserve_ratios, axis=0),
-            ]
-        )
         return reserves
 
     @partial(jit, static_argnums=2)

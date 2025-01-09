@@ -78,18 +78,24 @@ class GyroscopePool(AbstractPool):
             sin=jnp.sin(params["phi"]),
             cos=jnp.cos(params["phi"]),
         )
-        reserves = _jax_calc_gyroscope_reserves_with_fees(
-            initial_reserves,
-            prices=arb_acted_upon_local_prices,
-            alpha=params["alpha"],
-            beta=params["beta"],
-            sin=jnp.sin(params["phi"]),
-            cos=jnp.cos(params["phi"]),
-            lam=params["lam"],
-            fees=run_fingerprint["fees"],
-            arb_thresh=run_fingerprint["gas_cost"],
-            arb_fees=run_fingerprint["arb_fees"],
-        )
+        if run_fingerprint["do_arb"]:
+            reserves = _jax_calc_gyroscope_reserves_with_fees(
+                initial_reserves,
+                prices=arb_acted_upon_local_prices,
+                alpha=params["alpha"],
+                beta=params["beta"],
+                sin=jnp.sin(params["phi"]),
+                cos=jnp.cos(params["phi"]),
+                lam=params["lam"],
+                fees=run_fingerprint["fees"],
+                arb_thresh=run_fingerprint["gas_cost"],
+                arb_fees=run_fingerprint["arb_fees"],
+            )
+        else:
+            reserves = jnp.broadcast_to(
+                initial_reserves, arb_acted_upon_local_prices.shape
+            )
+
         # Restore original order if we swapped
         if needs_swap:
             reserves = reserves[..., ::-1]
@@ -132,15 +138,21 @@ class GyroscopePool(AbstractPool):
             sin=jnp.sin(params["phi"]),
             cos=jnp.cos(params["phi"]),
         )
-        reserves = _jax_calc_gyroscope_reserves_zero_fees(
-            initial_reserves,
-            prices=arb_acted_upon_local_prices,
-            alpha=params["alpha"],
-            beta=params["beta"],
-            sin=jnp.sin(params["phi"]),
-            cos=jnp.cos(params["phi"]),
-            lam=params["lam"],
-        )
+        if run_fingerprint["do_arb"]:
+            reserves = _jax_calc_gyroscope_reserves_zero_fees(
+                initial_reserves,
+                prices=arb_acted_upon_local_prices,
+                alpha=params["alpha"],
+                beta=params["beta"],
+                sin=jnp.sin(params["phi"]),
+                cos=jnp.cos(params["phi"]),
+                lam=params["lam"],
+            )
+        else:
+            reserves = jnp.broadcast_to(
+                initial_reserves, arb_acted_upon_local_prices.shape
+            )
+
         # Restore original order if we swapped
         if needs_swap:
             reserves = reserves[..., ::-1]
