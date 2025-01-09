@@ -225,11 +225,13 @@ def train_on_historic_data(
         "training_data_kind": run_fingerprint["optimisation_settings"][
             "training_data_kind"
         ],
+        "tokens": tuple(run_fingerprint["tokens"]),
         "use_alt_lamb": use_alt_lamb,
         "use_pre_exp_scaling": use_pre_exp_scaling,
         "all_sig_variations": all_sig_variations,
         "weight_interpolation_method": weight_interpolation_method,
         "arb_frequency": arb_frequency,
+        "numeraire": run_fingerprint["numeraire"],
     }
 
     partial_training_step = Partial(
@@ -659,6 +661,7 @@ def do_run_on_historic_data(
         "startDateString": run_fingerprint["startDateString"],
         "endDateString": run_fingerprint["endDateString"],
         "endTestDateString": run_fingerprint["endTestDateString"],
+        "numeraire": run_fingerprint["numeraire"],
     }
 
     # Create static dictionaries for training and testing

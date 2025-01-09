@@ -45,6 +45,7 @@ run_fingerprint_defaults = {
     "weight_interpolation_method": "linear",
     "arb_frequency": 1,
     "do_trades": False,
+    "numeraire": None
 }
 
 
