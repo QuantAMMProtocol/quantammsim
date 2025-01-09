@@ -29,8 +29,17 @@ from quantammsim.core_simulator.param_utils import (
     memory_days_to_lamb,
     lamb_to_memory_days_clipped,
     calc_lamb,
+    calc_alt_lamb,
 )
-from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import calc_gradients, calc_k, calc_alt_ewma_padded, calc_ewma_padded
+from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
+    calc_gradients,
+    calc_k,
+    calc_alt_ewma_padded,
+    calc_ewma_padded,
+)
+from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives import (
+    _jax_ewma_at_infinity_via_scan,
+)
 
 from typing import Dict, Any, Optional
 from functools import partial
@@ -111,33 +120,49 @@ class DifferenceMomentumPool(MomentumPool):
         1. Calculates the memory days based on the lambda parameter.
         2. Computes the 'k' factor which scales the weight updates.
         3. Extracts chunkwise price values from the input prices.
-        4. Calculates price gradients using the calc_gradients function.
-        5. Applies the antimomentum weight update (momentum with negative k) formula to get raw weight outputs.
+        4. Calculates two difference EWMAs and the proportional difference between them.
+        5. Applies the momentum weight update formula using the proportional difference as signal to get raw weight outputs.
 
         The raw weight outputs are not the final weights, but rather the changes
         to be applied to the previous weights. These will be refined in subsequent steps.
-        # """
+        """
+
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
+        lamb = calc_lamb(params)
+        cap_lamb = True
         memory_days = lamb_to_memory_days_clipped(
-            calc_lamb(params), run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"]
+            lamb, run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"]
         )
         k = calc_k(params, memory_days)
-        alt_ewma_padded = calc_alt_ewma_padded(
-            params,
-            chunkwise_price_values,
+        if DEFAULT_BACKEND != "cpu":
+            alt_ewma_padded = calc_alt_ewma_padded(
+                params,
+                chunkwise_price_values,
             run_fingerprint["chunk_period"],
             run_fingerprint["max_memory_days"],
-            cap_lamb=True,
-        )
-        alt_ewma = alt_ewma_padded[-(len(chunkwise_price_values) - 1) :]
-        ewma_padded = calc_ewma_padded(
-            params,
-            chunkwise_price_values,
-            run_fingerprint["chunk_period"],
-            run_fingerprint["max_memory_days"],
-            cap_lamb=True,
-        )
-        ewma = ewma_padded[-(len(chunkwise_price_values) - 1) :]
+            cap_lamb=cap_lamb,
+            )
+            alt_ewma = alt_ewma_padded[-(len(chunkwise_price_values) - 1) :]
+            ewma_padded = calc_ewma_padded(
+                params,
+                chunkwise_price_values,
+                run_fingerprint["chunk_period"],
+                run_fingerprint["max_memory_days"],
+                cap_lamb=cap_lamb,
+            )
+            ewma = ewma_padded[-(len(chunkwise_price_values) - 1) :]
+        else:
+            alt_lamb = calc_alt_lamb(params)
+            if cap_lamb:
+                max_lamb = memory_days_to_lamb(
+                    run_fingerprint["max_memory_days"], run_fingerprint["chunk_period"]
+                )
+                capped_alt_lamb = jnp.clip(alt_lamb, a_min=0.0, a_max=max_lamb)
+                alt_lamb = capped_alt_lamb
+                capped_lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+                lamb = capped_lamb
+            alt_ewma = _jax_ewma_at_infinity_via_scan(chunkwise_price_values, alt_lamb)
+            ewma = _jax_ewma_at_infinity_via_scan(chunkwise_price_values, lamb)
         ewma_proportional_difference = 1.0 - alt_ewma / ewma
         raw_weight_outputs = _jax_momentum_weight_update(
             ewma_proportional_difference, k
@@ -147,3 +172,52 @@ class DifferenceMomentumPool(MomentumPool):
 tree_util.register_pytree_node(
     DifferenceMomentumPool, DifferenceMomentumPool._tree_flatten, DifferenceMomentumPool._tree_unflatten
 )
+
+
+# def test_backends_match():
+#     """Quick test that GPU and CPU backends give same results"""
+#     from jax import config
+#     from jax.lib.xla_bridge import get_backend
+#     import numpy as np
+#     from quantammsim.runners.jax_runner_utils import Hashabledict
+#     # Save original backend
+#     original_backend = get_backend().platform
+
+#     # Test data
+#     run_fingerprint = {
+#         "chunk_period": 1,
+#         "max_memory_days": 30
+#     }
+#     params = {
+#         "logit_lamb": jnp.array([0.0, 0.1]),
+#         "logit_delta_lamb": jnp.array([0.5, 0.2]),
+#         "log_k": jnp.array([1.0, 1.0])
+#     }
+#     prices = jnp.array([[100.0, 200.0], [101.0, 202.0], [99.0, 198.0]])
+
+#     # Force CPU backend
+#     config.update("jax_platform_name", "cpu")
+#     pool_cpu = DifferenceMomentumPool()
+#     cpu_output = pool_cpu.calculate_raw_weights_outputs(
+#         params, Hashabledict(run_fingerprint), prices
+#     )
+#     print(cpu_output)
+#     # Try GPU if available
+#     try:
+#         config.update("jax_platform_name", "gpu") 
+#         pool_gpu = DifferenceMomentumPool()
+#         gpu_output = pool_gpu.calculate_raw_weights_outputs(
+#             params, Hashabledict(run_fingerprint), prices
+#         )
+#         print(gpu_output)
+#         # Compare outputs
+#         assert np.allclose(cpu_output, gpu_output, rtol=1e-5), "CPU and GPU outputs differ!"
+#         print("CPU and GPU backends produce matching outputs")
+#     except:
+#         print("GPU backend not available for testing")
+
+#     # Restore original backend
+#     config.update("jax_platform_name", original_backend)
+
+# if __name__ == "__main__":
+#     test_backends_match()

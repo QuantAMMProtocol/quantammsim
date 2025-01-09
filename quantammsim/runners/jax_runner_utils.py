@@ -28,6 +28,68 @@ from datetime import datetime
 from pathlib import Path
 import plotly.graph_objects as go
 from optuna.visualization import plot_optimization_history, plot_param_importances
+import numpy as np
+
+def generate_evaluation_points(
+    start_idx, end_idx, bout_length, n_points, min_spacing, random_key=0
+):
+    np.random.seed(random_key)
+    available_range = end_idx - start_idx - bout_length
+
+    # Generate random points
+    points = np.random.randint(0, available_range, n_points)
+    points = np.sort(points)  # Sort for better coverage
+
+    # Generate equally spaced points
+    spacing = available_range // (n_points - 1)
+    equal_points = np.linspace(0, available_range, n_points, dtype=int)
+
+    # Combine with random points and sort
+    all_points = np.concatenate([points, equal_points])
+    all_points = np.unique(all_points)
+
+    # Convert to absolute indices
+    evaluation_starts = [start_idx + p for p in all_points]
+    return evaluation_starts
+
+
+def find_best_balanced_solution(values_array, n_objectives=None):
+    """Find the solution closest to the ideal point after normalizing objectives.
+
+    Args:
+        values_array: Either a numpy array of shape (n_trials, n_objectives) or
+                     a list of optuna trials with values attribute
+        n_objectives: Number of objectives. Only needed if using list of trials.
+
+    Returns:
+        int: Index of the best balanced solution
+    """
+    if not isinstance(values_array, np.ndarray):
+        # Convert list of trials to numpy array
+        values_array = np.array([t.values for t in values_array])
+
+    if n_objectives is None:
+        n_objectives = values_array.shape[1]
+
+    normalized = (values_array - values_array.min(axis=0)) / (
+        values_array.max(axis=0) - values_array.min(axis=0)
+    )
+
+    # Find solution closest to ideal point
+    ideal_point = np.ones(n_objectives)
+    distances = np.linalg.norm(normalized - ideal_point, axis=1)
+    best_idx = np.argmin(distances)
+
+    return best_idx
+
+
+def get_best_balanced_solution(study):
+    trials = study.best_trials
+    # Normalize each objective to [0,1]
+    
+    # Use the helper function
+    best_idx = find_best_balanced_solution(trials, len(study.directions))
+    return trials[best_idx].params, trials[best_idx].values, best_idx
 
 
 class OptunaManager:
@@ -41,6 +103,7 @@ class OptunaManager:
 
     def _setup_logger(self):
         """Configure logging for the optimization process."""
+        optuna.logging.set_verbosity(optuna.logging.ERROR)
         logger = logging.getLogger(f"optuna_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         logger.setLevel(logging.INFO)
 
@@ -49,23 +112,23 @@ class OptunaManager:
         fh.setLevel(logging.INFO)
 
         # Console handler
-        ch = logging.StreamHandler()
-        ch.setLevel(logging.INFO)
+        # ch = logging.StreamHandler()
+        #         ch.setLevel(logging.ERROR)
 
         # Formatter
         formatter = logging.Formatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
         fh.setFormatter(formatter)
-        ch.setFormatter(formatter)
+        # ch.setFormatter(formatter)
 
         logger.addHandler(fh)
-        logger.addHandler(ch)
 
         return logger
 
-    def setup_study(self):
+    def setup_study(self, multi_objective=False):
         """Create and configure the Optuna study."""
+        self.multi_objective = multi_objective
         study_name = (
             self.optuna_settings["study_name"]
             or f"quantamm_{self.run_fingerprint['rule']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -90,13 +153,22 @@ class OptunaManager:
             interval_steps=1,
         )
 
-        self.study = optuna.create_study(
-            study_name=study_name,
-            storage=storage,
-            sampler=sampler,
-            pruner=pruner,
-            direction="maximize",
-        )
+        if multi_objective:
+            self.study = optuna.create_study(
+                study_name=study_name,
+                storage=storage,
+                pruner=pruner,
+                sampler=sampler,
+                directions=["maximize", "maximize", "maximize"],
+            )
+        else:
+            self.study = optuna.create_study(
+                study_name=study_name,
+                storage=storage,
+                sampler=sampler,
+                pruner=pruner,
+                direction="maximize",
+            )
 
     def early_stopping_callback(self, study, trial):
         """Enhanced callback to implement early stopping using both training and validation metrics."""
@@ -145,16 +217,30 @@ class OptunaManager:
         study_dir.mkdir(parents=True, exist_ok=True)
 
         # Save study statistics
-        stats = {
-            "best_value": float(self.study.best_value),  # Convert to Python float
-            "best_params": {
-                k: float(v)
-                for k, v in self.study.best_params.items()  # Convert to Python float
-            },
-            "n_trials": len(self.study.trials),
-            "datetime": timestamp,
-            "run_fingerprint": self.run_fingerprint,
-        }
+        if self.multi_objective:
+            pareto_front_trials = self.study.best_trials  # Returns list of all non-dominated trials
+            best_balanced_params, best_balanced_values, best_balanced_idx = get_best_balanced_solution(self.study)
+            stats = {
+                "best_params": [trial.params for trial in pareto_front_trials],
+                "best_values": [trial.values for trial in pareto_front_trials],
+                "n_trials": len(self.study.trials),
+                "datetime": timestamp,
+                "run_fingerprint": self.run_fingerprint,
+                "best_balanced_params": best_balanced_params,
+                "best_balanced_values": best_balanced_values,
+                "best_balanced_idx": int(best_balanced_idx),
+            }
+        else:
+            stats = {
+                "best_value": float(self.study.best_value),  # Convert to Python float
+                "best_params": {
+                    k: float(v)
+                    for k, v in self.study.best_params.items()  # Convert to Python float
+                },
+                "n_trials": len(self.study.trials),
+                "datetime": timestamp,
+                "run_fingerprint": self.run_fingerprint,
+            }
 
         with open(study_dir / "study_results.json", "w") as f:
             json.dump(stats, f, indent=2)
@@ -170,21 +256,40 @@ class OptunaManager:
         trial_data = []
         for trial in self.study.trials:
             if trial.state == optuna.trial.TrialState.COMPLETE:
-                trial_data.append(
-                    {
-                        "number": trial.number,
-                        "train_value": float(trial.value),  # Convert to Python float
-                        "validation_value": float(
-                            trial.user_attrs.get("validation_value", float("-inf"))
-                        ),
-                        "params": {
-                            k: float(v)
-                            for k, v in trial.params.items()  # Convert to Python float
-                        },
-                        "datetime_start": trial.datetime_start.isoformat(),
-                        "datetime_complete": trial.datetime_complete.isoformat(),
-                    }
-                )
+                trial_data_entry = {
+                    "number": trial.number,
+                    "datetime_start": trial.datetime_start.isoformat(),
+                    "datetime_complete": trial.datetime_complete.isoformat(),
+                    "params": {k: float(v) for k, v in trial.params.items()},
+                }
+
+                # Handle multi-objective values
+                if self.multi_objective:
+                    trial_data_entry.update(
+                        {
+                            "mean_return": float(trial.values[0]),
+                            "worst_case": float(trial.values[1]),
+                            "stability": float(trial.values[2]),
+                        }
+                    )
+                else:
+                    trial_data_entry["train_value"] = float(trial.value)
+
+                # Add user attributes
+                for attr in [
+                    "validation_value",
+                    "validation_returns_over_hodl",
+                    "validation_sharpe",
+                    "validation_return",
+                    "train_returns_over_hodl",
+                    "train_sharpe",
+                    "train_return",
+                ]:
+                    trial_data_entry[attr] = float(
+                        trial.user_attrs.get(attr, float("-inf"))
+                    )
+
+                trial_data.append(trial_data_entry)
 
         with open(study_dir / "trial_data.json", "w") as f:
             json.dump(trial_data, f, indent=2)
@@ -249,6 +354,48 @@ class Hashabledict(dict):
 
     def __eq__(self, other):
         return self.__key() == other.__key()
+
+
+class NestedHashabledict(dict):
+    """A hashable dictionary class that enables using dictionaries as dictionary keys.
+    Handles deeply nested dictionaries by recursively converting all nested dicts.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Recursively convert all nested dictionaries to NestedHashabledict
+        for key, value in self.items():
+            if isinstance(value, dict):
+                self[key] = NestedHashabledict(
+                    value
+                )  # Use NestedHashabledict instead of Hashabledict
+            elif isinstance(value, list):
+                self[key] = [
+                    NestedHashabledict(item) if isinstance(item, dict) else item
+                    for item in value
+                ]
+
+    def __key(self):
+        return tuple(
+            (k, tuple(v) if isinstance(v, list) else v) for k, v in sorted(self.items())
+        )
+
+    def __hash__(self):
+        try:
+            return hash(self.__key())
+        except TypeError as e:
+            # Debug info to help identify unhashable items
+            for k, v in self.items():
+                try:
+                    hash((k, v))
+                except TypeError:
+                    print(f"Unhashable item found - Key: {k}, Value type: {type(v)}")
+            raise e
+
+    def __eq__(self, other):
+        if not isinstance(other, dict):
+            return False
+        return self.__key() == NestedHashabledict(other).__key()
 
 
 def get_run_location(run_fingerprint):

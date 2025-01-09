@@ -39,12 +39,12 @@ from quantammsim.pools.G3M.quantamm.weight_calculations.linear_interpolation imp
 from quantammsim.pools.G3M.quantamm.weight_calculations.non_linear_interpolation import (
     _jax_calc_approx_optimal_interpolation_block,
 )
-from quantammsim.core_simulator.param_utils import calc_alt_lamb
+from quantammsim.core_simulator.param_utils import calc_alt_lamb, memory_days_to_lamb
 
 
 @partial(
     jit,
-    static_argnums=(6,),
+    static_argnums=(4,5,6,),
 )
 def _jax_calc_coarse_weights(
     raw_weight_outputs,
@@ -81,7 +81,7 @@ def _jax_calc_coarse_weights(
         if cap_lamb:
             max_lamb = memory_days_to_lamb(max_memory_days, chunk_period)
             capped_alt_lamb = jnp.clip(alt_lamb, a_min=0.0, a_max=max_lamb)
-        alt_lamb = capped_alt_lamb
+            alt_lamb = capped_alt_lamb
     else:
         alt_lamb = None
 
@@ -412,6 +412,8 @@ def _jax_calc_coarse_weight_scan_function(
         minimum_weight (float): Minimum weight value.
         asset_arange (ndarray): Array of asset indices.
         n_assets (int): Number of assets.
+        alt_lamb (float): Alternative lambda value.
+        mvpt (bool): Whether to use minimum variance targeting.
 
     Returns:
         list: List containing the final weights.

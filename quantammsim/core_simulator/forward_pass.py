@@ -81,6 +81,7 @@ def _calculate_raroc(value_over_time, percentile=5.0, duration=24 * 60):
     return annualized_return / annualized_var
 
 
+@partial(jit, static_argnums=(0,))
 def _calculate_return_value(
     return_val, reserves, local_prices, value_over_time, initial_reserves=None
 ):
@@ -152,7 +153,6 @@ def _calculate_return_value(
 
     if return_val not in return_metrics:
         raise NotImplementedError(f"Return value type '{return_val}' not implemented")
-
     return return_metrics[return_val]()
 
 
@@ -303,7 +303,6 @@ def forward_pass(
             gas_cost_array = jnp.array([static_dict["gas_cost"]])
         if arb_fees_array is None:
             arb_fees_array = jnp.array([static_dict["arb_fees"]])
-
         reserves = pool.calculate_reserves_with_dynamic_inputs(
             params,
             static_dict,

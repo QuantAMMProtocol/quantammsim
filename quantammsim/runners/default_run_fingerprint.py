@@ -44,8 +44,10 @@ run_fingerprint_defaults = {
     "use_pre_exp_scaling": True,
     "weight_interpolation_method": "linear",
     "arb_frequency": 1,
+    "arb_quality": 1.0,
     "do_trades": False,
-    "numeraire": None
+    "numeraire": None,
+    "do_arb": True,
 }
 
 
@@ -64,6 +66,7 @@ optuna_settings = {
         "patience": 100,  # Trials without improvement
         "min_improvement": 0.001,  # Minimum relative improvement
     },
+    "multi_objective": False,
     "parameter_config": {
         "memory_length": {
             "low": 1,
