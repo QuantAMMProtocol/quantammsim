@@ -230,6 +230,7 @@ def train_on_historic_data(
         "training_data_kind": run_fingerprint["optimisation_settings"][
             "training_data_kind"
         ],
+        "tokens": tuple(run_fingerprint["tokens"]),
         "use_alt_lamb": use_alt_lamb,
         "use_pre_exp_scaling": use_pre_exp_scaling,
         "all_sig_variations": all_sig_variations,
@@ -237,14 +238,10 @@ def train_on_historic_data(
         "arb_frequency": arb_frequency,
         "do_arb": run_fingerprint["do_arb"],
         "arb_quality": run_fingerprint["arb_quality"],
+        "numeraire": run_fingerprint["numeraire"],
+        "do_trades": False
     }
 
-    partial_training_step = Partial(
-        forward_pass,
-        prices=data_dict["prices"],
-        static_dict=Hashabledict(base_static_dict),
-        pool=pool,
-    )
     partial_training_step = Partial(
         forward_pass,
         prices=data_dict["prices"],
@@ -834,19 +831,8 @@ def do_run_on_historic_data(
         "endTestDateString": run_fingerprint["endTestDateString"],
         "do_arb": run_fingerprint["do_arb"],
         "arb_quality": run_fingerprint["arb_quality"],
+        "numeraire": run_fingerprint["numeraire"],
     }
-
-    # base_static_dict_copy = base_static_dict.copy()
-    # base_static_dict_copy["bout_length"] = (
-    #     data_dict["bout_length"] - run_fingerprint["bout_offset"]
-    # )
-
-    # partial_forward_pass_nograd_batch = Partial(
-    #     forward_pass_nograd,
-    #     prices=data_dict["prices"],
-    #     static_dict=Hashabledict(base_static_dict_copy),
-    #     pool=pool,
-    # )
 
     # Create static dictionaries for training and testing
     reserves_values_train_static_dict = base_static_dict.copy()

@@ -46,6 +46,7 @@ run_fingerprint_defaults = {
     "arb_frequency": 1,
     "arb_quality": 1.0,
     "do_trades": False,
+    "numeraire": None,
     "do_arb": True,
 }
 
