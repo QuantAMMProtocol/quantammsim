@@ -476,8 +476,6 @@ class GyroscopePool(AbstractPool):
                 alpha=params["alpha"],
                 beta=params["beta"],
             )
-            print("lam", lam)
-            print("tan_phi", tan_phi)
             phi = jnp.arctan(tan_phi)
         else:
             lam = params["lam"]
