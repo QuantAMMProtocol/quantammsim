@@ -35,6 +35,9 @@ from quantammsim.pools.ECLP.gyroscope_reserves import (
     _jax_calc_gyroscope_reserves_with_dynamic_inputs,
     initialise_gyroscope_reserves_given_value,
 )
+from quantammsim.pools.ECLP.gyroscope_weight_conversion import (
+    optimize_lambda_and_tan_phi,
+)
 
 
 class GyroscopePool(AbstractPool):
@@ -52,10 +55,10 @@ class GyroscopePool(AbstractPool):
     ) -> jnp.ndarray:
         # Gyroscope ECLP pools are only defined for 2 assets
         assert run_fingerprint["n_assets"] == 2
-
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
+        lam, phi = self._get_lam_and_phi(params, run_fingerprint, local_prices[0])
 
         # Handle numeraire ordering for prices
         prices, needs_swap = self._handle_numeraire_ordering(prices, run_fingerprint)
@@ -74,9 +77,9 @@ class GyroscopePool(AbstractPool):
             local_prices[0],
             alpha=params["alpha"],
             beta=params["beta"],
-            lam=params["lam"],
-            sin=jnp.sin(params["phi"]),
-            cos=jnp.cos(params["phi"]),
+            lam=lam,
+            sin=jnp.sin(phi),
+            cos=jnp.cos(phi),
         )
         if run_fingerprint["do_arb"]:
             reserves = _jax_calc_gyroscope_reserves_with_fees(
@@ -84,9 +87,9 @@ class GyroscopePool(AbstractPool):
                 prices=arb_acted_upon_local_prices,
                 alpha=params["alpha"],
                 beta=params["beta"],
-                sin=jnp.sin(params["phi"]),
-                cos=jnp.cos(params["phi"]),
-                lam=params["lam"],
+                sin=jnp.sin(phi),
+                cos=jnp.cos(phi),
+                lam=lam,
                 fees=run_fingerprint["fees"],
                 arb_thresh=run_fingerprint["gas_cost"],
                 arb_fees=run_fingerprint["arb_fees"],
@@ -97,8 +100,7 @@ class GyroscopePool(AbstractPool):
             )
 
         # Restore original order if we swapped
-        if needs_swap:
-            reserves = reserves[..., ::-1]
+        reserves = jnp.where(needs_swap, jnp.flip(reserves, axis=-1), reserves)
         return reserves
 
     @partial(jit, static_argnums=(2,))
@@ -112,13 +114,13 @@ class GyroscopePool(AbstractPool):
     ) -> jnp.ndarray:
         # Gyroscope ECLP pools are only defined for 2 assets
         assert run_fingerprint["n_assets"] == 2
-
         # Handle numeraire ordering for prices
         prices, needs_swap = self._handle_numeraire_ordering(prices, run_fingerprint)
 
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
+        lam, phi = self._get_lam_and_phi(params, run_fingerprint, local_prices[0])
 
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_local_prices = local_prices[
@@ -134,9 +136,9 @@ class GyroscopePool(AbstractPool):
             local_prices[0],
             alpha=params["alpha"],
             beta=params["beta"],
-            lam=params["lam"],
-            sin=jnp.sin(params["phi"]),
-            cos=jnp.cos(params["phi"]),
+            lam=lam,
+            sin=jnp.sin(phi),
+            cos=jnp.cos(phi),
         )
         if run_fingerprint["do_arb"]:
             reserves = _jax_calc_gyroscope_reserves_zero_fees(
@@ -144,9 +146,9 @@ class GyroscopePool(AbstractPool):
                 prices=arb_acted_upon_local_prices,
                 alpha=params["alpha"],
                 beta=params["beta"],
-                sin=jnp.sin(params["phi"]),
-                cos=jnp.cos(params["phi"]),
-                lam=params["lam"],
+                sin=jnp.sin(phi),
+                cos=jnp.cos(phi),
+                lam=lam,
             )
         else:
             reserves = jnp.broadcast_to(
@@ -154,8 +156,7 @@ class GyroscopePool(AbstractPool):
             )
 
         # Restore original order if we swapped
-        if needs_swap:
-            reserves = reserves[..., ::-1]
+        reserves = jnp.where(needs_swap, jnp.flip(reserves, axis=-1), reserves)
         return reserves
 
     @partial(jit, static_argnums=(2,))
@@ -173,13 +174,13 @@ class GyroscopePool(AbstractPool):
     ) -> jnp.ndarray:
         # Gyroscope ECLP pools are only defined for 2 assets
         assert run_fingerprint["n_assets"] == 2
-
         # Handle numeraire ordering for prices
         prices, needs_swap = self._handle_numeraire_ordering(prices, run_fingerprint)
 
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
+        lam, phi = self._get_lam_and_phi(params, run_fingerprint, local_prices[0])
 
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_local_prices = local_prices[
@@ -195,9 +196,9 @@ class GyroscopePool(AbstractPool):
             local_prices[0],
             alpha=params["alpha"],
             beta=params["beta"],
-            lam=params["lam"],
-            sin=jnp.sin(params["phi"]),
-            cos=jnp.cos(params["phi"]),
+            lam=lam,
+            sin=jnp.sin(phi),
+            cos=jnp.cos(phi),
         )
         # any of fees_array, arb_thresh_array, arb_fees_array, trade_array
         # can be singletons, in which case we repeat them for the length of the bout
@@ -234,9 +235,9 @@ class GyroscopePool(AbstractPool):
             prices=arb_acted_upon_local_prices,
             alpha=params["alpha"],
             beta=params["beta"],
-            sin=jnp.sin(params["phi"]),
-            cos=jnp.cos(params["phi"]),
-            lam=params["lam"],
+            sin=jnp.sin(phi),
+            cos=jnp.cos(phi),
+            lam=lam,
             fees=fees_array_broadcast,
             arb_thresh=arb_thresh_array_broadcast,
             arb_fees=arb_fees_array_broadcast,
@@ -244,8 +245,7 @@ class GyroscopePool(AbstractPool):
             do_trades=run_fingerprint["do_trades"],
         )
         # Restore original order if we swapped
-        if needs_swap:
-            reserves = reserves[..., ::-1]
+        reserves = jnp.where(needs_swap, jnp.flip(reserves, axis=-1), reserves)
         return reserves
 
     def _init_base_parameters(
@@ -353,9 +353,9 @@ class GyroscopePool(AbstractPool):
         """
         Calculate the weights for ECLP pools.
 
-        ECLP pools do not have weights in the same way as other pools, 
-        such as G3M pools or FM-AMM pools. Therefore, the weights are 
-        calculated based on the reserves that the pool has when run in 
+        ECLP pools do not have weights in the same way as other pools,
+        such as G3M pools or FM-AMM pools. Therefore, the weights are
+        calculated based on the reserves that the pool has when run in
         the zero-fees case, and the empirical weights are derived from
         the empirical division of value between reserve over time.
 
@@ -448,6 +448,42 @@ class GyroscopePool(AbstractPool):
             prices = prices[..., ::-1]
 
         return prices, needs_swap
+
+    @partial(jit, static_argnums=(2,))
+    def _get_lam_and_phi(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        initial_prices: jnp.ndarray,
+    ) -> jnp.ndarray:
+        # We assume that the prices are in the correct order for ECLP calculations
+        # so we don't need to swap them using _handle_numeraire_ordering
+        # BUT, we do need to know if we need to swap them for the weight conversion
+        # so we pass in the initial prices to _handle_numeraire_ordering
+        # and then use the result to determine if we need to swap
+        _, needs_swap = self._handle_numeraire_ordering(initial_prices, run_fingerprint)
+
+        if "initial_weights_logits" in params:
+            # Calculate target weight from logits
+            weights = stop_gradient(softmax(params["initial_weights_logits"]))
+            target_weight = jnp.where(needs_swap, weights[1], weights[0])
+
+            # Optimize lambda and phi to match target weight
+            lam, tan_phi = optimize_lambda_and_tan_phi(
+                target_weight=target_weight,
+                initial_pool_value=run_fingerprint["initial_pool_value"],
+                initial_prices=initial_prices,
+                alpha=params["alpha"],
+                beta=params["beta"],
+            )
+            print("lam", lam)
+            print("tan_phi", tan_phi)
+            phi = jnp.arctan(tan_phi)
+        else:
+            lam = params["lam"]
+            phi = params["phi"]
+
+        return lam, phi
 
 
 tree_util.register_pytree_node(
