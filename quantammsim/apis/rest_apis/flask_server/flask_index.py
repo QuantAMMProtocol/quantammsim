@@ -190,6 +190,13 @@ def filters():
 
     return content
 
+@app.route("/api/test", methods=["GET"])
+def test():
+    return "Hello World"
+
+@app.route("/health", methods=["GET"])
+def health():
+    return "OK"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port="5001")
