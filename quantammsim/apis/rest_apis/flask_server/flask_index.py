@@ -39,7 +39,7 @@ app.config["JWT_SECRET_KEY"] = (
     "2b25014d8e591e91cc4e3bfc3a7561983e06bc7ff0a140bcecca3c0a15d31c5e"
 )
 
-@app.route("/runSimulation", methods=["POST"])
+@app.route("/api/runSimulation", methods=["POST"])
 def runSimulation():
     """
     Handle the POST request to run a simulation.
@@ -64,7 +64,7 @@ def runSimulation():
     return jsonString
 
 
-@app.route("/runFinancialAnalysis", methods=["POST"])
+@app.route("/api/runFinancialAnalysis", methods=["POST"])
 def runFinancialAnalysis():
     """
     Handle the POST request to run a financial analysis.
@@ -106,7 +106,7 @@ def runFinancialAnalysis():
     return jsonString
 
 
-@app.route("/loadHistoricDailyPrices", methods=["POST"])
+@app.route("/api/loadHistoricDailyPrices", methods=["POST"])
 def loadHistoricDailyPrices():
     """
     Handle the POST request to load historic daily prices.
@@ -129,7 +129,7 @@ def loadHistoricDailyPrices():
     jsonString = json.dumps(parsed)
     return jsonString
 
-@app.route("/loadCoinComparisonData", methods=["POST"])
+@app.route("/api/loadCoinComparisonData", methods=["POST"])
 def loadCoinComparisonData():
     """
     Handle the POST request to load coin comparison data.
@@ -151,7 +151,7 @@ def loadCoinComparisonData():
     return jsonString
 
 
-@app.route("/products", methods=["GET"])
+@app.route("/api/products", methods=["GET"])
 def products():
     """
     Handle the GET request to retrieve product information.
@@ -171,7 +171,7 @@ def products():
     return content
 
 
-@app.route("/filters", methods=["GET"])
+@app.route("/api/filters", methods=["GET"])
 def filters():
     """
     Handle the GET request to retrieve filter information.
