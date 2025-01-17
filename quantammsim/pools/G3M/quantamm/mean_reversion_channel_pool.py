@@ -187,7 +187,7 @@ class MeanReversionChannelPool(MomentumPool):
         to be applied to the previous weights. These will be refined in subsequent steps.
         """
         use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-        if use_pre_exp_scaling:
+        if use_pre_exp_scaling and params.get("logit_pre_exp_scaling") is not None:
             logit_pre_exp_scaling = params.get("logit_pre_exp_scaling")
             pre_exp_scaling = jnp.exp(logit_pre_exp_scaling) / (
                 1 + jnp.exp(logit_pre_exp_scaling)
