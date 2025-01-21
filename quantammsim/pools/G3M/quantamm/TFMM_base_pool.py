@@ -283,8 +283,6 @@ class TFMMBasePool(AbstractPool):
         raw_weight_outputs = self.calculate_raw_weights_outputs(
             params, run_fingerprint, prices, additional_oracle_input
         )
-        # print("initial raw_weight_outputs ", raw_weight_outputs)
-        # print("initial raw_weight_outputs.shape ", raw_weight_outputs.shape)
         initial_weights_logits = params.get("initial_weights_logits")
         # we dont't want to change the initial weights during any training
         # so wrap them in a stop_grad
@@ -295,7 +293,7 @@ class TFMMBasePool(AbstractPool):
         # with the burnin period, ie everything before the start of the sequence
 
         start_index_coarse = ((start_index[0] / chunk_period).astype("int64"), 0)
-        # print("start_index_coarse ", start_index_coarse)
+
         raw_weight_outputs = dynamic_slice(
             raw_weight_outputs,
             start_index_coarse,
@@ -303,20 +301,15 @@ class TFMMBasePool(AbstractPool):
         )
         raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
         initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
-        # print("initial_weights_cpu ", initial_weights_cpu)
-        # print("raw_weight_outputs_cpu ", raw_weight_outputs_cpu)
-        # print("raw_weight_outputs_cpu.shape ", raw_weight_outputs_cpu.shape)
+
         weights = self.fine_weight_output(
             raw_weight_outputs_cpu,
             initial_weights_cpu,
             run_fingerprint,
             params,
         )
-        # print("weights ", weights)
-        # print("weights.shape ", weights.shape)
+
         weights = dynamic_slice(weights, (0, 0), (bout_length - 1, n_assets))
-        # initial_value_per_token = initial_weights * initial_pool_value
-        # initial_reserves = initial_value_per_token / prices[start_index]
 
         return weights
 
