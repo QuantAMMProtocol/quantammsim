@@ -112,13 +112,6 @@ def _jax_calc_coarse_weights(
 
     carry_list_init = [initial_weights]
 
-    # weights = jnp.zeros((n, n_assets), dtype=jnp.float64)
-
-    # if raw_weight_outputs_are_themselves_weights:
-    #     weights = weights.at[0].set(raw_weight_outputs[0])
-    # else:
-    #     weights = weights.at[0].set(initial_weights)
-    # weights = weights.at[1:].set(scan(scan_fn, carry_list_init, raw_weight_outputs)[1])
     _, (actual_starts, scaled_diffs, target_weights) = scan(scan_fn, carry_list_init, raw_weight_outputs)
     return actual_starts, scaled_diffs, target_weights
 
@@ -177,13 +170,6 @@ def calc_fine_weight_output(
         raw_weight_outputs_are_themselves_weights,
     )
 
-    # actual_starts_cpu, scaled_diffs_cpu = _jax_fine_weights_end_from_coarse_weights(
-    #     coarse_weights_cpu,
-    #     interpol_num=weight_interpolation_period + 1,
-    #     num=chunk_period + 1,
-    #     maximum_change=maximum_change,
-    # )
-    # coarse_weights = coarse_weights_cpu
     scaled_diffs_gpu = device_put(scaled_diffs_cpu, GPU_DEVICE)
     actual_starts_gpu = device_put(actual_starts_cpu, GPU_DEVICE)
 
