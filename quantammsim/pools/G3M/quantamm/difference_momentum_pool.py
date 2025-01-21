@@ -52,6 +52,7 @@ from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weight_changes,
 )
 
+
 class DifferenceMomentumPool(MomentumPool):
     """
     A class for difference-momentum strategies run as TFMM liquidity pools.
@@ -150,92 +151,6 @@ class DifferenceMomentumPool(MomentumPool):
             ewma_proportional_difference, k
         )
         return raw_weight_outputs
-        # def calculate_raw_weights_outputs(
-        #     self,
-        #     params: Dict[str, Any],
-        #     run_fingerprint: Dict[str, Any],
-        #     prices: jnp.ndarray,
-        #     additional_oracle_input: Optional[jnp.ndarray] = None,
-        # ) -> jnp.ndarray:
-        # """
-        # Calculate the raw weight outputs based on antimomentum signals.
-        # This method computes the raw weight adjustments for the antimomentum strategy. It processes
-        # the input prices to calculate gradients, which are then used to determine weight updates.
-
-        # Parameters
-        # ----------
-        # params : Dict[str, Any]
-        #     A dictionary of strategy parameters.
-        # run_fingerprint : Dict[str, Any]
-        #     A dictionary containing run-specific settings.
-        # prices : jnp.ndarray
-        #     An array of asset prices over time.
-        # additional_oracle_input : Optional[jnp.ndarray], optional
-        #     Additional input data, if any.
-
-        # Returns
-        # -------
-        # jnp.ndarray
-        #     Raw weight outputs representing the suggested weight adjustments.
-
-        # Notes
-        # -----
-        # The method performs the following steps:
-        # 1. Calculates the memory days based on the lambda parameter.
-        # 2. Computes the 'k' factor which scales the weight updates.
-        # 3. Extracts chunkwise price values from the input prices.
-        # 4. Calculates two difference EWMAs and the proportional difference between them.
-        # 5. Applies the momentum weight update formula using the proportional difference as signal to get raw weight outputs.
-
-        # The raw weight outputs are not the final weights, but rather the changes
-        # to be applied to the previous weights. These will be refined in subsequent steps.
-        # """
-
-        # chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
-        # lamb = calc_lamb(params)
-        # cap_lamb = True
-        # memory_days = lamb_to_memory_days_clipped(
-        #     lamb, run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"]
-        # )
-        # k = calc_k(params, memory_days)
-        # if params.get("long_memory_days") is not None:
-        #     long_memory_days = params["long_memory_days"]
-        # else:
-        #     long_memory_days = memory_days
-        # if DEFAULT_BACKEND != "cpu":
-        #     alt_ewma_padded = calc_alt_ewma_padded(
-        #         params,
-        #         chunkwise_price_values,
-        #     run_fingerprint["chunk_period"],
-        #     run_fingerprint["max_memory_days"],
-        #     cap_lamb=cap_lamb,
-        #     )
-        #     alt_ewma = alt_ewma_padded[-(len(chunkwise_price_values) - 1) :]
-        #     ewma_padded = calc_ewma_padded(
-        #         params,
-        #         chunkwise_price_values,
-        #         run_fingerprint["chunk_period"],
-        #         run_fingerprint["max_memory_days"],
-        #         cap_lamb=cap_lamb,
-        #     )
-        #     ewma = ewma_padded[-(len(chunkwise_price_values) - 1) :]
-        # else:
-        #     alt_lamb = calc_alt_lamb(params)
-        #     if cap_lamb:
-        #         max_lamb = memory_days_to_lamb(
-        #             run_fingerprint["max_memory_days"], run_fingerprint["chunk_period"]
-        #         )
-        #         capped_alt_lamb = jnp.clip(alt_lamb, a_min=0.0, a_max=max_lamb)
-        #         alt_lamb = capped_alt_lamb
-        #         capped_lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
-        #         lamb = capped_lamb
-        #     alt_ewma = _jax_ewma_at_infinity_via_scan(chunkwise_price_values, alt_lamb)
-        #     ewma = _jax_ewma_at_infinity_via_scan(chunkwise_price_values, lamb)
-        # ewma_proportional_difference = 1.0 - alt_ewma / ewma
-        # raw_weight_outputs = _jax_momentum_weight_update(
-        #     ewma_proportional_difference, k
-        # )
-        # return raw_weight_outputs
 
     def _init_base_parameters(
         self,
@@ -313,8 +228,8 @@ class DifferenceMomentumPool(MomentumPool):
             initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets
         )
         k = process_initial_values(
-                initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets
-            )
+            initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets
+        )
 
         memory_days_1 = process_initial_values(
             initial_values_dict, "initial_memory_length", n_assets, n_parameter_sets
@@ -341,7 +256,9 @@ class DifferenceMomentumPool(MomentumPool):
 
 
 tree_util.register_pytree_node(
-    DifferenceMomentumPool, DifferenceMomentumPool._tree_flatten, DifferenceMomentumPool._tree_unflatten
+    DifferenceMomentumPool,
+    DifferenceMomentumPool._tree_flatten,
+    DifferenceMomentumPool._tree_unflatten,
 )
 
 
