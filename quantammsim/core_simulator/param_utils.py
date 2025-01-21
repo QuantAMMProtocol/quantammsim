@@ -204,6 +204,35 @@ def memory_days_to_lamb(memory_days, chunk_period=60):
     return lamb
 
 
+def memory_days_to_lamb_for_jax(memory_days, chunk_period=60):
+    """
+    Convert memory days to lambda value, that is compatible with jax.
+    Mirrors the numpy version, memory_days_to_lamb, but returns a jax array.
+
+    Args:
+        memory_days (float): The memory days value.
+        chunk_period (int, optional): The chunk period. Defaults to 60.
+
+    Returns:
+        float: The lambda value.
+    """
+    scaled_memory_days = (1440.0 * memory_days / (2.0 * chunk_period)) ** 3 / 6.0
+
+    smd = scaled_memory_days
+    smd2 = scaled_memory_days**2
+    smd3 = scaled_memory_days**3
+    smd4 = scaled_memory_days**4
+
+    numerator_1 = jnp.cbrt((jnp.sqrt(3 * (27 * smd4 + 4 * smd3)) - 9 * smd2))
+    denominator_1 = jnp.cbrt(2) * 3 ** (2.0 / 3.0) * smd
+
+    numerator_2 = jnp.cbrt((2 / 3))
+    denominator_2 = numerator_1
+
+    lamb = numerator_1 / denominator_1 - numerator_2 / denominator_2 + 1.0
+    return lamb
+
+
 def memory_days_to_logit_lamb(memory_days, chunk_period=60):
     """
     Convert memory days to logit lambda value.

@@ -10,6 +10,7 @@ from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import (
     MeanReversionChannelPool,
 )
 from quantammsim.pools.G3M.quantamm.difference_momentum_pool import DifferenceMomentumPool
+from quantammsim.pools.G3M.quantamm.min_variance_pool import MinVariancePool
 from quantammsim.pools.hodl_pool import HODLPool
 from quantammsim.pools.FM_AMM.cow_pool import CowPool
 from quantammsim.pools.ECLP.gyroscope import GyroscopePool
@@ -133,6 +134,8 @@ def create_pool(rule):
         base_pool = MeanReversionChannelPool()
     elif base_rule == "difference_momentum":
         base_pool = DifferenceMomentumPool()
+    elif base_rule == "min_variance":
+        base_pool = MinVariancePool()
     elif base_rule == "hodl":
         base_pool = HODLPool()
     elif base_rule == "cow":
