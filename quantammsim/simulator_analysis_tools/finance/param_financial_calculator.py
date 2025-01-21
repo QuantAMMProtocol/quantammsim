@@ -154,7 +154,7 @@ def run_pool_simulation(simulationRunDto):
     )
 
     test_window_end_str = test_window_end_str.split()[0] + " 00:00:00"
-
+    
     run_fingerprint = {
         "startDateString": simulationRunDto.startDateString,
         "endDateString": simulationRunDto.endDateString,
@@ -166,7 +166,9 @@ def run_pool_simulation(simulationRunDto):
         "initial_pool_value": total_initial_value,
         "use_alt_lamb": False,
         "do_trades": raw_trades is not None,
-        "return_val": "final_reserves_value_and_weights"
+        "return_val": "final_reserves_value_and_weights",
+        "do_arb": simulationRunDto.pool.enableAutomaticArbBots,
+        "numeraire":simulationRunDto.pool.numeraire,
     }
 
     price_data_local = get_historic_parquet_data(tokens)
