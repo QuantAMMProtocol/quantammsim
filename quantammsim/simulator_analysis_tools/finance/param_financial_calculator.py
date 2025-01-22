@@ -134,7 +134,7 @@ def run_pool_simulation(simulationRunDto):
     # Use pool's parameter processor if available
     if hasattr(pool_class, "process_parameters"):
         update_rule_parameter_dict_converted = pool_class.process_parameters(
-            update_rule_parameters
+            update_rule_parameters, len(tokens)
         )
     elif len(update_rule_parameters) > 0:
         # Fallback to basic parameter processing
@@ -211,6 +211,8 @@ def run_pool_simulation(simulationRunDto):
     }
 
     price_data_local = get_historic_parquet_data(tokens)
+    print(run_fingerprint)
+    print(update_rule_parameter_dict_converted)
     outputDict = do_run_on_historic_data(
         run_fingerprint,
         update_rule_parameter_dict_converted,
