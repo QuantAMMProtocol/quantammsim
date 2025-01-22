@@ -155,6 +155,29 @@ class AbstractPool(ABC):
     def is_trainable(self):
         pass
 
+    @classmethod
+    def process_parameters(cls, update_rule_parameters, n_assets):
+        """
+        Default implementation for processing pool parameters from web interface input.
+
+        Performs simple conversion of parameter values to numpy arrays while preserving names.
+        Override this method in subclasses that need custom parameter processing.
+
+        Parameters
+        ----------
+        update_rule_parameters : List[UpdateRuleParameter]
+            List of parameters from the web interface
+
+        Returns
+        -------
+        Dict[str, np.ndarray]
+            Processed parameters ready for pool initialization
+        """
+        result = {}
+        for urp in update_rule_parameters:
+            result[urp.name] = np.array(urp.value)
+        return result
+
 
 tree_util.register_pytree_node(
     AbstractPool, AbstractPool._tree_flatten, AbstractPool._tree_unflatten

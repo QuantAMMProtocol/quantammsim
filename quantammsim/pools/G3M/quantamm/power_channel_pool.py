@@ -29,6 +29,7 @@ from quantammsim.core_simulator.param_utils import (
     memory_days_to_lamb,
     lamb_to_memory_days_clipped,
     calc_lamb,
+    inverse_squareplus,
 )
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
     calc_gradients,
@@ -323,6 +324,26 @@ class PowerChannelPool(MomentumPool):
 
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
+
+    @classmethod
+    def _process_specific_parameters(cls, update_rule_parameters, n_assets):
+        """Process mean reversion channel specific parameters."""
+        result = {}
+
+        # Process specific parameters
+        for urp in update_rule_parameters:
+            if urp.name == "exponent":
+                raw_exponents = [float(inverse_squareplus(val)) for val in urp.value]
+                if len(raw_exponents) != n_assets:
+                    raw_exponents = [raw_exponents[0]] * n_assets
+                result["raw_exponents"] = np.array(raw_exponents)
+            elif urp.name == "pre_exp_scaling":
+                logit_pre_exp_scaling = [float(np.log(val / (1.0 - val))) for val in urp.value]
+                if len(logit_pre_exp_scaling) != n_assets:
+                    logit_pre_exp_scaling = [logit_pre_exp_scaling[0]] * n_assets
+                result["logit_pre_exp_scaling"] = np.array(logit_pre_exp_scaling)
+
+        return result
 
 
 tree_util.register_pytree_node(

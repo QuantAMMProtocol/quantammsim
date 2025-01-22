@@ -204,7 +204,7 @@ def memory_days_to_lamb(memory_days, chunk_period=60):
     return lamb
 
 
-def memory_days_to_lamb_for_jax(memory_days, chunk_period=60):
+def jax_memory_days_to_lamb(memory_days, chunk_period=60):
     """
     Convert memory days to lambda value, that is compatible with jax.
     Mirrors the numpy version, memory_days_to_lamb, but returns a jax array.
@@ -362,6 +362,29 @@ def calc_alt_lamb(update_rule_parameter_dict):
     logit_alt_lamb = logit_delta_lamb + logit_lamb
     alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
     return alt_lamb
+
+
+def inverse_squareplus(y):
+    """
+    Inverse of squareplus function. Input must be >= 1.
+    """
+    if y < 1:
+        raise ValueError("Input must be >= 1")
+    return y - np.sqrt(y * y - 1)
+
+
+def get_raw_width(width):
+    """
+    Get raw_width parameter from desired width value
+    """
+    return np.log2(width)
+
+
+def get_log_amplitude(amplitude, memory_days):
+    """
+    Get log_amplitude parameter from desired amplitude and memory_days
+    """
+    return np.log2(amplitude / memory_days)
 
 
 def init_params_singleton(

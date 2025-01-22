@@ -483,6 +483,15 @@ class GyroscopePool(AbstractPool):
 
         return lam, phi
 
+    @classmethod
+    def process_parameters(cls, update_rule_parameters, n_assets):
+        """Process gyroscope pool parameters from web interface input."""
+        result = {}
+        # Process any remaining parameters in a default way
+        for urp in update_rule_parameters:
+            result[urp.name] = np.squeeze(np.array(urp.value))
+        return result
+
 
 tree_util.register_pytree_node(
     GyroscopePool,

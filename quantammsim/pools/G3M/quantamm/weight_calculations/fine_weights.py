@@ -42,7 +42,7 @@ from quantammsim.pools.G3M.quantamm.weight_calculations.non_linear_interpolation
 from quantammsim.core_simulator.param_utils import (
     calc_alt_lamb,
     memory_days_to_lamb,
-    memory_days_to_lamb_for_jax,
+    jax_memory_days_to_lamb,
 )
 
 
@@ -88,7 +88,7 @@ def _jax_calc_coarse_weights(
         if "memory_days_2" in update_rule_parameter_dict:
             # Direct memory_days parameterization
             memory_days = update_rule_parameter_dict["memory_days_2"]
-            alt_lamb = memory_days_to_lamb_for_jax(memory_days, chunk_period)
+            alt_lamb = jax_memory_days_to_lamb(memory_days, chunk_period)
         else:
             # Original logit_lamb parameterization
             alt_lamb = calc_alt_lamb(update_rule_parameter_dict)

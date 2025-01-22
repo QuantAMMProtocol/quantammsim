@@ -252,11 +252,6 @@ class MinVariancePool(TFMMBasePool):
         initial_weights_logits = process_initial_values(
             initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets
         )
-        log_k = np.log2(
-            process_initial_values(
-                initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets
-            )
-        )
 
         initial_lamb = memory_days_to_lamb(
             initial_values_dict["initial_memory_length"],
@@ -284,7 +279,6 @@ class MinVariancePool(TFMMBasePool):
         )
 
         params = {
-            "log_k": log_k,
             "logit_lamb": logit_lamb,
             "logit_delta_lamb": logit_delta_lamb,
             "initial_weights_logits": initial_weights_logits,
@@ -293,6 +287,37 @@ class MinVariancePool(TFMMBasePool):
 
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
+
+    @classmethod
+    def process_parameters(cls, update_rule_parameters, n_assets):
+        """Process Min Variance pool parameters from web interface input."""
+        result = {}
+
+        # Find memory_days parameter
+        for urp in update_rule_parameters:
+            if urp.name == "memory_days":
+                memory_days = []
+                for tokenValue in urp.value:
+                    memory_days.append(tokenValue)
+                if len(memory_days) != n_assets:
+                    memory_days = [memory_days[0]] * n_assets
+                memory_days = np.array(memory_days)
+                # Set both memory_days parameters to the same value
+                result["memory_days_1"] = memory_days  # for variance calculation
+                result["memory_days_2"] = memory_days  # for weight smoothing
+                break
+
+        # Process any remaining parameters in default way
+        for urp in update_rule_parameters:
+            if urp.name != "memory_days":  # skip memory_days as already processed
+                value = []
+                for tokenValue in urp.value:
+                    value.append(tokenValue)
+                if len(value) != n_assets:
+                    value = [value[0]] * n_assets
+                result[urp.name] = np.array(value)
+
+        return result
 
 
 tree_util.register_pytree_node(

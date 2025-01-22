@@ -67,7 +67,7 @@ def dicts_to_csv(data, filename):
 
 def convert_annual_to_daily_returns(rates):
   
-    trading_days_per_year = 356  # Typically, there are 252 trading days in a year
+    trading_days_per_year = 365
 
     if np.any(rates > 1):
         rates = rates / 100.0

@@ -27,7 +27,7 @@ from quantammsim.pools.G3M.quantamm.quantamm_reserves import (
     _jax_calc_quantAMM_reserves_with_dynamic_inputs,
 )
 from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
-
+from quantammsim.core_simulator.param_utils import memory_days_to_lamb
 import numpy as np
 
 from typing import Dict, Any, Optional
@@ -323,3 +323,74 @@ class TFMMBasePool(AbstractPool):
 
     def is_trainable(self):
         return True
+
+    @classmethod
+    def process_parameters(cls, update_rule_parameters, n_assets):
+        """Process TFMM pool parameters from web interface input."""
+        result = {}
+        processed_params = set()
+        
+        # Process TFMM common parameters
+        memory_days_values = cls._process_memory_days(update_rule_parameters, n_assets)
+        if memory_days_values is not None:
+            result.update(memory_days_values)
+            processed_params.add("memory_days")
+            
+        k_values = cls._process_k_per_day(update_rule_parameters, n_assets)
+        if k_values is not None:
+            result.update(k_values)
+            processed_params.add("k_per_day")
+            
+        # Let specific pools process their parameters
+        specific_params = cls._process_specific_parameters(update_rule_parameters, n_assets)
+        if specific_params is not None:
+            result.update(specific_params)
+            # Assume any parameters returned by specific processing are handled
+            processed_params.update(specific_params.keys())
+            
+        # Process any remaining parameters in a default way
+        for urp in update_rule_parameters:
+            if urp.name not in processed_params:
+                value = []
+                for tokenValue in urp.value:
+                    value.append(tokenValue)
+                if len(value) != n_assets:
+                    value = [value[0]] * n_assets
+                result[urp.name] = np.array(value)
+                
+        
+        return result
+
+    @classmethod
+    def _process_memory_days(cls, update_rule_parameters, n_assets):
+        """Process memory_days parameter."""
+        for urp in update_rule_parameters:
+            if urp.name == "memory_days":
+                logit_lamb_vals = []
+                memory_days_values = urp.value
+                for tokenValue in urp.value:
+                    initial_lamb = memory_days_to_lamb(tokenValue)
+                    logit_lamb = np.log(initial_lamb / (1.0 - initial_lamb))
+                    logit_lamb_vals.append(logit_lamb)
+                if len(logit_lamb_vals) != n_assets:
+                    logit_lamb_vals = [logit_lamb_vals[0]] * n_assets
+                return {"logit_lamb": np.array(logit_lamb_vals)}
+        return None
+
+    @classmethod
+    def _process_k_per_day(cls, update_rule_parameters, n_assets):
+        """Process k_per_day parameter."""
+        for urp in update_rule_parameters:
+            if urp.name == "k_per_day":
+                k_vals = []
+                for tokenValue in urp.value:
+                    k_vals.append(tokenValue)
+                if len(k_vals) != n_assets:
+                    k_vals = [k_vals[0]] * n_assets
+                return {"k": np.array(k_vals)}
+        return None
+
+    @classmethod
+    def _process_specific_parameters(cls, update_rule_parameters, n_assets):
+        """Process pool-specific parameters. Override in subclasses."""
+        return None
