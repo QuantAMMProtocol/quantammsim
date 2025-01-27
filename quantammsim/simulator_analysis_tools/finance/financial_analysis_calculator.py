@@ -198,8 +198,7 @@ def convert_benchmark_analysis_to_run_metric(
                         timeseries = convert_simulation_timeseries_to_run_metric(
                             element[key][risk_metric],
                             startDateString,
-                            risk_metric,
-                            risk_metric,
+                            risk_metric
                         )
                         run_timeline_metrics.append(
                             SimulationResultTimeseries(
@@ -240,7 +239,7 @@ def convert_benchmark_analysis_to_run_metric(
             elif key != "benchmark_name":
                 if isinstance(element[key], np.ndarray):
                     timeseries = convert_simulation_timeseries_to_run_metric(
-                        element[key], rf_name
+                        element[key], startDateString, rf_name
                     )
                     run_timeline_metrics.append(
                         SimulationResultTimeseries(timeseries, rf_name, key, "Daily")
@@ -401,14 +400,29 @@ def perform_porfolio_financial_analysis(
     return_analysis = perform_return_analysis(portfolio_returns, dailyRfValues)
     result_analysis_array = []
     return_analysis_timeseries_array = []
-    if benchmark_return_array is not None:
-        i = 0
-        for benchmark_returns in benchmark_return_array:
-            benchmark_analysis = portfolio_benchmark_analysis(
-                portfolio_returns, benchmark_returns, dailyRfValues, benchmark_name[i]
-            )
-            result_analysis_array.append(benchmark_analysis)
-            i += 1
+    benchmark_return_analysis_array = []
+    print("benchmark len")
+    print(len(benchmark_return_array))
+    if benchmark_return_array is not None and len(benchmark_return_array) == 1:
+        print("reached if")
+        benchmark_returns = benchmark_return_array[0]
+        
+        #precaution as hodl values are balancer supplied
+        benchmark_returns = np.nan_to_num(benchmark_returns, nan=0.0)
+        benchmark_analysis = portfolio_benchmark_analysis(
+            portfolio_returns, benchmark_returns, dailyRfValues, benchmark_name[0]
+        )
+        result_analysis_array.append(benchmark_analysis)
+
+        benchmark_return_analysis = perform_return_analysis(benchmark_returns, dailyRfValues)
+
+        hodl_return_array, _ = (
+            convert_return_analysis_to_run_metric(benchmark_return_analysis, rf_name, startDateString)
+        )
+        for metric in hodl_return_array:
+            metric.benchmarkName = "benchmark_return_analysis"
+
+        benchmark_return_analysis_array.extend(hodl_return_array)
 
     return_analysis_array, return_analysis_timeseries_array = (
         convert_return_analysis_to_run_metric(return_analysis, rf_name, startDateString)
@@ -420,11 +434,13 @@ def perform_porfolio_financial_analysis(
         )
     )
 
-    return_analysis_timeseries_array.extend(return_benchmark_analysis_timeseries_array)
+    benchmark_return_analysis_array.extend(return_benchmark_analysis_array)
 
+    return_analysis_timeseries_array.extend(return_benchmark_analysis_timeseries_array)
+    
     return {
         "return_analysis": return_analysis_array,
-        "benchmark_analysis": return_benchmark_analysis_array,
+        "benchmark_analysis": benchmark_return_analysis_array,
         "return_timeseries_analysis": return_analysis_timeseries_array,
     }
 
