@@ -278,9 +278,19 @@ class MinVariancePool(TFMMBasePool):
             [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
         )
 
+        memory_days_1 = process_initial_values(
+            initial_values_dict, "initial_memory_length", n_assets, n_parameter_sets
+        )
+        memory_days_delta = process_initial_values(
+            initial_values_dict, "initial_memory_length_delta", n_assets, n_parameter_sets
+        )
+        memory_days_2 = memory_days_1 + memory_days_delta
+
         params = {
-            "logit_lamb": logit_lamb,
-            "logit_delta_lamb": logit_delta_lamb,
+            # "logit_lamb": logit_lamb,
+            # "logit_delta_lamb": logit_delta_lamb,
+            "memory_days_1": memory_days_1,
+            "memory_days_2": memory_days_2,
             "initial_weights_logits": initial_weights_logits,
             "subsidary_params": [],
         }

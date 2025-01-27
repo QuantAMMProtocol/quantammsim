@@ -6,7 +6,7 @@ from itertools import product
 
 import numpy as np
 import jax.numpy as jnp
-from jax import jit
+from jax import jit, lax
 from jax import config
 
 from quantammsim.training.hessian_trace import hessian_trace
@@ -365,19 +365,20 @@ def calc_alt_lamb(update_rule_parameter_dict):
 
 
 def inverse_squareplus(y):
-    """
-    Inverse of squareplus function. Input must be >= 1.
-    """
-    if y < 1:
-        raise ValueError("Input must be >= 1")
-    return y - np.sqrt(y * y - 1)
+    # Convert input to float64 to ensure consistent types
+    y = jnp.asarray(y, dtype=jnp.float64)
+    # one = jnp.array(1.0, dtype=jnp.float64)
+    return lax.div(lax.sub(lax.square(y), 1.0), y)
 
 
-def get_raw_width(width):
+def inverse_squareplus_np(y):
+    return (y**2 - 1.0) / y
+
+def get_raw_value(value):
     """
-    Get raw_width parameter from desired width value
+    Get raw_value parameter from desired value
     """
-    return np.log2(width)
+    return np.log2(value)
 
 
 def get_log_amplitude(amplitude, memory_days):

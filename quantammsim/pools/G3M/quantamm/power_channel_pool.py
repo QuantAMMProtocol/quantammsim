@@ -29,7 +29,8 @@ from quantammsim.core_simulator.param_utils import (
     memory_days_to_lamb,
     lamb_to_memory_days_clipped,
     calc_lamb,
-    inverse_squareplus,
+    inverse_squareplus_np,
+    get_raw_value,
 )
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
     calc_gradients,
@@ -299,14 +300,6 @@ class PowerChannelPool(MomentumPool):
             [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
         )
 
-        logit_pre_exp_scaling_np = np.log(
-            initial_values_dict["initial_pre_exp_scaling"]
-            / (1.0 - initial_values_dict["initial_pre_exp_scaling"])
-        )
-        logit_pre_exp_scaling = np.array(
-            [[logit_pre_exp_scaling_np] * n_assets] * n_parameter_sets
-        )
-
         raw_exponents = np.array(
             [[initial_values_dict["initial_raw_exponents"]] * n_assets]
             * n_parameter_sets
@@ -317,7 +310,6 @@ class PowerChannelPool(MomentumPool):
             "logit_lamb": logit_lamb,
             "logit_delta_lamb": logit_delta_lamb,
             "initial_weights_logits": initial_weights_logits,
-            "logit_pre_exp_scaling": logit_pre_exp_scaling,
             "raw_exponents": raw_exponents,
             "subsidary_params": [],
         }
@@ -333,15 +325,15 @@ class PowerChannelPool(MomentumPool):
         # Process specific parameters
         for urp in update_rule_parameters:
             if urp.name == "exponent":
-                raw_exponents = [float(inverse_squareplus(val)) for val in urp.value]
+                raw_exponents = [float(inverse_squareplus_np(val)) for val in urp.value]
                 if len(raw_exponents) != n_assets:
                     raw_exponents = [raw_exponents[0]] * n_assets
                 result["raw_exponents"] = np.array(raw_exponents)
             elif urp.name == "pre_exp_scaling":
-                logit_pre_exp_scaling = [float(np.log(val / (1.0 - val))) for val in urp.value]
-                if len(logit_pre_exp_scaling) != n_assets:
-                    logit_pre_exp_scaling = [logit_pre_exp_scaling[0]] * n_assets
-                result["logit_pre_exp_scaling"] = np.array(logit_pre_exp_scaling)
+                raw_pre_exp_scaling = [float(get_raw_value(val)) for val in urp.value]
+                if len(raw_pre_exp_scaling) != n_assets:
+                    raw_pre_exp_scaling = [raw_pre_exp_scaling[0]] * n_assets
+                result["raw_pre_exp_scaling"] = np.array(raw_pre_exp_scaling)
 
         return result
 
