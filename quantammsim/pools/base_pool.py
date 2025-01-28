@@ -178,6 +178,17 @@ class AbstractPool(ABC):
             result[urp.name] = np.array(urp.value)
         return result
 
+    def weights_needs_original_methods(self) -> bool:
+        """Indicates if calculate_weights needs access to original pool methods.
+        
+        Returns
+        -------
+        bool
+            False by default - most pools don't need original methods. Override in subclasses
+            if they do.
+        """
+        return False
+
 
 tree_util.register_pytree_node(
     AbstractPool, AbstractPool._tree_flatten, AbstractPool._tree_unflatten
