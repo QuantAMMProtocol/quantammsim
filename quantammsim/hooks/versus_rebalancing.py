@@ -471,15 +471,6 @@ class CalculateLossVersusRebalancing(ABC):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-        print("-----------------------------------n")
-        print("Using HOOK implementation")
-        print("self", self)
-        print("params", params)
-        print("run_fingerprint", run_fingerprint)
-        print("prices", prices)
-        print("start_index", start_index)
-        print("additional_oracle_input", additional_oracle_input)
-        print("-----------------------------------n")
         local_run_fingerprint = deepcopy(run_fingerprint)
         local_run_fingerprint["fees"] = 0
         return self.calculate_reserves_with_fees(
