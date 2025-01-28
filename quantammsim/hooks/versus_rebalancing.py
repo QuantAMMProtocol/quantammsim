@@ -15,7 +15,7 @@ from jax.lax import dynamic_slice
 
 
 from quantammsim.utils.data_processing.historic_data_utils import get_data_dict
-
+from quantammsim.pools.base_pool import AbstractPool
 
 
 config.update("jax_enable_x64", True)
@@ -395,6 +395,14 @@ class CalculateLossVersusRebalancing(ABC):
     def __init__(self):
         pass
 
+    def get_original_pool_class(self):
+        """Get the original pool class from MRO."""
+        return next(
+            cls
+            for cls in self.__class__.__mro__
+            if issubclass(cls, AbstractPool) and cls != AbstractPool
+        )
+
     def calculate_reserves_with_fees(
         self,
         params: Dict[str, Any],
@@ -403,13 +411,22 @@ class CalculateLossVersusRebalancing(ABC):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
+        if self.weights_needs_original_methods():
+            original_pool_class = self.get_original_pool_class()
+            # Create bound method that will use original pool's methods
+            bound_calculate_weights = original_pool_class.calculate_weights.__get__(
+                self, original_pool_class
+            )
+            weights = bound_calculate_weights(
+                params, run_fingerprint, prices, start_index, additional_oracle_input
+            )
+        else:
+            weights = self.calculate_weights(
+                params, run_fingerprint, prices, start_index, additional_oracle_input
+            )
         n_assets = run_fingerprint["n_assets"]
 
         # Calculate loss versus rebalancing reserve changes
-        weights = self.calculate_weights(
-            params, run_fingerprint, prices, start_index, additional_oracle_input
-        )
-
         # some pools might return a single weight vector, not a time series
         weights = jnp.broadcast_to(
             weights, (run_fingerprint["bout_length"] - 1, n_assets)
@@ -454,6 +471,15 @@ class CalculateLossVersusRebalancing(ABC):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
+        print("-----------------------------------n")
+        print("Using HOOK implementation")
+        print("self", self)
+        print("params", params)
+        print("run_fingerprint", run_fingerprint)
+        print("prices", prices)
+        print("start_index", start_index)
+        print("additional_oracle_input", additional_oracle_input)
+        print("-----------------------------------n")
         local_run_fingerprint = deepcopy(run_fingerprint)
         local_run_fingerprint["fees"] = 0
         return self.calculate_reserves_with_fees(
@@ -469,6 +495,14 @@ class CalculateRebalancingVersusRebalancing(ABC):
 
     def __init__(self):
         pass
+
+    def get_original_pool_class(self):
+        """Get the original pool class from MRO."""
+        return next(
+            cls
+            for cls in self.__class__.__mro__
+            if issubclass(cls, AbstractPool) and cls != AbstractPool
+        )
 
     def calculate_reserves_with_fees(
         self,
@@ -516,10 +550,20 @@ class CalculateRebalancingVersusRebalancing(ABC):
 
         n_assets = run_fingerprint["n_assets"]
 
+        if self.weights_needs_original_methods():
+            original_pool_class = self.get_original_pool_class()
+            # Create bound method that will use original pool's methods
+            bound_calculate_weights = original_pool_class.calculate_weights.__get__(
+                self, original_pool_class
+            )
+            weights = bound_calculate_weights(
+                params, run_fingerprint, prices, start_index, additional_oracle_input
+            )
+        else:
+            weights = self.calculate_weights(
+                params, run_fingerprint, prices, start_index, additional_oracle_input
+            )
         # Calculate loss versus rebalancing reserve changes
-        weights = self.calculate_weights(
-            params, run_fingerprint, prices, start_index, additional_oracle_input
-        )
 
         # some pools might return a single weight vector, not a time series
         weights = jnp.broadcast_to(
