@@ -603,6 +603,8 @@ class GyroscopePool(AbstractPool):
         # Get token tickers in current order
         tokens = sorted(run_fingerprint["tokens"])
         numeraire = run_fingerprint["numeraire"]
+        if numeraire is None:
+            numeraire = tokens[-1]
 
         # Check if numeraire is already in second position
         needs_swap = tokens.index(numeraire) == 0
