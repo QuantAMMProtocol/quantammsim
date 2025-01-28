@@ -40,6 +40,23 @@ from quantammsim.utils.data_processing.historic_data_utils import (
 from quantammsim.pools.creator import create_pool
 
 
+def get_static_value(df, value_column):
+    """Check if DataFrame has a single static value.
+
+    Args:
+        df: DataFrame to check
+        value_column: Column name to check for static value
+
+    Returns:
+        float or None: The static value if found, None otherwise
+    """
+    if df is not None and not df.empty:
+        unique_values = df[value_column].unique()
+        if len(unique_values) == 1:
+            return float(unique_values[0])
+    return None
+
+
 def slice_minutes_array(
     minutes_array, array_start_date_str, start_date_str, end_date_str
 ):
@@ -127,6 +144,30 @@ def run_pool_simulation(simulationRunDto):
         if urp.name == "weight_interpolation_period":
             weight_interpolation_period = urp.value
 
+    test_window_end = (simulationRunDto.endDate + 2 * 24 * 60 * 60 * 1000) / 1000
+    test_window_end_str = unixtimestamp_to_precise_datetime(
+        test_window_end, scaling=1.0
+    )
+
+    test_window_end_str = test_window_end_str.split()[0] + " 00:00:00"
+
+    run_fingerprint = {
+        "startDateString": simulationRunDto.startDateString,
+        "endDateString": simulationRunDto.endDateString,
+        "endTestDateString": test_window_end_str,
+        "tokens": tokens,
+        "rule": update_rule,
+        "bout_offset": 14400,
+        "initial_weights_logits": initial_value_log_ratio,
+        "initial_pool_value": total_initial_value,
+        "use_alt_lamb": False,
+        "return_val": "final_reserves_value_and_weights",
+        "do_arb": simulationRunDto.pool.enableAutomaticArbBots,
+        "numeraire": getattr(simulationRunDto.pool, "poolNumeraireCoinCode", None),
+        "chunk_period": int(chunk_period[0]),
+        "weight_interpolation_period": int(weight_interpolation_period[0]),
+    }
+
     pool = create_pool(update_rule)
     pool_class = pool.__class__
 
@@ -165,8 +206,8 @@ def run_pool_simulation(simulationRunDto):
             fee_steps_df = pd.DataFrame({
                 "unix": [step.unix for step in time_series_fee_hook_variable.hookTimeSteps],
                 "fees": [float(step.value)/float(divisor) for step in time_series_fee_hook_variable.hookTimeSteps],
-    })
-
+            })
+            print("fee_steps_df-------------------", fee_steps_df)
     raw_trades = None
 
     if len(simulationRunDto.swapImports) > 0:
@@ -177,42 +218,30 @@ def run_pool_simulation(simulationRunDto):
             "amount_in": [float(swap.amountIn) for swap in simulationRunDto.swapImports],
         })
 
-    gas_cost_pd = None
+    run_fingerprint["do_trades"] = raw_trades is not None
+
+    gas_cost_df = None
 
     if len(simulationRunDto.gasSteps) > 0:
-        gas_cost_pd = pd.DataFrame({
+        gas_cost_df = pd.DataFrame({
             "unix": [gasStep.unix for gasStep in simulationRunDto.gasSteps],
             "trade_gas_cost_usd": [float(gasStep.value) for gasStep in simulationRunDto.gasSteps],
         })
 
-    test_window_end = (simulationRunDto.endDate + 2 * 24 * 60 * 60 * 1000) / 1000
-    test_window_end_str = unixtimestamp_to_precise_datetime(
-        test_window_end, scaling=1.0
-    )
-
-    test_window_end_str = test_window_end_str.split()[0] + " 00:00:00"
-
-    run_fingerprint = {
-        "startDateString": simulationRunDto.startDateString,
-        "endDateString": simulationRunDto.endDateString,
-        "endTestDateString": test_window_end_str,
-        "tokens": tokens,
-        "rule": update_rule,
-        "bout_offset": 14400,
-        "initial_weights_logits": initial_value_log_ratio,
-        "initial_pool_value": total_initial_value,
-        "use_alt_lamb": False,
-        "do_trades": raw_trades is not None,
-        "return_val": "final_reserves_value_and_weights",
-        "do_arb": simulationRunDto.pool.enableAutomaticArbBots,
-        "numeraire": getattr(simulationRunDto.pool, "poolNumeraireCoinCode", None),
-        "chunk_period": int(chunk_period[0]),
-        "weight_interpolation_period": int(weight_interpolation_period[0]),
-    }
-
     price_data_local = get_historic_parquet_data(tokens)
-    print(run_fingerprint)
-    print(update_rule_parameter_dict_converted)
+
+    # Check for static values, if found, set in run_fingerprint and remove df
+    # this is to enable faster subroutines
+    if (static_gas := get_static_value(gas_cost_df, "trade_gas_cost_usd")) is not None:
+        run_fingerprint["gas_cost"] = static_gas
+        gas_cost_df = None
+
+    if (static_fee := get_static_value(fee_steps_df, "fees")) is not None:
+        run_fingerprint["fees"] = static_fee
+        fee_steps_df = None
+    
+    print("run fingerprint-------------------", run_fingerprint)
+    print("update rule parameter dict converted-------------------", update_rule_parameter_dict_converted)
     outputDict = do_run_on_historic_data(
         run_fingerprint,
         update_rule_parameter_dict_converted,
@@ -221,7 +250,7 @@ def run_pool_simulation(simulationRunDto):
         verbose=True,
         do_test_period=False,
         raw_trades=raw_trades,
-        gas_cost_df=gas_cost_pd,
+        gas_cost_df=gas_cost_df,
         fees_df=fee_steps_df
     )
 
