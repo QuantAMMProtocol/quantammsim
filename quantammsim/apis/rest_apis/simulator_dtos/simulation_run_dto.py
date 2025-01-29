@@ -28,6 +28,7 @@ class SimulationRunDto(object):
         self.endDate = jsonDto["endUnix"]
         self.startDateString = jsonDto["startDateString"]
         self.endDateString = jsonDto["endDateString"]
+
         self.feeHooks = list()
         for feeHook in jsonDto["feeHooks"]:
             self.feeHooks.append(FeeHook(feeHook))
@@ -167,6 +168,8 @@ class LiquidityPoolDto(object):
             poolConstituents.append(LiquidityPoolCoinDto(coin))
         self.poolConstituents = poolConstituents
         self.updateRule = UpdateRuleDto(poolDto["updateRule"])
+        self.enableAutomaticArbBots = poolDto["enableAutomaticArbBots"]
+        self.poolNumeraireCoinCode = poolDto["poolNumeraireCoinCode"]
 
 
 

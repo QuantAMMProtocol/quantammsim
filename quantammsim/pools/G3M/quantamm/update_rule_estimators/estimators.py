@@ -35,15 +35,18 @@ from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives 
     make_a_kernel,
     make_cov_kernel,
     _jax_ewma_at_infinity_via_conv_padded,
+    _jax_ewma_at_infinity_via_scan,
     _jax_gradients_at_infinity_via_conv_padded,
     _jax_gradients_at_infinity_via_conv_padded_with_alt_ewma,
     _jax_variance_at_infinity_via_conv,
+    _jax_variance_at_infinity_via_scan,
     squareplus,
     _jax_gradients_at_infinity_via_scan,
     _jax_gradients_at_infinity_via_scan_with_alt_ewma,
 )
 from quantammsim.core_simulator.param_utils import (
     memory_days_to_lamb,
+    jax_memory_days_to_lamb,
     lamb_to_memory_days_clipped,
     calc_lamb,
 )
@@ -59,7 +62,7 @@ def calc_gradients(
 ):
 
     lamb = calc_lamb(update_rule_parameter_dict)
-    max_lamb = memory_days_to_lamb(max_memory_days, chunk_period)
+    max_lamb = jax_memory_days_to_lamb(max_memory_days, chunk_period)
     # Apply max_memory_days restriction to lamb and alt_lamb
     if cap_lamb:
         capped_lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
@@ -235,6 +238,87 @@ def calc_alt_ewma_padded(
     return alt_ewma_padded
 
 
+def calc_ewma_pair(
+    memory_days_1: float,
+    memory_days_2: float,
+    chunkwise_price_values: jnp.ndarray,
+    chunk_period: float,
+    max_memory_days: float,
+    cap_lamb: bool = True,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Calculate two EWMAs with specified memory lengths.
+
+    Parameters
+    ----------
+    memory_days_1 : float
+        Memory length for first EWMA in days
+    memory_days_2 : float
+        Memory length for second EWMA in days
+    chunkwise_price_values : jnp.ndarray
+        Price values of shape (time, assets)
+    chunk_period : float
+        Time period between chunks in minutes
+    max_memory_days : float
+        Maximum allowed memory length in days
+    cap_lamb : bool, optional
+        Whether to cap lambda values, by default True
+
+    Returns
+    -------
+    tuple[jnp.ndarray, jnp.ndarray]
+        Two EWMA arrays of shape (time, assets)
+        For GPU: Returns full padded length
+        For CPU: Returns same length as input
+    """
+    # Ensure non-negative memory days
+    memory_days_1 = jnp.maximum(memory_days_1, 0.0)
+    memory_days_2 = jnp.maximum(memory_days_2, 0.0)
+
+    # Convert to lambda values
+    lamb_1 = jax_memory_days_to_lamb(memory_days_1, chunk_period)
+    lamb_2 = jax_memory_days_to_lamb(memory_days_2, chunk_period)
+
+    if cap_lamb:
+        max_lamb = jax_memory_days_to_lamb(max_memory_days, chunk_period)
+        lamb_1 = jnp.clip(lamb_1, a_min=0.0, a_max=max_lamb)
+        lamb_2 = jnp.clip(lamb_2, a_min=0.0, a_max=max_lamb)
+
+    # Ensure input is 2D
+    chunkwise_price_values = jnp.atleast_2d(chunkwise_price_values)
+
+    if DEFAULT_BACKEND != "cpu":
+        safety_margin_max_memory_days = max_memory_days * 5.0
+
+        # Create padding exactly as in calc_ewma_padded
+        padded_chunkwise_price_values = jnp.vstack(
+            [
+                jnp.ones(
+                    (
+                        int(safety_margin_max_memory_days * 1440 / chunk_period),
+                        chunkwise_price_values.shape[1],
+                    )
+                )
+                * chunkwise_price_values[0],
+                chunkwise_price_values,
+            ]
+        )
+
+        # Calculate EWMAs using same function as calc_ewma_padded
+        ewma_1 = _jax_ewma_at_infinity_via_conv_padded(
+            padded_chunkwise_price_values, ewma_kernel_1
+        )
+        ewma_2 = _jax_ewma_at_infinity_via_conv_padded(
+            padded_chunkwise_price_values, ewma_kernel_2
+        )
+
+    else:
+        # CPU path - no padding needed
+        ewma_1 = _jax_ewma_at_infinity_via_scan(chunkwise_price_values, lamb_1)
+        ewma_2 = _jax_ewma_at_infinity_via_scan(chunkwise_price_values, lamb_2)
+
+    return ewma_1, ewma_2
+
+
 def calc_return_variances(
     update_rule_parameter_dict,
     chunkwise_price_values,
@@ -242,39 +326,49 @@ def calc_return_variances(
     max_memory_days,
     cap_lamb,
 ):
-    lamb = calc_lamb(update_rule_parameter_dict)
+    # Determine which parameterization is being used
+    if "memory_days_1" in update_rule_parameter_dict:
+        # Direct memory_days parameterization
+        memory_days = update_rule_parameter_dict["memory_days_1"]
+        lamb = jax_memory_days_to_lamb(memory_days, chunk_period)
+    else:
+        # Original logit_lamb parameterization
+        lamb = calc_lamb(update_rule_parameter_dict)
+
     if cap_lamb:
         max_lamb = memory_days_to_lamb(max_memory_days, chunk_period)
         lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
-    safety_margin_max_memory_days = max_memory_days * 5.0
-    cov_kernel = make_cov_kernel(lamb, safety_margin_max_memory_days, chunk_period)
-    ewma_kernel = make_ewma_kernel(lamb, safety_margin_max_memory_days, chunk_period)
     returns = jnp.diff(chunkwise_price_values, axis=0) / chunkwise_price_values[:-1]
 
-    padded_returns = jnp.vstack(
-        [
-            jnp.ones(
-                (
-                    int(safety_margin_max_memory_days * 1440 / chunk_period),
-                    returns.shape[1],
+    if DEFAULT_BACKEND != "cpu":
+        safety_margin_max_memory_days = max_memory_days * 5.0
+        cov_kernel = make_cov_kernel(lamb, safety_margin_max_memory_days, chunk_period)
+        ewma_kernel = make_ewma_kernel(
+            lamb, safety_margin_max_memory_days, chunk_period
+        )
+
+        padded_returns = jnp.vstack(
+            [
+                jnp.ones(
+                    (
+                        int(safety_margin_max_memory_days * 1440 / chunk_period),
+                        returns.shape[1],
+                    )
                 )
-            )
-            * returns[0],
-            returns,
-        ]
-    )
+                * returns[0],
+                returns,
+            ]
+        )
 
-    # ewma_returns = _ewma_at_infinity(returns, lamb)
-
-    # ewma_padded_ = jnp.convolve(padded_returns[:, 0], ewma_kernel[:, 0], mode="full")[
-    #     (return_slice_index) : len(padded_returns)
-    # ]
-    ewma_returns_padded = _jax_ewma_at_infinity_via_conv_padded(
-        padded_returns, ewma_kernel
-    )
-    variances = _jax_variance_at_infinity_via_conv(
-        padded_returns, ewma_returns_padded[1:], cov_kernel, lamb
-    )
+        ewma_returns_padded = _jax_ewma_at_infinity_via_conv_padded(
+            padded_returns, ewma_kernel
+        )
+        variances = _jax_variance_at_infinity_via_conv(
+            padded_returns, ewma_returns_padded[1:], cov_kernel, lamb
+        )
+        variances = variances[-(len(chunkwise_price_values) - 1) :]
+    else:
+        variances = _jax_variance_at_infinity_via_scan(returns, lamb)
 
     return variances
 

@@ -1,4 +1,3 @@
-
 import numpy as np
 import pandas as pd
 
@@ -194,23 +193,83 @@ def raw_fee_like_amounts_to_fee_like_array(
         pd.date_range(
             start=pd.to_datetime(start_date_string, format="%Y-%m-%d %H:%M:%S"),
             end=pd.to_datetime(end_date_string, format="%Y-%m-%d %H:%M:%S"),
-            freq="T",
+            freq="min",
         ).astype(int)
         // 10**6
+    )[:-1]
+    full_index_df = pd.DataFrame(
+        index=full_index, 
+        columns=names, 
+        data=0,
+        dtype=np.float64
     )
-    full_index_df = pd.DataFrame(index=full_index[:-1], columns=names, data=0)
+
     # Map raw data to the full index DataFrame
     for index, row in raw_inputs.iterrows():
         unix_timestamp = int(row["unix"])
         if unix_timestamp in full_index_df.index:
             for name in names:
-                full_index_df.loc[unix_timestamp, name] = row[name]
+                full_index_df.loc[unix_timestamp, name] = float(row[name])
+
     # Apply fill method
     if fill_method == "ffill":
-        for name in names:
-            full_index_df[name] = full_index_df[name].replace(
-                to_replace=0, method="ffill"
-            )
+        try:
+            # Validate required columns exist
+            if 'unix' not in raw_inputs.columns:
+                raise KeyError("raw_inputs must contain 'unix' column")
+            for name in names:
+                if name not in raw_inputs.columns:
+                    raise KeyError(f"raw_inputs missing required column: {name}")
+
+            # Convert start_date_string to unix timestamp
+            start_unix = pd.to_datetime(start_date_string, format="%Y-%m-%d %H:%M:%S").value // 10**6
+
+            # Ensure unix values are valid
+            valid_unix = pd.to_numeric(raw_inputs['unix'], errors='coerce')
+            valid_mask = valid_unix.notna()
+
+            for name in names:
+                initial_value = None
+
+                if valid_mask.any():
+                    # Try to get the last value before our start date
+                    previous_values = raw_inputs[
+                        valid_mask & (valid_unix < start_unix)
+                    ]
+
+                    if not previous_values.empty:
+                        try:
+                            initial_value = pd.to_numeric(previous_values[name].iloc[-1])
+                        except (ValueError, TypeError):
+                            initial_value = None
+
+                    if initial_value is None or pd.isna(initial_value):
+                        # Try to get first value in our date range
+                        in_range_values = raw_inputs[
+                            valid_mask & (valid_unix >= start_unix)
+                        ]
+                        if not in_range_values.empty:
+                            try:
+                                initial_value = pd.to_numeric(in_range_values[name].iloc[0])
+                            except (ValueError, TypeError):
+                                initial_value = None
+
+                if initial_value is not None and pd.notna(initial_value):
+                    # this more complex logic is because of how we have started with prior-to-start values
+                    # filled in, and then we want to ffill the rest
+                    # Fill initial values
+                    full_index_df[name] = full_index_df[name].mask(
+                        full_index_df[name] == 0, 
+                        initial_value
+                    )
+                    # Use ffill()
+                    full_index_df[name] = full_index_df[name].where(
+                        full_index_df[name] != 0
+                    ).ffill()
+        except (ValueError, KeyError, TypeError) as e:
+            print(f"Warning: Error during ffill processing: {str(e)}")
+            # On any error, return the original zero-filled DataFrame
+            pass
     # If fill_method is 'base', we don't need to do anything as zeros are already in place
     elif fill_method == "base":
         pass

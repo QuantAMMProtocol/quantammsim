@@ -28,8 +28,7 @@ from quantammsim.core_simulator.param_utils import (
     calc_lamb,
 )
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
-    calc_gradients,
-    calc_k,
+    calc_return_variances,
 )
 
 from typing import Dict, Any, Optional
@@ -38,55 +37,27 @@ from abc import abstractmethod
 import numpy as np
 
 # import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
-# as this is False for momentum pools --- the strategy outputs weight _changes_
+# as this is True for min variance pools --- the strategy outputs weights themselves, not changes
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
-    calc_fine_weight_output_from_weight_changes,
+    calc_fine_weight_output_from_weights,
 )
 
 
 @jit
-def _jax_momentum_weight_update(price_gradient, k):
+def _jax_min_variance_weights(variances):
+    diag_precisions = 1.0 / variances
+    reshape_sum = jnp.sum(diag_precisions, axis=-1, keepdims=True)
+    precision_based_weights = diag_precisions / reshape_sum
+    return precision_based_weights
+
+
+class MinVariancePool(TFMMBasePool):
     """
-    Calculate momentum-based weight updates for assets.
-
-    This function computes weight updates for a set of assets based on their price gradients
-    and a momentum factor k. It ensures that the sum of weight updates across all assets is zero,
-    maintaining the total portfolio weight.
-
-    Parameters
-    ----------
-    price_gradient : jnp.ndarray
-        Array of price gradients for each asset.
-    k : float or jnp.ndarray
-        Momentum factor or array of momentum factors for each asset.
-
-    Returns
-    -------
-    jnp.ndarray
-        Array of weight updates for each asset.
-
-    Notes
-    -----
-    The function performs the following steps:
-    1. Calculates an offset to ensure the sum of weight updates is zero.
-    2. Computes weight updates using the price gradients, k, and the offset.
-    3. Sets weight updates to zero for any asset where k is zero.
-
-    The function assumes that inputs are JAX arrays for efficient computation.
-    """
-    offset_constants = -(k * price_gradient).sum(axis=-1, keepdims=True) / (jnp.sum(k))
-    weight_updates = k * (price_gradient + offset_constants)
-    weight_updates = jnp.where(k == 0.0, 0.0, weight_updates)
-    return weight_updates
-
-
-class MomentumPool(TFMMBasePool):
-    """
-    A class for momentum strategies run as TFMM (Temporal Function Market Making) liquidity pools,
+    A class for min variance strategies run as TFMM (Temporal Function Market Making) liquidity pools,
     extending the TFMMBasePool class.
 
-    This class implements a momentum-based strategy for asset allocation within a TFMM framework.
-    It uses price data to generate momentum signals, which are then translated into weight adjustments.
+    This class implements a min variance strategy for asset allocation within a TFMM framework.
+    It uses price data to generate min variance weights.
 
     Parameters
     ----------
@@ -95,7 +66,7 @@ class MomentumPool(TFMMBasePool):
     Methods
     -------
     calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
-        Calculate the raw weight outputs based on momentum signals.
+        Calculate the raw weight outputs based on min variance calculations.
     fine_weight_output(raw_weight_output, initial_weights, run_fingerprint, params)
         Refine the raw weight outputs to produce final weights.
     calculate_weights(params, run_fingerprint, prices, additional_oracle_input)
@@ -103,7 +74,7 @@ class MomentumPool(TFMMBasePool):
 
     Notes
     -----
-    The class provides methods to calculate raw weight outputs based on momentum signals and refine them
+    The class provides methods to calculate raw weight outputs based on min variance signals and refine them
     into final asset weights, taking into account various parameters and constraints defined in the pool setup.
     """
 
@@ -159,22 +130,10 @@ class MomentumPool(TFMMBasePool):
         The raw weight outputs are not the final weights, but rather the changes
         to be applied to the previous weights. These will be refined in subsequent steps.
         """
-        memory_days = lamb_to_memory_days_clipped(
-            calc_lamb(params),
-            run_fingerprint["chunk_period"],
-            run_fingerprint["max_memory_days"],
-        )
-        k = calc_k(params, memory_days)
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
-        gradients = calc_gradients(
-            params,
-            chunkwise_price_values,
-            run_fingerprint["chunk_period"],
-            run_fingerprint["max_memory_days"],
-            run_fingerprint["use_alt_lamb"],
-            cap_lamb=True,
-        )
-        raw_weight_outputs = _jax_momentum_weight_update(gradients, k)
+        variances = calc_return_variances(params, chunkwise_price_values, run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"], cap_lamb=True)
+        raw_weight_outputs = _jax_min_variance_weights(variances)
+
         return raw_weight_outputs
 
     @partial(jit, static_argnums=(3))
@@ -210,11 +169,11 @@ class MomentumPool(TFMMBasePool):
 
         Notes
         -----
-        Uses the `calc_fine_weight_output_from_weight_changes` function to perform the actual
+        Uses the `calc_fine_weight_output_from_weights` function to perform the actual
         refinement. The implementation of this function should handle details such as weight
         interpolation, maximum change limits, and ensuring weights sum to 1.
         """
-        return calc_fine_weight_output_from_weight_changes(
+        return calc_fine_weight_output_from_weights(
             raw_weight_output, initial_weights, run_fingerprint, params
         )
 
@@ -293,11 +252,6 @@ class MomentumPool(TFMMBasePool):
         initial_weights_logits = process_initial_values(
             initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets
         )
-        log_k = np.log2(
-            process_initial_values(
-                initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets
-            )
-        )
 
         initial_lamb = memory_days_to_lamb(
             initial_values_dict["initial_memory_length"],
@@ -324,10 +278,19 @@ class MomentumPool(TFMMBasePool):
             [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
         )
 
+        memory_days_1 = process_initial_values(
+            initial_values_dict, "initial_memory_length", n_assets, n_parameter_sets
+        )
+        memory_days_delta = process_initial_values(
+            initial_values_dict, "initial_memory_length_delta", n_assets, n_parameter_sets
+        )
+        memory_days_2 = memory_days_1 + memory_days_delta
+
         params = {
-            "log_k": log_k,
-            "logit_lamb": logit_lamb,
-            "logit_delta_lamb": logit_delta_lamb,
+            # "logit_lamb": logit_lamb,
+            # "logit_delta_lamb": logit_delta_lamb,
+            "memory_days_1": memory_days_1,
+            "memory_days_2": memory_days_2,
             "initial_weights_logits": initial_weights_logits,
             "subsidary_params": [],
         }
@@ -335,7 +298,38 @@ class MomentumPool(TFMMBasePool):
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
 
+    @classmethod
+    def process_parameters(cls, update_rule_parameters, n_assets):
+        """Process Min Variance pool parameters from web interface input."""
+        result = {}
+
+        # Find memory_days parameter
+        for urp in update_rule_parameters:
+            if urp.name == "memory_days":
+                memory_days = []
+                for tokenValue in urp.value:
+                    memory_days.append(tokenValue)
+                if len(memory_days) != n_assets:
+                    memory_days = [memory_days[0]] * n_assets
+                memory_days = np.array(memory_days)
+                # Set both memory_days parameters to the same value
+                result["memory_days_1"] = memory_days  # for variance calculation
+                result["memory_days_2"] = memory_days  # for weight smoothing
+                break
+
+        # Process any remaining parameters in default way
+        for urp in update_rule_parameters:
+            if urp.name != "memory_days":  # skip memory_days as already processed
+                value = []
+                for tokenValue in urp.value:
+                    value.append(tokenValue)
+                if len(value) != n_assets:
+                    value = [value[0]] * n_assets
+                result[urp.name] = np.array(value)
+
+        return result
+
 
 tree_util.register_pytree_node(
-    MomentumPool, MomentumPool._tree_flatten, MomentumPool._tree_unflatten
+    MinVariancePool, MinVariancePool._tree_flatten, MinVariancePool._tree_unflatten
 )

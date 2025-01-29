@@ -70,38 +70,75 @@ optuna_settings = {
     "parameter_config": {
         "memory_length": {
             "low": 1,
-            "high": 365,
+            "high": 200,
             "log_scale": True,
+            "scalar": False,
         },
         "memory_length_delta": {
             "low": 0.1,
             "high": 100,
             "log_scale": True,
+            "scalar": False,
+        },
+        "log_k": {
+            "low": -10.0,
+            "high": 10.0,
+            "log_scale": False,
+            "scalar": False,
         },
         "k_per_day": {
             "low": 0.1,
             "high": 1000,
             "log_scale": True,
+            "scalar": False,
         },
         "weights_logits": {
             "low": -10,
             "high": 10,
             "log_scale": False,
+            "scalar": False,
         },
         "log_amplitude": {
             "low": -10,
             "high": 10,
             "log_scale": False,
+            "scalar": False,
         },
         "raw_width": {
             "low": -10,
             "high": 10,
             "log_scale": False,
+            "scalar": False,
         },
         "raw_exponents": {
+            "low": 0,
+            "high": 10,
+            "log_scale": False,
+            "scalar": False,
+        },
+        "raw_pre_exp_scaling": {
             "low": -10,
             "high": 10,
             "log_scale": False,
+            "scalar": False,
+        },
+        "memory_days_1": {
+            "low": 0.5,
+            "high": 200,
+            "log_scale": True,
+            "scalar": False,
+        },
+        "memory_days_2": {
+            "low": 0.5,
+            "high": 200,
+            "log_scale": True,
+            "scalar": False,
+        },
+        "logit_lamb": {
+            "low": -10,
+            "high": 10,
+            "log_scale": False,
+            "scalar": False,
         },
     },
 }

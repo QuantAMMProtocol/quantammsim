@@ -35,9 +35,57 @@ from quantammsim.pools.ECLP.gyroscope_reserves import (
     _jax_calc_gyroscope_reserves_with_dynamic_inputs,
     initialise_gyroscope_reserves_given_value,
 )
+from quantammsim.pools.ECLP.gyroscope_weight_conversion import (
+    optimize_lambda_and_tan_phi,
+)
 
 
 class GyroscopePool(AbstractPool):
+    """Elliptical Concentrated Liquidity Pool (ECLP) implementation.
+    
+    The ECLP is an automated market maker (AMM) design that uses elliptical 
+    geometry to define the trading curve. It provides concentrated liquidity
+    within a specified price range while maintaining smooth price discovery.
+    
+    Key Features:
+    - Price bounds (alpha, beta) define valid trading range
+    - Rotation angle (phi) and scaling factor (lambda) control curve shape
+    - Supports fee-based and zero-fee trading
+    - Optimizes parameters to achieve target weights
+    - Compatible with LVR (Liquidity Value at Risk) hooks
+    
+    The pool is defined by:
+    - Elliptical trading curve rotated by phi
+    - Price range [alpha, beta] for valid trades
+    - Lambda parameter controlling curve eccentricity
+    - Optional trading fees and arbitrage thresholds
+    
+    The implementation follows the E-CLP paper, using JAX for
+    efficient computation of reserves and weights. The pool maintains both
+    public interfaces for normal operation and protected implementations for
+    use by hooks and internal calculations.
+    
+    Parameters
+    ----------
+    params : Dict[str, Any]
+        Pool parameters including alpha, beta, lambda, and phi
+    run_fingerprint : Dict[str, Any]
+        Configuration settings for the simulation run
+    prices : jnp.ndarray
+        Asset prices over time
+    start_index : jnp.ndarray
+        Starting indices for price windows
+    additional_oracle_input : Optional[jnp.ndarray]
+        Additional input data from oracles
+    
+    Notes
+    -----
+    - Only supports exactly 2 assets
+    - Uses JAX for efficient computation
+    - Implements equations from "The Elliptic Concentrated Liquidity Pool" paper
+    - Maintains original implementation access for hooks via protected methods
+    - Weights are derived empirically from zero-fee reserve calculations
+    """
     def __init__(self):
         super().__init__()
 
@@ -50,12 +98,55 @@ class GyroscopePool(AbstractPool):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
+        """Calculate reserves for ECLP pool including trading fees.
+        
+        This method computes pool reserves over time considering trading fees and
+        arbitrage thresholds. It follows Appendix A of the E-CLP paper, applying
+        the calculations at each timestep.
+        
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters including:
+            - alpha : float
+                Lower price bound
+            - beta : float
+                Upper price bound
+            - phi : float
+                Rotation angle
+            - lam : float
+                Scaling factor
+        run_fingerprint : Dict[str, Any]
+            Run configuration including:
+            - fees : float
+                Trading fee percentage
+            - gas_cost : float
+                Arbitrage threshold
+            - arb_fees : float
+                Additional arbitrage fees
+        prices : jnp.ndarray
+            Asset prices over time, shape (T, 2)
+        start_index : jnp.ndarray
+            Starting indices for price windows
+        additional_oracle_input : Optional[jnp.ndarray]
+            Additional oracle data if needed
+        
+        Returns
+        -------
+        jnp.ndarray
+            Calculated reserves over time, shape (T, 2)
+        
+        Notes
+        -----
+        The implementation handles numeraire ordering internally and
+        restores the original order before returning.
+        """
         # Gyroscope ECLP pools are only defined for 2 assets
         assert run_fingerprint["n_assets"] == 2
-
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
+        lam, phi = self._get_lam_and_phi(params, run_fingerprint, local_prices[0])
 
         # Handle numeraire ordering for prices
         prices, needs_swap = self._handle_numeraire_ordering(prices, run_fingerprint)
@@ -74,9 +165,9 @@ class GyroscopePool(AbstractPool):
             local_prices[0],
             alpha=params["alpha"],
             beta=params["beta"],
-            lam=params["lam"],
-            sin=jnp.sin(params["phi"]),
-            cos=jnp.cos(params["phi"]),
+            lam=lam,
+            sin=jnp.sin(phi),
+            cos=jnp.cos(phi),
         )
         if run_fingerprint["do_arb"]:
             reserves = _jax_calc_gyroscope_reserves_with_fees(
@@ -84,9 +175,9 @@ class GyroscopePool(AbstractPool):
                 prices=arb_acted_upon_local_prices,
                 alpha=params["alpha"],
                 beta=params["beta"],
-                sin=jnp.sin(params["phi"]),
-                cos=jnp.cos(params["phi"]),
-                lam=params["lam"],
+                sin=jnp.sin(phi),
+                cos=jnp.cos(phi),
+                lam=lam,
                 fees=run_fingerprint["fees"],
                 arb_thresh=run_fingerprint["gas_cost"],
                 arb_fees=run_fingerprint["arb_fees"],
@@ -97,12 +188,11 @@ class GyroscopePool(AbstractPool):
             )
 
         # Restore original order if we swapped
-        if needs_swap:
-            reserves = reserves[..., ::-1]
+        reserves = jnp.where(needs_swap, jnp.flip(reserves, axis=-1), reserves)
         return reserves
 
     @partial(jit, static_argnums=(2,))
-    def calculate_reserves_zero_fees(
+    def _calculate_reserves_zero_fees(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -110,15 +200,45 @@ class GyroscopePool(AbstractPool):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
+        """Protected implementation for zero-fee reserve calculation.
+
+               This protected method preserves the original implementation for use by:
+               1. The public calculate_reserves_zero_fees interface
+               2. Internal weight calculations that need the zero-fee behavior
+               3. Hooks that need access to the original logic
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters (see calculate_reserves_with_fees)
+        run_fingerprint : Dict[str, Any]
+            Run configuration (see calculate_reserves_with_fees)
+        prices : jnp.ndarray
+            Asset prices over time
+        start_index : jnp.ndarray
+            Starting indices for price windows
+        additional_oracle_input : Optional[jnp.ndarray]
+            Additional oracle data if needed
+
+        Returns
+        -------
+        jnp.ndarray
+            Calculated reserves over time
+
+        Notes
+        -----
+        The implementation is jitted for performance, with run_fingerprint
+        marked as static to allow JAX to optimize the computation.
+        """
         # Gyroscope ECLP pools are only defined for 2 assets
         assert run_fingerprint["n_assets"] == 2
-
         # Handle numeraire ordering for prices
         prices, needs_swap = self._handle_numeraire_ordering(prices, run_fingerprint)
 
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
+        lam, phi = self._get_lam_and_phi(params, run_fingerprint, local_prices[0])
 
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_local_prices = local_prices[
@@ -134,9 +254,9 @@ class GyroscopePool(AbstractPool):
             local_prices[0],
             alpha=params["alpha"],
             beta=params["beta"],
-            lam=params["lam"],
-            sin=jnp.sin(params["phi"]),
-            cos=jnp.cos(params["phi"]),
+            lam=lam,
+            sin=jnp.sin(phi),
+            cos=jnp.cos(phi),
         )
         if run_fingerprint["do_arb"]:
             reserves = _jax_calc_gyroscope_reserves_zero_fees(
@@ -144,9 +264,9 @@ class GyroscopePool(AbstractPool):
                 prices=arb_acted_upon_local_prices,
                 alpha=params["alpha"],
                 beta=params["beta"],
-                sin=jnp.sin(params["phi"]),
-                cos=jnp.cos(params["phi"]),
-                lam=params["lam"],
+                sin=jnp.sin(phi),
+                cos=jnp.cos(phi),
+                lam=lam,
             )
         else:
             reserves = jnp.broadcast_to(
@@ -154,9 +274,30 @@ class GyroscopePool(AbstractPool):
             )
 
         # Restore original order if we swapped
-        if needs_swap:
-            reserves = reserves[..., ::-1]
+        reserves = jnp.where(needs_swap, jnp.flip(reserves, axis=-1), reserves)
         return reserves
+
+    def calculate_reserves_zero_fees(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        start_index: jnp.ndarray,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+    ) -> jnp.ndarray:
+        """Public interface for zero-fee reserve calculation.
+        
+        This method can be safely overridden by hooks (e.g., LVR) while still
+        allowing access to the original implementation through the protected
+        _calculate_reserves_zero_fees method.
+        """
+        return self._calculate_reserves_zero_fees(
+            params,
+            run_fingerprint,
+            prices,
+            start_index,
+            additional_oracle_input,
+        )
 
     @partial(jit, static_argnums=(2,))
     def calculate_reserves_with_dynamic_inputs(
@@ -173,13 +314,13 @@ class GyroscopePool(AbstractPool):
     ) -> jnp.ndarray:
         # Gyroscope ECLP pools are only defined for 2 assets
         assert run_fingerprint["n_assets"] == 2
-
         # Handle numeraire ordering for prices
         prices, needs_swap = self._handle_numeraire_ordering(prices, run_fingerprint)
 
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
+        lam, phi = self._get_lam_and_phi(params, run_fingerprint, local_prices[0])
 
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_local_prices = local_prices[
@@ -195,9 +336,9 @@ class GyroscopePool(AbstractPool):
             local_prices[0],
             alpha=params["alpha"],
             beta=params["beta"],
-            lam=params["lam"],
-            sin=jnp.sin(params["phi"]),
-            cos=jnp.cos(params["phi"]),
+            lam=lam,
+            sin=jnp.sin(phi),
+            cos=jnp.cos(phi),
         )
         # any of fees_array, arb_thresh_array, arb_fees_array, trade_array
         # can be singletons, in which case we repeat them for the length of the bout
@@ -234,9 +375,9 @@ class GyroscopePool(AbstractPool):
             prices=arb_acted_upon_local_prices,
             alpha=params["alpha"],
             beta=params["beta"],
-            sin=jnp.sin(params["phi"]),
-            cos=jnp.cos(params["phi"]),
-            lam=params["lam"],
+            sin=jnp.sin(phi),
+            cos=jnp.cos(phi),
+            lam=lam,
             fees=fees_array_broadcast,
             arb_thresh=arb_thresh_array_broadcast,
             arb_fees=arb_fees_array_broadcast,
@@ -244,8 +385,7 @@ class GyroscopePool(AbstractPool):
             do_trades=run_fingerprint["do_trades"],
         )
         # Restore original order if we swapped
-        if needs_swap:
-            reserves = reserves[..., ::-1]
+        reserves = jnp.where(needs_swap, jnp.flip(reserves, axis=-1), reserves)
         return reserves
 
     def _init_base_parameters(
@@ -342,6 +482,23 @@ class GyroscopePool(AbstractPool):
     def is_trainable(self):
         return False
 
+    def weights_needs_original_methods(self) -> bool:
+        """ECLP pools need original methods for weight calculation.
+        
+        Returns
+        -------
+        bool
+            True - ECLP weight calculation requires original pool methods.
+
+        Notes
+        -----
+        This is because the weights are calculated based on the reserves that the pool has when run in
+        the zero-fees case, and the empirical weights are derived from the empirical division of value between reserve over time.
+        This also means that we need to preserve the original reserve calculation method in the original pool class as a
+        classmethod.
+        """
+        return True
+
     def calculate_weights(
         self,
         params: Dict[str, Any],
@@ -350,17 +507,17 @@ class GyroscopePool(AbstractPool):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-        """
-        Calculate the weights for ECLP pools.
+        """Calculate empirical weights for ECLP pool.
 
-        ECLP pools do not have weights in the same way as other pools, 
-        such as G3M pools or FM-AMM pools. Therefore, the weights are 
-        calculated based on the reserves that the pool has when run in 
+        ECLP pools do not have weights in the same way as other pools,
+        such as G3M pools or FM-AMM pools. Therefore, the weights are
+        calculated based on the reserves that the pool has when run in
         the zero-fees case, and the empirical weights are derived from
         the empirical division of value between reserve over time.
-
-        Note:
-            This function is only called in the versus rebalancing hooks.
+        This method:
+        1. Calculates zero-fee reserves
+        2. Computes value distribution using prices
+        3. Returns normalized weights
 
         Parameters
         ----------
@@ -379,12 +536,19 @@ class GyroscopePool(AbstractPool):
         -------
         jnp.ndarray
             The calculated weights for the ECLP pool.
+        Notes
+        -----
+        This method uses the protected _calculate_reserves_zero_fees
+        implementation to ensure consistent weight calculation even
+        when hooks override the public interface. It is only called
+        in the 'versus rebalancing' hooks.
+
         """
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
 
-        reserves = self.calculate_reserves_zero_fees(
+        reserves = self._calculate_reserves_zero_fees(
             params, run_fingerprint, prices, start_index, additional_oracle_input
         )
         value = reserves * local_prices
@@ -439,7 +603,8 @@ class GyroscopePool(AbstractPool):
         # Get token tickers in current order
         tokens = sorted(run_fingerprint["tokens"])
         numeraire = run_fingerprint["numeraire"]
-
+        if numeraire is None or numeraire not in tokens:
+            numeraire = tokens[-1]
         # Check if numeraire is already in second position
         needs_swap = tokens.index(numeraire) == 0
 
@@ -448,6 +613,49 @@ class GyroscopePool(AbstractPool):
             prices = prices[..., ::-1]
 
         return prices, needs_swap
+
+    @partial(jit, static_argnums=(2,))
+    def _get_lam_and_phi(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        initial_prices: jnp.ndarray,
+    ) -> jnp.ndarray:
+        # We assume that the prices are in the correct order for ECLP calculations
+        # so we don't need to swap them using _handle_numeraire_ordering
+        # BUT, we do need to know if we need to swap them for the weight conversion
+        # so we pass in the initial prices to _handle_numeraire_ordering
+        # and then use the result to determine if we need to swap
+        _, needs_swap = self._handle_numeraire_ordering(initial_prices, run_fingerprint)
+
+        if "initial_weights_logits" in params:
+            # Calculate target weight from logits
+            weights = stop_gradient(softmax(params["initial_weights_logits"]))
+            target_weight = jnp.where(needs_swap, weights[1], weights[0])
+
+            # Optimize lambda and phi to match target weight
+            lam, tan_phi = optimize_lambda_and_tan_phi(
+                target_weight=target_weight,
+                initial_pool_value=run_fingerprint["initial_pool_value"],
+                initial_prices=initial_prices,
+                alpha=params["alpha"],
+                beta=params["beta"],
+            )
+            phi = jnp.arctan(tan_phi)
+        else:
+            lam = params["lam"]
+            phi = params["phi"]
+
+        return lam, phi
+
+    @classmethod
+    def process_parameters(cls, update_rule_parameters, n_assets):
+        """Process gyroscope pool parameters from web interface input."""
+        result = {}
+        # Process any remaining parameters in a default way
+        for urp in update_rule_parameters:
+            result[urp.name] = np.squeeze(np.array(urp.value))
+        return result
 
 
 tree_util.register_pytree_node(
