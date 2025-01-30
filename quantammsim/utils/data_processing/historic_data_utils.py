@@ -441,7 +441,7 @@ def update_historic_data_old(token, root):
     cols = ["unix"] + cols
     csvData = csvData[cols]
 
-    csvData.to_csv(outputMinutePath, mode="w", index=False)
+    # csvData.to_csv(outputMinutePath, mode="w", index=False)
 
     plot_exchange_data(csvData.set_index("unix"), token, outputMinutePath[:-4] + ".png")
 
@@ -635,7 +635,7 @@ def update_historic_data(token, root):
         first_invalid = invalid_diffs[0]
         invalid_time = pd.to_datetime(concated_df['unix'].iloc[first_invalid], unit='ms')
         raise Exception(f"Invalid unix timestamp difference found at index {first_invalid} ({invalid_time}). All differences should be 60000ms (1 minute).")
-    concated_df.to_csv(minutePath, index=False)
+    # concated_df.to_csv(minutePath, index=False)
     # Create visualization of the data sources
     print(f"Creating visualizations for {token}")
     plot_exchange_data(concated_df.set_index("unix"), token, minutePath[:-4] + ".png")
@@ -769,7 +769,13 @@ def createMissingDataFrameFromClosePrices(startUnix, closePrices, token):
 
 def get_historic_parquet_data(
     list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
-):
+):  
+    print("get_historic_parquet_data-----------------------------")
+    print(f"list_of_tickers: {list_of_tickers}")
+    print(f"cols: {cols}")
+    print(f"root: {root}")
+    print(f"start_time_unix: {start_time_unix}")
+    print(f"end_time_unix: {end_time_unix}")
     firstTicker = list_of_tickers[0]
     # print('cwd: ', os.getcwd())
     filename = firstTicker + "_USD.parquet"
@@ -800,7 +806,8 @@ def get_historic_parquet_data(
                     items=["unix"] + baseCols
                 )
                 newCsvData = newCsvData.rename(columns=dict(zip(baseCols, renamedCols)))
-                newCsvData = newCsvData.set_index("unix")
+                if newCsvData.index.name != "unix":
+                    newCsvData = newCsvData.set_index("unix")
             csvData = csvData.join(newCsvData)
     csvData = csvData.dropna()
     if start_time_unix is not None and end_time_unix is not None:
