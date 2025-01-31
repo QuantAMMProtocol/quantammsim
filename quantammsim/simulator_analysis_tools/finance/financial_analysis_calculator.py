@@ -209,7 +209,6 @@ def convert_benchmark_analysis_to_run_metric(
                             element[key][risk_metric],
                             startDateString,
                             risk_metric,
-                            risk_metric,
                         )
                         run_timeline_metrics.append(
                             SimulationResultTimeseries(
@@ -258,7 +257,7 @@ def convert_benchmark_analysis_to_run_metric(
             elif key != "benchmark_name":
                 if isinstance(element[key], np.ndarray):
                     timeseries = convert_simulation_timeseries_to_run_metric(
-                        element[key], rf_name
+                        element[key], startDateString, rf_name
                     )
                     run_timeline_metrics.append(
                         SimulationResultTimeseries(timeseries, rf_name, key, "Daily")

@@ -161,8 +161,8 @@ def calculate_tracking_error_and_information_ratio(
     annualized_information_ratio = information_ratio * np.sqrt(365)
 
     return {
-        "tracking_error": tracking_error,
-        "information_ratio": annualized_information_ratio,
+        "tracking_error": tracking_error.item(),
+        "information_ratio": annualized_information_ratio.item(),
     }
 
 
