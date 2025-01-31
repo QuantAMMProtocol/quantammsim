@@ -320,6 +320,9 @@ def retrieve_simulation_run_analysis_results(
         )
     )
 
+    #TODO fix this bug
+    yearly_daily_rf_values[0] = 0
+
     results = fac.perform_porfolio_financial_analysis(
         portfolio_daily_returns,
         yearly_daily_rf_values,
