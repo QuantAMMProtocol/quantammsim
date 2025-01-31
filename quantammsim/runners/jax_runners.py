@@ -164,8 +164,8 @@ def train_on_historic_data(
         price_data=price_data,
     )
 
-    if verbose:
-        print("max_memory_days: ", max_memory_days)
+    max_memory_days = data_dict["max_memory_days"]
+    print("max_memory_days: ", max_memory_days)
 
     bout_length_window = data_dict["bout_length"] - run_fingerprint["bout_offset"]
 
@@ -226,7 +226,7 @@ def train_on_historic_data(
         "arb_fees": arb_fees,
         "gas_cost": gas_cost,
         "run_type": "normal",
-        "max_memory_days": 365.0,
+        "max_memory_days": run_fingerprint["max_memory_days"],
         "training_data_kind": run_fingerprint["optimisation_settings"][
             "training_data_kind"
         ],
@@ -506,6 +506,13 @@ def train_on_historic_data(
                 param_config = run_fingerprint["optimisation_settings"][
                     "optuna_settings"
                 ]["parameter_config"]
+
+                if run_fingerprint["optimisation_settings"][
+                    "optuna_settings"
+                ]["make_scalar"]:
+                    # Set scalar=True for all parameter configurations
+                    for param_key in param_config:
+                        param_config[param_key]["scalar"] = True
 
                 trial_params = create_trial_params(
                     trial, param_config, params, run_fingerprint, n_assets
@@ -790,7 +797,7 @@ def do_run_on_historic_data(
     all_sig_variations = all_sig_variations[(all_sig_variations == -1).sum(-1) == 1]
     all_sig_variations = tuple(map(tuple, all_sig_variations))
 
-    max_memory_days = 365.0
+    max_memory_days = run_fingerprint["max_memory_days"]
 
     np.random.seed(0)
 
