@@ -24,7 +24,6 @@ def calculate_tau(in_value, A_matrix):
     # the Defn. 2 and 1.
 
     ap = A_matrix @ jnp.array([-1, in_value])
-
     zeta = (jnp.array([0, 1]) @ ap) / (-jnp.array([1, 0]) @ ap)
     # tau is eta(zeta) from Defn. 3
     tau = 1 / jnp.sqrt(1 + zeta**2) * jnp.array([zeta, 1])
