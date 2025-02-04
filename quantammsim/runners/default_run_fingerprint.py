@@ -48,6 +48,7 @@ run_fingerprint_defaults = {
     "do_trades": False,
     "numeraire": None,
     "do_arb": True,
+    "max_memory_days": 365,
 }
 
 
@@ -67,6 +68,7 @@ optuna_settings = {
         "min_improvement": 0.001,  # Minimum relative improvement
     },
     "multi_objective": False,
+    "make_scalar": False,
     "parameter_config": {
         "memory_length": {
             "low": 1,

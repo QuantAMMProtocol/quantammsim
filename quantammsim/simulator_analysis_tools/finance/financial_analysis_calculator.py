@@ -124,11 +124,15 @@ def convert_return_analysis_to_run_metric(return_analysis, rf_name, startDateStr
                         )
                     )
                 else:
+                    metric_value_float = return_analysis[key][risk_metric]
+                    if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
+                        metric_value_float = return_analysis[key][risk_metric].item()
+                    
                     run_metrics.append(
                         SimulationRunMetric(
                             rf_name,
                             risk_metric,
-                            return_analysis["risk_metrics"][risk_metric],
+                            metric_value_float,
                             "",
                             "Daily",
                         )
@@ -147,18 +151,24 @@ def convert_return_analysis_to_run_metric(return_analysis, rf_name, startDateStr
                         )
                     )
                 else:
+                    metric_value_float = return_analysis[key][drawdown_metric]
+                    if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
+                        metric_value_float = return_analysis[key][drawdown_metric].item()
                     run_metrics.append(
                         SimulationRunMetric(
                             rf_name,
                             drawdown_metric,
-                            return_analysis[key][drawdown_metric],
+                            metric_value_float,
                             "",
                             "Daily",
                         )
                     )
         else:
+            metric_value_float = return_analysis[key]
+            if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
+                metric_value_float = return_analysis[key].item()
             run_metrics.append(
-                SimulationRunMetric(rf_name, key, return_analysis[key], "", "Daily")
+                SimulationRunMetric(rf_name, key, metric_value_float, "", "Daily")
             )
     return run_metrics, run_timestep_metrics
 
@@ -206,11 +216,15 @@ def convert_benchmark_analysis_to_run_metric(
                             )
                         )
                     else:
+                        metric_value_float = element["risk_metrics"][risk_metric]
+                        if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):                            
+                            metric_value_float = element["risk_metrics"][risk_metric].item()
+
                         run_metrics.append(
                             SimulationRunMetric(
                                 rf_name,
                                 risk_metric,
-                                element["risk_metrics"][risk_metric],
+                                metric_value_float,
                                 benchmark_name,
                                 "Daily",
                             )
@@ -227,6 +241,10 @@ def convert_benchmark_analysis_to_run_metric(
                             )
                         )
                     else:
+                        metric_value_float = element["capture_ratios"][capture_ratio]
+                        if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
+                            metric_value_float = element["capture_ratios"][capture_ratio].item()
+
                         run_metrics.append(
                             SimulationRunMetric(
                                 rf_name,
@@ -245,6 +263,10 @@ def convert_benchmark_analysis_to_run_metric(
                         SimulationResultTimeseries(timeseries, rf_name, key, "Daily")
                     )
                 else:
+                    metric_value_float = element[key]
+                    if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
+                        metric_value_float = element[key].item()
+                        
                     run_metrics.append(
                         SimulationRunMetric(
                             rf_name, key, element[key], benchmark_name, "Daily"

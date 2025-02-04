@@ -83,8 +83,8 @@ def calculate_sharpe_ratio(portfolio_returns, rf_values):
     annualized_sharpe_ratio = sharpe_ratio * np.sqrt(trading_days_per_year)
 
     return {
-        "sharpe_ratio": sharpe_ratio.item(),
-        "annualized_sharpe_ratio": annualized_sharpe_ratio.item(),
+        "sharpe_ratio": sharpe_ratio,
+        "annualized_sharpe_ratio": annualized_sharpe_ratio,
     }
 
 
@@ -202,9 +202,9 @@ def calculate_portfolio_risk_metrics(portfolio_returns, rf_values, benchmark_ret
     )
 
     return {
-        "Daily VaR (95)": VaR_95.item(),
+        "Daily VaR (95)": VaR_95,
         "Volatility": volatility,
-        "Beta": beta.item(),
+        "Beta": beta,
     }
 
 
@@ -276,12 +276,12 @@ def calculate_drawdown_statistics(daily_returns, rf_values):
         "Avg Daily Drawdown per month": daily_monthly_avg,
         "Daily Maximum Drawdown per week": daily_weekly_max,
         "Daily Maximum Drawdown per month": daily_monthly_max,
-        "Conditional Drawdown at Risk": annualized_cDaR.item(),
+        "Conditional Drawdown at Risk": annualized_cDaR,
         "Weekly CDaR": weekly_cDaR,
         "Monthly CDaR": monthly_cDaR,
         "Weekly Ulcer Index": daily_weekly_ulcer,
         "Monthly Ulcer Index": daily_monthly_ulcer,
-        "Ulcer Index": ulcer_index.item(),
+        "Ulcer Index": ulcer_index,
         "Weekly Sterling Ratio": daily_weekly_sterling,
         "Monthly Sterling Ratio": daily_monthly_sterling,
         "Sterling Ratio": sterling,
@@ -741,11 +741,11 @@ def calculate_capture_ratios(portfolio_returns, benchmark_returns):
     total_capture_ratio = upside_capture_ratio - downside_capture_ratio
 
     if type(upside_capture_ratio) == np.float64:
-        upside_capture_ratio = upside_capture_ratio.item()
+        upside_capture_ratio = upside_capture_ratio
     if type(downside_capture_ratio) == np.float64:
-        downside_capture_ratio = downside_capture_ratio.item()
+        downside_capture_ratio = downside_capture_ratio
     if type(total_capture_ratio) == np.float64:
-        total_capture_ratio = total_capture_ratio.item()
+        total_capture_ratio = total_capture_ratio
 
     return {
         "Upside Capture Ratio": upside_capture_ratio,
@@ -771,8 +771,8 @@ def calculate_distribution_statistics(array):
     skewness = skew(array)
 
     return {
-        "mean": mean.item(),
-        "std": std.item(),
+        "mean": mean,
+        "std": std,
         "kurtosis": kurtosis_,
         "skewness": skewness,
     }
