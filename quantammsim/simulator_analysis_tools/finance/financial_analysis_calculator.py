@@ -11,7 +11,6 @@ from quantammsim.simulatorMocks.simulationRunDto import (
     SimulationRunMetric,
 )
 import quantammsim.simulator_analysis_tools.finance.financial_analysis_functions as faf
-import quantammsim.simulator_analysis_tools.finance.financial_analysis_utils as fau
 import numpy as np
 
 
@@ -177,7 +176,8 @@ def convert_benchmark_analysis_to_run_metric(
     benchmark_analysis, rf_name, benchmark_name, startDateString
 ):
     """
-    Converts benchmark analysis results into SimulationRunMetric and SimulationResultTimeseries objects.
+    Converts benchmark analysis results into SimulationRunMetric 
+    and SimulationResultTimeseries objects.
 
     Args:
         benchmark_analysis (list): List of dictionaries containing benchmark analysis results
@@ -190,7 +190,8 @@ def convert_benchmark_analysis_to_run_metric(
             - list[SimulationRunMetric]: List of scalar metric results
             - list[SimulationResultTimeseries]: List of timeseries metric results
 
-    The function processes benchmark analysis results and converts them into standardized metric objects:
+    The function processes benchmark analysis results and converts them 
+    into standardized metric objects:
     - Scalar metrics are converted to SimulationRunMetric objects
     - Timeseries metrics are converted to SimulationResultTimeseries objects
     - Handles risk metrics, capture ratios and other benchmark comparison metrics
@@ -423,10 +424,8 @@ def perform_porfolio_financial_analysis(
     result_analysis_array = []
     return_analysis_timeseries_array = []
     benchmark_return_analysis_array = []
-    print("benchmark len")
-    print(len(benchmark_return_array))
+
     if benchmark_return_array is not None and len(benchmark_return_array) == 1:
-        print("reached if")
         benchmark_returns = benchmark_return_array[0]
         
         #precaution as hodl values are balancer supplied
