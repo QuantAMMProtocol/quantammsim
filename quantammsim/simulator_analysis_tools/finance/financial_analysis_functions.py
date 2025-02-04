@@ -1,12 +1,12 @@
 import numpy as np
 from scipy.stats import kurtosis, skew, linregress
 import pandas as pd
-import csv
 
 
 def calculate_jensens_alpha(portfolio_returns, rf_values, benchmark_returns):
     """
-    Calculate Jensen's Alpha for a given set of portfolio returns, risk-free rates, and benchmark returns.
+    Calculate Jensen's Alpha for a given set of portfolio returns, risk-free rates, 
+    and benchmark returns.
 
     Parameters:
     portfolio_returns (np.array): Daily returns of the portfolio.
@@ -57,7 +57,8 @@ def calculate_jensens_alpha(portfolio_returns, rf_values, benchmark_returns):
 
 def calculate_sharpe_ratio(portfolio_returns, rf_values):
     """
-    Calculate the Sharpe Ratio and annualized Sharpe Ratio for a given set of portfolio returns and risk-free rates.
+    Calculate the Sharpe Ratio and annualized Sharpe Ratio 
+    for a given set of portfolio returns and risk-free rates.
 
     Parameters:
     portfolio_returns (np.array): Daily returns of the portfolio.
@@ -137,7 +138,8 @@ def calculate_tracking_error_and_information_ratio(
     portfolio_returns, benchmark_returns
 ):
     """
-    Calculate the Tracking Error and Information Ratio for a given set of portfolio returns and benchmark returns.
+    Calculate the Tracking Error and Information Ratio for a given set of 
+    portfolio returns and benchmark returns.
 
     Parameters:
     portfolio_returns (np.array): Daily returns of the portfolio.
@@ -481,7 +483,18 @@ def calculate_sterling_ratio(returns, rf):
 
 
 def calcuate_period_sterling_index(daily_returns, rf_values, period):
+    """
+    Calculate the Sterling Ratio per month for daily portfolio returns.
 
+    Parameters:
+    daily_returns (np.array or pd.Series): Daily returns of the portfolio.
+    rf_values (np.array or pd.Series): Daily risk-free rates.
+    period (str): Period for resampling (e.g., "M" for monthly).
+
+    Returns:
+    np.array: Monthly Sterling Ratios.
+    """
+    
     portfolio_returns = daily_returns
 
     if not isinstance(daily_returns, pd.Series):

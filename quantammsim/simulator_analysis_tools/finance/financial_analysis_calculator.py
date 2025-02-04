@@ -11,7 +11,6 @@ from quantammsim.simulatorMocks.simulationRunDto import (
     SimulationRunMetric,
 )
 import quantammsim.simulator_analysis_tools.finance.financial_analysis_functions as faf
-import quantammsim.simulator_analysis_tools.finance.financial_analysis_utils as fau
 import numpy as np
 
 
@@ -177,7 +176,8 @@ def convert_benchmark_analysis_to_run_metric(
     benchmark_analysis, rf_name, benchmark_name, startDateString
 ):
     """
-    Converts benchmark analysis results into SimulationRunMetric and SimulationResultTimeseries objects.
+    Converts benchmark analysis results into SimulationRunMetric 
+    and SimulationResultTimeseries objects.
 
     Args:
         benchmark_analysis (list): List of dictionaries containing benchmark analysis results
@@ -190,7 +190,8 @@ def convert_benchmark_analysis_to_run_metric(
             - list[SimulationRunMetric]: List of scalar metric results
             - list[SimulationResultTimeseries]: List of timeseries metric results
 
-    The function processes benchmark analysis results and converts them into standardized metric objects:
+    The function processes benchmark analysis results and converts them 
+    into standardized metric objects:
     - Scalar metrics are converted to SimulationRunMetric objects
     - Timeseries metrics are converted to SimulationResultTimeseries objects
     - Handles risk metrics, capture ratios and other benchmark comparison metrics
@@ -208,7 +209,7 @@ def convert_benchmark_analysis_to_run_metric(
                         timeseries = convert_simulation_timeseries_to_run_metric(
                             element[key][risk_metric],
                             startDateString,
-                            risk_metric,
+                            risk_metric
                         )
                         run_timeline_metrics.append(
                             SimulationResultTimeseries(
@@ -422,14 +423,27 @@ def perform_porfolio_financial_analysis(
     return_analysis = perform_return_analysis(portfolio_returns, dailyRfValues)
     result_analysis_array = []
     return_analysis_timeseries_array = []
-    if benchmark_return_array is not None:
-        i = 0
-        for benchmark_returns in benchmark_return_array:
-            benchmark_analysis = portfolio_benchmark_analysis(
-                portfolio_returns, benchmark_returns, dailyRfValues, benchmark_name[i]
-            )
-            result_analysis_array.append(benchmark_analysis)
-            i += 1
+    benchmark_return_analysis_array = []
+
+    if benchmark_return_array is not None and len(benchmark_return_array) == 1:
+        benchmark_returns = benchmark_return_array[0]
+        
+        #precaution as hodl values are balancer supplied
+        benchmark_returns = np.nan_to_num(benchmark_returns, nan=0.0)
+        benchmark_analysis = portfolio_benchmark_analysis(
+            portfolio_returns, benchmark_returns, dailyRfValues, benchmark_name[0]
+        )
+        result_analysis_array.append(benchmark_analysis)
+
+        benchmark_return_analysis = perform_return_analysis(benchmark_returns, dailyRfValues)
+
+        hodl_return_array, _ = (
+            convert_return_analysis_to_run_metric(benchmark_return_analysis, rf_name, startDateString)
+        )
+        for metric in hodl_return_array:
+            metric.benchmarkName = "benchmark_return_analysis"
+
+        benchmark_return_analysis_array.extend(hodl_return_array)
 
     return_analysis_array, return_analysis_timeseries_array = (
         convert_return_analysis_to_run_metric(return_analysis, rf_name, startDateString)
@@ -441,11 +455,13 @@ def perform_porfolio_financial_analysis(
         )
     )
 
-    return_analysis_timeseries_array.extend(return_benchmark_analysis_timeseries_array)
+    benchmark_return_analysis_array.extend(return_benchmark_analysis_array)
 
+    return_analysis_timeseries_array.extend(return_benchmark_analysis_timeseries_array)
+    
     return {
         "return_analysis": return_analysis_array,
-        "benchmark_analysis": return_benchmark_analysis_array,
+        "benchmark_analysis": benchmark_return_analysis_array,
         "return_timeseries_analysis": return_analysis_timeseries_array,
     }
 
