@@ -6,7 +6,7 @@ from itertools import product
 
 import numpy as np
 import jax.numpy as jnp
-from jax import jit
+from jax import jit, lax
 from jax import config
 
 from quantammsim.training.hessian_trace import hessian_trace
@@ -204,6 +204,35 @@ def memory_days_to_lamb(memory_days, chunk_period=60):
     return lamb
 
 
+def jax_memory_days_to_lamb(memory_days, chunk_period=60):
+    """
+    Convert memory days to lambda value, that is compatible with jax.
+    Mirrors the numpy version, memory_days_to_lamb, but returns a jax array.
+
+    Args:
+        memory_days (float): The memory days value.
+        chunk_period (int, optional): The chunk period. Defaults to 60.
+
+    Returns:
+        float: The lambda value.
+    """
+    scaled_memory_days = (1440.0 * memory_days / (2.0 * chunk_period)) ** 3 / 6.0
+
+    smd = scaled_memory_days
+    smd2 = scaled_memory_days**2
+    smd3 = scaled_memory_days**3
+    smd4 = scaled_memory_days**4
+
+    numerator_1 = jnp.cbrt((jnp.sqrt(3 * (27 * smd4 + 4 * smd3)) - 9 * smd2))
+    denominator_1 = jnp.cbrt(2) * 3 ** (2.0 / 3.0) * smd
+
+    numerator_2 = jnp.cbrt((2 / 3))
+    denominator_2 = numerator_1
+
+    lamb = numerator_1 / denominator_1 - numerator_2 / denominator_2 + 1.0
+    return lamb
+
+
 def memory_days_to_logit_lamb(memory_days, chunk_period=60):
     """
     Convert memory days to logit lambda value.
@@ -333,6 +362,30 @@ def calc_alt_lamb(update_rule_parameter_dict):
     logit_alt_lamb = logit_delta_lamb + logit_lamb
     alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
     return alt_lamb
+
+
+def inverse_squareplus(y):
+    # Convert input to float64 to ensure consistent types
+    y = jnp.asarray(y, dtype=jnp.float64)
+    # one = jnp.array(1.0, dtype=jnp.float64)
+    return lax.div(lax.sub(lax.square(y), 1.0), y)
+
+
+def inverse_squareplus_np(y):
+    return (y**2 - 1.0) / y
+
+def get_raw_value(value):
+    """
+    Get raw_value parameter from desired value
+    """
+    return np.log2(value)
+
+
+def get_log_amplitude(amplitude, memory_days):
+    """
+    Get log_amplitude parameter from desired amplitude and memory_days
+    """
+    return np.log2(amplitude / memory_days)
 
 
 def init_params_singleton(

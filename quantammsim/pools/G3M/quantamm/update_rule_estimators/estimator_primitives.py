@@ -591,3 +591,49 @@ def _jax_covariance_matrix_at_infinity_via_scan(arr_in, lamb):
     )
 
     return covariances
+
+
+@jit
+def _jax_variance_scan_function(carry_list, arr_in, G_inf, lamb):
+    ewma = carry_list[0]
+    running_var = carry_list[1]
+
+    diff_old = arr_in - ewma
+    ewma = ewma + diff_old / G_inf
+    diff_new = diff_old * (1 - 1 / G_inf)  # Equivalent to arr_in - ewma_new
+    running_var = lamb * running_var + diff_old * diff_new
+    variance = running_var * (1 - lamb)
+
+    return [ewma, running_var], variance
+
+
+@jit
+def _jax_variance_at_infinity_via_scan(arr_in, lamb):
+    """Calculate exponentially weighted variance using scan.
+
+    Parameters
+    ----------
+    arr_in : jnp.ndarray
+        Input array of shape (time, features)
+    lamb : jnp.ndarray
+        Decay factor for each feature
+
+    Returns
+    -------
+    jnp.ndarray
+        Variance estimates of shape (time, features)
+    """
+    n = arr_in.shape[0]
+    n_features = arr_in.shape[1]
+
+    G_inf = 1.0 / (1.0 - lamb)
+    scan_fn = Partial(_jax_variance_scan_function, G_inf=G_inf, lamb=lamb)
+
+    # Initialize with first value
+    carry_list_init = [arr_in[0], jnp.zeros((n_features,), dtype=jnp.float64)]
+
+    # Run scan and prepend ones for first timestep
+    _, variances = scan(scan_fn, carry_list_init, arr_in[1:])
+    variances = jnp.vstack([jnp.ones((1, n_features), dtype=jnp.float64), variances])
+
+    return variances

@@ -17,12 +17,15 @@ setup(
         "tqdm",
         "optuna",
         "pyarrow",
+        "plotly",
     ],
     extras_require={
         "dev": [
-            "pytest",
+            "pytest>=6.0",
             "black",
             "flake8",
+            "pytest-cov",
+            "hypothesis",
         ],
         "docs": [
             "sphinx",

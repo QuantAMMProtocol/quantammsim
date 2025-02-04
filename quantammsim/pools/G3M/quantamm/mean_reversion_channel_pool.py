@@ -29,6 +29,9 @@ from quantammsim.core_simulator.param_utils import (
     memory_days_to_lamb,
     lamb_to_memory_days_clipped,
     calc_lamb,
+    inverse_squareplus_np,
+    get_raw_value,
+    get_log_amplitude,
 )
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
     calc_gradients,
@@ -192,6 +195,8 @@ class MeanReversionChannelPool(MomentumPool):
             pre_exp_scaling = jnp.exp(logit_pre_exp_scaling) / (
                 1 + jnp.exp(logit_pre_exp_scaling)
             )
+        elif use_pre_exp_scaling and params.get("raw_pre_exp_scaling") is not None:
+            pre_exp_scaling = 2 ** params.get("raw_pre_exp_scaling")
         else:
             pre_exp_scaling = 0.5
         memory_days = lamb_to_memory_days_clipped(
@@ -332,12 +337,11 @@ class MeanReversionChannelPool(MomentumPool):
             [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
         )
 
-        logit_pre_exp_scaling_np = np.log(
+        raw_pre_exp_scaling_np = np.log2(
             initial_values_dict["initial_pre_exp_scaling"]
-            / (1.0 - initial_values_dict["initial_pre_exp_scaling"])
         )
-        logit_pre_exp_scaling = np.array(
-            [[logit_pre_exp_scaling_np] * n_assets] * n_parameter_sets
+        raw_pre_exp_scaling = np.array(
+            [[raw_pre_exp_scaling_np] * n_assets] * n_parameter_sets
         )
 
         log_amplitude = np.array(
@@ -362,13 +366,59 @@ class MeanReversionChannelPool(MomentumPool):
             "log_amplitude": log_amplitude,
             "raw_width": raw_width,
             "raw_exponents": raw_exponents,
-            "logit_pre_exp_scaling": logit_pre_exp_scaling,
+            "raw_pre_exp_scaling": raw_pre_exp_scaling,
             "subsidary_params": [],
         }
 
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
 
+    @classmethod
+    def _process_specific_parameters(cls, update_rule_parameters, n_assets):
+        """Process mean reversion channel specific parameters."""
+        result = {}
+        amplitude_values = None
+        memory_days = None
+
+        # Get memory_days value for amplitude calculation
+        for urp in update_rule_parameters:
+            if urp.name == "memory_days":
+                memory_days = urp.value
+                break
+
+        # Process specific parameters
+        for urp in update_rule_parameters:
+            if urp.name == "amplitude":
+                amplitude_values = urp.value
+            elif urp.name == "exponent":
+                raw_exponents = [float(inverse_squareplus_np(val)) for val in urp.value]
+                if len(raw_exponents) != n_assets:
+                    raw_exponents = [raw_exponents[0]] * n_assets
+                result["raw_exponents"] = np.array(raw_exponents)
+            elif urp.name == "width":
+                raw_width = [float(get_raw_value(val)) for val in urp.value]
+                result["raw_width"] = np.array(raw_width)
+                if len(raw_width) != n_assets:
+                    raw_width = [raw_width[0]] * n_assets
+                result["raw_width"] = np.array(raw_width)
+            elif urp.name == "pre_exp_scaling":
+                raw_pre_exp_scaling = [float(get_raw_value(val)) for val in urp.value]
+                if len(raw_pre_exp_scaling) != n_assets:
+                    raw_pre_exp_scaling = [raw_pre_exp_scaling[0]] * n_assets
+                result["raw_pre_exp_scaling"] = np.array(raw_pre_exp_scaling)
+
+        # Process amplitude last
+        if amplitude_values is not None:
+            if memory_days is None:
+                raise ValueError("memory_days parameter is required for amplitude calculation")
+            log_amplitude = [
+                get_log_amplitude(float(amp), float(mem)) 
+                for amp, mem in zip(amplitude_values, memory_days)
+            ]
+            if len(log_amplitude) != n_assets:
+                log_amplitude = [log_amplitude[0]] * n_assets
+            result["log_amplitude"] = np.array(log_amplitude)
+        return result
 
 tree_util.register_pytree_node(
     MeanReversionChannelPool,

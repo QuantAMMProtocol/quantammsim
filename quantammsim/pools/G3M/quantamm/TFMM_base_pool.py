@@ -27,7 +27,7 @@ from quantammsim.pools.G3M.quantamm.quantamm_reserves import (
     _jax_calc_quantAMM_reserves_with_dynamic_inputs,
 )
 from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
-
+from quantammsim.core_simulator.param_utils import memory_days_to_lamb
 import numpy as np
 
 from typing import Dict, Any, Optional
@@ -92,15 +92,21 @@ class TFMMBasePool(AbstractPool):
         initial_pool_value = run_fingerprint["initial_pool_value"]
         initial_value_per_token = arb_acted_upon_weights[0] * initial_pool_value
         initial_reserves = initial_value_per_token / arb_acted_upon_local_prices[0]
-        reserves = _jax_calc_quantAMM_reserves_with_fees_using_precalcs(
-            initial_reserves,
-            arb_acted_upon_weights,
-            arb_acted_upon_local_prices,
-            fees=run_fingerprint["fees"],
-            arb_thresh=run_fingerprint["gas_cost"],
-            arb_fees=run_fingerprint["arb_fees"],
-            all_sig_variations=jnp.array(run_fingerprint["all_sig_variations"]),
-        )
+        if run_fingerprint["do_arb"]:
+            reserves = _jax_calc_quantAMM_reserves_with_fees_using_precalcs(
+                initial_reserves,
+                arb_acted_upon_weights,
+                arb_acted_upon_local_prices,
+                fees=run_fingerprint["fees"],
+                arb_thresh=run_fingerprint["gas_cost"],
+                arb_fees=run_fingerprint["arb_fees"],
+                all_sig_variations=jnp.array(run_fingerprint["all_sig_variations"]),
+            )
+        else:
+            reserves = jnp.broadcast_to(
+                initial_reserves, arb_acted_upon_local_prices.shape
+            )
+
         return reserves
 
     @partial(jit, static_argnums=(2))
@@ -121,33 +127,39 @@ class TFMMBasePool(AbstractPool):
         weights = self.calculate_weights(
             params, run_fingerprint, prices, start_index, additional_oracle_input
         )
-        if run_fingerprint["arb_frequency"] != 1:
-            arb_acted_upon_weights = weights[:: run_fingerprint["arb_frequency"]]
-            arb_acted_upon_local_prices = local_prices[
-                :: run_fingerprint["arb_frequency"]
-            ]
-        else:
-            arb_acted_upon_weights = weights
-            arb_acted_upon_local_prices = local_prices
 
-        reserve_ratios = _jax_calc_quantAMM_reserve_ratios(
-            arb_acted_upon_weights[:-1],
-            arb_acted_upon_local_prices[:-1],
-            arb_acted_upon_weights[1:],
-            arb_acted_upon_local_prices[1:],
-        )
         # calculate initial reserves
         initial_pool_value = run_fingerprint["initial_pool_value"]
         initial_value_per_token = weights[0] * initial_pool_value
         initial_reserves = initial_value_per_token / local_prices[0]
 
-        # calculate the reserves by cumprod of reserve ratios
-        reserves = jnp.vstack(
-            [
-                initial_reserves,
-                initial_reserves * jnp.cumprod(reserve_ratios, axis=0),
-            ]
-        )
+        if run_fingerprint["do_arb"]:
+            if run_fingerprint["arb_frequency"] != 1:
+                arb_acted_upon_weights = weights[:: run_fingerprint["arb_frequency"]]
+                arb_acted_upon_local_prices = local_prices[:: run_fingerprint["arb_frequency"]]
+            else:
+                arb_acted_upon_weights = weights
+                arb_acted_upon_local_prices = local_prices
+
+            reserve_ratios = _jax_calc_quantAMM_reserve_ratios(
+                arb_acted_upon_weights[:-1],
+                arb_acted_upon_local_prices[:-1],
+                arb_acted_upon_weights[1:],
+                arb_acted_upon_local_prices[1:],
+            )
+
+            # calculate the reserves by cumprod of reserve ratios
+            reserves = jnp.vstack(
+                [
+                    initial_reserves,
+                    initial_reserves * jnp.cumprod(reserve_ratios, axis=0),
+                ]
+            )
+        else:
+            reserves = jnp.broadcast_to(
+                initial_reserves, arb_acted_upon_local_prices.shape
+            )
+
         return reserves
 
     @partial(jit, static_argnums=(2))
@@ -216,6 +228,7 @@ class TFMMBasePool(AbstractPool):
             jnp.array(run_fingerprint["all_sig_variations"]),
             trade_array,
             run_fingerprint["do_trades"],
+            run_fingerprint["do_arb"],
         )
         return reserves
 
@@ -270,7 +283,6 @@ class TFMMBasePool(AbstractPool):
         raw_weight_outputs = self.calculate_raw_weights_outputs(
             params, run_fingerprint, prices, additional_oracle_input
         )
-
         initial_weights_logits = params.get("initial_weights_logits")
         # we dont't want to change the initial weights during any training
         # so wrap them in a stop_grad
@@ -281,6 +293,7 @@ class TFMMBasePool(AbstractPool):
         # with the burnin period, ie everything before the start of the sequence
 
         start_index_coarse = ((start_index[0] / chunk_period).astype("int64"), 0)
+
         raw_weight_outputs = dynamic_slice(
             raw_weight_outputs,
             start_index_coarse,
@@ -295,9 +308,8 @@ class TFMMBasePool(AbstractPool):
             run_fingerprint,
             params,
         )
+
         weights = dynamic_slice(weights, (0, 0), (bout_length - 1, n_assets))
-        # initial_value_per_token = initial_weights * initial_pool_value
-        # initial_reserves = initial_value_per_token / prices[start_index]
 
         return weights
 
@@ -311,3 +323,74 @@ class TFMMBasePool(AbstractPool):
 
     def is_trainable(self):
         return True
+
+    @classmethod
+    def process_parameters(cls, update_rule_parameters, n_assets):
+        """Process TFMM pool parameters from web interface input."""
+        result = {}
+        processed_params = set()
+        
+        # Process TFMM common parameters
+        memory_days_values = cls._process_memory_days(update_rule_parameters, n_assets)
+        if memory_days_values is not None:
+            result.update(memory_days_values)
+            processed_params.add("memory_days")
+            
+        k_values = cls._process_k_per_day(update_rule_parameters, n_assets)
+        if k_values is not None:
+            result.update(k_values)
+            processed_params.add("k_per_day")
+            
+        # Let specific pools process their parameters
+        specific_params = cls._process_specific_parameters(update_rule_parameters, n_assets)
+        if specific_params is not None:
+            result.update(specific_params)
+            # Assume any parameters returned by specific processing are handled
+            processed_params.update(specific_params.keys())
+            
+        # Process any remaining parameters in a default way
+        for urp in update_rule_parameters:
+            if urp.name not in processed_params:
+                value = []
+                for tokenValue in urp.value:
+                    value.append(tokenValue)
+                if len(value) != n_assets:
+                    value = [value[0]] * n_assets
+                result[urp.name] = np.array(value)
+                
+        
+        return result
+
+    @classmethod
+    def _process_memory_days(cls, update_rule_parameters, n_assets):
+        """Process memory_days parameter."""
+        for urp in update_rule_parameters:
+            if urp.name == "memory_days":
+                logit_lamb_vals = []
+                memory_days_values = urp.value
+                for tokenValue in urp.value:
+                    initial_lamb = memory_days_to_lamb(tokenValue)
+                    logit_lamb = np.log(initial_lamb / (1.0 - initial_lamb))
+                    logit_lamb_vals.append(logit_lamb)
+                if len(logit_lamb_vals) != n_assets:
+                    logit_lamb_vals = [logit_lamb_vals[0]] * n_assets
+                return {"logit_lamb": np.array(logit_lamb_vals)}
+        return None
+
+    @classmethod
+    def _process_k_per_day(cls, update_rule_parameters, n_assets):
+        """Process k_per_day parameter."""
+        for urp in update_rule_parameters:
+            if urp.name == "k_per_day":
+                k_vals = []
+                for tokenValue in urp.value:
+                    k_vals.append(tokenValue)
+                if len(k_vals) != n_assets:
+                    k_vals = [k_vals[0]] * n_assets
+                return {"k": np.array(k_vals)}
+        return None
+
+    @classmethod
+    def _process_specific_parameters(cls, update_rule_parameters, n_assets):
+        """Process pool-specific parameters. Override in subclasses."""
+        return None

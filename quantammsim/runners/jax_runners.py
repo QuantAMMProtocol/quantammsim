@@ -17,17 +17,17 @@ from quantammsim.utils.data_processing.historic_data_utils import (
 from quantammsim.core_simulator.forward_pass import (
     forward_pass,
     forward_pass_nograd,
+    _calculate_return_value,
 )
-from quantammsim.core_simulator.windowing_utils import (
-    get_indices
-)
+from quantammsim.core_simulator.windowing_utils import get_indices
 
 from quantammsim.training.backpropagation import (
-    update_from_partial_training_step_factory
+    update_from_partial_training_step_factory,
 )
 from quantammsim.core_simulator.param_utils import (
     recursive_default_set,
     check_run_fingerprint,
+    memory_days_to_logit_lamb,
 )
 
 from quantammsim.core_simulator.result_exporter import (
@@ -40,6 +40,8 @@ from quantammsim.runners.jax_runner_utils import (
     get_trades_and_fees,
     get_unique_tokens,
     OptunaManager,
+    generate_evaluation_points,
+    create_trial_params,
 )
 
 from quantammsim.pools.creator import create_pool
@@ -59,7 +61,7 @@ def train_on_historic_data(
     """
     Train a model on historical price data using JAX.
 
-    This function trains a model on historical price data using JAX for optimization. 
+    This function trains a model on historical price data using JAX for optimization.
     It supports various hyperparameters and training configurations specified in the run_fingerprint.
 
     Parameters:
@@ -97,8 +99,6 @@ def train_on_historic_data(
 
     recursive_default_set(run_fingerprint, run_fingerprint_defaults)
     check_run_fingerprint(run_fingerprint)
-    if run_fingerprint["optimisation_settings"]["method"] == "optuna":
-        run_fingerprint["bout_offset"]=0
     if verbose:
         print("Run Fingerprint: ", run_fingerprint)
     rule = run_fingerprint["rule"]
@@ -131,10 +131,16 @@ def train_on_historic_data(
     n_tokens = len(unique_tokens)
     n_assets = n_tokens
 
+    # all_sig_variations = np.array(list(product([1, 0, -1], repeat=n_assets)))
+    # all_sig_variations = all_sig_variations[(all_sig_variations != 0).sum(-1) > 1]
+    # all_sig_variations = all_sig_variations[np.any(all_sig_variations == 1, -1)]
+    # all_sig_variations = all_sig_variations[np.any(all_sig_variations == -1, -1)]
+    # all_sig_variations = tuple(map(tuple, all_sig_variations))
+
     all_sig_variations = np.array(list(product([1, 0, -1], repeat=n_assets)))
-    all_sig_variations = all_sig_variations[(all_sig_variations != 0).sum(-1) > 1]
-    all_sig_variations = all_sig_variations[np.any(all_sig_variations == 1, -1)]
-    all_sig_variations = all_sig_variations[np.any(all_sig_variations == -1, -1)]
+    # Keep only variations with exactly one +1 and one -1
+    all_sig_variations = all_sig_variations[(all_sig_variations == 1).sum(-1) == 1]
+    all_sig_variations = all_sig_variations[(all_sig_variations == -1).sum(-1) == 1]
     all_sig_variations = tuple(map(tuple, all_sig_variations))
 
     np.random.seed(0)
@@ -158,8 +164,8 @@ def train_on_historic_data(
         price_data=price_data,
     )
 
-    if verbose:
-        print("max_memory_days: ", max_memory_days)
+    max_memory_days = data_dict["max_memory_days"]
+    print("max_memory_days: ", max_memory_days)
 
     bout_length_window = data_dict["bout_length"] - run_fingerprint["bout_offset"]
 
@@ -220,16 +226,20 @@ def train_on_historic_data(
         "arb_fees": arb_fees,
         "gas_cost": gas_cost,
         "run_type": "normal",
-        "max_memory_days": 365.0,
-        "initial_pool_value": 1000000.0,
+        "max_memory_days": run_fingerprint["max_memory_days"],
         "training_data_kind": run_fingerprint["optimisation_settings"][
             "training_data_kind"
         ],
+        "tokens": tuple(run_fingerprint["tokens"]),
         "use_alt_lamb": use_alt_lamb,
         "use_pre_exp_scaling": use_pre_exp_scaling,
         "all_sig_variations": all_sig_variations,
         "weight_interpolation_method": weight_interpolation_method,
         "arb_frequency": arb_frequency,
+        "do_arb": run_fingerprint["do_arb"],
+        "arb_quality": run_fingerprint["arb_quality"],
+        "numeraire": run_fingerprint["numeraire"],
+        "do_trades": False,
     }
 
     partial_training_step = Partial(
@@ -245,6 +255,15 @@ def train_on_historic_data(
         pool=pool,
     )
 
+    base_static_dict_test = base_static_dict.copy()
+    base_static_dict_test["bout_length"] = data_dict["bout_length_test"]
+    partial_forward_pass_nograd_batch_test = Partial(
+        forward_pass_nograd,
+        prices=data_dict["prices"],
+        static_dict=Hashabledict(base_static_dict_test),
+        pool=pool,
+    )
+
     returns_train_static_dict = base_static_dict.copy()
     returns_train_static_dict["return_val"] = "returns_over_hodl"
     returns_train_static_dict["bout_length"] = data_dict["bout_length"]
@@ -255,7 +274,7 @@ def train_on_historic_data(
     )
 
     returns_test_static_dict = base_static_dict.copy()
-    returns_test_static_dict["return_val"] = "returns"
+    returns_test_static_dict["return_val"] = "returns_over_hodl"
     returns_test_static_dict["bout_length"] = data_dict["bout_length_test"]
     partial_forward_pass_nograd_batch_returns_test = Partial(
         forward_pass_nograd,
@@ -398,81 +417,249 @@ def train_on_historic_data(
             print("final objective value: ", objective_value)
             print("best train params", best_train_params)
     elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
+
+        n_evaluation_points = 20
+        min_spacing = data_dict["bout_length"] // 2  # E
+
         run_fingerprint["optimisation_settings"]["n_parameter_sets"] = 1
         # assert run_fingerprint["optimisation_settings"]["n_parameter_sets"] == 1, \
         #     "Optuna only supports single parameter sets"
 
+        # Generate and store evaluation points
+        if "evaluation_starts" not in run_fingerprint:
+            evaluation_starts = generate_evaluation_points(
+                data_dict["start_idx"],
+                data_dict["end_idx"],
+                bout_length_window,
+                n_evaluation_points,
+                min_spacing,
+                run_fingerprint["optimisation_settings"]["initial_random_key"],
+            )
+            run_fingerprint["evaluation_starts"] = [int(e) for e in evaluation_starts]
+        else:
+            evaluation_starts = run_fingerprint["evaluation_starts"]
+
+        reserves_values_train_static_dict = base_static_dict.copy()
+        reserves_values_train_static_dict["return_val"] = "reserves_and_values"
+        reserves_values_train_static_dict["bout_length"] = data_dict["bout_length"]
+        partial_forward_pass_nograd_batch_reserves_values_train = jit(
+            Partial(
+                forward_pass_nograd,
+                static_dict=Hashabledict(reserves_values_train_static_dict),
+                pool=pool,
+            )
+        )
+
+        reserves_values_test_static_dict = base_static_dict.copy()
+        reserves_values_test_static_dict["return_val"] = "reserves_and_values"
+        reserves_values_test_static_dict["bout_length"] = data_dict["bout_length_test"]
+        partial_forward_pass_nograd_batch_reserves_values_test = jit(
+            Partial(
+                forward_pass_nograd,
+                static_dict=Hashabledict(reserves_values_test_static_dict),
+                pool=pool,
+            )
+        )
+
         # Initialize Optuna manager
         optuna_manager = OptunaManager(run_fingerprint)
-        optuna_manager.setup_study()
+        optuna_manager.setup_study(
+            multi_objective=run_fingerprint["optimisation_settings"]["optuna_settings"][
+                "multi_objective"
+            ]
+        )
+
+        run_fingerprint["optimisation_settings"]["optuna_settings"]["parameter_config"][
+            "logit_lamb"
+        ] = {
+            "low": float(
+                memory_days_to_logit_lamb(
+                    0.5, chunk_period=base_static_dict["chunk_period"]
+                )
+            ),
+            "high": float(
+                memory_days_to_logit_lamb(
+                    base_static_dict["max_memory_days"],
+                    chunk_period=base_static_dict["chunk_period"],
+                )
+            ),
+            "log_scale": False,
+        }
+        # run_fingerprint["optimisation_settings"]["optuna_settings"]["parameter_config"][
+        #     "logit_delta_lamb"
+        # ] = {
+        #     "low": float(
+        #         memory_days_to_logit_lamb(
+        #             0.5, chunk_period=run_fingerprint["chunk_period"]
+        #         )
+        #     ),
+        #     "high": float(
+        #         memory_days_to_logit_lamb(
+        #             200.0, chunk_period=run_fingerprint["chunk_period"]
+        #         )
+        #     ),
+        # }
 
         # Create objective with parameter configuration and validation
         def objective(trial):
             try:
-                trial_params = {}
-                param_config = run_fingerprint["optimisation_settings"]["optuna_settings"][
-                    "parameter_config"
-                ]
+                param_config = run_fingerprint["optimisation_settings"][
+                    "optuna_settings"
+                ]["parameter_config"]
 
-                for key, value in params.items():
-                    if key == "subsidary_params":
-                        continue
+                if run_fingerprint["optimisation_settings"][
+                    "optuna_settings"
+                ]["make_scalar"]:
+                    # Set scalar=True for all parameter configurations
+                    for param_key in param_config:
+                        param_config[param_key]["scalar"] = True
 
-                    config = param_config.get(key, {"low": -10, "high": 10, "log_scale": False})
-                    trial_params[key] = jnp.array(
-                        [
-                            trial.suggest_float(
-                                f"{key}_{i}",
-                                config["low"],
-                                config["high"],
-                                log=config["log_scale"],
-                            )
-                            for i in range(value.shape[1])
-                        ]
-                    )
-                    trial_params["initial_weights_logits"] = jnp.array([0.0]*n_assets)
-
+                trial_params = create_trial_params(
+                    trial, param_config, params, run_fingerprint, n_assets
+                )
                 # Training evaluation
-                train_returns = partial_forward_pass_nograd_batch_returns_train(
+                train_outputs = partial_forward_pass_nograd_batch_reserves_values_train(
                     trial_params,
                     (data_dict["start_idx"], 0),
                     data_dict["prices"],
                 )
 
-                train_value = partial_forward_pass_nograd_batch(
-                    trial_params, (data_dict["start_idx"], 0)
+                # Calculate objectives for each evaluation point through slicing
+                train_objectives = []
+                for start_offset in evaluation_starts:
+                    # Calculate relative indices for slicing
+                    start_idx = start_offset - data_dict["start_idx"]
+                    end_idx = start_idx + data_dict["bout_length"]
+
+                    # Slice the relevant portions of the full trajectory
+                    train_value = _calculate_return_value(
+                        run_fingerprint["return_val"],
+                        train_outputs["reserves"][start_idx:end_idx],
+                        data_dict["prices"][start_idx:end_idx],
+                        train_outputs["value"][start_idx:end_idx],
+                        initial_reserves=train_outputs["reserves"][start_idx],
+                    )
+                    train_objectives.append(train_value)
+
+                mean_train_value = sum(train_objectives) / len(train_objectives)
+                train_value = _calculate_return_value(
+                    run_fingerprint["return_val"],
+                    train_outputs["reserves"],
+                    train_outputs["prices"],
+                    train_outputs["value"],
+                )
+
+                train_sharpe = _calculate_return_value(
+                    "sharpe",
+                    train_outputs["reserves"],
+                    train_outputs["prices"],
+                    train_outputs["value"],
+                )
+
+                train_return = (
+                    train_outputs["value"][-1] / train_outputs["value"][0] - 1.0
+                )
+
+                train_returns_over_hodl = _calculate_return_value(
+                    "returns_over_hodl",
+                    train_outputs["reserves"],
+                    train_outputs["prices"],
+                    train_outputs["value"],
+                    initial_reserves=train_outputs["reserves"][0],
                 )
 
                 # Validation (test period) evaluation
-                validation_returns = partial_forward_pass_nograd_batch_returns_test(
-                    trial_params,
-                    (data_dict["start_idx_test"], 0),
-                    data_dict["prices_test"],
+                validation_outputs = (
+                    partial_forward_pass_nograd_batch_reserves_values_test(
+                        trial_params,
+                        (data_dict["start_idx_test"], 0),
+                        data_dict["prices"],
+                    )
                 )
 
-                validation_value = partial_forward_pass_nograd_batch(
-                    trial_params, (data_dict["start_idx_test"], 0)
+                validation_value = _calculate_return_value(
+                    run_fingerprint["return_val"],
+                    validation_outputs["reserves"],
+                    validation_outputs["prices"],
+                    validation_outputs["value"],
                 )
 
+                validation_sharpe = _calculate_return_value(
+                    "sharpe",
+                    validation_outputs["reserves"],
+                    validation_outputs["prices"],
+                    validation_outputs["value"],
+                )
+
+                validation_return = (
+                    validation_outputs["value"][-1] / validation_outputs["value"][0]
+                    - 1.0
+                )
+
+                validation_returns_over_hodl = _calculate_return_value(
+                    "returns_over_hodl",
+                    validation_outputs["reserves"],
+                    validation_outputs["prices"],
+                    validation_outputs["value"],
+                    initial_reserves=validation_outputs["reserves"][0],
+                )
                 # Log both training and validation metrics
                 # optuna_manager.logger.info(f"Trial {trial.number}:")
                 optuna_manager.logger.info(
-                    f"Training {trial.number}, Return over HODL: {train_returns}"
+                    f"Training {trial.number}, Return over HODL: {train_returns_over_hodl}"
+                )
+                optuna_manager.logger.info(
+                    f"Training {trial.number}, Return: {train_return}"
+                )
+                optuna_manager.logger.info(
+                    f"Training {trial.number}, Sharpe: {train_sharpe}"
                 )
                 optuna_manager.logger.info(
                     f"Training {trial.number}, {run_fingerprint['return_val']}: {train_value}"
                 )
                 optuna_manager.logger.info(
-                    f"Validation {trial.number}, Return over HODL: {validation_returns}"
+                    f"Validation {trial.number}, Return over HODL: {validation_returns_over_hodl}"
+                )
+                optuna_manager.logger.info(
+                    f"Validation {trial.number}, Return: {validation_return}"
+                )
+                optuna_manager.logger.info(
+                    f"Validation {trial.number}, Sharpe: {validation_sharpe}"
                 )
                 optuna_manager.logger.info(
                     f"Validation {trial.number}, {run_fingerprint['return_val']}: {validation_value}"
                 )
-
+                for i, value in enumerate(train_objectives):
+                    optuna_manager.logger.info(
+                        f"Training {trial.number},  Evaluation point {i}: {value}"
+                    )
+                optuna_manager.logger.info(
+                    f"Training {trial.number},  Mean value: {mean_train_value}"
+                )
                 # Store validation value as a trial attribute
                 trial.set_user_attr("validation_value", validation_value)
+                trial.set_user_attr(
+                    "validation_returns_over_hodl", validation_returns_over_hodl
+                )
+                trial.set_user_attr("validation_sharpe", validation_sharpe)
+                trial.set_user_attr("validation_return", validation_return)
+                trial.set_user_attr("train_value", train_value)
+                trial.set_user_attr("train_returns_over_hodl", train_returns_over_hodl)
+                trial.set_user_attr("train_sharpe", train_sharpe)
+                trial.set_user_attr("train_return", train_return)
+                trial.set_user_attr("train_objectives", train_objectives)
+                trial.set_user_attr("mean_train_value", mean_train_value)
 
-                return train_value  # Still optimize on training value
+                if run_fingerprint["optimisation_settings"]["optuna_settings"][
+                    "multi_objective"
+                ]:
+                    return (
+                        np.mean(train_objectives),  # mean_return
+                        np.min(train_objectives),  # worst_case
+                        -np.std(train_objectives),  # stability
+                    )
+                else:
+                    return mean_train_value  # Still optimize on training value
 
             except Exception as e:
                 optuna_manager.logger.error(f"Trial {trial.number} failed: {str(e)}")
@@ -482,10 +669,24 @@ def train_on_historic_data(
         optuna_manager.optimize(objective)
 
         if verbose:
-            print("Best trial:")
-            print(f"  Training Value: {optuna_manager.study.best_value}")
-            print(f"  Validation Value: {optuna_manager.study.best_trial.user_attrs['validation_value']}")
-            print(f"  Params: {optuna_manager.study.best_params}")
+            if run_fingerprint["optimisation_settings"]["optuna_settings"][
+                "multi_objective"
+            ]:
+                print("Best trials:")
+                print(f"  Training Value: {optuna_manager.study.best_trials}")
+                print(
+                    f"  Validation Value: {[trial.user_attrs['validation_value'] for trial in optuna_manager.study.best_trials]}"
+                )
+                print(
+                    f"  Params: {[trial.params for trial in optuna_manager.study.best_trials]}"
+                )
+            else:
+                print("Best trial:")
+                print(f"  Training Value: {optuna_manager.study.best_value}")
+                print(
+                    f"  Validation Value: {optuna_manager.study.best_trial.user_attrs['validation_value']}"
+                )
+                print(f"  Params: {optuna_manager.study.best_params}")
     else:
         raise NotImplementedError
 
@@ -534,13 +735,13 @@ def do_run_on_historic_data(
     arb_fees : float, optional
         Arbitrage fees to apply (overrides run_fingerprint value if provided).
     fees_df : pd.DataFrame, optional
-        Transaction fees to apply over time. 
+        Transaction fees to apply over time.
         Each row should contain the unix timestamp and fee to be charged.
     gas_cost_df : pd.DataFrame, optional
-        Gas costs for transactions over time. 
+        Gas costs for transactions over time.
         Each row should contain the unix timestamp and gas cost.
     arb_fees_df : pd.DataFrame, optional
-        Arbitrage fees to apply over time. 
+        Arbitrage fees to apply over time.
         Each row should contain the unix timestamp and arb fee to be charged.
     do_test_period : bool, optional
         Whether to run the test period (default is False).
@@ -584,13 +785,19 @@ def do_run_on_historic_data(
     n_assets = n_tokens
 
     # Generate all possible signature variations
+    # all_sig_variations = np.array(list(product([1, 0, -1], repeat=n_assets)))
+    # all_sig_variations = all_sig_variations[(all_sig_variations != 0).sum(-1) > 1]
+    # all_sig_variations = all_sig_variations[np.any(all_sig_variations == 1, -1)]
+    # all_sig_variations = all_sig_variations[np.any(all_sig_variations == -1, -1)]
+    # all_sig_variations = tuple(map(tuple, all_sig_variations))
+
     all_sig_variations = np.array(list(product([1, 0, -1], repeat=n_assets)))
-    all_sig_variations = all_sig_variations[(all_sig_variations != 0).sum(-1) > 1]
-    all_sig_variations = all_sig_variations[np.any(all_sig_variations == 1, -1)]
-    all_sig_variations = all_sig_variations[np.any(all_sig_variations == -1, -1)]
+    # Keep only variations with exactly one +1 and one -1
+    all_sig_variations = all_sig_variations[(all_sig_variations == 1).sum(-1) == 1]
+    all_sig_variations = all_sig_variations[(all_sig_variations == -1).sum(-1) == 1]
     all_sig_variations = tuple(map(tuple, all_sig_variations))
 
-    max_memory_days = 365.0
+    max_memory_days = run_fingerprint["max_memory_days"]
 
     np.random.seed(0)
 
@@ -659,26 +866,33 @@ def do_run_on_historic_data(
         "startDateString": run_fingerprint["startDateString"],
         "endDateString": run_fingerprint["endDateString"],
         "endTestDateString": run_fingerprint["endTestDateString"],
+        "do_arb": run_fingerprint["do_arb"],
+        "arb_quality": run_fingerprint["arb_quality"],
+        "numeraire": run_fingerprint["numeraire"],
     }
 
     # Create static dictionaries for training and testing
     reserves_values_train_static_dict = base_static_dict.copy()
     reserves_values_train_static_dict["return_val"] = "reserves_and_values"
     reserves_values_train_static_dict["bout_length"] = data_dict["bout_length"]
-    partial_forward_pass_nograd_batch_reserves_values_train = Partial(
-        forward_pass_nograd,
-        static_dict=Hashabledict(reserves_values_train_static_dict),
-        pool=pool,
+    partial_forward_pass_nograd_batch_reserves_values_train = jit(
+        Partial(
+            forward_pass_nograd,
+            static_dict=Hashabledict(reserves_values_train_static_dict),
+            pool=pool,
+        )
     )
 
     if do_test_period:
         reserves_values_test_static_dict = base_static_dict.copy()
         reserves_values_test_static_dict["return_val"] = "reserves_and_values"
         reserves_values_test_static_dict["bout_length"] = data_dict["bout_length_test"]
-        partial_forward_pass_nograd_batch_reserves_values_test = Partial(
-            forward_pass_nograd,
-            static_dict=Hashabledict(reserves_values_test_static_dict),
-            pool=pool,
+        partial_forward_pass_nograd_batch_reserves_values_test = jit(
+            Partial(
+                forward_pass_nograd,
+                static_dict=Hashabledict(reserves_values_test_static_dict),
+                pool=pool,
+            )
         )
 
     # Ensure params is a list
@@ -725,6 +939,11 @@ def do_run_on_historic_data(
             )
             output_dicts_test.append(output_dict_test)
 
+    # out = partial_forward_pass_nograd_batch(
+    #     params[0],
+    #     (data_dict["start_idx"], 0),
+    # )
+    # raise Exception("stop")
     # If only one set of parameters, return as single dict instead of list
     if len(output_dicts) == 1:
         output_dicts = output_dicts[0]
