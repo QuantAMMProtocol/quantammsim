@@ -5,6 +5,7 @@ import numpy as np
 import jax.numpy as jnp
 from jax import tree_util
 
+from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 
 class AbstractPool(ABC):
     """
@@ -16,15 +17,25 @@ class AbstractPool(ABC):
 
     Methods
     -------
-    calculate_reserve_changes(params, run_fingerprint, prices, start_index, additional_oracle_input)
-        Calculate changes in reserves based on weights, prices, and parameters.
+    calculate_reserves_with_fees(params, run_fingerprint, prices, start_index, additional_oracle_input)
+        Calculate reserve changes with fees and arbitrage enabled.
+        
+        Used when fees are non-zero and arbitrage is enabled. Handles arbitrage thresholds,
+        trading costs, and fee calculations. Less performant than zero-fees case.
 
-    calculate_reserve_changes_zero_fees(params, run_fingerprint, prices, 
-    start_index, additional_oracle_input)
-        Calculate reserve changes assuming zero fees, based on weights, prices, and parameters.
+    calculate_reserves_zero_fees(params, run_fingerprint, prices, start_index, additional_oracle_input) 
+        Calculate reserve changes assuming zero fees.
 
-    initialize_parameters(initial_values_dict, run_fingerprint, n_assets, n_parameter_sets, noise)
-        Initialize the pool's parameters.
+        Fast, vectorized implementation for the zero-fees case. Uses parallel computation
+        since arbitrageurs will always trade to exactly match external market prices.
+        Should be overridden with fees=0 version of calculate_reserves_with_fees if no
+        faster implementation exists.
+
+    calculate_reserves_with_dynamic_inputs(params, run_fingerprint, prices, start_index, additional_oracle_input)
+        Calculate reserve changes with time-varying parameters.
+        
+        Handles cases where pool properties like fees, arbitrage thresholds, or weights
+        can change over time. Required for pools with dynamic parameters.
 
     Notes
     -----
@@ -98,7 +109,7 @@ class AbstractPool(ABC):
     ) -> Dict[str, Any]:
         """Initialize pool parameters and apply any extensions from mixins."""
         # Get base parameters
-        params = self._init_base_parameters(
+        params = self.init_base_parameters(
             initial_values_dict, run_fingerprint, n_assets, n_parameter_sets, noise
         )
 
@@ -110,7 +121,7 @@ class AbstractPool(ABC):
         return params
 
     @abstractmethod
-    def _init_base_parameters(
+    def init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -147,9 +158,23 @@ class AbstractPool(ABC):
     def _tree_unflatten(cls, aux_data, children):
         return cls(*children, **aux_data)
 
-    @abstractmethod
-    def make_vmap_in_axes(self, input_dict: Dict[str, Any], n_repeats_of_recurred: int):
-        pass
+    def make_vmap_in_axes(self, params: Dict[str, Any], n_repeats_of_recurred: int = 0):
+        """
+        Configure JAX vectorization axes for pool parameters.
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters
+        n_repeats_of_recurred : int
+            Number of times to repeat recurrent parameters
+
+        Returns
+        -------
+        Dict[str, Any]
+            vmap axes configuration
+        """
+        return make_vmap_in_axes_dict(params, 0, [], [], n_repeats_of_recurred)
 
     @abstractmethod
     def is_trainable(self):

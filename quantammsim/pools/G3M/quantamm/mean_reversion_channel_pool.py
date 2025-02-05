@@ -229,7 +229,7 @@ class MeanReversionChannelPool(MomentumPool):
 
         return raw_weight_outputs
 
-    def _init_base_parameters(
+    def init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],

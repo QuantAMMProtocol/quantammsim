@@ -44,8 +44,6 @@ Basic usage:
    user_guide/index
    api/index
 
-.. include:: introduction.rst
-
 * :ref:`genindex`
 * :ref:`modindex`
 * :ref:`search`

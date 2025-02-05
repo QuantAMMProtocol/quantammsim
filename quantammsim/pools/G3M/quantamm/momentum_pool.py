@@ -218,7 +218,7 @@ class MomentumPool(TFMMBasePool):
             raw_weight_output, initial_weights, run_fingerprint, params
         )
 
-    def _init_base_parameters(
+    def init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],

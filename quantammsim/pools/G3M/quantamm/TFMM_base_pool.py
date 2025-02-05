@@ -72,6 +72,47 @@ class TFMMBasePool(AbstractPool):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
+        """
+        Calculate reserves with fees and dynamic weights.
+
+        TFMM pools calculate weights dynamically based on price history.
+        This method handles the full complexity of weight adjustments, fees, and arbitrage.
+
+        Implementation Steps:
+        ---------------------
+        1. Extract local price window
+        2. Calculate dynamic weights based on price history
+        3. Apply arbitrage frequency adjustments
+        4. Initialize reserves based on pool value
+        5. Calculate reserve changes using quantAMM precalcs
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters including weight calculation parameters
+        run_fingerprint : Dict[str, Any]
+            Simulation settings including:
+            - bout_length: Simulation window length
+            - n_assets: Number of tokens
+            - arb_frequency: Arbitrage check frequency
+            - initial_pool_value: Starting pool value
+            - fees: Trading fees
+            - gas_cost: Arbitrage threshold
+            - arb_fees: Arbitrage fees
+            - do_arb: Enable arbitrage
+            - all_sig_variations: Valid trade combinations
+        prices : jnp.ndarray
+            Historical price data
+        start_index : jnp.ndarray
+            Window start position
+        additional_oracle_input : Optional[jnp.ndarray]
+            Extra data for weight calculation
+
+        Returns
+        -------
+        jnp.ndarray
+            Time series of pool reserves
+        """
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
 
@@ -240,6 +281,28 @@ class TFMMBasePool(AbstractPool):
         prices: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
+        """
+        Calculate raw weight adjustments based on price history.
+
+        This is the first step in TFMM's two-step weight calculation process.
+        Subclasses must implement their specific weight adjustment logic.
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters for weight calculation
+        run_fingerprint : Dict[str, Any]
+            Simulation settings
+        prices : jnp.ndarray
+            Historical price data
+        additional_oracle_input : Optional[jnp.ndarray]
+            Extra data for weight calculation
+
+        Returns
+        -------
+        jnp.ndarray
+            Raw weight adjustment values
+        """
         pass
 
     @abstractmethod
@@ -250,6 +313,28 @@ class TFMMBasePool(AbstractPool):
         run_fingerprint: Dict[str, Any],
         params: Dict[str, Any],
     ) -> jnp.ndarray:
+        """
+        Refine raw weight outputs into final weights.
+
+        Second step of TFMM's weight calculation process. Converts raw weight
+        adjustments into valid pool weights.
+
+        Parameters
+        ----------
+        raw_weight_output : jnp.ndarray
+            Output from calculate_raw_weights_outputs
+        initial_weights : jnp.ndarray
+            Starting weights
+        run_fingerprint : Dict[str, Any]
+            Simulation settings
+        params : Dict[str, Any]
+            Pool parameters
+
+        Returns
+        -------
+        jnp.ndarray
+            Final refined weights
+        """
         pass
 
     @partial(jit, static_argnums=(2, 5))
@@ -314,19 +399,98 @@ class TFMMBasePool(AbstractPool):
         return weights
 
     def calculate_all_signature_variations(self, params: Dict[str, Any]) -> jnp.ndarray:
+        """
+        Calculate all valid trading signature combinations.
+
+        Abstract method that subclasses may implement to define valid trading patterns.
+        Can be used by reserve calculation methods to determine possible arbitrage opportunities.
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters that may influence valid trade combinations
+
+        Returns
+        -------
+        jnp.ndarray
+            Array of valid trading signature combinations
+
+        Raises
+        ------
+        NotImplementedError
+            Base class does not implement this method
+        """
         raise NotImplementedError
 
     def make_vmap_in_axes(self, params: Dict[str, Any], n_repeats_of_recurred: int = 0):
+        """
+        Configure JAX vectorization axes for pool parameters.
+
+        FMM pools handle subsidiary parameters differently
+        for vectorization due to their potentially more complex parameter structure.
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters to vectorize
+        n_repeats_of_recurred : int, optional
+            Number of times to repeat recurrent parameters, by default 0
+
+        Returns
+        -------
+        Dict[str, Any]
+            vmap axes configuration with subsidiary_params handled separately
+        """
         return make_vmap_in_axes_dict(
             params, 0, [], ["subsidary_params"], n_repeats_of_recurred
         )
 
     def is_trainable(self):
+        """
+        Indicate if pool weights can be trained.
+
+        TFMM pools are trainable by default, as their weights
+        change based on market conditions.
+
+        Returns
+        -------
+        bool
+            Always True for TFMM pools as weights are trainable
+        """
         return True
 
     @classmethod
     def process_parameters(cls, update_rule_parameters, n_assets):
-        """Process TFMM pool parameters from web interface input."""
+        """
+        Process TFMM pool parameters from web interface input.
+
+        Handles common TFMM parameters and delegates pool-specific processing
+        to subclasses. Supports both per-token and global parameters.
+
+        Parameters
+        ----------
+        update_rule_parameters : List[Parameter]
+            Raw parameters from web interface, each containing:
+            - name: Parameter identifier
+            - value: Parameter values per token
+        n_assets : int
+            Number of tokens in pool
+
+        Returns
+        -------
+        Dict[str, np.ndarray]
+            Processed parameters including:
+            - logit_lamb: Memory parameter
+            - k: Update rate parameter
+            - Additional pool-specific parameters
+
+        Notes
+        -----
+        - Handles parameter broadcasting for single values
+        - Validates parameter dimensions
+        - Processes memory_days and k_per_day specially
+        - Allows subclasses to add specific parameters
+        """
         result = {}
         processed_params = set()
         
@@ -363,7 +527,31 @@ class TFMMBasePool(AbstractPool):
 
     @classmethod
     def _process_memory_days(cls, update_rule_parameters, n_assets):
-        """Process memory_days parameter."""
+        """
+        Process memory_days parameter into logit_lamb values.
+
+        Converts memory_days into a logit-transformed lambda parameter
+        that determines how quickly the pool forgets past price information.
+
+        Parameters
+        ----------
+        update_rule_parameters : List[Parameter]
+            Raw parameters containing memory_days values
+        n_assets : int
+            Number of tokens in pool
+
+        Returns
+        -------
+        Dict[str, np.ndarray]
+            Dictionary with 'logit_lamb' key containing transformed values,
+            or None if memory_days not found
+
+        Notes
+        -----
+        - Converts memory days to lambda using memory_days_to_lamb
+        - Applies logit transform for numerical stability
+        - Broadcasts single values to match n_assets
+        """
         for urp in update_rule_parameters:
             if urp.name == "memory_days":
                 logit_lamb_vals = []
@@ -379,7 +567,30 @@ class TFMMBasePool(AbstractPool):
 
     @classmethod
     def _process_k_per_day(cls, update_rule_parameters, n_assets):
-        """Process k_per_day parameter."""
+        """
+        Process k_per_day parameter into update rate values.
+
+        The k parameter determines how quickly weights adjust to new prices.
+        Higher values mean faster adjustments.
+
+        Parameters
+        ----------
+        update_rule_parameters : List[Parameter]
+            Raw parameters containing k_per_day values
+        n_assets : int
+            Number of tokens in pool
+
+        Returns
+        -------
+        Dict[str, np.ndarray]
+            Dictionary with 'k' key containing update rates,
+            or None if k_per_day not found
+
+        Notes
+        -----
+        - Uses raw k values without transformation
+        - Broadcasts single values to match n_assets
+        """
         for urp in update_rule_parameters:
             if urp.name == "k_per_day":
                 k_vals = []
@@ -392,5 +603,23 @@ class TFMMBasePool(AbstractPool):
 
     @classmethod
     def _process_specific_parameters(cls, update_rule_parameters, n_assets):
-        """Process pool-specific parameters. Override in subclasses."""
+        """
+        Process pool-specific parameters.
+
+        Abstract method that subclasses should override to handle any
+        parameters specific to their implementation.
+
+        Parameters
+        ----------
+        update_rule_parameters : List[Parameter]
+            Raw parameters to process
+        n_assets : int
+            Number of tokens in pool
+
+        Returns
+        -------
+        Dict[str, np.ndarray] or None
+            Processed pool-specific parameters if any,
+            None if no specific parameters needed
+        """
         return None

@@ -6,17 +6,6 @@ from jax import config
 from jax.lib.xla_bridge import default_backend
 from jax import devices, tree_util
 
-import jax.numpy as jnp
-from jax.lax import dynamic_slice
-
-from quantammsim.pools.base_pool import AbstractPool
-from quantammsim.pools.FM_AMM.cow_reserves import (
-    _jax_calc_cowamm_reserve_ratio_vmapped,
-    _jax_calc_cowamm_reserves_with_fees,
-    _jax_calc_cowamm_reserves_with_dynamic_inputs,
-)
-from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
-
 config.update("jax_enable_x64", True)
 
 DEFAULT_BACKEND = default_backend()
@@ -45,9 +34,8 @@ from quantammsim.pools.FM_AMM.cow_reserves import (
     _jax_calc_cowamm_reserves_with_fees,
     _jax_calc_cowamm_reserves_one_arb_zero_fees,
     _jax_calc_cowamm_reserves_one_arb_with_fees,
+    _jax_calc_cowamm_reserves_with_dynamic_inputs,
 )
-from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
-
 
 class CowPool(AbstractPool):
     """
@@ -73,7 +61,7 @@ class CowPool(AbstractPool):
         Calculates the reserves of the pool with dynamic inputs for fees, 
         arbitrage thresholds, arbitrage fees, and trades.
 
-    _init_base_parameters(initial_values_dict, run_fingerprint, n_assets, 
+    init_base_parameters(initial_values_dict, run_fingerprint, n_assets, 
     n_parameter_sets=1, noise="gaussian") -> Dict[str, Any]:
         Initializes the base parameters for the pool. Cow pools have no parameters.
 
@@ -263,7 +251,7 @@ class CowPool(AbstractPool):
         )
         return reserves
 
-    def _init_base_parameters(
+    def init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -316,9 +304,6 @@ class CowPool(AbstractPool):
         # so wrap them in a stop_grad
         weights = softmax(stop_gradient(initial_weights_logits))
         return weights
-
-    def make_vmap_in_axes(self, params: Dict[str, Any], n_repeats_of_recurred: int = 0):
-        return make_vmap_in_axes_dict(params, 0, [], [], n_repeats_of_recurred)
 
     def is_trainable(self):
         return False
