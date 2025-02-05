@@ -127,7 +127,7 @@ def convert_return_analysis_to_run_metric(return_analysis, rf_name, startDateStr
                     if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
                         metric_value_float = return_analysis[key][risk_metric].item()
                     if type(metric_value_float) == np.float64 and np.isnan(metric_value_float):
-                            metric_value_float = None
+                        metric_value_float = None
                     run_metrics.append(
                         SimulationRunMetric(
                             rf_name,
