@@ -126,7 +126,8 @@ def convert_return_analysis_to_run_metric(return_analysis, rf_name, startDateStr
                     metric_value_float = return_analysis[key][risk_metric]
                     if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
                         metric_value_float = return_analysis[key][risk_metric].item()
-                    
+                    if type(metric_value_float) == np.float64 and np.isnan(metric_value_float):
+                            metric_value_float = None
                     run_metrics.append(
                         SimulationRunMetric(
                             rf_name,
@@ -153,6 +154,8 @@ def convert_return_analysis_to_run_metric(return_analysis, rf_name, startDateStr
                     metric_value_float = return_analysis[key][drawdown_metric]
                     if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
                         metric_value_float = return_analysis[key][drawdown_metric].item()
+                    if type(metric_value_float) == np.float64 and np.isnan(metric_value_float):
+                            metric_value_float = None
                     run_metrics.append(
                         SimulationRunMetric(
                             rf_name,
@@ -166,6 +169,8 @@ def convert_return_analysis_to_run_metric(return_analysis, rf_name, startDateStr
             metric_value_float = return_analysis[key]
             if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
                 metric_value_float = return_analysis[key].item()
+            if type(metric_value_float) == np.float64 and np.isnan(metric_value_float):
+                metric_value_float = None
             run_metrics.append(
                 SimulationRunMetric(rf_name, key, metric_value_float, "", "Daily")
             )
@@ -221,6 +226,9 @@ def convert_benchmark_analysis_to_run_metric(
                         if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):                            
                             metric_value_float = element["risk_metrics"][risk_metric].item()
 
+                        if type(metric_value_float) == np.float64 and np.isnan(metric_value_float):
+                            metric_value_float = None
+
                         run_metrics.append(
                             SimulationRunMetric(
                                 rf_name,
@@ -243,14 +251,17 @@ def convert_benchmark_analysis_to_run_metric(
                         )
                     else:
                         metric_value_float = element["capture_ratios"][capture_ratio]
+
                         if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
                             metric_value_float = element["capture_ratios"][capture_ratio].item()
+                        if type(metric_value_float) == np.float64 and np.isnan(metric_value_float):
+                            metric_value_float = None
 
                         run_metrics.append(
                             SimulationRunMetric(
                                 rf_name,
                                 capture_ratio,
-                                element["capture_ratios"][capture_ratio],
+                                metric_value_float,
                                 benchmark_name,
                                 "Daily",
                             )
@@ -267,7 +278,8 @@ def convert_benchmark_analysis_to_run_metric(
                     metric_value_float = element[key]
                     if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
                         metric_value_float = element[key].item()
-                        
+                    if type(metric_value_float) == np.float64 and np.isnan(metric_value_float):
+                            metric_value_float = None    
                     run_metrics.append(
                         SimulationRunMetric(
                             rf_name, key, element[key], benchmark_name, "Daily"
@@ -300,7 +312,9 @@ def perform_return_analysis(returns, dailyRfValues):
             - Drawdown Statistics
             - Statistical Properties
     """
-    # Calculate the Sharpe ratio
+    # Calculate the Sharpe ratios
+    print(dailyRfValues)
+
     sharpe = faf.calculate_sharpe_ratio(returns, dailyRfValues)
 
     # Calculate the Sortino ratio
@@ -328,6 +342,7 @@ def perform_return_analysis(returns, dailyRfValues):
 
     # Return the results
     cumulative_returns = (1 + returns).cumprod()
+    print(sharpe)
     return {
         "Absolute Return (%)": float(cumulative_returns[-1] - 1) * 100,
         "Sharpe Ratio": sharpe["sharpe_ratio"],
