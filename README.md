@@ -71,12 +71,7 @@
 * NumPy
 * Pandas
 
-### Basic Installation
-```bash
-pip install quantammsim
-```
-
-### Development Installation
+### Installation
 ```bash
 git clone https://github.com/QuantAMMProtocol/quantammsim.git
 cd quantammsim

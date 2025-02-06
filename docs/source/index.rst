@@ -16,7 +16,9 @@ Install quantammsim:
 
 .. code-block:: bash
 
-   pip install quantammsim
+   git clone https://github.com/QuantAMMProtocol/quantammsim.git
+   cd quantammsim
+   pip install -e .
 
 Basic usage:
 
