@@ -239,13 +239,13 @@ def calc_alt_ewma_padded(
 
 
 def calc_ewma_pair(
-    memory_days_1: float,
-    memory_days_2: float,
-    chunkwise_price_values: jnp.ndarray,
-    chunk_period: float,
-    max_memory_days: float,
-    cap_lamb: bool = True,
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+    memory_days_1,
+    memory_days_2,
+    chunkwise_price_values,
+    chunk_period,
+    max_memory_days,
+    cap_lamb=True,
+):
     """Calculate two EWMAs with specified memory lengths.
 
     Parameters
