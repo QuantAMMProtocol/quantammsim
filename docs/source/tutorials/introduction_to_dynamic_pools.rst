@@ -45,8 +45,7 @@ Example:
    If :math:`\mathbf{w} = (0.6, 0.4)` but the pool acutal, empirical holdings means the pool holds equal values of tokens, arbitrageurs will:
 
    - sell token 1 to the pool, and
-   - buy token 2 from the pool
-   until the value ratio matches 60:40.
+   - buy token 2 from the pool until the value ratio matches 60:40.
 
 So by the action of arbs for a given asset :math:`R_i p_i = w_i V`: the value of the holdings of the :math:`i` :sup:`th` asset in the pool is equal to the weight of that asset times the total value of the pool.
 

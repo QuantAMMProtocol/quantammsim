@@ -37,7 +37,8 @@ Let's examine what the simulation tells us:
 
 Now that you've run your first simulation, you might want to:
 
-* Try different update rules (see :doc:`./update_rules`)
+* Learn about the principles of dynamic pools (see :doc:`./introduction_to_dynamic_pools`)
+* Read about how QuantAMM pools work (see :doc:`./quantamm_pools`)
 * Explore Balancer and CowAMM pools (see :doc:`./balancer_pools` and :doc:`./cow_pools`)
 * Learn about the mechanics of the pools (see :doc:`../api/core/pools`)
 

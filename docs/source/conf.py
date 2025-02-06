@@ -102,7 +102,6 @@ exclude_modules = [
 
 html_build_dir = "_build/html"
 html_static_path = ["_static"]
-html_extra_path = ["_extra"]
 
 # Build output settings
 output_dir = "build"
