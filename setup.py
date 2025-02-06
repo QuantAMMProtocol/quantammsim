@@ -18,6 +18,8 @@ setup(
         "optuna",
         "pyarrow",
         "plotly",
+        "bidask",
+        "Historic_Crypto",
     ],
     extras_require={
         "dev": [
