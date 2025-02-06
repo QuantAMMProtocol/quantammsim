@@ -442,8 +442,8 @@ def calc_alt_lamb(update_rule_parameter_dict):
     update_rule_parameter_dict : dict
         A dictionary containing the update rule parameters.
         Must include keys:
-            - "logit_lamb": The logit lambda value
-            - "logit_delta_lamb": The logit delta lambda value
+        - "logit_lamb": The logit lambda value
+        - "logit_delta_lamb": The logit delta lambda value
 
     Returns
     -------
@@ -927,31 +927,27 @@ def load_result_array(run_location, key="objective", recalc_hess=False):
 
 
 def load_manually(run_location, load_method="last", recalc_hess=False, min_test=0.0):
-    """
-    Load and process parameter sets from a JSON results file with custom loading methods.
+    """Load and process parameter sets from a JSON results file with custom loading methods.
 
     Parameters
     ----------
     run_location : str
-        Path to the JSON results file
+        Path to the JSON results file.
     load_method : str, optional
         Method for selecting parameter sets. One of:
-            'last' 
-                Return last parameter set
-            'best_objective'
-                Return set with highest overall objective
-            'best_train_objective'
-                Return set with highest training objective  
-            'best_test_objective'
-                Return set with highest test objective
-            'best_train_min_test_objective'
-                Return set with highest training objective that meets minimum test threshold
-        Defaults to 'last'
+        'last' - Returns the last parameter set
+        'best_objective' - Returns set with highest overall objective
+        'best_train_objective' - Returns set with highest training objective
+        'best_test_objective' - Returns set with highest test objective
+        'best_train_min_test_objective' - Returns set with highest training objective
+        that meets minimum test threshold.
+        Defaults to 'last'.
+
     recalc_hess : bool, optional
-        Whether to recalculate Hessian trace values. Defaults to False
-    min_test : float, optional 
+        Whether to recalculate Hessian trace values. Defaults to False.
+    min_test : float, optional
         Minimum test objective threshold for 'best_train_min_test_objective' method.
-        Defaults to 0.0
+        Defaults to 0.0.
 
     Returns
     -------
