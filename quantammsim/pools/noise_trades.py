@@ -2,7 +2,7 @@
 from jax import config, jit, devices
 
 import jax.numpy as jnp
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 
 config.update("jax_enable_x64", True)
 

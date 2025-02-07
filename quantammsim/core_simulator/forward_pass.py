@@ -1,7 +1,7 @@
 from jax import config
 
 config.update("jax_enable_x64", True)
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 from jax import devices
 
 DEFAULT_BACKEND = default_backend()

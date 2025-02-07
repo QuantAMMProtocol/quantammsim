@@ -4,7 +4,7 @@ from jax import config
 config.update("jax_enable_x64", True)
 # config.update("jax_debug_nans", True)
 # config.update('jax_disable_jit', True)
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 from jax import local_device_count, devices
 
 DEFAULT_BACKEND = default_backend()
@@ -36,7 +36,6 @@ from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives 
     make_cov_kernel,
     _jax_ewma_at_infinity_via_conv_padded,
     _jax_ewma_at_infinity_via_scan,
-    _jax_gradients_at_infinity_via_conv_padded,
     _jax_gradients_at_infinity_via_conv_padded_with_alt_ewma,
     _jax_variance_at_infinity_via_conv,
     _jax_variance_at_infinity_via_scan,
@@ -60,6 +59,55 @@ def calc_gradients(
     use_alt_lamb,
     cap_lamb=True,
 ):
+    """Calculate time-weighted price gradients for TFMM strategy implementation.
+
+    Computes gradients of price movements using exponentially weighted moving averages (EWMA),
+    with support for both CPU and GPU acceleration via JAX. Implements the gradient calculation
+    described in the TFMM litepaper, with additional features for alternative memory lengths.
+
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        Dictionary containing strategy parameters including:
+        - 'logit_lamb': Controls the base memory length
+        - 'logit_delta_lamb': Optional, controls alternative memory length if use_alt_lamb=True
+    chunkwise_price_values : ndarray
+        Array of shape (time_steps, n_assets) containing price values for each asset
+        over time
+    chunk_period : float
+        Time period between chunks in minutes
+    max_memory_days : float
+        Maximum allowed memory length in days, used to cap lambda parameters
+    use_alt_lamb : bool
+        Whether to use an alternative lambda parameter for part of the calculation.
+        Enables different parts of update rules to act over different memory lengths
+    cap_lamb : bool, optional
+        Whether to apply maximum memory day restriction to lambda parameters.
+        Defaults to True
+
+    Returns
+    -------
+    ndarray
+        Array of shape (time_steps-1, n_assets) containing calculated gradients.
+        For each asset, represents the time-weighted rate of change of prices.
+
+    Notes
+    -----
+    The function implements two calculation paths:
+    
+    1. GPU path: Uses convolution operations for efficient parallel computation
+       - Pads input data to handle initialization
+       - Creates specialized kernels for EWMA calculation
+       - Leverages GPU parallelism for efficient computation
+    
+    2. CPU path: Uses scan operations for sequential computation
+       - More memory efficient
+       - Uses a scan operation, so is fundamentally sequential
+
+    The gradient calculation follows the methodology described in the TFMM litepaper,
+    using exponential weighting to estimate price trends while avoiding look-ahead bias.
+
+    """
 
     lamb = calc_lamb(update_rule_parameter_dict)
     max_lamb = jax_memory_days_to_lamb(max_memory_days, chunk_period)
@@ -88,10 +136,6 @@ def calc_gradients(
     else:
         capped_alt_lamb = lamb
         alt_lamb = lamb
-
-    ## NOTE THAT PROBABLY WE WONT TAKE GRADIENTS WRT chunk_period
-    ## as that would lead to changing shapes of input data
-    ## which means we have to re-jit every step, which we probably dont want to do!
 
     if DEFAULT_BACKEND != "cpu":
         ewma_kernel = make_ewma_kernel(
@@ -246,30 +290,70 @@ def calc_ewma_pair(
     max_memory_days,
     cap_lamb=True,
 ):
-    """Calculate two EWMAs with specified memory lengths.
+    """Calculate two exponentially weighted moving averages (EWMAs) with different memory lengths.
+
+    Core estimator for Difference Momentum strategies, implementing the MACD-like comparison:
+
+    .. math::
+       1 - \\frac{E_2(\\mathbf{p}(t))}{E_1(\\mathbf{p}(t))}
+
+    where E₁ and E₂ are EWMAs with memory lengths m₁ and m₂ respectively.
+    Typically m₂ > m₁ for trend comparison.
+
+    This function outputs the EWMAs for the two memory lengths used in the above formula.
+    It supports both CPU and GPU paths, with GPU being more efficient for larger datasets.
 
     Parameters
     ----------
     memory_days_1 : float
-        Memory length for first EWMA in days
+        Memory length for first EWMA in days. Typically shorter period (m₁),
+        making it more responsive to recent price changes.
     memory_days_2 : float
-        Memory length for second EWMA in days
+        Memory length for second EWMA in days. Typically longer period (m₂),
+        providing baseline for trend comparison.
     chunkwise_price_values : jnp.ndarray
-        Price values of shape (time, assets)
+        Price/oracle values of shape (time, assets). Can be any oracle value,
+        not just prices (see Notes).
     chunk_period : float
-        Time period between chunks in minutes
+        Time period between chunks in minutes. Used to convert between
+        memory_days and λ parameters.
     max_memory_days : float
-        Maximum allowed memory length in days
+        Maximum allowed memory length in days. Prevents numerical instability
+        from extremely long memory periods.
     cap_lamb : bool, optional
-        Whether to cap lambda values, by default True
+        Whether to cap λ values to prevent numerical issues, by default True.
+        Recommended for numerical stability.
 
     Returns
     -------
     tuple[jnp.ndarray, jnp.ndarray]
-        Two EWMA arrays of shape (time, assets)
-        For GPU: Returns full padded length
-        For CPU: Returns same length as input
+        Two EWMA arrays of shape (time - 1, assets) (each same shape as calc_gradients).
+     Notes
+    -----
+    Implementation details:
+    1. Converts memory_days to λ values using:
+       λ = memory_days_to_lamb(memory_days, chunk_period)
+    
+    2. GPU acceleration:
+       - Uses convolution for parallel computation
+       - Adds 5 * max_memory_days padding for initialization
+       - Returns padded arrays for consistent calculations
+    
+    3. CPU computation:
+       - Uses sequential scan operations
+       - More memory efficient for smaller datasets
+
+    The function ensures:
+    - Non-negative memory lengths
+    - Numerical stability through λ capping
+
+    See Also
+    --------
+    DifferenceMomentumPool : Primary user of this function
+    calc_gradients : Alternative trend estimation approach
+
     """
+
     # Ensure non-negative memory days
     memory_days_1 = jnp.maximum(memory_days_1, 0.0)
     memory_days_2 = jnp.maximum(memory_days_2, 0.0)
@@ -302,7 +386,8 @@ def calc_ewma_pair(
                 chunkwise_price_values,
             ]
         )
-
+        ewma_kernel_1 = make_ewma_kernel(lamb_1, safety_margin_max_memory_days, chunk_period)
+        ewma_kernel_2 = make_ewma_kernel(lamb_2, safety_margin_max_memory_days, chunk_period)
         # Calculate EWMAs using same function as calc_ewma_padded
         ewma_1 = _jax_ewma_at_infinity_via_conv_padded(
             padded_chunkwise_price_values, ewma_kernel_1
@@ -310,6 +395,8 @@ def calc_ewma_pair(
         ewma_2 = _jax_ewma_at_infinity_via_conv_padded(
             padded_chunkwise_price_values, ewma_kernel_2
         )
+        ewma_1 = ewma_1[-(len(chunkwise_price_values) - 1):]
+        ewma_2 = ewma_2[-(len(chunkwise_price_values) - 1):]
 
     else:
         # CPU path - no padding needed
@@ -326,6 +413,59 @@ def calc_return_variances(
     max_memory_days,
     cap_lamb,
 ):
+    """Calculate time-weighted return variances for TFMM strategy implementation.
+
+    Computes the variance of asset returns using exponentially weighted moving averages (EWMA),
+    with support for both CPU and GPU acceleration via JAX. Essential for minimum variance
+    portfolio calculations and related risk estimation.
+
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        Dictionary containing strategy parameters, supporting two parameterizations:
+        1. Direct memory specification:
+           - 'memory_days_1': Direct specification of memory length in days
+        2. Logit parameterization:
+           - 'logit_lamb': Controls memory length through logit transform
+    chunkwise_price_values : ndarray
+        Array of shape (time_steps, n_assets) containing price values for each asset
+        over time
+    chunk_period : float
+        Time period between chunks in minutes
+    max_memory_days : float
+        Maximum allowed memory length in days, used to cap lambda parameters
+    cap_lamb : bool
+        Whether to apply maximum memory day restriction to lambda parameters
+
+    Returns
+    -------
+    ndarray
+        Array of shape (time_steps-1, n_assets) containing calculated variances.
+        For each asset, represents the time-weighted variance of returns.
+
+    Notes
+    -----
+    The function implements two calculation paths:
+    
+    1. GPU path: Uses convolution operations for efficient parallel computation
+       - Pads input data to handle initialization
+       - Creates specialized kernels for variance calculation
+       - Combines EWMA and covariance kernels for efficient computation
+    
+    2. CPU path: Uses scan operations for sequential computation
+       - More memory efficient for smaller datasets
+       - Direct implementation of variance formula
+
+    The variance calculation follows the methodology described in the TFMM litepaper,
+    using exponential weighting to estimate return variances while avoiding look-ahead bias.
+
+    See Also
+    --------
+    MinVariancePool : Primary user of this function
+    calc_gradients : Calculates price gradients using similar EWMA methodology
+    calc_ewma_pair : Calculates EWMA pairs for difference momentum strategies
+    """
+
     # Determine which parameterization is being used
     if "memory_days_1" in update_rule_parameter_dict:
         # Direct memory_days parameterization

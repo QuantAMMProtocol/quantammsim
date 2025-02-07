@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional
 # again, this only works on startup!
 from jax import config
 
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 from jax import devices, tree_util
 
 config.update("jax_enable_x64", True)

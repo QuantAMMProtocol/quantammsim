@@ -7,7 +7,7 @@ from jax import config, devices, tree_util
 import jax.numpy as jnp
 from jax.lax import stop_gradient, dynamic_slice
 from jax.nn import softmax
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 
 from quantammsim.pools.base_pool import AbstractPool
 

@@ -4,7 +4,7 @@ import numpy as np
 
 # again, this only works on startup!
 from jax import config, devices, jit, tree_util
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 import jax.numpy as jnp
 from jax.lax import stop_gradient, dynamic_slice
 from jax.nn import softmax
