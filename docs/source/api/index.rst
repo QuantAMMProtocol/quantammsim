@@ -8,4 +8,4 @@ API Reference
    core/simulator
    core/runners
    core/pools
-
+   core/estimators

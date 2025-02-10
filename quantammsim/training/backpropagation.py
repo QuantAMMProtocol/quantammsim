@@ -10,7 +10,7 @@ from jax import config
 config.update("jax_enable_x64", True)
 # config.update("jax_debug_nans", True)
 # config.update('jax_disable_jit', True)
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 from jax import local_device_count, devices
 
 DEFAULT_BACKEND = default_backend()

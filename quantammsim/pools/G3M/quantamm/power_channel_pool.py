@@ -2,7 +2,7 @@
 from jax import config
 
 config.update("jax_enable_x64", True)
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 from jax import local_device_count, devices
 
 DEFAULT_BACKEND = default_backend()
@@ -193,7 +193,7 @@ class PowerChannelPool(MomentumPool):
 
         return raw_weight_outputs
 
-    def _init_base_parameters(
+    def init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],

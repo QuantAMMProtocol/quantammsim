@@ -9,7 +9,7 @@ from jax import jit, vmap
 from jax import devices
 from jax.tree_util import Partial
 from jax.lax import scan
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 from jax import local_device_count, devices
 
 from functools import partial

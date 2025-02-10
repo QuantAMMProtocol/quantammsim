@@ -16,7 +16,9 @@ Install quantammsim:
 
 .. code-block:: bash
 
-   pip install quantammsim
+   git clone https://github.com/QuantAMMProtocol/quantammsim.git
+   cd quantammsim
+   pip install -e .
 
 Basic usage:
 
@@ -43,8 +45,6 @@ Basic usage:
    tutorials/index
    user_guide/index
    api/index
-
-.. include:: introduction.rst
 
 * :ref:`genindex`
 * :ref:`modindex`

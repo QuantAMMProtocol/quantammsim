@@ -7,7 +7,12 @@ These tutorials will help you get started with quantammsim.
    :maxdepth: 2
 
    getting_started
-   update_rules
+   pool_architecture
+   introduction_to_dynamic_pools
+   quantamm_pools
+   custom_rules
    balancer_pools
    cow_pools
-   advanced_usage
+   gyroscope_pools
+   custom_pools
+   tuning

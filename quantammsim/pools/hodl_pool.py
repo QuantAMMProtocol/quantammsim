@@ -7,10 +7,9 @@ from jax import config, devices, tree_util
 import jax.numpy as jnp
 from jax.lax import stop_gradient, dynamic_slice
 from jax.nn import softmax
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 
 from quantammsim.pools.base_pool import AbstractPool
-from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 
 config.update("jax_enable_x64", True)
 
@@ -25,8 +24,7 @@ else:
 
 class HODLPool(AbstractPool):
     """
-    HODLPool is a subclass of AbstractPool that represents a pool with no activity 
-    (HODL - Hold On for Dear Life).
+    HODLPool is a subclass of AbstractPool that represents a pool with no activity.
     This class provides methods to calculate reserves assuming no trading activity occurs.
 
     Methods
@@ -48,7 +46,7 @@ class HODLPool(AbstractPool):
         Calculates the reserves with dynamic inputs, which in this case is 
         the same as reserves without fees due to no activity.
 
-    _init_base_parameters(initial_values_dict, run_fingerprint, n_assets, 
+    init_base_parameters(initial_values_dict, run_fingerprint, n_assets, 
         n_parameter_sets=1, noise="gaussian"):
     Initializes the base parameters for the pool, including weights and other initial values.
 
@@ -119,7 +117,7 @@ class HODLPool(AbstractPool):
             params, run_fingerprint, prices, start_index, additional_oracle_input
         )
 
-    def _init_base_parameters(
+    def init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -174,9 +172,6 @@ class HODLPool(AbstractPool):
         # so wrap them in a stop_grad
         weights = softmax(stop_gradient(initial_weights_logits))
         return weights
-
-    def make_vmap_in_axes(self, params: Dict[str, Any], n_repeats_of_recurred: int = 0):
-        return make_vmap_in_axes_dict(params, 0, [], [], n_repeats_of_recurred)
 
     def is_trainable(self):
         return False

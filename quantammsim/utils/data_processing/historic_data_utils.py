@@ -818,12 +818,6 @@ def createMissingDataFrameFromClosePrices(startUnix, closePrices, token):
 def get_historic_parquet_data(
     list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
 ):
-    print("get_historic_parquet_data-----------------------------")
-    print(f"list_of_tickers: {list_of_tickers}")
-    print(f"cols: {cols}")
-    print(f"root: {root}")
-    print(f"start_time_unix: {start_time_unix}")
-    print(f"end_time_unix: {end_time_unix}")
     firstTicker = list_of_tickers[0]
     # print('cwd: ', os.getcwd())
     filename = firstTicker + "_USD.parquet"

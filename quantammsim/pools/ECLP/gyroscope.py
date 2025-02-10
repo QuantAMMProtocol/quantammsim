@@ -2,7 +2,7 @@
 from jax import config
 
 config.update("jax_enable_x64", True)
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 from jax import local_device_count, devices
 
 DEFAULT_BACKEND = default_backend()
@@ -28,7 +28,6 @@ import numpy as np
 
 from quantammsim.pools.base_pool import AbstractPool
 
-from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 from quantammsim.pools.ECLP.gyroscope_reserves import (
     _jax_calc_gyroscope_reserves_with_fees,
     _jax_calc_gyroscope_reserves_zero_fees,
@@ -108,34 +107,45 @@ class GyroscopePool(AbstractPool):
         ----------
         params : Dict[str, Any]
             Pool parameters including:
+            
             - alpha : float
                 Lower price bound
+            
             - beta : float
                 Upper price bound
+            
             - phi : float
                 Rotation angle
+            
             - lam : float
                 Scaling factor
+
         run_fingerprint : Dict[str, Any]
             Run configuration including:
+            
             - fees : float
                 Trading fee percentage
+            
             - gas_cost : float
                 Arbitrage threshold
+            
             - arb_fees : float
                 Additional arbitrage fees
+
         prices : jnp.ndarray
             Asset prices over time, shape (T, 2)
+
         start_index : jnp.ndarray
             Starting indices for price windows
-        additional_oracle_input : Optional[jnp.ndarray]
+
+        additional_oracle_input : Optional[jnp.ndarray], optional
             Additional oracle data if needed
-        
+
         Returns
         -------
         jnp.ndarray
             Calculated reserves over time, shape (T, 2)
-        
+
         Notes
         -----
         The implementation handles numeraire ordering internally and
@@ -388,7 +398,7 @@ class GyroscopePool(AbstractPool):
         reserves = jnp.where(needs_swap, jnp.flip(reserves, axis=-1), reserves)
         return reserves
 
-    def _init_base_parameters(
+    def init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -475,9 +485,6 @@ class GyroscopePool(AbstractPool):
 
     def calculate_weights(self, params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
         return jnp.array([0.5, 0.5])
-
-    def make_vmap_in_axes(self, params: Dict[str, Any], n_repeats_of_recurred: int = 0):
-        return make_vmap_in_axes_dict(params, 0, [], [], n_repeats_of_recurred)
 
     def is_trainable(self):
         return False
@@ -621,6 +628,91 @@ class GyroscopePool(AbstractPool):
         run_fingerprint: Dict[str, Any],
         initial_prices: jnp.ndarray,
     ) -> jnp.ndarray:
+        """Calculate lambda and phi parameters that define ECLP pool geometry.
+
+        In ECLP pools, lambda and phi determine the shape of the pool's elliptical trading curve:
+
+        - lambda (λ > 1): Controls curve eccentricity/skew. Higher values create more asymmetric
+          liquidity distribution within the price bounds set by alpha and beta.
+
+        - phi (φ ∈ [0, π/2]): Determines curve rotation. φ = 0 gives symmetric behavior,
+          while φ ≠ 0 creates directional bias. Often it's easier to work with tan(phi)
+          instead of phi, which thus has a range of [0, ∞).
+
+        The method supports two initialization approaches:
+
+        1. Weight-based (via initial_weights_logits):
+           - Converts logits to target weights using softmax
+           - Uses grid search + gradient descent to find (λ, φ) that achieve these weights
+           - Optimizes for both target weights and parameter magnitude
+           - Ensures stable convergence through stop_gradient
+
+        2. Direct (via explicit lam, phi):
+           - Uses provided parameters directly
+           - Caller must ensure parameters satisfy constraints
+           - Typically used for known pool configurations
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Must contain:
+            - 'alpha': float
+                Lower price bound relative to numeraire
+
+            - 'beta': float
+                Upper price bound relative to numeraire
+
+            And either:
+            - 'initial_weights_logits': jnp.ndarray(shape=(2,))
+                Logits for target weights
+
+            Or:
+            - 'lam': float > 1
+                Direct lambda specification
+
+            - 'phi': float in [-π/2, π/2]
+                Direct phi specification
+
+        run_fingerprint : Dict[str, Any]
+            Must contain:
+            - 'tokens': List[str]
+                Token symbols in sorted order
+
+            - 'numeraire': str
+                Numeraire token symbol
+
+            - 'initial_pool_value': float
+                Total pool value in numeraire terms
+
+        initial_prices : jnp.ndarray
+            Initial token prices relative to numeraire, shape (..., 2)
+
+        Returns
+        -------
+        Tuple[float, float]
+            lambda: Price range parameter > 1
+            phi: Rotation angle in [-π/2, π/2] radians
+
+        Notes
+        -----
+        The optimization process:
+
+        1. Explores (λ, φ) space with grid search
+
+        2. Refines best candidate with gradient descent
+
+        3. Falls back to grid search result if descent diverges
+
+        4. Ensures numeraire token is in second position
+
+        Parameter constraints are fundamental to pool stability:
+
+        - λ > 1 ensures finite price range
+
+        - φ ∈ [-π/2, π/2] maintains monotonic price response
+
+        - Both affect capital efficiency and slippage
+        """
         # We assume that the prices are in the correct order for ECLP calculations
         # so we don't need to swap them using _handle_numeraire_ordering
         # BUT, we do need to know if we need to swap them for the weight conversion
