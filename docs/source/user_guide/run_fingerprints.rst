@@ -19,14 +19,15 @@ Core simulation configuration:
         "initial_pool_value": 1000000.0,     # Starting pool value
     }
 
-Optimization Settings
----------------------
+Optimization Settings for Gradient Descent
+------------------------------------------
 
 Control the training process:
 
 .. code-block:: python
 
     run_fingerprint["optimisation_settings"] = {
+        "method": "gradient_descent",
         "base_lr": 0.01,                     # Initial learning rate
         "optimiser": "sgd",                  # Optimizer type
         "batch_size": 8,                     # Training batch size
@@ -36,7 +37,7 @@ Control the training process:
     }
 
 Initial Parameters
-------------------
+~~~~~~~~~~~~~~~~~~
 
 Starting values for strategy parameters:
 
@@ -48,6 +49,31 @@ Starting values for strategy parameters:
         "initial_weights_logits": 1.0,      # Starting weights
         "initial_log_amplitude": -10.0,     # Signal amplitude
     })
+
+Optimization Settings for Gradient-Free Descent
+-----------------------------------------------
+
+For hyperparameter optimization using Optuna:
+
+.. code-block:: python
+
+    run_fingerprint["optimisation_settings"]["method"] = "optuna"
+    run_fingerprint["optimisation_settings"]["optuna_settings"] = {
+        "n_trials": 20,                    # Number of trials
+        "n_jobs": 4,                       # Parallel workers
+        "timeout": 7200,                   # Max runtime (seconds)
+        "parameter_config": {
+            "memory_length": {
+                "low": 1,                  # Min value
+                "high": 200,               # Max value
+                "log_scale": True,         # Use log scale
+            },
+            # ... other parameters ...
+        }
+    }
+
+For more details on the Optuna settings see :doc:`../tutorials/tuning`.
+
 
 Runtime Behavior
 ----------------
@@ -66,32 +92,12 @@ Configure execution details:
         "arb_frequency": 1,                 # Arb check frequency
     })
 
-Advanced Optimization
----------------------
-
-For hyperparameter optimization using Optuna:
-
-.. code-block:: python
-
-    run_fingerprint["optimisation_settings"]["optuna_settings"] = {
-        "n_trials": 20,                    # Number of trials
-        "n_jobs": 4,                       # Parallel workers
-        "timeout": 7200,                   # Max runtime (seconds)
-        "parameter_config": {
-            "memory_length": {
-                "low": 1,                  # Min value
-                "high": 200,               # Max value
-                "log_scale": True,         # Use log scale
-            },
-            # ... other parameters ...
-        }
-    }
 
 Implementation Notes
 --------------------
 
-- All settings have defaults in ``run_fingerprint_defaults``
+- All settings have defaults ``quantammsim/runners/default_run_fingerprints.py``
 - Settings are validated before use
 - Some combinations may be invalid for certain strategies
 
-For how the run_fingerprint is used in simulations, see :func:`quantammsim.runners.train_on_historic_data` and :func:`quantammsim.runners.do_run_on_historic_data`.
+For how the run_fingerprint is used in simulations, see :func:`~quantammsim.runners.train_on_historic_data` and :func:`~quantammsim.runners.do_run_on_historic_data`.

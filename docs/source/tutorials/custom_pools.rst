@@ -1,93 +1,21 @@
-Advanced Usage
-==============
+Implementing a new AMM
+======================
 
-This tutorial covers advanced features of quantamm.
-
-
-Creating Update Rules
----------------------
-
-When designing an update rule, you're essentially creating a function that maps market observations to weight changes. Key considerations:
-
-Weight Calculation
-~~~~~~~~~~~~~~~~~~
-
-The core of any update rule is the logic that converts market observations into desired weight changes.
-
-.. code-block:: python
-
-    from quantammsim.pools.G3M.quantamm.TFMM_base_pool import TFMMBasePool
-
-    class MyCustomRule(TFMMBasePool):
-        @partial(jit, static_argnums=(2))
-        def calculate_raw_weights_outputs(
-            self,
-            params: Dict[str, Any],
-            run_fingerprint: Dict[str, Any],
-            prices: jnp.ndarray,
-            additional_oracle_input: Optional[jnp.ndarray] = None,
-        ) -> jnp.ndarray:
-            # Your weight calculation logic here
-
-
-To create a custom update rule:
-
-1. Inherit from TFMMBasePool
-2. Implement method ``calculate_raw_weights_outputs()``
-3. (Optional) Add custom parameters
-
-Note that the simulator does not enforce causality, so be careful to make sure no look-ahead bias is introduced in the raw weight calculation.
-If you stick to using provided QuantAMM estimators, e.g. the gradient estimator :func:`~quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators.calc_gradients`, then you can be confident that no look-ahead bias is introduced.
-
-The base TFMM implementation handles these automatically after the raw weight calculation.
-
-
-Using Custom Rules
-------------------
-
-To use your custom rule, add it to the function :func:`~quantammsim.pools.creator.create_pool`` giving it a string name, and then pass this string name to the ``rule`` key in the ``run_fingerprint`` dictionary to use it.
-
-.. code-block:: python
-
-    run_fingerprint = {
-        'tokens': ['BTC', 'USDC'],
-        'rule': 'custom',  # Must register your rule in the creator.py file
-        'initial_pool_value': 1000000.0
-    }
-
-Design Considerations
-~~~~~~~~~~~~~~~~~~~~~
-
-When designing update rules, consider:
-
-1. **Responsiveness**: How quickly should weights change?
-2. **Stability**: Avoid oscillations or extreme changes
-3. **Robustness**: Handle edge cases and unusual market conditions
-4. **Computational Efficiency**: Rules run frequently, keep them fast
-5. **Memory Usage**: Consider how much historical data you need
-
-The base TFMM implementation handles many edge cases and constraints, allowing you to focus on the core strategy logic in your update rule.
-Note of course that if the strategy is novel, for QuantAMM V1 it will have to be implemented as a smart contract. Contact the team if you'd like to discuss.
-
-
-Implementing a new pool type
-----------------------------
-
-Above we have seen how to implement a custom update rule *for* a QuantAMM pool.
+We have seen how to implement a custom update rule *for* a QuantAMM pool.
 
 What if you have a totally new type of AMM?
-To implement a new pool *type*, you need to create a new class that implements abstract methods from the :class:`~quantammsim.pools.base_pool.AbstractPool` interface.
+To implement a new pool *type*, you need to create a new class that implements abstract methods from the :class:`quantammsim.pools.AbstractPool` interface.
 
-Let's walk through an example implementation, looking at how :class:`~quantammsim.pools.G3M.balancer.balancer.BalancerPool` implements these requirements.
+Let's walk through an example implementation, looking at how :class:`quantammsim.pools.BalancerPool` implements these requirements.
 
 Note that pools do not hold any state, they only have methods.
 This makes them much easier to make work with JAX, which as a semi-functional language is not well-suited to object-oriented programming.
 The pool classes thus almost act (very informally speaking) as a namespace for methods.
 
 Core Implementation Requirements
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+--------------------------------
 
-Looking at the :class:`~quantammsim.pools.base_pool.AbstractPool` interface, we need to implement:
+Looking at the :class:`quantammsim.pools.AbstractPool` interface, we need to implement:
 
 i. Reserve Calculation Methods
 
@@ -107,12 +35,12 @@ ii. Configuration Methods
    * ``make_vmap_in_axes`` - Configure JAX vectorization
    * ``is_trainable`` - Determine if weights can be trained
 
-See :class:`~quantammsim.pools.base_pool.AbstractPool` for the complete interface specification.
+See :class:`quantammsim.pools.AbstractPool` for the complete interface specification.
 
-The following sections demonstrate how :class:`~quantammsim.pools.G3M.balancer.balancer.BalancerPool` implements these requirements.
+The following sections demonstrate how :class:`quantammsim.pools.BalancerPool` implements these requirements.
 
 Basic Structure
-^^^^^^^^^^^^^^^
+~~~~~~~~~~~~~~~
 
 First, let's look at the class definition and initialization:
 
@@ -221,7 +149,7 @@ The length of the price array is given by ``bout_length``, which is a parameter 
 
 For a base Balancer pool with constant weights, however, we have no dynamic properties (the weights are constant, the fees are fixed at zero here).
 This means that we could happily pass in a price array that is the length of the entire simulation, and then slice it to the relevant period within the ``calculate_reserves_zero_fees`` function.
-But this is the structure required by the :class:`~quantammsim.pools.base_pool.AbstractPool` interface, and is the structure that enables time varying properties.
+But this is the structure required by the :class:`quantammsim.pools.AbstractPool` interface, and is the structure that enables time varying properties.
 
 **Arbitrage control**
 
@@ -513,6 +441,7 @@ Finally, we implement required helper methods:
 .. note::
     JAX enables very efficient vmapping over the parameters of a pool, and out the box this is enabled via the method :func:`~quantammsim.pools.base_pool.AbstractPool.make_vmap_in_axes` provided in the base class.
     If the pool has a particularly complex structure in its parameters, however, (e.g. dicts of dicts where different levels of the hierachy have different vmap axes, for example) it may be necessary to implement a custom method to enable vmapping over that pool's params dict.
+
 
 .. note::
     After a pool class is created, it should be registered with JAX as a pytree.

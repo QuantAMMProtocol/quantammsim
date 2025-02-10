@@ -31,21 +31,20 @@ Let's examine what the simulation tells us:
 .. code-block:: python
 
     # Access key metrics
-    print(f"Final pool value: {result.final_pool_value}")
-    print(f"Total trading volume: {result.total_volume}")
+    print(f"Final pool value: {result["value"][-1]}")
 
 
 Now that you've run your first simulation, you might want to:
 
 * Learn about the principles of dynamic pools (see :doc:`./introduction_to_dynamic_pools`)
 * Read about how QuantAMM pools work (see :doc:`./quantamm_pools`)
-* Explore Balancer and CowAMM pools (see :doc:`./balancer_pools` and :doc:`./cow_pools`)
-* Learn about the mechanics of the pools (see :doc:`../api/core/pools`)
+* Explore Balancer, CowAMM, and Gyroscope pools (see :doc:`./balancer_pools`, :doc:`./cow_pools`, :doc:`./gyroscope_pools`)
+* Learn about deeper mechanics and implementation of the pools (see :doc:`../api/core/pools`)
 
 Basic Usage
 -----------
 
-Let's walk through a simple example of simulating a BTC/DAI pool using the momentum strategy:
+Let's walk through a simple example of simulating a BTC/DAI QuantAMM pool with a momentum strategy:
 
 .. code-block:: python
 
@@ -79,9 +78,7 @@ The run_fingerprint supports many additional parameters for fine-tuning the simu
 
     run_fingerprint = {
         # ... basic parameters ...
-        'weight_interpolation_method': 'linear',  # How weights change between updates
-        'fees': 0.0,                             # Trading fees
-        'initial_memory_length': 20.0,           # Lookback period for strategies
+        'fees': 0.003,                           # Trading fees (30 bps)
         'maximum_change': 0.0003                 # Max weight change per update
     }
 

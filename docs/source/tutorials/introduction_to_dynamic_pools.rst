@@ -90,7 +90,7 @@ where:
 Very often the update rule acts to add a weight change to the previous weights, with the weight *change* being a function of the current oracle values, some strategy parameters, and some running variables.
 
 .. math::
-   \mathbf{w}_{t+1} = \\mathbf{w}_t + f(\mathbf{w}_t, \mathbf{p}_t, \theta)
+   \mathbf{w}_{t+1} = \mathbf{w}_t + f(\mathbf{w}_t, \mathbf{p}_t, \theta)
 
 For more details on the update rule, see :doc:`../tutorials/quantamm_pools` and the `TFMM litepaper <https://quantamm.fi/research>`_.
 
@@ -102,7 +102,7 @@ The QuantAMM protocol itself implements linear interpolation, which is both simp
 See Appendix A.3. of the `TFMM litepaper <https://quantamm.fi/research>`_ for more details on the benefits of interpolation.
 
 We include in the simulator a more advanced method based around approximations to the Lambert W function, which is more accurate but more expensive to run.
-See `this paper <https://arxiv.org/abs/2403.18737>`_ for more details.
+See this `paper <https://arxiv.org/abs/2403.18737>`_ for more details.
 
 Guardrails
 ~~~~~~~~~~
@@ -117,13 +117,13 @@ There are reasons, however, why pool creators might want to set a higher minimum
 On blockchains where neighbouring blocks might have the same block builder there can be opportunities for a multiblock MEV attack.
 By setting a higher minimum weight and restricting the weight change per block, pool creators can make this potential attack uneconomical, for a given number of blocks under attack.
 
-For more details on the potentical manipulation and on guardrails see `this paper <https://arxiv.org/abs/2404.15489>_` and `TFMM litepaper <https://quantamm.fi/research>`_ Appendix C.
+For more details on the potentical manipulation and on guardrails see `this paper <https://arxiv.org/abs/2404.15489>`_ and `TFMM litepaper <https://quantamm.fi/research>`_ Appendix C.
 
 For chains with centralised, trusted block builders, these multiblock MEV attacks may be less of a concern.
-The standard settings in the simulator are to set a minimum weight of 3% and a maximum weight change of 0.0003 per minute (which corresponds to cover for ~5 blocks on mainnet, see `paper <https://arxiv.org/abs/2404.15489>_`).
+The standard settings in the simulator are to set a minimum weight of 3% and a maximum weight change of 0.0003 per minute (which corresponds to cover for ~5 blocks on mainnet, see `this paper on multiblock MEV <https://arxiv.org/abs/2404.15489>`_).
 
 Implementation
 ~~~~~~~~~~~~~~
 
-The TFMM base class, :class:`~quantamm.pools.quantamm.TFMM_base_pool` implements the logic needed for the application of guardrails and for weight change interpolation.
-This means that QuantAMM pools can be created by simply subclassing :class:`~quantamm.pools.quantamm.TFMM_base_pool` and implementing the update rule as the method :meth:`~quantamm.pools.quantamm.TFMM_base_pool.calculate_raw_weights_outputs` (plus a few helper methods for initialising/handling the particular parameters the pool's strategy needs).
+The TFMM base class, :class:`~quantammsim.pools.TFMMBasePool` implements the logic needed for the application of guardrails and for weight change interpolation.
+This means that QuantAMM pools can be created by simply subclassing :class:`~quantammsim.pools.TFMMBasePool` and implementing the update rule as the method :meth:`~quantammsim.pools.TFMMBasePool.calculate_raw_weights_outputs` (plus a few helper methods for initialising/handling the particular parameters the pool's strategy needs).

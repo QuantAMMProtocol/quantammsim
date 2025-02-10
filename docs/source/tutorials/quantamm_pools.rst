@@ -1,15 +1,15 @@
 QuantAMM: Pools as Portfolios
 =============================
 
-QuantAMM pools implement Temporal Function Market Making (TFMM) - a system where pool behavior is determined by dynamic weight vectors that evolve based on market conditions.
-These changes in pool behavior lead to changes in the pool's composition.
+QuantAMM pools implement Temporal Function Market Making (TFMM): pool behavior is determined by dynamic weight vectors that evolve based on market conditions.
+These changes in pool weights lead to changes in the pool's composition by the action of arbitrageurs.
 
 If you're new to QuantAMM pools, you should start with :doc:`../tutorials/introduction_to_dynamic_pools`, which describes the overall structure of how weight changes are done in Temporal Function Market Making and in this simulator.
 
 We provide here in the simulator the same strategies that are implemented in V1 of the QuantAMM protocol.
 Users can also experiment with custom strategies in this simulator, but support for custom strategies in the onchain protocol is not yet fully implemented.
 If you are interested in deploying a custom strategy as a smart contract, please get in touch.
-See :doc:`../tutorials/advanced_usage` for more detail on how to implement a custom strategy in the simulator.
+See :doc:`../tutorials/custom_rules` for more detail on how to implement a custom strategy in the simulator.
 
 This page provides an overview of the actual strategies we have implemented in the simulator.
 
@@ -19,8 +19,6 @@ This page provides an overview of the actual strategies we have implemented in t
    :local:
    :backlinks: none
 
-Pre-implemented Strategies
---------------------------
 
 Strategy Implementations:
 
@@ -34,9 +32,9 @@ Strategy Implementations:
 All of these strategies use pre-defined *estimators* to extract signals from price/oracle data.
 There are three core estimators:
 
-* ``calc_gradients``: Calculates the gradient of a price/oracle value with respect to time
-* ``calc_covariances``: Calculates the covariance of a price/oracle value with respect to time
-* ``calc_ewma``: Calculates the exponentially-weighted moving average of a price/oracle value with respect to time
+* :func:`~quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators.calc_gradients`: Calculates the gradient of a price/oracle value with respect to time
+* :func:`~quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators.calc_return_variances`: Calculates the covariance of a price orcale's return values with respect to time
+* :func:`~quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators.calc_ewma_pair`: Calculates two exponentially-weighted moving averages of a price/oracle value with respect to time
 
 .. note::
    For the rest of this page, we will use the term "price" to refer to any oracle value, as all these estimators are used to calculate price-related signals, but non-price oracles can be used as well.
@@ -57,7 +55,7 @@ The estimators are carefully written to avoid look-ahead bias.
 .. _constrained-vs-unconstrained:
 
 Constrained vs unconstrained parameters
-"""""""""""""""""""""""""""""""""""""""
+---------------------------------------
 
 The behaviour of an update rule is controlled by the numerical values of its parameters.
 One of the key purposes of this simulator is to allow users to optimise these parameters
@@ -65,11 +63,14 @@ But a given strategy can be parameterised in many different ways.
 In the pre-implemented strategies we often parameterise a strategy not in terms that are most human readable but in terms that are most convenient for optimisation.
 Why do this? Generally we choose underlying parameterisations that enable us to perform unconstrained optimisation.
 For exaple, often we do not directly work with the memory length of a strategy, nor even its :math:`\lambda` parameter, but instead a logit representation of :math:`\lambda`.
-:math:`\lambda` = :math:`\text{sigmoid}(\mathrm{logit\_lambda})`.
-:math:`\mathrm{logit\_lambda}` is a free parameter that can take any value, and the sigmoid function ensures that :math:`\lambda` is always between 0 and 1 by constuction.
+:math:`\lambda` = :math:`\text{sigmoid}(\mathrm{logit_lambda})`.
+:math:`\mathrm{logit_lambda}` is a free parameter that can take any value, and the sigmoid function ensures that :math:`\lambda` is always between 0 and 1 by constuction.
 
 This means that we sometimes have to interconvert between the underlying parameterisation and the human-readable parameterisation.
 For example, we have a method :func:`quantammsim.pools.TFMMBasePool.process_parameters` that takes the human-readable parameterisation (which is what is displayed in the simulator frontend) and converts it into the underlying parameterisation.
+
+Pre-implemented Strategies
+--------------------------
 
 Momentum Pool
 """""""""""""

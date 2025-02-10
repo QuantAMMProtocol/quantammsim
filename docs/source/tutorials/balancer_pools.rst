@@ -181,7 +181,6 @@ Next Steps
 To learn more about:
 
 * Different pool types, see :doc:`../user_guide/core_concepts`
-* Advanced features, see :doc:`./advanced_usage`
 * Implementation details, see :doc:`../api/core/pools`
 * Mathematical foundations, see the `Balancer whitepaper <https://balancer.fi/whitepaper.pdf>`_
 

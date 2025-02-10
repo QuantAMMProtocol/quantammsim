@@ -424,9 +424,9 @@ def calc_return_variances(
     update_rule_parameter_dict : dict
         Dictionary containing strategy parameters, supporting two parameterizations:
         1. Direct memory specification:
-           - 'memory_days_1': Direct specification of memory length in days
+        - 'memory_days_1': Direct specification of memory length in days
         2. Logit parameterization:
-           - 'logit_lamb': Controls memory length through logit transform
+        - 'logit_lamb': Controls memory length through logit transform
     chunkwise_price_values : ndarray
         Array of shape (time_steps, n_assets) containing price values for each asset
         over time
@@ -446,15 +446,15 @@ def calc_return_variances(
     Notes
     -----
     The function implements two calculation paths:
-    
+
     1. GPU path: Uses convolution operations for efficient parallel computation
-       - Pads input data to handle initialization
-       - Creates specialized kernels for variance calculation
-       - Combines EWMA and covariance kernels for efficient computation
-    
+    - Pads input data to handle initialization
+    - Creates specialized kernels for variance calculation
+    - Combines EWMA and covariance kernels for efficient computation
+
     2. CPU path: Uses scan operations for sequential computation
-       - More memory efficient for smaller datasets
-       - Direct implementation of variance formula
+    - More memory efficient for smaller datasets
+    - Direct implementation of variance formula
 
     The variance calculation follows the methodology described in the TFMM litepaper,
     using exponential weighting to estimate return variances while avoiding look-ahead bias.

@@ -23,8 +23,8 @@ Constant Weight Pools
    BalancerPool
    CowPool
 
-Dynamic Weight Pools
---------------------
+QuantAMM Dynamic Weight Pools
+-----------------------------
 
 .. autosummary::
    :toctree: generated/
@@ -45,3 +45,12 @@ Concentrated Pools
    :nosignatures:
 
    GyroscopePool
+
+Helper Functions
+----------------
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+
+   creator.create_pool

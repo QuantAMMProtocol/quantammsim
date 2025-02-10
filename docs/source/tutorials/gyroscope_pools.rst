@@ -1,12 +1,13 @@
 Gyroscope Pools
 ===============
 
-This tutorial explains Gyroscope pools, which implement the Embedded Constant Liquidity Provider (ECLP) design with support for weight targeting and efficient GPU-accelerated computation.
+This tutorial explains Gyroscope pools, Elliptic Concentrated Liquidity Pools (E-CLP), with support for weight targeting and efficient GPU-accelerated computation.
+These pools enable efficient concentrated liquidity within price bounds while still having fungible liquidity.
 
 Key Features
 ~~~~~~~~~~~~
 
-* ECLP design with matrix-based price calculations
+* E-CLP design with matrix-based price calculations
 * Weight targeting through lambda/phi optimization
 * Price bounds through alpha/beta parameters
 * Dynamic fee support
@@ -114,9 +115,8 @@ Fine-tune arbitrage behavior:
 
     run_fingerprint.update({
         'gas_cost': 0.0001,              # Minimum profit threshold
-        'arb_fees': 0.0002,              # External arbitrage costs
+        'arb_fees': 0.0002,              # External fees paid by arbitrageurs when they liquidate their positions
         'arb_frequency': 5,              # Check every 5 minutes
-        'arb_quality': 0.8,              # Blend between perfect/imperfect arbitrage
     })
 
 Performance Considerations
@@ -143,6 +143,5 @@ Next Steps
 To learn more about:
 
 * Different pool types, see :doc:`../user_guide/core_concepts`
-* Advanced features, see :doc:`./advanced_usage`
 * Implementation details, see :doc:`../api/core/pools`
-* Mathematical foundations, see the `ECLP paper <https://3407769812-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2F-MU527HCtxlYaQoNazhF%2Fuploads%2FLK4MN8COTAR2EjAdQNlH%2FE-CLP%20Mathematics.pdf?alt=media&token=f77bc40b-9262-41de-bde1-55b000c7bd6e>`_ 
+* Mathematical foundations, see the `E-CLP paper <https://3407769812-files.gitbook.io/~/files/v0/b/gitbook-x-prod.appspot.com/o/spaces%2F-MU527HCtxlYaQoNazhF%2Fuploads%2FLK4MN8COTAR2EjAdQNlH%2FE-CLP%20Mathematics.pdf?alt=media&token=f77bc40b-9262-41de-bde1-55b000c7bd6e>`_ 

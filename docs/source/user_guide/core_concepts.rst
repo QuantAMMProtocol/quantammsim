@@ -4,11 +4,12 @@ Core Concepts
 AMM Mechanisms
 --------------
 
-quantammsim implements two main AMM mechanisms:
+quantammsim implements four main AMM mechanisms:
 
 1. Balancer Protocol
 2. QuantAMM Protocol
 3. CowAMM Protocol
+4. Gyroscope Protocol
 
 Weight Update Rules
 -------------------
@@ -64,20 +65,13 @@ Example::
     }
 
 
-Vector vs Scalar Parameters
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Vector vs Scalar (Universal) Parameters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-While the examples above show scalar parameters, both :math:`k` and :math:`\lambda` can be specified as vectors to give different values for each asset in the pool:
+While the examples above show scalar (universal) parameters, both :math:`k` and :math:`\lambda` can be specified as vectors to give different values for each asset in the pool:
 
-* Scalar parameters: Same value applies to all assets
+* Scalar (universal) parameters: Same value applies to all assets
 * Vector parameters: Different values for each asset
-
-For example, in a BTC/ETH/DAI pool::
-
-    run_fingerprint = {
-        'initial_k_per_day': [30, 20, 10],  # More aggressive for BTC, less for DAI
-        'initial_memory_length': [5.0, 7.0, 10.0],  # Shorter memory for BTC
-    }
 
 This allows fine-tuning of how aggressively each asset's weight responds to market conditions. Common use cases include:
 
@@ -86,5 +80,3 @@ This allows fine-tuning of how aggressively each asset's weight responds to mark
 * Custom parameter sets for different market regimes
 
 Note that when using vector parameters, the length must match the number of assets in the pool.
-
-quantammsim natively supports vector parameters.

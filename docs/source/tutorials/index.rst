@@ -10,7 +10,9 @@ These tutorials will help you get started with quantammsim.
    pool_architecture
    introduction_to_dynamic_pools
    quantamm_pools
+   custom_rules
    balancer_pools
    cow_pools
    gyroscope_pools
-   advanced_usage
+   custom_pools
+   tuning
