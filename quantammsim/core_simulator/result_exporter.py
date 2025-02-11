@@ -162,6 +162,7 @@ def save_multi_params(
     if os.path.isfile(run_location) is False:
         results = [run_fingerprint] + params
         dumped = json.dumps(results, cls=NumpyEncoder, sort_keys=True)
+        os.makedirs(os.path.dirname(run_location), exist_ok=True)
         with open(run_location, "w", encoding="utf-8") as json_file:
             json.dump(dumped, json_file, indent=4)
     else:
