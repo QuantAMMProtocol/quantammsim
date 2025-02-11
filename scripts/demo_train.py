@@ -18,7 +18,7 @@ DEFAULT_FINGERPRINT = {
         "method": "optuna",
         "optuna_settings": {
             "n_jobs": 8,
-            "n_trials": 50,
+            "n_trials": 500,  # can be made higher, e.g. 5000 or more
             "multi_objective": True,
             "make_scalar": True,
         },
