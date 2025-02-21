@@ -142,14 +142,14 @@ The zero fees implementation is the simplest and most performant:
 
 While it might be natural to consider passing in a price array that corresponds exactly the time period covered by the simulation, it can actually be neater for some use cases to pass in a price array that is longer than the simulation period, and then slice the price array to the relevant period within these functions.
 
-This is particularly useful for pools that have dynamic properties that change over time, such as time-varying fees or dynamic weights, as these features very often will depend on earlier prices than those of the just the simulation period.
+This is particularly useful for pools that have dynamic properties that change over time, such as time-varying fees or dynamic weights, as these features very often will depend on earlier prices than those of just the simulation period.
 
 So in the ``calculate_reserves_zero_fees`` function, we see that we pass in a ``start_index`` parameter, which is used to slice the price array to the relevant period.
 The length of the price array is given by ``bout_length``, which is a parameter of the ``run_fingerprint`` dictionary.
 
 For a base Balancer pool with constant weights, however, we have no dynamic properties (the weights are constant, the fees are fixed at zero here).
-This means that we could happily pass in a price array that is the length of the entire simulation, and then slice it to the relevant period within the ``calculate_reserves_zero_fees`` function.
-But this is the structure required by the :class:`quantammsim.pools.AbstractPool` interface, and is the structure that enables time varying properties.
+This means that we could happily pass in a price array that is just the length of the simulation period.
+But the dynamic slicing of the completed price array is the structure required by the :class:`quantammsim.pools.AbstractPool` interface, and is the structure that enables time varying properties.
 
 **Arbitrage control**
 
@@ -186,6 +186,7 @@ b. **Price Matching and Equilibrium**
 After arbitrage, in the zero fees case, the pool's marginal prices exactly match the external market prices.
 The pool's quoted price for a marginal trade of the :math:`i`\ :sup:`th` asset is proportional to  :math:`\frac{w_i}{R_i}`.
 So we have that, after arbitrage,
+
 .. math::
 
        \frac{\frac{w_i}{R_i}}{\frac{w_j}{R_j}} = \frac{p_i}{p_j},
@@ -194,7 +195,7 @@ where :math:`p_k` is the price of asset :math:`k` on the external market in a pa
 
 Combining these ideas, we can derive the reserve ratio formula for a Balancer pool with constant weights,
 
-   .. math::
+.. math::
 
        \frac{R_i(t')}{R_i(t)} = \frac{p_i(t)}{p_i(t')} \prod_{j=1}^N \left(\frac{p_j(t')}{p_j(t)}\right)^{w_j}.
 

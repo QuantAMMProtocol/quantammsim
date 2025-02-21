@@ -20,6 +20,7 @@ setup(
         "plotly",
         "bidask",
         "Historic_Crypto",
+        "gdown",
     ],
     extras_require={
         "dev": [
@@ -33,6 +34,7 @@ setup(
             "sphinx",
             "sphinx-automodapi",
             "sphinx-rtd-theme",
+            "sphinx-tabs",
         ],
     },
     python_requires=">=3.8",

@@ -14,10 +14,10 @@ The weight vector :math:`\mathbf{w} = (w_1, \ldots, w_N)` determines the desired
 In base Balancer pools the weight vector is constant over time.
 (A Uniswap V2 pool is a special case of a Balancer pool where :math:`N=2` and the weights are equal to 1/2 for both tokens.)
 
-For example, in a BTC/DAI pool:
+For example, in a BTC/USDC pool:
 
 - :math:`\mathbf{w} = (0.5, 0.5)` means the pool wants equal value in both tokens
-- :math:`\mathbf{w} = (0.7, 0.3)` means the pool wants 70% of its value in BTC, 30% in DAI
+- :math:`\mathbf{w} = (0.7, 0.3)` means the pool wants 70% of its value in BTC, 30% in USDC
 
 .. note::
    Weights must always sum to 1.0 (to give them a clear interpretation as a percentage of the pool's value, see below), and for implementation reasons each weight must stay above a minimum threshold (Balancer V3 requires weights must be at least 1%, and QuantAMM pool creators can choose a higher minimum threshold, e.g. 3%).

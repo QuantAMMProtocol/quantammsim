@@ -87,14 +87,14 @@ Quick Start
    from quantammsim.runners.jax_runners import do_run_on_historic_data
    
    run_fingerprint = {
-       'tokens': ['BTC', 'DAI'],
+       'tokens': ['BTC', 'USDC'],
        'rule': 'momentum',
        'initial_pool_value': 1000000.0,
        'startDateString': '2024-01-01 00:00:00',
        'endDateString': '2024-06-15 00:00:00',
    }
    
-   result = do_run_on_historic_data(run_fingerprint)
+   result = do_run_on_historic_data(run_fingerprint, verbose=True)
 
 .. _this paper: https://arxiv.org/abs/2307.02074
 .. _the TFMM litepaper: https://cdn.prod.website-files.com/6616670ddddc931f1dd3aa73/6617c4c2381409947dc42c7a_TFMM_litepaper.pdf

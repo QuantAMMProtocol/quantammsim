@@ -37,12 +37,12 @@ Here's how to create and simulate a basic Balancer pool:
 
     from quantammsim.runners.jax_runners import do_run_on_historic_data
 
-    # Configure a 80/20 BTC/DAI pool
+    # Configure a 80/20 BTC/USDC pool
     run_fingerprint = {
-        'tokens': ['BTC', 'DAI'],
+        'tokens': ['BTC', 'USDC'],
         'pool_type': 'balancer',
         'initial_pool_value': 1000000.0,  # $1M initial pool value
-        'weights': [0.8, 0.2],           # 80% BTC, 20% DAI
+        'weights': [0.8, 0.2],           # 80% BTC, 20% USDC
         'fees': 0.002,                   # 0.2% trading fee
         'gas_cost': 0.0001,              # Minimum profit threshold for arbitrage
         'arb_frequency': 1,              # How often arbitrageurs can act
@@ -65,7 +65,7 @@ Balancer supports pools with any number of tokens (the protocol supports up to 8
 
     # Create a three-token pool
     run_fingerprint = {
-        'tokens': ['ETH', 'BTC', 'DAI'],
+        'tokens': ['ETH', 'BTC', 'USDC'],
         'pool_type': 'balancer',
         'initial_pool_value': 1000000.0,
         'weights': [0.4, 0.4, 0.2],      # 40/40/20 split

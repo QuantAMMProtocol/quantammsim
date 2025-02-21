@@ -9,18 +9,12 @@ quantammsim is a Python library for modeling synthetic markets, enabling modelli
 * Simulation of trading strategies
 * Tuning of pool parameters/strategies
 
+See our :doc:`installation guide <installation>` to get started.
+
 Quick Start
 -----------
 
-Install quantammsim:
-
-.. code-block:: bash
-
-   git clone https://github.com/QuantAMMProtocol/quantammsim.git
-   cd quantammsim
-   pip install -e .
-
-Basic usage:
+Once installed, here's a basic usage example:
 
 .. code-block:: python
 
@@ -28,13 +22,13 @@ Basic usage:
 
    # Define experiment parameters
    run_fingerprint = {
-       'tokens': ['BTC', 'DAI'],
+       'tokens': ['BTC', 'USDC'],
        'rule': 'momentum',
        'initial_pool_value': 1000000.0
    }
 
    # Run simulation
-   result = do_run_on_historic_data(run_fingerprint)
+   result = do_run_on_historic_data(run_fingerprint, verbose=True)
 
 .. toctree::
    :maxdepth: 2

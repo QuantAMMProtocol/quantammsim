@@ -14,7 +14,7 @@ Let's create a simple momentum-based AMM pool and run a simulation:
 
     # Set up a basic simulation
     run_fingerprint = {
-        'tokens': ['BTC', 'DAI'],
+        'tokens': ['BTC', 'USDC'],
         'rule': 'momentum',
         'initial_pool_value': 1000000.0
     }
@@ -44,7 +44,7 @@ Now that you've run your first simulation, you might want to:
 Basic Usage
 -----------
 
-Let's walk through a simple example of simulating a BTC/DAI QuantAMM pool with a momentum strategy:
+Let's walk through a simple example of simulating a BTC/USDC QuantAMM pool with a momentum strategy:
 
 .. code-block:: python
 
@@ -52,7 +52,7 @@ Let's walk through a simple example of simulating a BTC/DAI QuantAMM pool with a
 
     # Define the basic parameters for our simulation
     run_fingerprint = {
-        'tokens': ['BTC', 'DAI'],        # Token pair to simulate
+        'tokens': ['BTC', 'USDC'],        # Token pair to simulate
         'rule': 'momentum',              # Weight update strategy
         'initial_pool_value': 1000000.0, # Starting liquidity
         'chunk_period': 60,              # Update frequency in minutes
