@@ -2,6 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="quantammsim",
+    version="0.1.0",
     packages=find_packages(),
     install_requires=[
         "jax>=0.4.0",
@@ -34,7 +35,6 @@ setup(
             "sphinx",
             "sphinx-automodapi",
             "sphinx-rtd-theme",
-            "sphinx-tabs",
         ],
     },
     python_requires=">=3.8",
