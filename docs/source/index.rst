@@ -19,16 +19,20 @@ Once installed, here's a basic usage example:
 .. code-block:: python
 
    from quantammsim.runners.jax_runners import do_run_on_historic_data
-
+   import jax.numpy as jnp
    # Define experiment parameters
    run_fingerprint = {
        'tokens': ['BTC', 'USDC'],
-       'rule': 'momentum',
+       'rule': 'balancer',
        'initial_pool_value': 1000000.0
    }
 
+   params = {
+       "initial_weights_logits": jnp.array([0.0, 0.0]),
+   }
+
    # Run simulation
-   result = do_run_on_historic_data(run_fingerprint, verbose=True)
+   result = do_run_on_historic_data(run_fingerprint, params, verbose=True)
 
 .. toctree::
    :maxdepth: 2

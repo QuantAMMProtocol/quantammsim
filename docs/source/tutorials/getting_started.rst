@@ -15,11 +15,16 @@ Let's create a simple momentum-based AMM pool and run a simulation:
     # Set up a basic simulation
     run_fingerprint = {
         'tokens': ['BTC', 'USDC'],
-        'rule': 'momentum',
+        'rule': 'balancer',
         'initial_pool_value': 1000000.0
     }
 
-    result = do_run_on_historic_data(run_fingerprint)
+    params = {
+        "initial_weights_logits": jnp.array([0.0, 0.0]),
+    }
+
+    # Run simulation
+    result = do_run_on_historic_data(run_fingerprint, params, verbose=True)
 
 Anything not set in the run_fingerprint will take on a default value
 
@@ -53,15 +58,19 @@ Let's walk through a simple example of simulating a BTC/USDC QuantAMM pool with 
     # Define the basic parameters for our simulation
     run_fingerprint = {
         'tokens': ['BTC', 'USDC'],        # Token pair to simulate
-        'rule': 'momentum',              # Weight update strategy
+        'rule': 'balancer',              # Weight update strategy
         'initial_pool_value': 1000000.0, # Starting liquidity
         'chunk_period': 60,              # Update frequency in minutes
         'startDateString': '2023-06-01 00:00:00',
         'endDateString': '2023-12-31 23:59:59'
     }
 
-    # Run the simulation
-    result = do_run_on_historic_data(run_fingerprint)
+    params = {
+        "initial_weights_logits": jnp.array([0.0, 0.0]),
+    }
+
+    # Run simulation
+    result = do_run_on_historic_data(run_fingerprint, params, verbose=True)
 
     # The result contains various metrics and time series including:
     # - Token prices

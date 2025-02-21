@@ -48,9 +48,13 @@ Here's how to create and simulate a basic Balancer pool:
         'arb_frequency': 1,              # How often arbitrageurs can act
         'do_arb': True                   # Enable arbitrage simulation
     }
+    
+    params = {
+       "initial_weights_logits": jnp.array([0.0, 0.0]),
+    }
 
-    # Run the simulation
-    result = do_run_on_historic_data(run_fingerprint)
+    # Run simulation
+    result = do_run_on_historic_data(run_fingerprint, params, verbose=True)
 
 Advanced Features
 -----------------
