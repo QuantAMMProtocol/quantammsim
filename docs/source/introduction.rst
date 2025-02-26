@@ -85,6 +85,7 @@ Quick Start
 .. code-block:: python
 
    from quantammsim.runners.jax_runners import do_run_on_historic_data
+   import jax.numpy as jnp
    
    run_fingerprint = {
        'tokens': ['BTC', 'USDC'],
@@ -94,8 +95,9 @@ Quick Start
        'endDateString': '2024-06-15 00:00:00',
    }
    
+    # Initialise pool parameters, equal weights. Equivalent to a Uniswap v2 poo;
     params = {
-       "initial_weights_logits": jnp.array([0.0, 0.0]),
+       "initial_weights": jnp.array([0.5, 0.5]),
     }
 
     # Run simulation

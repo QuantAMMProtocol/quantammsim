@@ -19,7 +19,6 @@ from jax import jit, vmap
 from jax import devices, device_put
 from jax import tree_util
 from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
 
 from quantammsim.pools.G3M.quantamm.TFMM_base_pool import TFMMBasePool
 from quantammsim.core_simulator.param_utils import (

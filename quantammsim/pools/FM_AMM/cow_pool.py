@@ -22,7 +22,6 @@ from jax import jit, vmap
 from jax import device_put
 from jax import tree_util
 from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
 
 from typing import Dict, Any, Optional, Callable
 from functools import partial
@@ -65,7 +64,7 @@ class CowPool(AbstractPool):
     n_parameter_sets=1, noise="gaussian") -> Dict[str, Any]:
         Initializes the base parameters for the pool. Cow pools have no parameters.
 
-    calculate_weights(params, *args, **kwargs) -> jnp.ndarray:
+    calculate_initial_weights(params, *args, **kwargs) -> jnp.ndarray:
         Calculates the weights for the assets in the pool. For CowPool, 
         the weights are always [0.5, 0.5].
 
@@ -88,7 +87,7 @@ class CowPool(AbstractPool):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-        weights = self.calculate_weights(params)
+        weights = self.calculate_initial_weights(params)
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
@@ -141,7 +140,7 @@ class CowPool(AbstractPool):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-        weights = self.calculate_weights(params)
+        weights = self.calculate_initial_weights(params)
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
@@ -201,7 +200,7 @@ class CowPool(AbstractPool):
         n_assets = run_fingerprint["n_assets"]
 
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
-        weights = self.calculate_weights(params)
+        weights = self.calculate_initial_weights(params)
 
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_local_prices = local_prices[
@@ -295,15 +294,6 @@ class CowPool(AbstractPool):
         }
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
-
-    def calculate_weights(
-        self, params: Dict[str, jnp.ndarray], *args, **kwargs
-    ) -> jnp.ndarray:
-        initial_weights_logits = params.get("initial_weights_logits")
-        # we dont't want to change the weights during any training
-        # so wrap them in a stop_grad
-        weights = softmax(stop_gradient(initial_weights_logits))
-        return weights
 
     def is_trainable(self):
         return False

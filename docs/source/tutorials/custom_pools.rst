@@ -50,14 +50,7 @@ First, let's look at the class definition and initialization:
         def __init__(self):
             super().__init__()
 
-        def calculate_weights(self, params):
-            """Calculate fixed weights using softmax of initial logits."""
-            return softmax(params["initial_weights_logits"])
-
 Note the empty ``__init__`` method--pools do not hold any state, they only have methods.
-
-Not all pools will have weights (though some hooks might require them) so the abstract class does not require this method.
-Balancer pools, however, do have weights, so we need to implement this method for them.
 
 Reserve Calculations
 ^^^^^^^^^^^^^^^^^^^^
@@ -79,7 +72,7 @@ The zero fees implementation is the simplest and most performant:
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-            """
+        """
         Calculate reserves assuming zero fees and perfect arbitrage.
 
         Uses JAX-accelerated function _jax_calc_balancer_reserve_ratios for efficient
@@ -89,7 +82,7 @@ The zero fees implementation is the simplest and most performant:
         Implementation Notes:
         ---------------------
         1. Uses dynamic_slice for price window
-        2. Applies constant weights from calculate_weights
+        2. Applies constant weights from calculate_initial_weights
         3. Computes reserve ratios directly
         4. Uses cumprod for reserve calculation
         5. Handles no-arbitrage case via broadcasting
@@ -97,7 +90,7 @@ The zero fees implementation is the simplest and most performant:
         Parameters
         ----------
         params : Dict[str, Any]
-            Pool parameters containing initial_weights_logits
+            Pool parameters containing initial_weights_logits or initial_weights
         run_fingerprint : Dict[str, Any]
             Simulation parameters
         prices : jnp.ndarray

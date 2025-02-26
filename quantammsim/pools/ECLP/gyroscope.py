@@ -19,7 +19,6 @@ from jax import jit, vmap
 from jax import device_put
 from jax import tree_util
 from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
 
 from functools import partial
 
@@ -483,9 +482,6 @@ class GyroscopePool(AbstractPool):
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
 
-    def calculate_weights(self, params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
-        return jnp.array([0.5, 0.5])
-
     def is_trainable(self):
         return False
 
@@ -641,8 +637,8 @@ class GyroscopePool(AbstractPool):
 
         The method supports two initialization approaches:
 
-        1. Weight-based (via initial_weights_logits):
-           - Converts logits to target weights using softmax
+        1. Weight-based (via initial_weights_logits or weights):
+           - Converts logits (if provided) to target weights using softmax
            - Uses grid search + gradient descent to find (λ, φ) that achieve these weights
            - Optimizes for both target weights and parameter magnitude
            - Ensures stable convergence through stop_gradient
@@ -720,9 +716,9 @@ class GyroscopePool(AbstractPool):
         # and then use the result to determine if we need to swap
         _, needs_swap = self._handle_numeraire_ordering(initial_prices, run_fingerprint)
 
-        if "initial_weights_logits" in params:
+        if "initial_weights_logits" in params or "weights" in params:
             # Calculate target weight from logits
-            weights = stop_gradient(softmax(params["initial_weights_logits"]))
+            weights = self.calculate_initial_weights(params)
             target_weight = jnp.where(needs_swap, weights[1], weights[0])
 
             # Optimize lambda and phi to match target weight

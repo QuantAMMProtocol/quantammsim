@@ -1,4 +1,3 @@
-
 from typing import Dict, Any, Optional
 import numpy as np
 
@@ -6,7 +5,6 @@ import numpy as np
 from jax import config, devices, tree_util
 import jax.numpy as jnp
 from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
 from jax import default_backend
 
 from quantammsim.pools.base_pool import AbstractPool
@@ -50,8 +48,8 @@ class HODLPool(AbstractPool):
         n_parameter_sets=1, noise="gaussian"):
     Initializes the base parameters for the pool, including weights and other initial values.
 
-    calculate_weights(params):
-        Calculates the weights for the assets in the pool based on the initial weights logits.
+    calculate_initial_weights(params):
+        Calculates the initial weights for the assets in the pool based on the initial weights logits.
 
     make_vmap_in_axes(params, n_repeats_of_recurred=0):
         Creates a dictionary for vectorized mapping of input axes.
@@ -76,7 +74,7 @@ class HODLPool(AbstractPool):
             params, run_fingerprint, prices, start_index, additional_oracle_input
         )
 
-    def calculate_reserves_zero_fees(
+    def _calculate_reserves_zero_fees(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -85,7 +83,7 @@ class HODLPool(AbstractPool):
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         # hodl means no activity, so reserves are just the initial reserves
-        weights = self.calculate_weights(params)
+        weights = self.calculate_initial_weights(params)
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
 
@@ -99,6 +97,28 @@ class HODLPool(AbstractPool):
         # calculate the reserves by cumprod of reserve ratios
         reserves = jnp.repeat(initial_reserves[jnp.newaxis, :], bout_length - 1, axis=0)
         return reserves
+
+    def calculate_reserves_zero_fees(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        start_index: jnp.ndarray,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+    ) -> jnp.ndarray:
+        """Public interface for zero-fee reserve calculation.
+
+        This method can be safely overridden by hooks (e.g., LVR) while still
+        allowing access to the original implementation through the protected
+        _calculate_reserves_zero_fees method.
+        """
+        return self._calculate_reserves_zero_fees(
+            params,
+            run_fingerprint,
+            prices,
+            start_index,
+            additional_oracle_input,
+        )
 
     def calculate_reserves_with_dynamic_inputs(
         self,
@@ -166,15 +186,64 @@ class HODLPool(AbstractPool):
                 params[k] = params[k][0]
         return params
 
-    def calculate_weights(self, params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
-        initial_weights_logits = params.get("initial_weights_logits")
-        # we dont't want to change the weights during any training
-        # so wrap them in a stop_grad
-        weights = softmax(stop_gradient(initial_weights_logits))
-        return weights
-
     def is_trainable(self):
         return False
+
+    def calculate_weights(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        start_index: jnp.ndarray,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+    ) -> jnp.ndarray:
+        """Calculate empirical weights for HODL.
+
+        HODL does not have weights in the same way as other pools,
+        such as G3M pools or FM-AMM pools. Therefore, the weights are
+        calculated based on the reserves that the pool has when run in
+        the zero-fees case, and the empirical weights are derived from
+        the empirical division of value between reserve over time.
+        This method:
+        1. Calculates zero-fee reserves
+        2. Computes value distribution using prices
+        3. Returns normalized weights
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            The parameters for the pool.
+        run_fingerprint : Dict[str, Any]
+            The fingerprint of the current run.
+        prices : jnp.ndarray
+            The prices of the assets.
+        start_index : jnp.ndarray
+            The starting index for the prices.
+        additional_oracle_input : Optional[jnp.ndarray]
+            Additional input from the oracle, if any.
+
+        Returns
+        -------
+        jnp.ndarray
+            The calculated weights for the ECLP pool.
+        Notes
+        -----
+        This method uses the protected _calculate_reserves_zero_fees
+        implementation to ensure consistent weight calculation even
+        when hooks override the public interface. It is only called
+        in the 'versus rebalancing' hooks.
+
+        """
+        bout_length = run_fingerprint["bout_length"]
+        n_assets = run_fingerprint["n_assets"]
+        local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
+
+        reserves = self._calculate_reserves_zero_fees(
+            params, run_fingerprint, prices, start_index, additional_oracle_input
+        )
+        value = reserves * local_prices
+        weights = value / jnp.sum(value, axis=-1, keepdims=True)
+        return weights
 
 
 tree_util.register_pytree_node(

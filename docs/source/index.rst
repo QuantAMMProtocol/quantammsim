@@ -20,15 +20,16 @@ Once installed, here's a basic usage example:
 
    from quantammsim.runners.jax_runners import do_run_on_historic_data
    import jax.numpy as jnp
-   # Define experiment parameters
+   # Define simulation parameters
    run_fingerprint = {
        'tokens': ['BTC', 'USDC'],
        'rule': 'balancer',
        'initial_pool_value': 1000000.0
    }
 
+   # Initialise pool parameters, equal weights. Equivalent to a Uniswap v2 poo;
    params = {
-       "initial_weights_logits": jnp.array([0.0, 0.0]),
+       "initial_weights": jnp.array([0.5, 0.5]),
    }
 
    # Run simulation

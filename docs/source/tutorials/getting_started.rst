@@ -6,11 +6,12 @@ This tutorial will walk you through your first AMM simulation using quantammsim.
 Your First Simulation
 ---------------------
 
-Let's create a simple momentum-based AMM pool and run a simulation:
+Let's create a simple balancer-style AMM pool and run a simulation:
 
 .. code-block:: python
 
     from quantammsim.runners.jax_runners import do_run_on_historic_data
+    import jax.numpy as jnp
 
     # Set up a basic simulation
     run_fingerprint = {
@@ -20,7 +21,7 @@ Let's create a simple momentum-based AMM pool and run a simulation:
     }
 
     params = {
-        "initial_weights_logits": jnp.array([0.0, 0.0]),
+        "initial_weights": jnp.array([0.5, 0.5]),
     }
 
     # Run simulation
@@ -36,7 +37,7 @@ Let's examine what the simulation tells us:
 .. code-block:: python
 
     # Access key metrics
-    print(f"Final pool value: {result["value"][-1]}")
+    print(f"Final pool value: {result['final_value']}")
 
 
 Now that you've run your first simulation, you might want to:
@@ -49,33 +50,32 @@ Now that you've run your first simulation, you might want to:
 Basic Usage
 -----------
 
-Let's walk through a simple example of simulating a BTC/USDC QuantAMM pool with a momentum strategy:
+Let's walk through a simple example of simulating a BTC/USDC balancer-style AMM pool:
 
 .. code-block:: python
 
     from quantammsim.runners.jax_runners import do_run_on_historic_data
+    import jax.numpy as jnp
 
     # Define the basic parameters for our simulation
     run_fingerprint = {
-        'tokens': ['BTC', 'USDC'],        # Token pair to simulate
+        'tokens': ['BTC', 'USDC'],       # Token pair to simulate
         'rule': 'balancer',              # Weight update strategy
-        'initial_pool_value': 1000000.0, # Starting liquidity
-        'chunk_period': 60,              # Update frequency in minutes
+        'initial_pool_value': 1000000.0, # Starting liquidity in USD
+        'fees': 0.001,                   # Charge fees of 10bps on swaps
         'startDateString': '2023-06-01 00:00:00',
         'endDateString': '2023-12-31 23:59:59'
     }
 
     params = {
-        "initial_weights_logits": jnp.array([0.0, 0.0]),
+        "initial_weights": jnp.array([0.5, 0.5]),
     }
 
     # Run simulation
     result = do_run_on_historic_data(run_fingerprint, params, verbose=True)
 
-    # The result contains various metrics and time series including:
+    # The result dictionary contains various metrics and time series including:
     # - Token prices
-    # - Pool weights
-    # - Trading volumes
     # - Pool value over time
 
 Advanced Configuration

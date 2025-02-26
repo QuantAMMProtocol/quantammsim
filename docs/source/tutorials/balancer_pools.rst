@@ -36,13 +36,13 @@ Here's how to create and simulate a basic Balancer pool:
 .. code-block:: python
 
     from quantammsim.runners.jax_runners import do_run_on_historic_data
+    import jax.numpy as jnp
 
     # Configure a 80/20 BTC/USDC pool
     run_fingerprint = {
         'tokens': ['BTC', 'USDC'],
         'pool_type': 'balancer',
         'initial_pool_value': 1000000.0,  # $1M initial pool value
-        'weights': [0.8, 0.2],           # 80% BTC, 20% USDC
         'fees': 0.002,                   # 0.2% trading fee
         'gas_cost': 0.0001,              # Minimum profit threshold for arbitrage
         'arb_frequency': 1,              # How often arbitrageurs can act
@@ -50,7 +50,7 @@ Here's how to create and simulate a basic Balancer pool:
     }
     
     params = {
-       "initial_weights_logits": jnp.array([0.0, 0.0]),
+       "initial_weights": jnp.log(jnp.array([0.8, 0.2])),
     }
 
     # Run simulation
@@ -63,7 +63,7 @@ Advanced Features
 Multi-Token Pools
 ~~~~~~~~~~~~~~~~~
 
-Balancer supports pools with any number of tokens (the protocol supports up to 8 in the current implementation):
+Geometric mean market maker pools can have two or more tokens (the Balancer protocol supports up to 8 in the current implementation):
 
 .. code-block:: python
 
@@ -72,12 +72,16 @@ Balancer supports pools with any number of tokens (the protocol supports up to 8
         'tokens': ['ETH', 'BTC', 'USDC'],
         'pool_type': 'balancer',
         'initial_pool_value': 1000000.0,
-        'weights': [0.4, 0.4, 0.2],      # 40/40/20 split
         'fees': 0.002,
         'do_arb': True
     }
 
+    params = {
+       "initial_weights": jnp.log(jnp.array([0.4, 0.4, 0.2])),
+    }
 
+    # Run simulation
+    result = do_run_on_historic_data(run_fingerprint, params, verbose=True)
 
 Arbitrage Modeling
 ~~~~~~~~~~~~~~~~~~

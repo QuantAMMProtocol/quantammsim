@@ -37,11 +37,12 @@ Here's how to create and simulate a basic Gyroscope pool:
 
 .. code-block:: python
 
+    import jax.numpy as jnp
+
     run_fingerprint = {
         'tokens': ['ETH', 'USDC'],
         'pool_type': 'gyroscope',
         'initial_pool_value': 1000000.0,  # $1M initial pool value
-        'initial_weights': [0.7, 0.3],    # 70% ETH, 30% USDC
         'alpha': 1500.0,                  # Lower price bound
         'beta': 4500.0,                   # Upper price bound
         'fees': 0.002,                    # 0.2% trading fee
@@ -49,9 +50,12 @@ Here's how to create and simulate a basic Gyroscope pool:
         'arb_frequency': 1,              # How often arbitrageurs can act
         'do_arb': True                   # Enable arbitrage simulation
     }
+    params = {
+        'initial_weights': jnp.array([0.7, 0.3]),    # 70% ETH, 30% USDC
+    }
 
     # Run the simulation
-    result = do_run_on_historic_data(run_fingerprint)
+    result = do_run_on_historic_data(run_fingerprint, params)
 
 Advanced Features
 -----------------
@@ -59,20 +63,8 @@ Advanced Features
 Weight Targeting
 ~~~~~~~~~~~~~~~~
 
-The pool can automatically optimize lambda and phi to achieve target weights:
-
-.. code-block:: python
-
-    # Create a pool with target weights
-    run_fingerprint = {
-        'tokens': ['ETH', 'USDC'],
-        'pool_type': 'gyroscope',
-        'initial_pool_value': 1000000.0,
-        'initial_weights': [0.7, 0.3],    # Target weights
-        'alpha': 1500.0,
-        'beta': 4500.0,
-        'do_arb': True
-    }
+The pool can automatically optimize lambda and phi to achieve target weights if 'initial_weights' or 'initial_weights_logits' are provided in the params dict.
+Otherwise 'lam' and 'phi' must be provided as singleton jnp arrays.
 
 Dynamic Parameters
 ~~~~~~~~~~~~~~~~~~

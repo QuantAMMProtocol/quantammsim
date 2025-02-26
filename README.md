@@ -39,7 +39,7 @@
 
 ## About
 
-`quantammsim` is a Python library for modeling synthetic markets, enabling modelling of Balancer, CowAMM and QuantAMM protocols. It provides tools for:
+`quantammsim` is a Python library for modeling synthetic markets, enabling modelling of Balancer, CowAMM, Gyroscope and QuantAMM protocols. It provides tools for:
 
 * Automated Market Making (AMM) simulation
 * Arbitrage opportunity detection
@@ -52,16 +52,18 @@
 * Multiple AMM implementations:
   * Balancer Protocol
   * CowAMM Protocol
+  * Gyroscope
   * QuantAMM Protocol (TFMM)
 * Pre-canned textbook strategies:
   * Momentum
   * Anti-Momentum
   * Power Channel
   * Mean Reversion Channel
+  * Minimum Variance
   * And implement custom strategies
 * Include the effects of fees, gas costs, and of a provided sequence of transactions.
 * JAX-accelerated computations
-* Comprehensive visualization tools (see XXXXX for frontend UI)
+* Comprehensive visualization tools (currently via hosted frontend)
 
 ## Installation
 
@@ -130,7 +132,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+See `LICENSE` for more information.
 
 <!-- MARKDOWN LINKS & IMAGES -->
 [contributors-shield]: https://img.shields.io/github/contributors/QuantAMMProtocol/quantammsim.svg?style=for-the-badge
