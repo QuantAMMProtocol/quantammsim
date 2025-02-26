@@ -1,6 +1,5 @@
 <!-- PROJECT SHIELDS -->
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Documentation](https://img.shields.io/badge/docs-latest-brightgreen.svg)](https://quantammsim.readthedocs.io)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![JAX](https://img.shields.io/badge/JAX-powered-FDB515.svg)](https://github.com/google/jax)
