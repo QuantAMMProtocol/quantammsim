@@ -197,10 +197,10 @@ def get_best_balanced_solution(study):
 
 
 class OptunaManager:
-    def __init__(self, run_fingerprint, output_dir=None):
+    def __init__(self, run_fingerprint):
         self.run_fingerprint = run_fingerprint
         self.optuna_settings = run_fingerprint["optimisation_settings"]["optuna_settings"]
-        self.output_dir = output_dir or Path("optuna_studies")
+        self.output_dir = Path(run_fingerprint["optimisation_settings"]["optuna_settings"].get("output_dir", "optuna_studies"))
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.study = None
         self.logger = self._setup_logger()
