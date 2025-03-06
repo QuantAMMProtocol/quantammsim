@@ -101,6 +101,7 @@ class TFMMBasePool(AbstractPool):
                 arb_thresh=run_fingerprint["gas_cost"],
                 arb_fees=run_fingerprint["arb_fees"],
                 all_sig_variations=jnp.array(run_fingerprint["all_sig_variations"]),
+                noise_trader_ratio=run_fingerprint["noise_trader_ratio"],
             )
         else:
             reserves = jnp.broadcast_to(
@@ -294,10 +295,17 @@ class TFMMBasePool(AbstractPool):
 
         start_index_coarse = ((start_index[0] / chunk_period).astype("int64"), 0)
 
+        # if the chunk period is not a divisor of bout_length, we need to pad the raw_weight_outputs.
+        # this can require more data to be available, potentially beyond the end of the bout.
+        if bout_length % chunk_period != 0:
+            raw_weight_additional_offset = 1
+        else:
+            raw_weight_additional_offset = 0
+
         raw_weight_outputs = dynamic_slice(
             raw_weight_outputs,
             start_index_coarse,
-            (int((bout_length) / chunk_period), n_assets),
+            (int((bout_length) / chunk_period) + raw_weight_additional_offset, n_assets),
         )
         raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
         initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
@@ -310,7 +318,7 @@ class TFMMBasePool(AbstractPool):
         )
 
         weights = dynamic_slice(weights, (0, 0), (bout_length - 1, n_assets))
-
+        
         return weights
 
     def calculate_all_signature_variations(self, params: Dict[str, Any]) -> jnp.ndarray:
