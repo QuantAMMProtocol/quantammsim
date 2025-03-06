@@ -4,10 +4,9 @@ import numpy as np
 
 # again, this only works on startup!
 from jax import config, devices, jit, tree_util
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 import jax.numpy as jnp
 from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
 
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.pools.G3M.balancer.balancer_reserves import (
@@ -15,7 +14,6 @@ from quantammsim.pools.G3M.balancer.balancer_reserves import (
     _jax_calc_balancer_reserves_with_fees_using_precalcs,
     _jax_calc_balancer_reserves_with_dynamic_inputs,
 )
-from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 
 config.update("jax_enable_x64", True)
 
@@ -30,6 +28,62 @@ else:
 
 
 class BalancerPool(AbstractPool):
+    """
+    Implementation of Balancer's constant-weight liquidity pool.
+
+    Unlike TFMM pools that can adjust weights dynamically, Balancer pools maintain fixed weight 
+    ratios between tokens. These weights are determined at initialization and remain constant,
+    making the pool non-trainable.
+
+    Core Features:
+    --------------
+    - Fixed weights (unlike TFMM's dynamic weights)
+    - Simple initial weight calculation
+    - No parameter processing from web interface needed
+    - Non-trainable design
+
+    Calculation Modes:
+    ------------------
+    1. Standard trading with fees (calculate_reserves_with_fees)
+       - Handles regular trading with configurable fees
+       - Supports arbitrage simulation with gas costs
+       - Uses _jax_calc_balancer_reserves_with_fees_using_precalcs
+
+    2. Zero-fee trading (calculate_reserves_zero_fees)
+       - Special case for theoretical analysis
+       - Perfect arbitrage simulation
+       - Uses _jax_calc_balancer_reserve_ratios
+
+    3. Dynamic input trading (calculate_reserves_with_dynamic_inputs)
+       - Supports time-varying fees and parameters
+       - Handles custom trade sequences
+       - Uses _jax_calc_balancer_reserves_with_dynamic_inputs
+
+    Parameters
+    ----------
+    params : Dict[str, Any]
+        Pool parameters including:
+        - initial_weights_logits: Determines fixed token weight ratios
+
+    run_fingerprint : Dict[str, Any]
+        Simulation parameters including:
+        - initial_pool_value: Starting total value
+        - fees: Trading fee percentages
+        - gas_cost: Arbitrage threshold
+        - arb_fees: Arbitrage-specific fees
+        - bout_length: Simulation length
+        - n_assets: Number of tokens
+        - do_arb: Enable/disable arbitrage
+        - arb_frequency: Frequency of arbitrage checks
+
+    Notes
+    -----
+    - Unlike TFMM pools, no raw_weights_outputs or fine_weight_output methods
+    - Simple weight calculation using softmax(initial_weights_logits) if provided
+    - Non-trainable by design (is_trainable() returns False)
+    - No web interface parameter processing needed (as it has no parameters other than initial_weights_logits)
+    - JAX-accelerated calculations for efficiency
+    """
     def __init__(self):
         super().__init__()
 
@@ -42,7 +96,48 @@ class BalancerPool(AbstractPool):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-        weights = self.calculate_weights(params)
+        """
+        Calculate reserves considering trading fees and arbitrage costs.
+
+        Uses JAX-accelerated function _jax_calc_balancer_reserves_with_fees_using_precalcs
+        for efficient computation. Unlike TFMM pools, this uses constant weights and
+        doesn't require raw weight calculations.
+
+        Implementation Notes:
+        ---------------------
+        1. Extracts local price window using dynamic_slice
+        2. Uses constant weights from calculate_initial_weights
+        3. Handles arbitrage frequency adjustments
+        4. Computes initial reserves based on pool value
+        5. Delegates core calculation to jitted external function
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters containing initial_weights_logits or initial_weights
+        run_fingerprint : Dict[str, Any]
+            Simulation parameters including:
+            - bout_length: Length of simulation window
+            - n_assets: Number of tokens
+            - arb_frequency: How often arbitrage is checked
+            - initial_pool_value: Starting pool value
+            - fees: Trading fee percentages
+            - gas_cost: Arbitrage threshold
+            - arb_fees: Arbitrage-specific fees
+            - do_arb: Enable/disable arbitrage
+        prices : jnp.ndarray
+            Price history array
+        start_index : jnp.ndarray
+            Starting index for the calculation window
+        additional_oracle_input : Optional[jnp.ndarray]
+            Not used in BalancerPool, kept for interface compatibility
+
+        Returns
+        -------
+        jnp.ndarray
+            Calculated reserves over time
+        """
+        weights = self.calculate_initial_weights(params)
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
@@ -85,7 +180,40 @@ class BalancerPool(AbstractPool):
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-        weights = self.calculate_weights(params)
+        """
+        Calculate reserves assuming zero fees and perfect arbitrage.
+
+        Uses JAX-accelerated function _jax_calc_balancer_reserve_ratios for efficient
+        computation in the theoretical zero-fee case. Simpler than TFMM implementation
+        due to constant weights.
+
+        Implementation Notes:
+        ---------------------
+        1. Uses dynamic_slice for price window
+        2. Applies constant weights from calculate_initial_weights
+        3. Computes reserve ratios directly
+        4. Uses cumprod for reserve calculation
+        5. Handles no-arbitrage case via broadcasting
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters containing initial_weights_logits or initial_weights
+        run_fingerprint : Dict[str, Any]
+            Simulation parameters
+        prices : jnp.ndarray
+            Price history array
+        start_index : jnp.ndarray
+            Starting index for the calculation window
+        additional_oracle_input : Optional[jnp.ndarray]
+            Not used in BalancerPool, kept for interface compatibility
+
+        Returns
+        -------
+        jnp.ndarray
+            Calculated reserves over time
+        """
+        weights = self.calculate_initial_weights(params)
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
@@ -135,11 +263,50 @@ class BalancerPool(AbstractPool):
         trade_array: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
+        """
+        Calculate reserves with time-varying fees and parameters.
+
+        Uses JAX-accelerated function _jax_calc_balancer_reserves_with_dynamic_inputs.
+        Simpler than TFMM version due to constant weights, but handles dynamic
+        parameters for fees and arbitrage thresholds.
+
+        Implementation Notes:
+        ---------------------
+        1. Handles time-varying parameters via broadcasting
+        2. Uses constant weights throughout
+        3. Supports custom trade sequences
+        4. Maintains arbitrage frequency adjustments
+        5. Validates trade array dimensions
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters containing initial_weights_logits or initial_weights
+        run_fingerprint : Dict[str, Any]
+            Simulation parameters
+        prices : jnp.ndarray
+            Price history array
+        start_index : jnp.ndarray
+            Starting index for the calculation window
+        fees_array : jnp.ndarray
+            Time-varying trading fees
+        arb_thresh_array : jnp.ndarray
+            Time-varying arbitrage thresholds
+        arb_fees_array : jnp.ndarray
+            Time-varying arbitrage fees
+        trade_array : jnp.ndarray
+            Custom trade sequence
+
+        Returns
+        -------
+        jnp.ndarray
+            Calculated reserves over time
+        """
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
 
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
-        weights = self.calculate_weights(params)
+        weights = self.calculate_initial_weights(params)
 
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_local_prices = local_prices[
@@ -188,7 +355,7 @@ class BalancerPool(AbstractPool):
         )
         return reserves
 
-    def _init_base_parameters(
+    def init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -234,19 +401,15 @@ class BalancerPool(AbstractPool):
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
 
-    def calculate_weights(
-        self, params: Dict[str, jnp.ndarray], *args, **kwargs
-    ) -> jnp.ndarray:
-        initial_weights_logits = params.get("initial_weights_logits")
-        # we dont't want to change the weights during any training
-        # so wrap them in a stop_grad
-        weights = softmax(stop_gradient(initial_weights_logits))
-        return weights
-
-    def make_vmap_in_axes(self, params: Dict[str, Any], n_repeats_of_recurred: int = 0):
-        return make_vmap_in_axes_dict(params, 0, [], [], n_repeats_of_recurred)
-
     def is_trainable(self):
+        """
+        Indicate if pool weights can be trained.
+
+        Returns
+        -------
+        bool
+            Always False for BalancerPool as weights are fixed
+        """
         return False
 
 

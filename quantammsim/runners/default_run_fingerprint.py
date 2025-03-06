@@ -3,7 +3,7 @@ run_fingerprint_defaults = {
     "startDateString": "2021-02-03 00:00:00",
     "endDateString": "2022-06-03 00:00:00",
     "endTestDateString": "2022-07-03 00:00:00",
-    "tokens": ["BTC", "DAI", "ETH"],
+    "tokens": ["BTC", "USDC", "ETH"],
     "rule": "mean_reversion_channel",
     "optimisation_settings": {
         "base_lr": 0.01,

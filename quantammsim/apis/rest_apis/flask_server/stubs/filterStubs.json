@@ -1,38 +1,37 @@
 [
     {
         "chain": [
-            "mainnet",
-            "arbitrum",
-            "avalanche",
-            "optimism",
-            "base"
+            "ARBITRUM",
+            "AVALANCHE",
+            "BASE",
+            "FANTOM",
+            "FRAXTAL",
+            "GNOSIS",
+            "MAINNET",
+            "MODE",
+            "OPTIMISM",
+            "POLYGON",
+            "SEPOLIA",
+            "SONIC",
+            "ZKEVM"
         ]
     },
     {
-        "tokenType": [
-            "topMarketCap",
-            "highMarketCap",
-            "gaming",
-            "dex",
-            "infra",
-            "defi",
-            "stables"
-        ]
-    },
-    {
-        "strategy": [
-            "momentum",
-            "antiMomentum",
-            "minimumVariance",
-            "channelFollowing",
-            "powerChannel"
-        ]
-    },
-    {
-        "frequency": [
-            "daily",
-            "hourly",
-            "likelyHourly"
+        "poolType": [
+            "COMPOSABLE_STABLE",
+            "COW_AMM",
+            "ELEMENT",
+            "FX",
+            "GYRO",
+            "GYRO3",
+            "GYROE",
+            "INVESTMENT",
+            "LIQUIDITY_BOOTSTRAPPING",
+            "META_STABLE",
+            "PHANTOM_STABLE",
+            "STABLE",
+            "UNKNOWN",
+            "WEIGHTED"
         ]
     }
 ]

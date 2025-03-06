@@ -2,7 +2,7 @@
 from jax import config
 
 config.update("jax_enable_x64", True)
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 from jax import local_device_count, devices
 
 DEFAULT_BACKEND = default_backend()
@@ -19,7 +19,6 @@ from jax import jit, vmap
 from jax import devices, device_put
 from jax import tree_util
 from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
 
 from quantammsim.pools.G3M.quantamm.momentum_pool import (
     MomentumPool,

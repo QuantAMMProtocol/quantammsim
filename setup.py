@@ -2,6 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="quantammsim",
+    version="0.1.0",
     packages=find_packages(),
     install_requires=[
         "jax>=0.4.0",
@@ -18,6 +19,9 @@ setup(
         "optuna",
         "pyarrow",
         "plotly",
+        "bidask",
+        "Historic_Crypto",
+        "gdown",
     ],
     extras_require={
         "dev": [

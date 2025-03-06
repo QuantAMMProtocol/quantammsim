@@ -1,6 +1,6 @@
 # again, this only works on startup!
 from jax import config, jit,devices
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 from jax.lax import cond
 import jax.numpy as jnp
 
