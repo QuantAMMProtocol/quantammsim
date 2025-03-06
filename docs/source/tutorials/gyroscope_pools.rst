@@ -26,6 +26,7 @@ Gyroscope pools use matrix transformations to maintain price relationships and r
    \end{bmatrix}
 
 where:
+
 - :math:`\phi` is the rotation angle
 - :math:`\lambda` is the scaling parameter
 - The matrix :math:`A` determines price relationships
@@ -115,16 +116,19 @@ Performance Considerations
 --------------------------
 
 1. GPU Acceleration
+
    - All core calculations are JAX-accelerated
    - Supports parallel processing of trades
    - Efficient handling of large datasets
 
 2. Memory Usage
+
    - Optimized for long simulations
    - Efficient precalculation of common values
    - Smart broadcasting of parameters
 
 3. Numerical Stability
+
    - Uses 64-bit precision
    - Handles edge cases in matrix calculations
    - Robust arbitrage detection
