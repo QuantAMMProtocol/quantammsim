@@ -5,6 +5,11 @@ import zipfile
 from pathlib import Path
 from tqdm import tqdm
 
+# Get absolute paths relative to this script
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+DATA_DIR = PROJECT_ROOT / "quantammsim" / "data"
+
 # Configuration
 DATA_FILES = {
     "data.zip": {
@@ -14,7 +19,7 @@ DATA_FILES = {
     },
 }
 
-DATA_DIR = Path("../quantammsim/data/")
+DATA_DIR.mkdir(exist_ok=True)
 
 
 def calculate_sha256(file_path):
@@ -70,8 +75,6 @@ def extract_zip(zip_path, extract_path):
 
 
 def main():
-    DATA_DIR.mkdir(exist_ok=True)
-
     for filename, info in DATA_FILES.items():
         print(f"\nDownloading {filename}...")
         dest_path = DATA_DIR / filename

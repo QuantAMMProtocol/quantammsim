@@ -3,6 +3,8 @@ from typing import Dict, Any, Optional
 import numpy as np
 
 import jax.numpy as jnp
+from jax.nn import softmax
+from jax.lax import stop_gradient
 from jax import tree_util
 
 from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
@@ -119,6 +121,82 @@ class AbstractPool(ABC):
         )
 
         return params
+
+    def calculate_initial_weights(
+        self, params: Dict[str, jnp.ndarray], *args, **kwargs
+    ) -> jnp.ndarray:
+        """
+        Calculate initial pool weights from initial logits or from directly-provided weights.
+        If both are provided, the weights calculated from logits take precendence.
+
+        Uses softmax with stop_gradient to ensure weights remain constant
+        during any optimization.
+
+        Parameters
+        ----------
+        params : Dict[str, jnp.ndarray]
+            Must contain 'initial_weights_logits' key or 'initial_weights' key
+        *args, **kwargs
+            Not used, kept for interface compatibility
+
+        Returns
+        -------
+        jnp.ndarray
+            Fixed normalized weights
+
+        Notes
+        -----
+        Using 'initial_weights_logits' means that the calculated initial weights
+        have +ve entries and sum to one by construction. If 'initial_weights' is
+        used the values are used unchecked.
+        """
+        initial_weights_logits = params.get("initial_weights_logits", None)
+        initial_weights = params.get("initial_weights", None)
+        if initial_weights_logits is not None:
+            # we dont't want to change the initial weights during any training
+            # so wrap them in a stop_grad
+            weights = softmax(stop_gradient(initial_weights_logits))
+        elif initial_weights is not None:
+            # we dont't want to change the initial weights during any training
+            # so wrap them in a stop_grad
+            weights = stop_gradient(initial_weights)
+        else:
+            raise ValueError(
+                "At least one of 'initial_weights_logits' and 'initial_weights' must be provided"
+            )
+        return weights
+
+    def calculate_weights(
+        self, params: Dict[str, jnp.ndarray], *args, **kwargs
+    ) -> jnp.ndarray:
+        """
+        This function will be overridden for any pools that a) have weights and b) have weights that vary.
+        As so many of the pools modelled in this package have weights (Balancer [G3M], Cow [FM-AMM], QuantAMM [TFMM])
+        this is helpful to have here (though this method is overriden for QuantAMM [TFMM] pools).
+
+        This method is used by some hooks that rely on having access to a pools weights over time. If a pool is to work
+        with all hooks, this method should be ensured to implement the correct logic for that pool. See GyroscopePool
+        for an example where a custom implementation was needed for the sake of hook compatibility.
+
+        Parameters
+        ----------
+        params : Dict[str, jnp.ndarray]
+            Must contain 'initial_weights_logits' key or 'initial_weights' key
+        *args, **kwargs
+            Not used, kept for interface compatibility
+
+        Returns
+        -------
+        jnp.ndarray
+            Fixed normalized weights
+
+        Notes
+        -----
+        Using 'initial_weights_logits' means that the calculated initial weights
+        have +ve entries and sum to one by construction. If 'initial_weights' is used the
+        values are used unchecked.
+        """
+        return self.calculate_initial_weights(params, *args, **kwargs)
 
     @abstractmethod
     def init_base_parameters(

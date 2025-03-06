@@ -17,7 +17,7 @@ Runner Utilities
 Run Fingerprint Defaults
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: quantammsim.runners.default_run_fingerprints
+.. automodule:: quantammsim.runners.default_run_fingerprint
    :members:
    :undoc-members:
    :show-inheritance:

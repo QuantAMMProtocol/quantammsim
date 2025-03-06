@@ -7,7 +7,6 @@ from jax import config, devices, jit, tree_util
 from jax import default_backend
 import jax.numpy as jnp
 from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
 
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.pools.G3M.balancer.balancer_reserves import (
@@ -39,7 +38,7 @@ class BalancerPool(AbstractPool):
     Core Features:
     --------------
     - Fixed weights (unlike TFMM's dynamic weights)
-    - Simple weight calculation using softmax
+    - Simple initial weight calculation
     - No parameter processing from web interface needed
     - Non-trainable design
 
@@ -80,7 +79,7 @@ class BalancerPool(AbstractPool):
     Notes
     -----
     - Unlike TFMM pools, no raw_weights_outputs or fine_weight_output methods
-    - Simple weight calculation using softmax(initial_weights_logits)
+    - Simple weight calculation using softmax(initial_weights_logits) if provided
     - Non-trainable by design (is_trainable() returns False)
     - No web interface parameter processing needed (as it has no parameters other than initial_weights_logits)
     - JAX-accelerated calculations for efficiency
@@ -107,7 +106,7 @@ class BalancerPool(AbstractPool):
         Implementation Notes:
         ---------------------
         1. Extracts local price window using dynamic_slice
-        2. Uses constant weights from calculate_weights
+        2. Uses constant weights from calculate_initial_weights
         3. Handles arbitrage frequency adjustments
         4. Computes initial reserves based on pool value
         5. Delegates core calculation to jitted external function
@@ -115,7 +114,7 @@ class BalancerPool(AbstractPool):
         Parameters
         ----------
         params : Dict[str, Any]
-            Pool parameters containing initial_weights_logits
+            Pool parameters containing initial_weights_logits or initial_weights
         run_fingerprint : Dict[str, Any]
             Simulation parameters including:
             - bout_length: Length of simulation window
@@ -138,7 +137,7 @@ class BalancerPool(AbstractPool):
         jnp.ndarray
             Calculated reserves over time
         """
-        weights = self.calculate_weights(params)
+        weights = self.calculate_initial_weights(params)
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
@@ -191,7 +190,7 @@ class BalancerPool(AbstractPool):
         Implementation Notes:
         ---------------------
         1. Uses dynamic_slice for price window
-        2. Applies constant weights from calculate_weights
+        2. Applies constant weights from calculate_initial_weights
         3. Computes reserve ratios directly
         4. Uses cumprod for reserve calculation
         5. Handles no-arbitrage case via broadcasting
@@ -199,7 +198,7 @@ class BalancerPool(AbstractPool):
         Parameters
         ----------
         params : Dict[str, Any]
-            Pool parameters containing initial_weights_logits
+            Pool parameters containing initial_weights_logits or initial_weights
         run_fingerprint : Dict[str, Any]
             Simulation parameters
         prices : jnp.ndarray
@@ -214,7 +213,7 @@ class BalancerPool(AbstractPool):
         jnp.ndarray
             Calculated reserves over time
         """
-        weights = self.calculate_weights(params)
+        weights = self.calculate_initial_weights(params)
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
@@ -282,7 +281,7 @@ class BalancerPool(AbstractPool):
         Parameters
         ----------
         params : Dict[str, Any]
-            Pool parameters containing initial_weights_logits
+            Pool parameters containing initial_weights_logits or initial_weights
         run_fingerprint : Dict[str, Any]
             Simulation parameters
         prices : jnp.ndarray
@@ -307,7 +306,7 @@ class BalancerPool(AbstractPool):
         n_assets = run_fingerprint["n_assets"]
 
         local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
-        weights = self.calculate_weights(params)
+        weights = self.calculate_initial_weights(params)
 
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_local_prices = local_prices[
@@ -401,33 +400,6 @@ class BalancerPool(AbstractPool):
         }
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
-
-    def calculate_weights(
-        self, params: Dict[str, jnp.ndarray], *args, **kwargs
-    ) -> jnp.ndarray:
-        """
-        Calculate fixed pool weights from initial logits.
-
-        Uses softmax with stop_gradient to ensure weights remain constant
-        during any optimization.
-
-        Parameters
-        ----------
-        params : Dict[str, jnp.ndarray]
-            Must contain 'initial_weights_logits' key
-        *args, **kwargs
-            Not used, kept for interface compatibility
-
-        Returns
-        -------
-        jnp.ndarray
-            Fixed normalized weights
-        """
-        initial_weights_logits = params.get("initial_weights_logits")
-        # we dont't want to change the weights during any training
-        # so wrap them in a stop_grad
-        weights = softmax(stop_gradient(initial_weights_logits))
-        return weights
 
     def is_trainable(self):
         """

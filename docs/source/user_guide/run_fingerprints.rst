@@ -39,14 +39,14 @@ Control the training process:
 Initial Parameters
 ~~~~~~~~~~~~~~~~~~
 
-Starting values for strategy parameters:
+Starting values for strategy parameters, used only during training.
 
 .. code-block:: python
 
     run_fingerprint.update({
         "initial_memory_length": 10.0,       # Memory parameter
         "initial_k_per_day": 20,            # Trading intensity
-        "initial_weights_logits": 1.0,      # Starting weights
+        "initial_weights_logits": 1.0,      # Starting weights. Provide a jnp.array of length = num of tokens for per-token allocation, otherwise defaults to uniform weights.
         "initial_log_amplitude": -10.0,     # Signal amplitude
     })
 

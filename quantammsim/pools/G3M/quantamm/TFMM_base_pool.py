@@ -18,7 +18,6 @@ import jax.numpy as jnp
 from jax import jit, vmap
 from jax import devices, device_put
 from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
 
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.pools.G3M.quantamm.quantamm_reserves import (
@@ -43,7 +42,10 @@ class TFMMBasePool(AbstractPool):
     It defines additional abstract methods that are specific to TFMM pools, such as weight calculation.
 
     Abstract Methods:
-        calculate_weights: Calculate the weights of assets in the pool based on prices and parameters.
+        calculate_raw_weights_outputs: Calculate the raw weight outputs of assets in the pool based on oracle values and parameters.
+        fine_weight_output: Function to handle how raw weights get mapped to per-block/per-minute weights. Two standard methods
+        are provided, for when 1) rules output raw weight _changes_ and 2) when rule output raw _weights_ themselves. See MomentumPool
+        and MinVariancePool as prototypical examples of each respectively.
 
     In addition to the methods from AbstractPool, subclasses of TFMMBasePool must implement these
     TFMM-specific methods to define the behavior of the pool.
@@ -368,10 +370,9 @@ class TFMMBasePool(AbstractPool):
         raw_weight_outputs = self.calculate_raw_weights_outputs(
             params, run_fingerprint, prices, additional_oracle_input
         )
-        initial_weights_logits = params.get("initial_weights_logits")
         # we dont't want to change the initial weights during any training
         # so wrap them in a stop_grad
-        initial_weights = softmax(stop_gradient(initial_weights_logits))
+        initial_weights = self.calculate_initial_weights(params)
 
         # we have a sequence now of weight changes, but if we are doing
         # a burnin operation, we need to cut off the changes associated
@@ -493,25 +494,25 @@ class TFMMBasePool(AbstractPool):
         """
         result = {}
         processed_params = set()
-        
+
         # Process TFMM common parameters
         memory_days_values = cls._process_memory_days(update_rule_parameters, n_assets)
         if memory_days_values is not None:
             result.update(memory_days_values)
             processed_params.add("memory_days")
-            
+
         k_values = cls._process_k_per_day(update_rule_parameters, n_assets)
         if k_values is not None:
             result.update(k_values)
             processed_params.add("k_per_day")
-            
+
         # Let specific pools process their parameters
         specific_params = cls._process_specific_parameters(update_rule_parameters, n_assets)
         if specific_params is not None:
             result.update(specific_params)
             # Assume any parameters returned by specific processing are handled
             processed_params.update(specific_params.keys())
-            
+
         # Process any remaining parameters in a default way
         for urp in update_rule_parameters:
             if urp.name not in processed_params:
@@ -521,8 +522,7 @@ class TFMMBasePool(AbstractPool):
                 if len(value) != n_assets:
                     value = [value[0]] * n_assets
                 result[urp.name] = np.array(value)
-                
-        
+
         return result
 
     @classmethod

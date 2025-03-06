@@ -39,7 +39,7 @@ Here's how to create and simulate a basic CoW pool:
 
     # Configure the simulation
     run_fingerprint = {
-        'tokens': ['ETH', 'DAI'],
+        'tokens': ['ETH', 'USDC'],
         'pool_type': 'cow',
         'initial_pool_value': 1000000.0,  # $1M initial pool value
         'fees': 0.001,                    # 0.1% fee per trade
@@ -81,15 +81,18 @@ Dynamic Parameters
 CoW pools support several dynamic parameters that can vary over time:
 
 1. Trading Fees
+
    - Configurable per-minute fees or set as a single value
    - Can respond to market conditions
    - Per minute fees are specified through `fees_array` (but can be a single value `fees` in the run fingerprint)
 
 2. Arbitrage Parameters
+
    - Threshold for profitable arbitrage (`arb_thresh_array`) often coterminous with gas costs (but can be a single value `arb_fees` in the run fingerprint)
    - Arbitrage fees (`arb_fees_array`), the fees the arbitrageur has to pay to liquidate the position they have after the arbitrage trade
 
 3. Trade Execution
+
    - Support for user-specified trades via `trade_array`
    - Format: [token_in_idx, token_out_idx, amount_in]
    - Can model specific trading patterns
@@ -157,6 +160,7 @@ Fine-tune arbitrage behavior:
     })
 
 The `arb_quality` parameter (0-1) controls how efficiently arbitrage opportunities are captured:
+
 - 1.0 = perfect arbitrage (multiple simultaneous arbitrageurs perfectly compete, resulting in rebalancing at the true price)
 - 0.0 = single arbitrageur (more pessimistic market conditions, the one arbitrageur is able to capture the arbitrage opportunity giving the pool less surplus)
 - Values between represent partial market efficiency
@@ -170,16 +174,19 @@ Implementation Details
 The pool implements three main calculation modes:
 
 1. Standard Fee Calculation (`calculate_reserves_with_fees`)
+
    - Handles regular trading with fees
    - Supports both perfect and imperfect arbitrage
    - Considers gas costs and arbitrage thresholds
 
 2. Zero Fee Calculation (`calculate_reserves_zero_fees`)
+
    - Special case for fee-less trading
    - Useful for theoretical analysis
    - Maintains arbitrage modeling
 
 3. Dynamic Input Calculation (`calculate_reserves_with_dynamic_inputs`)
+
    - Supports time-varying parameters
    - Handles custom trade sequences
    - Most flexible configuration
@@ -193,16 +200,19 @@ Performance Considerations
 --------------------------
 
 1. GPU Acceleration
+
    - All core calculations are JAX-accelerated
    - Supports parallel processing of trades
    - Efficient handling of large datasets
 
 2. Memory Usage
+
    - Optimized for long simulations
    - Efficient precalculation of common values
    - Smart broadcasting of parameters
 
 3. Numerical Stability
+
    - Uses 64-bit precision
    - Handles edge cases in calculations
    - Robust arbitrage detection

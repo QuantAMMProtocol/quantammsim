@@ -13,7 +13,7 @@ from jax.lax import scan, dynamic_slice
 
 
 def squareplus(x):
-    # algebraic (so non-trancendental) replacement for softmax
+    # algebraic (so non-trancendental) replacement for softplus
     # see https://arxiv.org/abs/2112.11687 for detail
     return lax.mul(0.5, lax.add(x, lax.sqrt(lax.add(lax.square(x), 4.0))))
 

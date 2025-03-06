@@ -50,14 +50,7 @@ First, let's look at the class definition and initialization:
         def __init__(self):
             super().__init__()
 
-        def calculate_weights(self, params):
-            """Calculate fixed weights using softmax of initial logits."""
-            return softmax(params["initial_weights_logits"])
-
 Note the empty ``__init__`` method--pools do not hold any state, they only have methods.
-
-Not all pools will have weights (though some hooks might require them) so the abstract class does not require this method.
-Balancer pools, however, do have weights, so we need to implement this method for them.
 
 Reserve Calculations
 ^^^^^^^^^^^^^^^^^^^^
@@ -79,7 +72,7 @@ The zero fees implementation is the simplest and most performant:
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-            """
+        """
         Calculate reserves assuming zero fees and perfect arbitrage.
 
         Uses JAX-accelerated function _jax_calc_balancer_reserve_ratios for efficient
@@ -89,7 +82,7 @@ The zero fees implementation is the simplest and most performant:
         Implementation Notes:
         ---------------------
         1. Uses dynamic_slice for price window
-        2. Applies constant weights from calculate_weights
+        2. Applies constant weights from calculate_initial_weights
         3. Computes reserve ratios directly
         4. Uses cumprod for reserve calculation
         5. Handles no-arbitrage case via broadcasting
@@ -97,7 +90,7 @@ The zero fees implementation is the simplest and most performant:
         Parameters
         ----------
         params : Dict[str, Any]
-            Pool parameters containing initial_weights_logits
+            Pool parameters containing initial_weights_logits or initial_weights
         run_fingerprint : Dict[str, Any]
             Simulation parameters
         prices : jnp.ndarray
@@ -142,14 +135,14 @@ The zero fees implementation is the simplest and most performant:
 
 While it might be natural to consider passing in a price array that corresponds exactly the time period covered by the simulation, it can actually be neater for some use cases to pass in a price array that is longer than the simulation period, and then slice the price array to the relevant period within these functions.
 
-This is particularly useful for pools that have dynamic properties that change over time, such as time-varying fees or dynamic weights, as these features very often will depend on earlier prices than those of the just the simulation period.
+This is particularly useful for pools that have dynamic properties that change over time, such as time-varying fees or dynamic weights, as these features very often will depend on earlier prices than those of just the simulation period.
 
 So in the ``calculate_reserves_zero_fees`` function, we see that we pass in a ``start_index`` parameter, which is used to slice the price array to the relevant period.
 The length of the price array is given by ``bout_length``, which is a parameter of the ``run_fingerprint`` dictionary.
 
 For a base Balancer pool with constant weights, however, we have no dynamic properties (the weights are constant, the fees are fixed at zero here).
-This means that we could happily pass in a price array that is the length of the entire simulation, and then slice it to the relevant period within the ``calculate_reserves_zero_fees`` function.
-But this is the structure required by the :class:`quantammsim.pools.AbstractPool` interface, and is the structure that enables time varying properties.
+This means that we could happily pass in a price array that is just the length of the simulation period.
+But the dynamic slicing of the completed price array is the structure required by the :class:`quantammsim.pools.AbstractPool` interface, and is the structure that enables time varying properties.
 
 **Arbitrage control**
 
@@ -186,6 +179,7 @@ b. **Price Matching and Equilibrium**
 After arbitrage, in the zero fees case, the pool's marginal prices exactly match the external market prices.
 The pool's quoted price for a marginal trade of the :math:`i`\ :sup:`th` asset is proportional to  :math:`\frac{w_i}{R_i}`.
 So we have that, after arbitrage,
+
 .. math::
 
        \frac{\frac{w_i}{R_i}}{\frac{w_j}{R_j}} = \frac{p_i}{p_j},
@@ -194,7 +188,7 @@ where :math:`p_k` is the price of asset :math:`k` on the external market in a pa
 
 Combining these ideas, we can derive the reserve ratio formula for a Balancer pool with constant weights,
 
-   .. math::
+.. math::
 
        \frac{R_i(t')}{R_i(t)} = \frac{p_i(t)}{p_i(t')} \prod_{j=1}^N \left(\frac{p_j(t')}{p_j(t)}\right)^{w_j}.
 
