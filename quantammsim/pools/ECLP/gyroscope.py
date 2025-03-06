@@ -473,9 +473,6 @@ class GyroscopePool(AbstractPool):
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
 
-    def calculate_weights(self, params: Dict[str, jnp.ndarray]) -> jnp.ndarray:
-        return jnp.array([0.5, 0.5])
-
     def make_vmap_in_axes(self, params: Dict[str, Any], n_repeats_of_recurred: int = 0):
         return make_vmap_in_axes_dict(params, 0, [], [], n_repeats_of_recurred)
 
