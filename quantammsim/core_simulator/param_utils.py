@@ -187,6 +187,7 @@ def memory_days_to_lamb(memory_days, chunk_period=60):
     Returns:
         float: The lambda value.
     """
+
     scaled_memory_days = (1440.0 * memory_days / (2.0 * chunk_period)) ** 3 / 6.0
 
     smd = scaled_memory_days
@@ -200,8 +201,21 @@ def memory_days_to_lamb(memory_days, chunk_period=60):
     numerator_2 = np.cbrt((2 / 3))
     denominator_2 = numerator_1
 
-    lamb = numerator_1 / denominator_1 - numerator_2 / denominator_2 + 1.0
-    return lamb
+    # Handle division by zero by checking denominator
+    safe_div1 = np.divide(
+        numerator_1,
+        denominator_1,
+        out=np.zeros_like(numerator_1),
+        where=denominator_1 != 0,
+    )
+    safe_div2 = np.divide(
+        np.broadcast_to(numerator_2, denominator_2.shape),
+        denominator_2,
+        out=np.zeros_like(np.broadcast_to(numerator_2, denominator_2.shape)),
+        where=denominator_2 != 0,
+    )
+    lamb = np.nan_to_num(safe_div1 - safe_div2 + 1.0, nan=0.0, posinf=1.0, neginf=0.0)
+    return np.where(memory_days == 0.0, 0.0, lamb)
 
 
 def jax_memory_days_to_lamb(memory_days, chunk_period=60):
@@ -230,8 +244,8 @@ def jax_memory_days_to_lamb(memory_days, chunk_period=60):
     denominator_2 = numerator_1
 
     lamb = numerator_1 / denominator_1 - numerator_2 / denominator_2 + 1.0
-    return lamb
 
+    return jnp.where(memory_days==0.0, 0.0, lamb)
 
 def memory_days_to_logit_lamb(memory_days, chunk_period=60):
     """
@@ -358,6 +372,7 @@ def calc_alt_lamb(update_rule_parameter_dict):
     if update_rule_parameter_dict.get("logit_delta_lamb") is not None:
         logit_delta_lamb = update_rule_parameter_dict["logit_delta_lamb"]
     else:
+        print(update_rule_parameter_dict)
         raise KeyError("logit_delta_lamb key not found in update_rule_parameter_dict")
     logit_alt_lamb = logit_delta_lamb + logit_lamb
     alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
