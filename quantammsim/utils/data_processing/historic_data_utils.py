@@ -818,12 +818,6 @@ def createMissingDataFrameFromClosePrices(startUnix, closePrices, token):
 def get_historic_parquet_data(
     list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
 ):
-    print("get_historic_parquet_data-----------------------------")
-    print(f"list_of_tickers: {list_of_tickers}")
-    print(f"cols: {cols}")
-    print(f"root: {root}")
-    print(f"start_time_unix: {start_time_unix}")
-    print(f"end_time_unix: {end_time_unix}")
     firstTicker = list_of_tickers[0]
     # print('cwd: ', os.getcwd())
     filename = firstTicker + "_USD.parquet"
@@ -962,6 +956,76 @@ def get_historic_csv_data_w_versions(
     }
 
 
+def load_market_cap_data(token: str, root: str = None) -> pd.DataFrame:
+    """
+    Load market cap data for a given token.
+
+    Parameters
+    ----------
+    token : str
+        Token symbol
+    root : str, optional
+        Root directory containing market cap data. If None, uses package data.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with columns: unix, price, market_cap, circulating_supply
+    """
+    if root is not None:
+        inp_file = Path(root) / "market_cap_data" / f"{token.lower()}-usd-max.csv"
+    else:
+        inp_file = (
+            impresources.files(data) / "market_cap_data" / f"{token.lower()}-usd-max.csv"
+        )
+
+    if not inp_file.exists():
+        raise FileNotFoundError(f"No market cap data found for {token}")
+
+    # Load market cap data
+    df = pd.read_csv(inp_file, parse_dates=["snapped_at"])
+
+    # Validate data
+    required_columns = ["snapped_at", "price", "market_cap"]
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        raise ValueError(f"Missing required columns: {missing_columns}")
+
+    # Convert UTC timestamp to unix milliseconds using existing utility
+    df["unix"] = pddatetime_to_unixtimestamp(df["snapped_at"])
+
+    # Calculate circulating supply with validation
+    df["circulating_supply"] = np.where(
+        (df["price"] > 1e-10) & (df["market_cap"] > 0),
+        df["market_cap"] / df["price"],
+        np.nan,
+    )
+
+    # Clip extreme values (3 sigma rule)
+    valid_supplies = df["circulating_supply"].dropna()
+    if len(valid_supplies) > 0:
+        mean_supply = valid_supplies.mean()
+        std_supply = valid_supplies.std()
+        df["circulating_supply"] = df["circulating_supply"].clip(
+            lower=mean_supply - 3 * std_supply, upper=mean_supply + 3 * std_supply
+        )
+
+    # Fill missing values with warnings
+    max_fill_window = pd.Timedelta(days=7)
+
+    # Forward fill with limit
+    df["circulating_supply"] = df["circulating_supply"].fillna(
+        method="ffill", limit=int(max_fill_window.total_seconds() / 86400)
+    )
+
+    # Backward fill with limit
+    df["circulating_supply"] = df["circulating_supply"].fillna(
+        method="bfill", limit=int(max_fill_window.total_seconds() / 86400)
+    )
+
+    return df[["unix", "circulating_supply"]]
+
+
 def get_data_dict(
     list_of_tickers,
     run_fingerprint,
@@ -975,6 +1039,7 @@ def get_data_dict(
     max_mc_version=9,
     return_slippage=False,
     return_gas_prices=False,
+    return_supply=False,
     price_data=None,
     do_test_period=False,
 ):
@@ -1102,16 +1167,24 @@ def get_data_dict(
     if start_idx / 1440 < max_memory_days:
         max_memory_days = start_idx / 1440 - 1.0
 
-    n_chunks = (len(prices) - remainder_idx) / chunk_period
+    # n_chunks = (len(prices) - remainder_idx) / chunk_period
+    n_chunks = int((len(prices) - remainder_idx) / 1440) * 1440 / chunk_period
     # check that we can cleanly divide data into 'chunk_period' units
     # if not, we will remove off the last little bit of the dataset.
     # (note that this doesn't interefere with the above burnin manipulations
     # as we made sure to 'add' a chunk-divisible portion to the start)
     if return_slippage:
         n_chunks = int((len(prices) - remainder_idx) / 1440) * 1440 / chunk_period
-        price_data_filtered = price_data.iloc[
-            remainder_idx : int(n_chunks) * chunk_period + remainder_idx
-        ]
+        if chunk_period < 1440 or chunk_period % 1440 != 0:
+            price_data_filtered = price_data.iloc[
+                remainder_idx : int(n_chunks) * chunk_period + remainder_idx
+            ]
+        else:
+            # Calculate daily n_chunks by dividing total minutes by minutes per day
+            n_chunks = int((len(prices) - remainder_idx) / 1440)
+            price_data_filtered = price_data.iloc[
+                remainder_idx : int(n_chunks) * chunk_period + remainder_idx
+            ]
         spread = list()
         annualised_daily_volatility = list()
         daily_volume = list()
@@ -1158,8 +1231,42 @@ def get_data_dict(
         # spread[idx, :] = 0.0
     # if return_slippage:
     # spread_rebased = spread[remainder_idx:]
-    prices_rebased = prices_rebased[: int(n_chunks) * chunk_period]
-    unix_values_rebased = unix_values_rebased[: int(n_chunks) * chunk_period]
+    if return_supply:
+        print("Loading market cap data for supply calculation")
+        supply_data = []
+        for token in list_of_tickers:
+            token_supply = load_market_cap_data(token, root)
+            token_supply.set_index("unix", inplace=True)
+
+            # Align with price timeline using efficient reindexing
+            price_timeline = pd.Index(unix_values)
+            aligned_supply = token_supply.reindex(
+                price_timeline,
+                method="ffill",
+                limit=int(
+                    pd.Timedelta(days=7).total_seconds() / 60
+                ),  # 7 day limit in minutes
+            )
+
+            if aligned_supply["circulating_supply"].isna().any():
+                print(
+                    f"Warning: Missing supply data for {token} after forward-filling"
+                )
+                # Use last valid value or 1.0 if no valid data
+                last_valid = (
+                    aligned_supply["circulating_supply"].dropna().iloc[-1]
+                    if not aligned_supply["circulating_supply"].isna().all()
+                    else 1.0
+                )
+                aligned_supply["circulating_supply"].fillna(
+                    last_valid, inplace=True
+                )
+                print(f"Using placeholder supply value of {last_valid} for {token}")
+
+            supply_data.append(aligned_supply["circulating_supply"].values)
+
+    prices_rebased = prices_rebased[: round(n_chunks * chunk_period)]
+    unix_values_rebased = unix_values_rebased[: round(n_chunks * chunk_period)]
 
     # if return_slippage:
     #     spread_rebased = spread[: int(n_chunks) * chunk_period]
@@ -1197,6 +1304,8 @@ def get_data_dict(
         data_dict["annualised_daily_volatility"] = annualised_daily_volatility
     if return_gas_prices:
         data_dict["gas_prices_in_dollars"] = gas_prices_in_dollars
+    if return_supply:
+        data_dict["supply"] = np.array(supply_data).T
     if start_time_test_string is not None and end_time_test_string is not None:
         startDateTest = (
             datetime_to_unixtimestamp(
