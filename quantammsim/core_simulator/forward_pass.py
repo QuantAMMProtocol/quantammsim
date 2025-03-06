@@ -16,7 +16,7 @@ else:
 
 import jax.numpy as jnp
 from jax import jit, vmap, devices
-from jax.lax import stop_gradient, dynamic_slice
+from jax.lax import stop_gradient, dynamic_slice, associative_scan
 
 
 import numpy as np
@@ -32,14 +32,14 @@ def _calculate_max_drawdown(value_over_time, duration=7 * 24 * 60):
     n_complete_chunks = (len(value_over_time) // duration) * duration
     value_over_time_truncated = value_over_time[:n_complete_chunks]
     values = value_over_time_truncated.reshape(-1, duration)
-    running_max = jnp.maximum.accumulate(values, axis=1)
+    running_max = vmap(lambda x: associative_scan(jnp.maximum, x))(values)
     drawdowns = (values - running_max) / running_max
     max_drawdowns = jnp.min(drawdowns, axis=1)
     return jnp.min(max_drawdowns)
 
 
 def _calculate_var(value_over_time, percentile=5.0, duration=24 * 60):
-    """Calculate 95% VaR using intraday returns."""
+    """Calculate VaR using intraday returns."""
     n_complete_chunks = (len(value_over_time) // duration) * duration
     value_over_time_truncated = value_over_time[:n_complete_chunks]
     values = value_over_time_truncated.reshape(-1, duration)
@@ -49,7 +49,7 @@ def _calculate_var(value_over_time, percentile=5.0, duration=24 * 60):
 
 
 def _calculate_var_trad(value_over_time, percentile=5.0, duration=24 * 60):
-    """Calculate traditional 95% VaR using daily returns."""
+    """Calculate traditional VaR using daily returns."""
     n_complete_chunks = (len(value_over_time) // duration) * duration
     value_over_time_truncated = value_over_time[:n_complete_chunks]
     value_over_time = value_over_time_truncated.reshape(-1, duration)[:, -1]
@@ -78,7 +78,57 @@ def _calculate_raroc(value_over_time, percentile=5.0, duration=24 * 60):
     annualized_var = var * jnp.sqrt(annualization_factor * 24 * 60 / duration)
 
     # RAROC = Annualized Return / VaR (VaR is already negative)
-    return annualized_return / annualized_var
+    return -annualized_return / annualized_var
+
+
+def _calculate_rovar(value_over_time, percentile=5.0, duration=24 * 60):
+    # Drop any incomplete chunks at the end by truncating to multiple of duration
+    n_complete_chunks = (len(value_over_time) // duration) * duration
+    value_over_time_truncated = value_over_time[:n_complete_chunks]
+    value_over_time_chunks = value_over_time_truncated.reshape(-1, duration)
+
+    # Calculate returns per 'duration'
+    period_returns = value_over_time_chunks[:, -1] / value_over_time_chunks[:, 0] - 1.0
+    # Calculate VaR (using our intraday method)
+    returns = jnp.diff(value_over_time_chunks) / value_over_time_chunks[:, :-1]
+    var = vmap(lambda x: jnp.percentile(x, percentile))(returns)
+    mean_var = jnp.mean(var)
+    # Calculate annualized rovar
+    days_in_sample = len(value_over_time) / (24 * 60)
+    annualization_factor = 365 / days_in_sample
+
+    annualized_return = (1 + period_returns) ** ((365 * 24 * 60) / duration) - 1
+    mean_annualized_return = jnp.mean(annualized_return)
+    annualized_var = mean_var * jnp.sqrt(annualization_factor * 24 * 60 / duration)
+
+    # ROVAR = mean of: annualized Return per chunk / VaR (VaR is already negative) per chunk
+    return -mean_annualized_return / annualized_var
+
+
+def _calculate_rovar_trad(value_over_time, percentile=5.0, duration=24 * 60):
+    # Drop any incomplete chunks at the end by truncating to multiple of duration
+    n_complete_chunks = (len(value_over_time) // duration) * duration
+    value_over_time_truncated = value_over_time[:n_complete_chunks]
+    value_over_time_chunks = value_over_time_truncated.reshape(-1, duration)
+
+    # Calculate returns per 'duration' using end-of-period values
+    period_returns = value_over_time_chunks[:, -1] / value_over_time_chunks[:, 0] - 1.0
+
+    # Calculate VaR using traditional method (end-of-period returns)
+    end_of_period_values = value_over_time_chunks[:, -1]
+    var_returns = jnp.diff(end_of_period_values) / end_of_period_values[:-1]
+    var = jnp.percentile(var_returns, percentile)
+
+    # Calculate annualized rovar
+    days_in_sample = len(value_over_time) / (24 * 60)
+    annualization_factor = 365 / days_in_sample
+
+    annualized_return = (1 + period_returns) ** ((365 * 24 * 60) / duration) - 1
+    mean_annualized_return = jnp.mean(annualized_return)
+    annualized_var = var * jnp.sqrt(annualization_factor * 24 * 60 / duration)
+
+    # ROVAR = mean of annualized returns / VaR (VaR is already negative)
+    return -mean_annualized_return / annualized_var
 
 
 @partial(jit, static_argnums=(0,))
@@ -111,7 +161,7 @@ def _calculate_return_value(
         "greatest_draw_down": lambda: jnp.min(value_over_time - value_over_time[0])
         / value_over_time[0],
         "value": lambda: value_over_time,
-        "weekly_max_drawdown": lambda: _calculate_weekly_max_drawdown(value_over_time),
+        "weekly_max_drawdown": lambda: _calculate_max_drawdown(value_over_time, duration=7 * 24 * 60),
         "daily_var_95%": lambda: _calculate_var(
             value_over_time, percentile=5.0, duration=24 * 60
         ),
@@ -142,6 +192,25 @@ def _calculate_return_value(
         "weekly_raroc": lambda: _calculate_raroc(
             value_over_time, percentile=5.0, duration=7 * 24 * 60
         ),
+        "daily_rovar": lambda: _calculate_rovar(
+            value_over_time, percentile=5.0, duration=24 * 60
+        ),
+        "weekly_rovar": lambda: _calculate_rovar(
+            value_over_time, percentile=5.0, duration=7 * 24 * 60
+        ),
+        "monthly_rovar": lambda: _calculate_rovar(
+            value_over_time, percentile=5.0, duration=30 * 24 * 60
+        ),
+        "daily_rovar_trad": lambda: _calculate_rovar_trad(
+            value_over_time, percentile=5.0, duration=24 * 60
+        ),
+        "weekly_rovar_trad": lambda: _calculate_rovar_trad(
+            value_over_time, percentile=5.0, duration=7 * 24 * 60
+        ),
+        "monthly_rovar_trad": lambda: _calculate_rovar_trad(
+            value_over_time, percentile=5.0, duration=30 * 24 * 60
+        ),
+
         "reserves_and_values": lambda: {
             "final_reserves": reserves[-1],
             "final_value": (reserves[-1] * local_prices[-1]).sum(),
@@ -367,6 +436,20 @@ def forward_pass(
         }
     local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
     value_over_time = jnp.sum(jnp.multiply(reserves, local_prices), axis=-1)
+    if return_val == "reserves_and_values":
+        return {
+            "final_reserves": reserves[-1],
+            "final_value": (reserves[-1] * local_prices[-1]).sum(),
+            "value": value_over_time,
+            "prices": local_prices,
+            "reserves": reserves,
+            # "weights": pool.calculate_weights(
+            #     params, static_dict, prices, start_index, additional_oracle_input=None
+            # ),
+            # "raw_weight_outputs": pool.calculate_raw_weights_outputs(
+            #     params, static_dict, prices, additional_oracle_input=None
+            # ),
+        }
     return _calculate_return_value(
         return_val,
         reserves,

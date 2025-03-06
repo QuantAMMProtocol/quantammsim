@@ -83,8 +83,8 @@ def _jax_calc_coarse_weights(
 
     cap_lamb = True
     if raw_weight_outputs_are_themselves_weights:
-          # Determine which parameterization is being used
-          # allow for direct memory_days parameterization
+        # Determine which parameterization is being used
+        # allow for direct memory_days parameterization
         if "memory_days_2" in update_rule_parameter_dict:
             # Direct memory_days parameterization
             memory_days = update_rule_parameter_dict["memory_days_2"]
@@ -96,6 +96,7 @@ def _jax_calc_coarse_weights(
             max_lamb = memory_days_to_lamb(max_memory_days, chunk_period)
             capped_alt_lamb = jnp.clip(alt_lamb, a_min=0.0, a_max=max_lamb)
             alt_lamb = capped_alt_lamb
+        # initial_weights = raw_weight_outputs[0]
     else:
         alt_lamb = None
 
@@ -110,7 +111,25 @@ def _jax_calc_coarse_weights(
         raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
     )
 
-    carry_list_init = [initial_weights]
+    if raw_weight_outputs_are_themselves_weights:
+        # Apply guardrails to initial weights
+        initial_carry = [raw_weight_outputs[0]]
+        guardrailed_init, (actual_starts_init, scaled_diffs_init, target_weights_init) = (
+            _jax_calc_coarse_weight_scan_function(
+                initial_carry,
+                raw_weight_outputs[0],
+                minimum_weight=minimum_weight,
+                asset_arange=asset_arange,
+                n_assets=n_assets,
+                alt_lamb=alt_lamb,
+                interpol_num=2,  # interpol_num = 2 for immediate weight change
+                maximum_change=maximum_change,
+                raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
+            )
+        )
+        carry_list_init = [target_weights_init]
+    else:
+        carry_list_init = [initial_weights]
 
     _, (actual_starts, scaled_diffs, target_weights) = scan(scan_fn, carry_list_init, raw_weight_outputs)
     return actual_starts, scaled_diffs, target_weights
@@ -163,7 +182,7 @@ def calc_fine_weight_output(
         initial_weights,
         minimum_weight,
         params,
-        100.0,
+        run_fingerprint["max_memory_days"],
         chunk_period,
         weight_interpolation_period,
         maximum_change,
@@ -182,12 +201,15 @@ def calc_fine_weight_output(
         maximum_change=maximum_change,
         method=weight_interpolation_method,
     )
-    return jnp.vstack(
-        [
-            jnp.ones((chunk_period, n_assets), dtype=jnp.float64) * initial_weights,
-            weights,
-        ]
-    )
+    if raw_weight_outputs_are_themselves_weights:
+        return weights
+    else:
+        return jnp.vstack(
+            [
+                jnp.ones((chunk_period, n_assets), dtype=jnp.float64) * initial_weights,
+                weights,
+            ]
+        )
 
 
 calc_fine_weight_output_from_weight_changes = jit(

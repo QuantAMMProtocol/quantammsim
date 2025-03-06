@@ -240,6 +240,7 @@ def train_on_historic_data(
         "arb_quality": run_fingerprint["arb_quality"],
         "numeraire": run_fingerprint["numeraire"],
         "do_trades": False,
+        "minimum_weight": run_fingerprint["minimum_weight"],
     }
 
     partial_training_step = Partial(
@@ -416,6 +417,7 @@ def train_on_historic_data(
         if verbose:
             print("final objective value: ", objective_value)
             print("best train params", best_train_params)
+        return best_train_params
     elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
 
         n_evaluation_points = 20
@@ -514,6 +516,8 @@ def train_on_historic_data(
                     for param_key in param_config:
                         param_config[param_key]["scalar"] = True
 
+                # param_config["log_k"]["scalar"] = False
+                # param_config["k_per_day"]["scalar"] = False
                 trial_params = create_trial_params(
                     trial, param_config, params, run_fingerprint, n_assets
                 )
@@ -687,8 +691,10 @@ def train_on_historic_data(
                     f"  Validation Value: {optuna_manager.study.best_trial.user_attrs['validation_value']}"
                 )
                 print(f"  Params: {optuna_manager.study.best_params}")
+        return optuna_manager.study.best_trials
     else:
         raise NotImplementedError
+        
 
 
 def do_run_on_historic_data(
@@ -869,6 +875,8 @@ def do_run_on_historic_data(
         "do_arb": run_fingerprint["do_arb"],
         "arb_quality": run_fingerprint["arb_quality"],
         "numeraire": run_fingerprint["numeraire"],
+        "noise_trader_ratio": run_fingerprint["noise_trader_ratio"],
+        "minimum_weight": run_fingerprint["minimum_weight"],
     }
 
     # Create static dictionaries for training and testing
@@ -925,7 +933,6 @@ def do_run_on_historic_data(
             dynamic_inputs_dict["arb_fees_array"],
         )
         output_dicts.append(output_dict)
-
         # Run forward pass for test data if required
         if do_test_period:
             output_dict_test = partial_forward_pass_nograd_batch_reserves_values_test(

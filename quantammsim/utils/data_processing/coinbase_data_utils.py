@@ -153,7 +153,7 @@ def clean_up_coinbase_df(df):
     ].rename(columns={"Volume USD": "volume"})
     merged_data = pd.concat([clean_data, unsorted_data_filtered])
     merged_data = merged_data.sort_index()
-    merged_data["unix"] = pddatetime_to_unixtimestamp(merged_data.index) * 1000
+    merged_data["unix"] = pddatetime_to_unixtimestamp(merged_data.index)
     return merged_data
 
 
