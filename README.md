@@ -104,6 +104,7 @@ For detailed installation instructions, see our [documentation](https://quantamm
 
 ```python
 from quantammsim.runners.jax_runners import do_run_on_historic_data
+import jax.numpy as jnp
 
 # Define experiment parameters
 run_fingerprint = {
