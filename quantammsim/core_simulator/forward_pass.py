@@ -225,6 +225,62 @@ def _calculate_return_value(
     return return_metrics[return_val]()
 
 
+def _calculate_sterling_ratio(
+    value_over_time, duration=24 * 60, drawdown_adjustment=None
+):
+    """
+    Calculate the Sterling ratio using JAX for a given value over time series.
+
+    Parameters
+    ----------
+    value_over_time : jnp.ndarray
+        Array of portfolio values over time
+    duration : int
+        Duration in minutes to calculate returns over
+    drawdown_adjustment : float, optional
+        Adjustment to add to average drawdown (e.g., 0.1 for traditional 10% adjustment).
+        If None, no adjustment is applied.
+
+    Returns
+    -------
+    float
+        Sterling ratio (annualized)
+    """
+    # Handle incomplete chunks
+    n_complete_chunks = (len(value_over_time) // duration) * duration
+    value_over_time_truncated = value_over_time[:n_complete_chunks]
+    values = value_over_time_truncated.reshape(-1, duration)
+
+    # Calculate running max using associative_scan for efficiency
+    running_max = vmap(lambda x: associative_scan(jnp.maximum, x))(values)
+
+    # Calculate drawdowns per chunk
+    drawdowns = (values - running_max) / running_max
+    chunk_max_drawdowns = jnp.min(drawdowns, axis=1)
+
+    # Get average of worst 3 drawdowns
+    worst_drawdowns = jnp.sort(chunk_max_drawdowns)[:3]
+    avg_drawdown = jnp.mean(worst_drawdowns)
+
+    # Calculate annualized return
+    days_in_sample = len(value_over_time) / (24 * 60)
+    annualization_factor = 365 / days_in_sample
+
+    total_return = value_over_time[-1] / value_over_time[0] - 1.0
+    annualized_return = (1 + total_return) ** annualization_factor - 1
+
+    # Apply drawdown adjustment if specified
+    if drawdown_adjustment is not None:
+        denominator = -(avg_drawdown + drawdown_adjustment)
+    else:
+        denominator = -avg_drawdown
+
+    # Handle zero/positive drawdown case
+    sterling = jnp.where(denominator >= 0, jnp.inf, annualized_return / denominator)
+
+    return sterling
+
+
 @partial(jit, static_argnums=(7, 8))
 def forward_pass(
     params,
