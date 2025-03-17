@@ -5,7 +5,7 @@ import pandas as pd
 
 def calculate_jensens_alpha(portfolio_returns, rf_values, benchmark_returns):
     """
-    Calculate Jensen's Alpha for a given set of portfolio returns, risk-free rates, 
+    Calculate Jensen's Alpha for a given set of portfolio returns, risk-free rates,
     and benchmark returns.
 
     Parameters:
@@ -57,7 +57,7 @@ def calculate_jensens_alpha(portfolio_returns, rf_values, benchmark_returns):
 
 def calculate_sharpe_ratio(portfolio_returns, rf_values):
     """
-    Calculate the Sharpe Ratio and annualized Sharpe Ratio 
+    Calculate the Sharpe Ratio and annualized Sharpe Ratio
     for a given set of portfolio returns and risk-free rates.
 
     Parameters:
@@ -138,7 +138,7 @@ def calculate_tracking_error_and_information_ratio(
     portfolio_returns, benchmark_returns
 ):
     """
-    Calculate the Tracking Error and Information Ratio for a given set of 
+    Calculate the Tracking Error and Information Ratio for a given set of
     portfolio returns and benchmark returns.
 
     Parameters:
@@ -500,7 +500,7 @@ def calcuate_period_sterling_index(daily_returns, rf_values, period):
     Returns:
     np.array: Monthly Sterling Ratios.
     """
-    
+
     portfolio_returns = daily_returns
 
     if not isinstance(daily_returns, pd.Series):
@@ -649,33 +649,23 @@ def calculate_monthly_cdar(portfolio_returns, period, confidence_level=0.95):
 def calculate_omega_ratio(portfolio_returns, rf_values, threshold=0):
     """
     Calculate the Omega Ratio for a given set of portfolio returns relative to a specified threshold.
-
-    Parameters:
-    portfolio_returns (np.array): Daily returns of the portfolio.
-    rf_values (np.array): Daily risk-free rates.
-    threshold (float): Threshold return value (default is 0).
-
-    Returns:
-    float: Omega Ratio
     """
-
     # Calculate the excess returns relative to the threshold
     excess_returns = portfolio_returns - rf_values - threshold
 
-    # Calculate the probability-weighted returns
+    # Separate positive and negative excess returns
     positive_returns = excess_returns[excess_returns > 0]
-    negative_returns = -excess_returns[excess_returns <= 0]
+    negative_returns = excess_returns[excess_returns <= 0]  # These are already negative
 
+    # Calculate probability weights (for reporting)
     probability_positive = len(positive_returns) / len(excess_returns)
     probability_negative = len(negative_returns) / len(excess_returns)
 
-    # Calculate Omega Ratio
-    omega_ratio = (1 + np.mean(positive_returns)) / (1 - np.mean(negative_returns))
-
-    annualized_omega_ratio = omega_ratio * np.sqrt(365)
+    # Calculate Omega Ratio - standard definition
+    omega_ratio = np.sum(positive_returns) / np.sum(abs(negative_returns))
 
     return {
-        "Annualized Omega Ratio": annualized_omega_ratio,
+        "Omega Ratio": omega_ratio,
         "Probability Positive": probability_positive,
         "Probability Negative": probability_negative,
     }
