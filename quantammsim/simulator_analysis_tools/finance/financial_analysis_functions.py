@@ -470,14 +470,20 @@ def calculate_sterling_ratio(returns, rf):
         Sterling ratio of the investment or portfolio.
     """
     excess_returns = returns - rf
-    downside_deviation = np.std(np.minimum(excess_returns, 0))
-
-    if downside_deviation == 0:
-        return np.inf  # Handle case where downside deviation is zero
-
     mean_excess_return = np.mean(excess_returns)
 
-    sterling_ratio = mean_excess_return / downside_deviation
+    # Calculate drawdowns
+    cumulative_returns = (1 + returns).cumprod()
+    peak = np.maximum.accumulate(cumulative_returns)
+    drawdowns = (cumulative_returns - peak) / peak
+
+    # Calculate average drawdown
+    average_drawdown = np.mean(drawdowns[drawdowns < 0])
+
+    if average_drawdown == 0:
+        return np.inf  # Handle case where average drawdown is zero
+
+    sterling_ratio = mean_excess_return / abs(average_drawdown)
 
     return sterling_ratio
 
