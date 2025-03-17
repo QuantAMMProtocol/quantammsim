@@ -674,41 +674,27 @@ def calculate_omega_ratio(portfolio_returns, rf_values, threshold=0):
 def calculate_calmar_ratio(portfolio_returns, rf_values):
     """
     Calculate the Calmar Ratio for a given set of portfolio returns.
-
-    Parameters:
-    portfolio_returns (np.array): Daily returns of the portfolio.
-    rf_values (np.array): Daily risk-free rates.
-
-    Returns:
-    float: Calmar Ratio
     """
     trading_days_per_year = 365
-    # Step 1: Calculate the excess returns by subtracting risk-free rate
+    
+    # Calculate annualized excess return
     excess_returns = portfolio_returns - rf_values
-
-    # Step 2: Calculate cumulative returns (based on portfolio returns, not excess returns)
+    mean_excess_return = np.mean(excess_returns)
+    annualized_excess_return = mean_excess_return * trading_days_per_year
+    
+    # Calculate maximum drawdown using total returns (not excess returns)
     cumulative_returns = np.cumprod(1 + portfolio_returns)
-
-    # Step 3: Calculate the annualized return (based on excess returns)
-    total_return = cumulative_returns[-1]  # Total return of the portfolio
-    num_days = len(portfolio_returns)
-    annualized_return = (
-        total_return ** (trading_days_per_year / num_days)
-    ) - 1  # Annualized total return
-
-    # Step 4: Calculate the maximum drawdown (based on cumulative returns)
     peak = np.maximum.accumulate(cumulative_returns)
     drawdown = (cumulative_returns - peak) / peak
-    max_drawdown = np.min(drawdown)  # Most negative drawdown
-
-    # Step 5: Calculate the Calmar Ratio (if max_drawdown is 0, return infinity)
+    max_drawdown = np.min(drawdown)
+    
+    # Calculate the Calmar Ratio
     if max_drawdown == 0:
         return np.inf
     else:
-        calmar_ratio = annualized_return / abs(max_drawdown)
-
+        calmar_ratio = annualized_excess_return / abs(max_drawdown)
+    
     return calmar_ratio
-
 
 def calculate_capture_ratios(portfolio_returns, benchmark_returns):
     """
@@ -720,6 +706,11 @@ def calculate_capture_ratios(portfolio_returns, benchmark_returns):
 
     Returns:
     dict: A dictionary containing the capture ratios.
+
+    Notes:
+    - Upside Capture Ratio > 100 means the portfolio outperformed the benchmark during up markets
+    - Downside Capture Ratio < 100 means the portfolio outperformed the benchmark during down markets (lost less)
+    - Total Capture Ratio > 1 indicates favorable risk-reward profile (capturing more upside than downside)
     """
     # Identify positive and negative benchmark returns
     positive_benchmark = benchmark_returns > 0
@@ -732,29 +723,32 @@ def calculate_capture_ratios(portfolio_returns, benchmark_returns):
     positive_benchmark_returns = benchmark_returns[positive_benchmark]
     negative_benchmark_returns = benchmark_returns[negative_benchmark]
 
-    # Calculate Upside Capture Ratio
-    upside_capture_ratio = (
-        np.mean(positive_portfolio_returns) / np.mean(positive_benchmark_returns) * 100
-        if np.mean(positive_benchmark_returns) != 0
-        else np.nan
-    )
+    # Calculate Upside Capture Ratio (how much of benchmark's positive performance is captured)
+    if len(positive_benchmark_returns) > 0 and np.mean(positive_benchmark_returns) != 0:
+        upside_capture_ratio = (
+            np.mean(positive_portfolio_returns)
+            / np.mean(positive_benchmark_returns)
+            * 100
+        )
+    else:
+        upside_capture_ratio = np.nan
 
-    # Calculate Downside Capture Ratio
-    downside_capture_ratio = (
-        np.mean(negative_portfolio_returns) / np.mean(negative_benchmark_returns) * 100
-        if np.mean(negative_benchmark_returns) != 0
-        else np.nan
-    )
+    # Calculate Downside Capture Ratio (how much of benchmark's negative performance is captured)
+    if len(negative_benchmark_returns) > 0 and np.mean(negative_benchmark_returns) != 0:
+        # Use absolute values in denominator since negative_benchmark_returns are negative
+        downside_capture_ratio = (
+            np.mean(negative_portfolio_returns)
+            / abs(np.mean(negative_benchmark_returns))
+            * 100
+        )
+    else:
+        downside_capture_ratio = np.nan
 
-    # Calculate Total Capture Ratio
-    total_capture_ratio = upside_capture_ratio - downside_capture_ratio
-
-    if type(upside_capture_ratio) == np.float64:
-        upside_capture_ratio = upside_capture_ratio
-    if type(downside_capture_ratio) == np.float64:
-        downside_capture_ratio = downside_capture_ratio
-    if type(total_capture_ratio) == np.float64:
-        total_capture_ratio = total_capture_ratio
+    # Calculate Total Capture Ratio (upside/downside, not difference)
+    if not np.isnan(downside_capture_ratio) and abs(downside_capture_ratio) > 0:
+        total_capture_ratio = abs(upside_capture_ratio) / abs(downside_capture_ratio)
+    else:
+        total_capture_ratio = np.nan
 
     return {
         "Upside Capture Ratio": upside_capture_ratio,
