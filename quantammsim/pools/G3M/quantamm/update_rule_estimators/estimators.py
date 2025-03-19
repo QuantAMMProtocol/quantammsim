@@ -36,6 +36,7 @@ from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives 
     make_cov_kernel,
     _jax_ewma_at_infinity_via_conv_padded,
     _jax_ewma_at_infinity_via_scan,
+    _jax_gradients_at_infinity_via_conv_padded,
     _jax_gradients_at_infinity_via_conv_padded_with_alt_ewma,
     _jax_variance_at_infinity_via_conv,
     _jax_variance_at_infinity_via_scan,
