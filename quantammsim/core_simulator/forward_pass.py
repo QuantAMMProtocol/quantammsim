@@ -186,7 +186,7 @@ def _calculate_sterling_ratio(
     return sterling
 
 
-def _calculate_calmar_ratio(value_over_time, duration=30 * 24 * 60):
+def _calculate_calmar_ratio(value_over_time, duration=None):
     """
     Calculate the Calmar ratio using JAX for a given value over time series.
 
@@ -195,23 +195,23 @@ def _calculate_calmar_ratio(value_over_time, duration=30 * 24 * 60):
     value_over_time : jnp.ndarray
         Array of portfolio values over time
     duration : int
-        Duration in minutes to calculate returns over
+        Maximum lookback period in minutes (default is 36 months)
+        Only used to truncate the data if needed
 
     Returns
     -------
     float
         Calmar ratio (annualized)
     """
-    # Handle incomplete chunks
-    n_complete_chunks = (len(value_over_time) // duration) * duration
-    value_over_time_truncated = value_over_time[:n_complete_chunks]
-    values = value_over_time_truncated.reshape(-1, duration)
+    # Truncate to maximum lookback period if needed
+    if duration is not None and len(value_over_time) > duration:
+        value_over_time = value_over_time[-duration:]
 
-    # Calculate running max using associative_scan for efficiency
-    running_max = vmap(lambda x: associative_scan(jnp.maximum, x))(values)
+    # Calculate running max for entire series
+    running_max = associative_scan(jnp.maximum, value_over_time)
 
     # Calculate drawdowns and find maximum drawdown
-    drawdowns = (values - running_max) / running_max
+    drawdowns = (value_over_time - running_max) / running_max
     max_drawdown = jnp.min(drawdowns)
 
     # Calculate annualized return
@@ -327,6 +327,7 @@ def _calculate_return_value(
         "sterling": lambda: _calculate_sterling_ratio(
             value_over_time, duration=30 * 24 * 60
         ),
+        "calmar": lambda: _calculate_calmar_ratio(value_over_time),
         "reserves_and_values": lambda: {
             "final_reserves": reserves[-1],
             "final_value": (reserves[-1] * local_prices[-1]).sum(),
