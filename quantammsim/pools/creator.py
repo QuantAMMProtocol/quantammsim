@@ -11,6 +11,9 @@ from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import (
     MeanReversionChannelPool,
 )
 from quantammsim.pools.G3M.quantamm.difference_momentum_pool import DifferenceMomentumPool
+from quantammsim.pools.G3M.quantamm.index_market_cap_pool import IndexMarketCapPool
+from quantammsim.pools.G3M.quantamm.hodling_index_pool import HodlingIndexPool
+from quantammsim.pools.G3M.quantamm.trad_hodling_index_pool import TradHodlingIndexPool
 from quantammsim.pools.G3M.quantamm.min_variance_pool import MinVariancePool
 from quantammsim.pools.hodl_pool import HODLPool
 from quantammsim.pools.FM_AMM.cow_pool import CowPool
@@ -137,6 +140,12 @@ def create_pool(rule):
         base_pool = MeanReversionChannelPool()
     elif base_rule == "difference_momentum":
         base_pool = DifferenceMomentumPool()
+    elif base_rule == "index_market_cap":
+        base_pool = IndexMarketCapPool()
+    elif base_rule == "hodling_index_market_cap":
+        base_pool = HodlingIndexPool()
+    elif base_rule == "trad_hodling_index_market_cap":
+        base_pool = TradHodlingIndexPool()
     elif base_rule == "min_variance":
         base_pool = MinVariancePool()
     elif base_rule == "hodl":
