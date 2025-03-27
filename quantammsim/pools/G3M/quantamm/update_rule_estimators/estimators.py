@@ -139,6 +139,9 @@ def calc_gradients(
         alt_lamb = lamb
 
     if DEFAULT_BACKEND != "cpu":
+        lamb = jnp.broadcast_to(
+            lamb, update_rule_parameter_dict["initial_weights_logits"].shape
+        )
         ewma_kernel = make_ewma_kernel(
             lamb, safety_margin_max_memory_days, chunk_period
         )
