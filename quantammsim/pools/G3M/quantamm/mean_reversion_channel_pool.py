@@ -396,7 +396,7 @@ class MeanReversionChannelPool(MomentumPool):
         return params
 
     @classmethod
-    def _process_specific_parameters(cls, update_rule_parameters, n_assets):
+    def _process_specific_parameters(cls, update_rule_parameters, run_fingerprint):
         """Process mean reversion channel specific parameters."""
         result = {}
         amplitude_values = None
@@ -414,19 +414,19 @@ class MeanReversionChannelPool(MomentumPool):
                 amplitude_values = urp.value
             elif urp.name == "exponent":
                 raw_exponents = [float(inverse_squareplus_np(val)) for val in urp.value]
-                if len(raw_exponents) != n_assets:
-                    raw_exponents = [raw_exponents[0]] * n_assets
+                if len(raw_exponents) != len(run_fingerprint["tokens"]):
+                    raw_exponents = [raw_exponents[0]] * len(run_fingerprint["tokens"])
                 result["raw_exponents"] = np.array(raw_exponents)
             elif urp.name == "width":
                 raw_width = [float(get_raw_value(val)) for val in urp.value]
                 result["raw_width"] = np.array(raw_width)
-                if len(raw_width) != n_assets:
-                    raw_width = [raw_width[0]] * n_assets
+                if len(raw_width) != len(run_fingerprint["tokens"]):
+                    raw_width = [raw_width[0]] * len(run_fingerprint["tokens"])
                 result["raw_width"] = np.array(raw_width)
             elif urp.name == "pre_exp_scaling":
                 raw_pre_exp_scaling = [float(get_raw_value(val)) for val in urp.value]
-                if len(raw_pre_exp_scaling) != n_assets:
-                    raw_pre_exp_scaling = [raw_pre_exp_scaling[0]] * n_assets
+                if len(raw_pre_exp_scaling) != len(run_fingerprint["tokens"]):
+                    raw_pre_exp_scaling = [raw_pre_exp_scaling[0]] * len(run_fingerprint["tokens"])
                 result["raw_pre_exp_scaling"] = np.array(raw_pre_exp_scaling)
 
         # Process amplitude last
@@ -437,8 +437,8 @@ class MeanReversionChannelPool(MomentumPool):
                 get_log_amplitude(float(amp), float(mem)) 
                 for amp, mem in zip(amplitude_values, memory_days)
             ]
-            if len(log_amplitude) != n_assets:
-                log_amplitude = [log_amplitude[0]] * n_assets
+            if len(log_amplitude) != len(run_fingerprint["tokens"]):
+                log_amplitude = [log_amplitude[0]] * len(run_fingerprint["tokens"])
             result["log_amplitude"] = np.array(log_amplitude)
         return result
 

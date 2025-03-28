@@ -333,7 +333,7 @@ class PowerChannelPool(MomentumPool):
         return params
 
     @classmethod
-    def _process_specific_parameters(cls, update_rule_parameters, n_assets):
+    def _process_specific_parameters(cls, update_rule_parameters, run_fingerprint):
         """Process mean reversion channel specific parameters."""
         result = {}
 
@@ -341,13 +341,13 @@ class PowerChannelPool(MomentumPool):
         for urp in update_rule_parameters:
             if urp.name == "exponent":
                 raw_exponents = [float(inverse_squareplus_np(val)) for val in urp.value]
-                if len(raw_exponents) != n_assets:
-                    raw_exponents = [raw_exponents[0]] * n_assets
+                if len(raw_exponents) != len(run_fingerprint["tokens"]):
+                    raw_exponents = [raw_exponents[0]] * len(run_fingerprint["tokens"])
                 result["raw_exponents"] = np.array(raw_exponents)
             elif urp.name == "pre_exp_scaling":
                 raw_pre_exp_scaling = [float(get_raw_value(val)) for val in urp.value]
-                if len(raw_pre_exp_scaling) != n_assets:
-                    raw_pre_exp_scaling = [raw_pre_exp_scaling[0]] * n_assets
+                if len(raw_pre_exp_scaling) != len(run_fingerprint["tokens"]):
+                    raw_pre_exp_scaling = [raw_pre_exp_scaling[0]] * len(run_fingerprint["tokens"])
                 result["raw_pre_exp_scaling"] = np.array(raw_pre_exp_scaling)
 
         return result

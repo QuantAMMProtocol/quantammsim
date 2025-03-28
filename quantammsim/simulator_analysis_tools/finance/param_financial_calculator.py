@@ -86,11 +86,12 @@ def slice_minutes_array(
     return minutes_array[start_diff_minutes:end_diff_minutes]
 
 
-def process_basic_parameters(update_rule_parameters):
+def process_basic_parameters(update_rule_parameters, run_fingerprint):
     """Convert update rule parameters into the required format.
     
     Args:
         update_rule_parameters: List of update rule parameter objects
+        run_fingerprint: Run fingerprint dictionary
         
     Returns:
         Dict containing the converted parameters
@@ -100,7 +101,7 @@ def process_basic_parameters(update_rule_parameters):
         if urp.name == "memory_days":
             logit_lamb_vals = []
             for tokenValue in urp.value:
-                initial_lamb = memory_days_to_lamb(tokenValue)
+                initial_lamb = memory_days_to_lamb(tokenValue, run_fingerprint["chunk_period"])
                 logit_lamb = np.log(initial_lamb / (1.0 - initial_lamb))
                 logit_lamb_vals.append(logit_lamb)
             update_rule_parameter_dict_converted["logit_lamb"] = np.array(
@@ -175,12 +176,12 @@ def run_pool_simulation(simulationRunDto):
     # Use pool's parameter processor if available
     if hasattr(pool_class, "process_parameters"):
         update_rule_parameter_dict_converted = pool_class.process_parameters(
-            update_rule_parameters, len(tokens)
+            update_rule_parameters, run_fingerprint
         )
     elif len(update_rule_parameters) > 0:
         # Fallback to basic parameter processing
         update_rule_parameter_dict_converted = process_basic_parameters(
-            update_rule_parameters
+            update_rule_parameters, run_fingerprint
         )
     else:
         update_rule_parameter_dict_converted = {}
@@ -207,7 +208,6 @@ def run_pool_simulation(simulationRunDto):
                 "unix": [step.unix for step in time_series_fee_hook_variable.hookTimeSteps],
                 "fees": [float(step.value)/float(divisor) for step in time_series_fee_hook_variable.hookTimeSteps],
             })
-            print("fee_steps_df-------------------", fee_steps_df)
     raw_trades = None
 
     if len(simulationRunDto.swapImports) > 0:
