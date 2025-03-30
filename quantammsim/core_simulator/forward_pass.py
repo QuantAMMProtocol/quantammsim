@@ -131,6 +131,117 @@ def _calculate_rovar_trad(value_over_time, percentile=5.0, duration=24 * 60):
     return -mean_annualized_return / annualized_var
 
 
+def _calculate_sterling_ratio(
+    value_over_time, duration=24 * 60, drawdown_adjustment=None
+):
+    """
+    Calculate the Sterling ratio using JAX for a given value over time series.
+
+    Parameters
+    ----------
+    value_over_time : jnp.ndarray
+        Array of portfolio values over time
+    duration : int
+        Duration in minutes to calculate returns over
+    drawdown_adjustment : float, optional
+        Adjustment to add to average drawdown (e.g., 0.1 for traditional 10% adjustment).
+        If None, no adjustment is applied.
+
+    Returns
+    -------
+    float
+        Sterling ratio (annualized)
+    """
+    # Handle incomplete chunks
+    n_complete_chunks = (len(value_over_time) // duration) * duration
+    value_over_time_truncated = value_over_time[:n_complete_chunks]
+    values = value_over_time_truncated.reshape(-1, duration)
+
+    # Calculate running max using associative_scan for efficiency
+    running_max = vmap(lambda x: associative_scan(jnp.maximum, x))(values)
+
+    # Calculate drawdowns per chunk
+    drawdowns = (values - running_max) / running_max
+    chunk_max_drawdowns = jnp.min(drawdowns, axis=1)
+
+    # Calculate average of annual maximum drawdowns
+    avg_drawdown = jnp.mean(chunk_max_drawdowns)
+
+    # Calculate annualized return
+    days_in_sample = len(value_over_time) / (24 * 60)
+    annualization_factor = 365 / days_in_sample
+
+    total_return = value_over_time[-1] / value_over_time[0] - 1.0
+    annualized_return = (1 + total_return) ** annualization_factor - 1
+
+    # Apply drawdown adjustment if specified
+    if drawdown_adjustment is not None:
+        denominator = -(avg_drawdown + drawdown_adjustment)
+    else:
+        denominator = -avg_drawdown
+
+    # Handle zero/positive drawdown case
+    sterling = jnp.where(denominator >= 0, jnp.inf, annualized_return / denominator)
+
+    return sterling
+
+
+def _calculate_calmar_ratio(value_over_time, duration=None):
+    """
+    Calculate the Calmar ratio using JAX for a given value over time series.
+
+    Parameters
+    ----------
+    value_over_time : jnp.ndarray
+        Array of portfolio values over time
+    duration : int
+        Maximum lookback period in minutes (default is 36 months)
+        Only used to truncate the data if needed
+
+    Returns
+    -------
+    float
+        Calmar ratio (annualized)
+    """
+    # Truncate to maximum lookback period if needed
+    if duration is not None and len(value_over_time) > duration:
+        value_over_time = value_over_time[-duration:]
+
+    # Calculate running max for entire series
+    running_max = associative_scan(jnp.maximum, value_over_time)
+
+    # Calculate drawdowns and find maximum drawdown
+    drawdowns = (value_over_time - running_max) / running_max
+    max_drawdown = jnp.min(drawdowns)
+
+    # Calculate annualized return
+    days_in_sample = len(value_over_time) / (24 * 60)
+    annualization_factor = 365 / days_in_sample
+
+    total_return = value_over_time[-1] / value_over_time[0] - 1.0
+    annualized_return = (1 + total_return) ** annualization_factor - 1
+
+    # Handle zero/positive drawdown case
+    calmar = jnp.where(max_drawdown >= 0, jnp.inf, annualized_return / -max_drawdown)
+
+    return calmar
+
+
+def _calculate_ulcer_index(value_over_time, duration=7 * 24 * 60):
+    """Calculate Ulcer Index on a chosen basis.
+
+    The Ulcer Index measures downside risk considering both depth and duration of drawdowns.
+    """
+    n_complete_chunks = (len(value_over_time) // duration) * duration
+    value_over_time_truncated = value_over_time[:n_complete_chunks]
+    values = value_over_time_truncated.reshape(-1, duration)
+    running_max = vmap(lambda x: associative_scan(jnp.maximum, x))(values)
+    drawdowns = (values - running_max) / running_max
+    squared_drawdowns = jnp.square(drawdowns)
+    ulcer_indices = jnp.sqrt(jnp.mean(squared_drawdowns, axis=1))
+    return -jnp.mean(ulcer_indices)
+
+
 @partial(jit, static_argnums=(0,))
 def _calculate_return_value(
     return_val, reserves, local_prices, value_over_time, initial_reserves=None
@@ -161,7 +272,9 @@ def _calculate_return_value(
         "greatest_draw_down": lambda: jnp.min(value_over_time - value_over_time[0])
         / value_over_time[0],
         "value": lambda: value_over_time,
-        "weekly_max_drawdown": lambda: _calculate_max_drawdown(value_over_time, duration=7 * 24 * 60),
+        "weekly_max_drawdown": lambda: _calculate_max_drawdown(
+            value_over_time, duration=7 * 24 * 60
+        ),
         "daily_var_95%": lambda: _calculate_var(
             value_over_time, percentile=5.0, duration=24 * 60
         ),
@@ -210,7 +323,11 @@ def _calculate_return_value(
         "monthly_rovar_trad": lambda: _calculate_rovar_trad(
             value_over_time, percentile=5.0, duration=30 * 24 * 60
         ),
-
+        "ulcer": lambda: _calculate_ulcer_index(value_over_time, duration=30 * 24 * 60),
+        "sterling": lambda: _calculate_sterling_ratio(
+            value_over_time, duration=30 * 24 * 60
+        ),
+        "calmar": lambda: _calculate_calmar_ratio(value_over_time),
         "reserves_and_values": lambda: {
             "final_reserves": reserves[-1],
             "final_value": (reserves[-1] * local_prices[-1]).sum(),
