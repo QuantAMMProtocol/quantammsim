@@ -4,11 +4,13 @@ import os.path
 import os
 import pyarrow as pa
 import matplotlib.pyplot as plt
+import dask.dataframe as dd
 
 # from numba import jit
 # from numba import float64
 # from numba import int64
 from Historic_Crypto import Cryptocurrencies, HistoricalData
+from binance_historical_data import BinanceDataDumper
 from datetime import datetime, timezone
 from importlib import resources as impresources
 from quantammsim import data
@@ -96,6 +98,50 @@ def start_and_end_calcs(
         remainder_idx,
     )
 
+def load_data_from_candles_parquet(parquet_path, asset):
+    """Load and process data from a candles parquet file for a specific asset.
+    
+    Args:
+        parquet_path (str): Path to the parquet file
+        asset (dict): Dictionary containing pair_id and token name
+        
+    Returns:
+        pd.DataFrame: Processed dataframe with standardized columns
+    """
+    # Read the parquet file
+    df = dd.read_parquet(parquet_path)
+    
+    # Filter for specific asset
+    filtered_df = df[df["pair_id"] == asset["pair_id"]].compute()
+
+    # Create unix timestamp column
+    filtered_df["unix"] = filtered_df["timestamp"].astype(np.int64)
+
+    # Make volume columns
+    filtered_df["Volume USD"] = filtered_df["volume"].fillna(0)
+    filtered_df[f"Volume {asset['token']}"] = filtered_df["volume"] / filtered_df["close"]
+
+    # Make symbol column
+    filtered_df["symbol"] = asset["token"]
+
+    # Drop unused columns
+    filtered_df = filtered_df.drop(
+        columns=[
+            "timestamp",
+            "volume",
+            "pair_id", 
+            "avg",
+            "start_block",
+            "end_block",
+            "buy_volume",
+            "sell_volume",
+            "buys",
+            "sells",
+            "exchange_rate",
+        ]
+    )
+    
+    return filtered_df
 
 def get_available_years(root, exchange_directory, token, numeraire, prefix):
     """Check which years of data are available for a given token.
@@ -147,7 +193,7 @@ def fill_in_missing_rows_with_exchange_data(
         root=root + raw_data_folder,
         save_root=root + "concat_" + raw_data_folder,
         token1=token1,
-        token2="USD",
+        token2=numeraire,
         prefix=prefix,
         postfix="_minute",
         years_array_str=available_years,
@@ -169,6 +215,7 @@ def fill_in_missing_rows_with_exchange_data(
         if len(str(int(concatenated_df.index.max()))) <= 10:
             concatenated_df.index = (concatenated_df.index * 1000).astype(int)
 
+    os.makedirs(os.path.join(root, "concat_" + raw_data_folder), exist_ok=True)
     # Create visualization of exchange data
     plot_success = plot_exchange_data(
         exchange_data,
@@ -195,6 +242,55 @@ def fill_in_missing_rows_with_exchange_data(
     filled_in_df = filled_in_df[~filled_in_df.index.duplicated(keep="first")]
 
     return filled_in_df, missing_timestamps.tolist()
+
+
+def merge_exchange_data_frames(base_df, exchange_df, token1, root, raw_data_folder, prefix):
+    """Merge two DataFrames with exchange data, handling missing timestamps and duplicates.
+    
+    Args:
+        base_df (pd.DataFrame): Base DataFrame to fill gaps in
+        exchange_df (pd.DataFrame): Exchange data to fill gaps with
+        token1 (str): Token symbol for visualization
+        root (str): Root directory path for saving visualizations
+        raw_data_folder (str): Folder name for saving visualizations
+        prefix (str): Exchange prefix for logging
+        
+    Returns:
+        tuple: (merged DataFrame, list of filled timestamps or None)
+    """
+    # Ensure proper index setup
+    for df in [base_df, exchange_df]:
+        if df.index.name != "unix" and "unix" in df.columns:
+            df.set_index("unix", inplace=True)
+            
+    # Standardize timestamp format to milliseconds
+    for df in [base_df, exchange_df]:
+        if len(df.index) > 0 and len(str(int(df.index.max()))) <= 10:
+            df.index = (df.index * 1000).astype(np.int64)
+    # Create visualization of exchange data
+    plot_success = plot_exchange_data(
+        exchange_df,
+        token1,
+        os.path.join(root, "concat_" + raw_data_folder, f"exchange_data_{token1}.png"),
+    )
+    if not plot_success:
+        print(f"Warning: Could not create visualization for {token1} {prefix.strip('_')} data")
+
+    # Find and fill missing data
+    missing_timestamps = exchange_df.index.difference(base_df.index)
+    if missing_timestamps.empty:
+        print(f"No missing timestamps to fill from {prefix.strip('_')}")
+        return base_df, None
+
+    # Get missing rows and combine data
+    missing_data = exchange_df.loc[missing_timestamps]
+    filled_df = pd.concat([base_df, missing_data])
+
+    # Clean up the combined data
+    filled_df.sort_index(inplace=True)
+    filled_df = filled_df[~filled_df.index.duplicated(keep="first")]
+
+    return filled_df, missing_timestamps.tolist()
 
 
 def update_historic_data_old(token, root):
@@ -550,6 +646,116 @@ def update_historic_data_old(token, root):
     daily_data.to_csv(dailyPath, mode="w", index=False)
 
 
+def get_binance_vision_data(token, numeraire, root):
+    """Get data directly from binance.vision using binance_historical_data package.
+    
+    Args:
+        token (str): Token symbol
+        numeraire (str): Quote currency (e.g., 'USDT', 'USD')
+        root (str): Root directory path
+        
+    Returns:
+        pd.DataFrame: DataFrame with standardized format or None if data not available
+    """
+    # try:
+    # Initialize downloader in a subdirectory to keep monthly files separate
+    vision_dir = os.path.join(root, "binance_vision_data")
+    os.makedirs(vision_dir, exist_ok=True)
+    
+    data_dumper = BinanceDataDumper(
+        path_dir_where_to_dump=vision_dir,
+        asset_class="spot",
+        data_type="klines",
+        data_frequency="1m"
+    )
+    
+    # Download all available data
+    data_dumper.dump_data(
+        tickers=[f"{token}{numeraire}"],
+        is_to_update_existing=True
+    )
+    
+    # Find and combine all monthly files
+    monthly_files = []
+    base_path = os.path.join(vision_dir, "spot", "monthly", "klines", f"{token}{numeraire}", "1m")
+    
+    if os.path.exists(base_path):
+        for filename in os.listdir(base_path):
+            if filename.endswith(".csv"):
+                file_path = os.path.join(base_path, filename)
+                df = pd.read_csv(file_path, header=None, names=[
+                    "unix",
+                    "open",
+                    "high",
+                    "low", 
+                    "close",
+                    "volume",
+                    "close_time",
+                    "quote_volume",
+                    "trades",
+                    "taker_base_volume",
+                    "taker_quote_volume",
+                    "ignore"
+                ])
+                monthly_files.append(df)
+    
+    if not monthly_files:
+        print(f"No Binance vision data found for {token}")
+        return None
+
+    daily_files = []
+    base_path = os.path.join(vision_dir, "spot", "daily", "klines", f"{token}{numeraire}", "1m")
+    
+    if os.path.exists(base_path):
+        for filename in os.listdir(base_path):
+            if filename.endswith(".csv"):
+                file_path = os.path.join(base_path, filename)
+                df = pd.read_csv(file_path, header=None, names=[
+                    "unix",
+                    "open",
+                    "high",
+                    "low", 
+                    "close",
+                    "volume",
+                    "close_time",
+                    "quote_volume",
+                    "trades",
+                    "taker_base_volume",
+                    "taker_quote_volume",
+                    "ignore"
+                ])
+                daily_files.append(df)
+
+    # Combine and format data
+    combined_df = pd.concat(monthly_files + daily_files)
+    # Convert unix timestamps to milliseconds if they're in nanoseconds or seconds
+    # Typical millisecond timestamps are ~13 digits
+    # Nanosecond timestamps are ~19 digits
+    # Second timestamps are ~10 digits
+    # First convert nanoseconds to milliseconds
+    combined_df["unix"] = combined_df["unix"].apply(
+        lambda x: x // 1_000_000 if len(str(int(x))) > 13 else x
+    )
+    # Then convert seconds to milliseconds
+    combined_df["unix"] = combined_df["unix"].apply(
+        lambda x: x * 1000 if len(str(int(x))) <= 10 else x
+    )
+    combined_df["date"] = pd.to_datetime(combined_df["unix"], unit="ms").dt.strftime("%Y-%m-%d %H:%M:%S")
+    combined_df["symbol"] = f"{token}/{numeraire}"
+    combined_df[f"Volume {token}"] = combined_df["volume"]
+    combined_df["Volume USD"] = combined_df["quote_volume"]
+    
+    # Select and order columns to match expected format
+    result_df = combined_df[["unix", "date", "symbol", "open", "high", "low", "close",
+                            "Volume USD", f"Volume {token}", "trades"]]
+    result_df = result_df.sort_values("unix").reset_index(drop=True)
+    
+    return result_df
+    
+    # except Exception as e:
+    #     print(f"Failed to get Binance vision data for {token}: {str(e)}")
+    #     return None
+
 def update_historic_data(token, root):
     """Update historic data for a given token, handling reruns gracefully.
 
@@ -569,61 +775,70 @@ def update_historic_data(token, root):
     os.makedirs(outputPath, exist_ok=True)
     os.makedirs(root + "concat_binance_data/", exist_ok=True)
 
-    # if os.path.isfile(path):
-    if False:
-        print(f"Reading existing Binance data for {token}")
-        concated_df = pd.read_csv(path)
-        concated_df.set_index("unix", inplace=True)
+    # Try binance.vision data first
+    print(f"Attempting to get Binance vision data for {token}")
+    filled_timestamps = {}
+    concated_df = get_binance_vision_data(token, "USDT", root)
+    if concated_df is not None:
+        print(f"No Binance vision data available for {token}")
+        if concated_df.index.name != "unix":
+            concated_df.set_index("unix", inplace=True)
+        filled_binance_vision_unix_values = concated_df.index.tolist()
+        filled_timestamps["Binance Vision"] = filled_binance_vision_unix_values
     else:
-        print(f"Fetching new Binance data for {token}")
-        available_years = get_available_years(
-            root, "raw_binance_data", token, "USDT", "Binance_"
+        print(f"No Binance vision data available for {token}")
+        concated_df = pd.DataFrame(
+            columns=[
+                "date",
+                "symbol",
+                "open",
+                "high",
+                "low",
+                "close",
+                "Volume USD",
+                f"Volume {token}",
+            ]
         )
-
-        if not available_years:
-            # Try getting historical data years as fallback
-            historical_years = get_available_years(
-                root, "historical_data", token, "USD", ""
+        filled_timestamps["Binance Vision"] = []
+    # Fill gaps with cryptodatadownload Binance data
+    print("Filling gaps with cryptodatadownload Binance data")
+    concated_df, filled_binance_unix_values = fill_in_missing_rows_with_exchange_data(
+        concated_df, token, "USDT", root, "raw_binance_data/", "Binance_"
+    )
+    filled_timestamps["Binance CDD"] = filled_binance_unix_values
+    if concated_df is None:
+        print(f"No cryptodatadownload Binance data available for {token}")
+        # Try getting historical data years as fallback
+        historical_years = get_available_years(
+            root, "historical_data", token, "USD", ""
+        )
+        if historical_years:
+            print(f"Found historical data years for {token}: {historical_years}")
+            available_years = historical_years
+            concated_df = import_crypto_historical_data(
+                token, root + "historical_data/"
             )
-            if historical_years:
-                print(f"Found historical data years for {token}: {historical_years}")
-                available_years = historical_years
-                concated_df = import_crypto_historical_data(
-                    token, root + "historical_data/"
-                )
-            else:
-                print(f"No historical data years found for {token}")
-                # Create empty DataFrame with correct columns and format
-                concated_df = pd.DataFrame(
-                    columns=[
-                        "date",
-                        "symbol",
-                        "open",
-                        "high",
-                        "low",
-                        "close",
-                        "Volume USD",
-                        f"Volume {token}",
-                    ]
-                )
-                concated_df.index.name = "unix"
-                concated_df["symbol"] = f"{token}/USD"
         else:
-            concated_df = concat_csv_files(
-                root=root + "raw_binance_data/",
-                save_root=root + "concat_binance_data/",
-                token1=token,
-                token2="USDT",
-                prefix="Binance_",
-                postfix="_minute",
-                years_array_str=available_years,
+            print(f"No historical data years found for {token}")
+            # Create empty DataFrame with correct columns and format
+            concated_df = pd.DataFrame(
+                columns=[
+                    "date",
+                    "symbol",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "Volume USD",
+                    f"Volume {token}",
+                ]
             )
+            concated_df.index.name = "unix"
+            concated_df["symbol"] = f"{token}/USD"    
     # Ensure proper index setup
     if "unix" in concated_df.columns:
         concated_df.set_index("unix", inplace=True)
     # Fill missing data from different sources
-
-    filled_timestamps = {}
 
     print("Filling gaps with Coinbase data")
     if os.path.exists(root + "coinbase_data/" + token + "_cb_sorted_.csv"):
@@ -657,6 +872,24 @@ def update_historic_data(token, root):
     if filled_historical_unix_values:
         filled_timestamps["Historical"] = filled_historical_unix_values
 
+    # if ticker is in a harcoded dict, load from parquet
+
+    assets = [
+    {"pair_id": 3010484, "token": "PEPE"},
+    {"pair_id": 1497, "token": "BAL"},
+    {"pair_id": 5241020, "token": "VVV"},
+    {"pair_id": 5388941, "token": "KAITO"},
+    {"pair_id": 4569519, "token": "DEGEN"},
+    {"pair_id": 4567392, "token": "VIRTUAL"},
+    ]
+    if token in [asset["token"] for asset in assets]:
+        print("Filling remaining gaps with candles data")
+        asset = next(asset for asset in assets if asset["token"] == token)
+        exchange_df = load_data_from_candles_parquet(root + "candles-1m.parquet", asset)
+        exchange_df = forward_fill_ohlcv_data(exchange_df.copy(), asset["token"])
+        concated_df, filled_candles_unix_values = merge_exchange_data_frames(concated_df, exchange_df, token, root, "raw_candles_data/", "Candles_")
+        filled_timestamps["Candles"] = filled_candles_unix_values
+
     # Ensure data is properly sorted and has no duplicates
     concated_df = concated_df.sort_index()
     concated_df = concated_df[~concated_df.index.duplicated(keep="first")]
@@ -686,15 +919,15 @@ def update_historic_data(token, root):
     plt.figure(figsize=(14, 7))
 
     # Plot original Binance data
-    plt.plot(
-        pd.to_datetime(concated_df["unix"], unit="ms"),
-        concated_df["close"],
-        label="Binance Minute Data",
-        linestyle="None",
-        marker="o",
-        markersize=0.5,
-        color="yellow",
-    )
+    # plt.plot(
+    #     pd.to_datetime(concated_df["unix"], unit="ms"),
+    #     concated_df["close"],
+    #     label="Binance Minute Data",
+    #     linestyle="None",
+    #     marker="o",
+    #     markersize=0.5,
+    #     color="yellow",
+    # )
 
     # Plot filled data from each source
     colors = {
@@ -702,6 +935,9 @@ def update_historic_data(token, root):
         "Bitstamp": "red",
         "Historical": "purple",
         "Coinbase": "blue",
+        "Binance CDD": "orange",
+        "Binance Vision": "cyan",
+        "Candles": "magenta",
     }
     for source, timestamps in filled_timestamps.items():
         if timestamps:
@@ -762,7 +998,6 @@ def update_historic_data(token, root):
     concated_df_daily = concated_df.copy()
     concated_df_daily["date"] = pd.to_datetime(concated_df_daily["date"])
     concated_df_daily = concated_df_daily.set_index("date")
-
     # Filter to only include existing columns
     agg_dict = {k: v for k, v in agg_dict.items() if k in concated_df_daily.columns}
 
@@ -830,8 +1065,9 @@ def get_historic_parquet_data(
     with inp_file.open("rb") as f:
         # path = root + firstTicker + "_USD.csv"
         csvData = pd.read_parquet(f, engine="pyarrow")
-        csvData = csvData.filter(items=["unix"] + baseCols)
-        csvData = csvData.rename(columns=dict(zip(baseCols, renamedCols)))
+    csvData = csvData.filter(items=["unix"] + baseCols)
+    csvData = csvData.rename(columns=dict(zip(baseCols, renamedCols)))
+    if csvData.index.name != "unix":
         csvData = csvData.set_index("unix")
     if len(list_of_tickers) > 1:
         for ticker in list_of_tickers[1:]:
@@ -1289,7 +1525,6 @@ def get_data_dict(
             gas_prices_minute.set_index("unix")
         )
         gas_prices_in_dollars = eth_price["close_ETH"] * eth_price["gas_cost"]
-
     data_dict = {
         "prices": prices_rebased,
         "start_idx": start_idx,
@@ -1298,6 +1533,7 @@ def get_data_dict(
         "unix_values": unix_values_rebased,
         "n_chunks": n_chunks,
     }
+    data_dict["max_memory_days"] = max_memory_days
     if return_slippage:
         data_dict["spread"] = spread
         data_dict["daily_volume"] = daily_volume
@@ -1340,7 +1576,6 @@ def get_data_dict(
         data_dict["end_idx_test"] = end_idx_test
         data_dict["bout_length_test"] = bout_length_test
         data_dict["unix_values_test"] = unix_values_test
-        data_dict["max_memory_days"] = max_memory_days
         if return_slippage:
             spread_test = spread[remainder_idx_test:]
             spread_test = spread_test[: int(n_chunks) * chunk_period]

@@ -22,6 +22,8 @@ setup(
         "bidask",
         "Historic_Crypto",
         "gdown",
+        "BinanceDataDumper",
+        "dask",
     ],
     extras_require={
         "dev": [
