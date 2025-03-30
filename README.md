@@ -104,16 +104,21 @@ For detailed installation instructions, see our [documentation](https://quantamm
 
 ```python
 from quantammsim.runners.jax_runners import do_run_on_historic_data
+import jax.numpy as jnp
 
 # Define experiment parameters
 run_fingerprint = {
     'tokens': ['BTC', 'USDC'],
-    'rule': 'momentum',
+    'rule': 'balancer',
     'initial_pool_value': 1000000.0
 }
+# Initialise pool parameters, equal weights. Equivalent to a Uniswap v2 pool;
+    params = {
+       "initial_weights": jnp.array([0.5, 0.5]),
+    }
 
 # Run simulation
-result = do_run_on_historic_data(run_fingerprint)
+result = do_run_on_historic_data(run_fingerprint, params, verbose=True)
 ```
 
 ## Documentation
