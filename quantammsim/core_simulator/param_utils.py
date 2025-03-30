@@ -477,7 +477,6 @@ def calc_alt_lamb(update_rule_parameter_dict):
     if update_rule_parameter_dict.get("logit_delta_lamb") is not None:
         logit_delta_lamb = update_rule_parameter_dict["logit_delta_lamb"]
     else:
-        print(update_rule_parameter_dict)
         raise KeyError("logit_delta_lamb key not found in update_rule_parameter_dict")
     logit_alt_lamb = logit_delta_lamb + logit_lamb
     alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
@@ -579,7 +578,6 @@ def init_params_singleton(
         The initialized parameters.
     """
     n_pool_members = n_tokens + n_subsidary_rules
-
     if log_for_k:
         log_k = jnp.array(
             [np.log2(initial_values_dict["initial_k_per_day"])] * n_pool_members
@@ -595,45 +593,64 @@ def init_params_singleton(
     # lamb delta is the difference in lamb needed for
     # lamb + delta lamb to give a final memory length
     # of  initial_memory_length + initial_memory_length_delta
-    initial_lamb_plus_delta_lamb = memory_days_to_lamb(
-        initial_values_dict["initial_memory_length"]
-        + initial_values_dict["initial_memory_length_delta"],
-        chunk_period,
-    )
+    if initial_values_dict.get("initial_memory_length_delta") is not None:
+        initial_lamb_plus_delta_lamb = memory_days_to_lamb(
+            initial_values_dict["initial_memory_length"]
+            + initial_values_dict["initial_memory_length_delta"],
+            chunk_period,
+        )
+        logit_lamb_plus_delta_lamb_np = np.log(
+            initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
+        )
+        logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np
+        logit_delta_lamb = jnp.array([logit_delta_lamb_np] * n_pool_members)
+    else:
+        logit_delta_lamb = jnp.array([0.0] * n_pool_members)
 
-    logit_lamb_plus_delta_lamb_np = np.log(
-        initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
-    )
-    logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np
-    logit_delta_lamb = jnp.array([logit_delta_lamb_np] * n_pool_members)
+    if initial_values_dict.get("initial_weights_logits") is not None:
+        if type(initial_values_dict.get("initial_weights_logits")) not in [
+            np.array,
+            jnp.array,
+            list,
+        ]:
+            initial_weights_logits = jnp.array(
+                [initial_values_dict["initial_weights_logits"]] * n_pool_members
+            )
+        else:
+            initial_weights_logits = jnp.array(
+                initial_values_dict["initial_weights_logits"]
+            )
+    else:
+        initial_weights_logits = jnp.array([0.0] * n_pool_members)
 
-    if type(initial_values_dict["initial_weights_logits"]) not in [
-        np.array,
-        jnp.array,
-        list,
-    ]:
-        initial_weights_logits = jnp.array(
-            [initial_values_dict["initial_weights_logits"]] * n_pool_members
+    if initial_values_dict.get("initial_log_amplitude") is not None:
+        log_amplitude = jnp.array(
+            [initial_values_dict["initial_log_amplitude"]] * n_pool_members
         )
     else:
-        initial_weights_logits = jnp.array(
-            initial_values_dict["initial_weights_logits"]
+        log_amplitude = jnp.array([0.0] * n_pool_members)
+
+    if initial_values_dict.get("initial_raw_width") is not None:
+        raw_width = jnp.array([initial_values_dict["initial_raw_width"]] * n_pool_members)
+    else:
+        raw_width = jnp.array([0.0] * n_pool_members)
+
+    if initial_values_dict.get("initial_raw_exponents") is not None:
+        raw_exponents = jnp.array(
+            [initial_values_dict["initial_raw_exponents"]] * n_pool_members
         )
-    log_amplitude = jnp.array(
-        [initial_values_dict["initial_log_amplitude"]] * n_pool_members
-    )
+    else:
+        raw_exponents = jnp.array([0.0] * n_pool_members)
 
-    raw_width = jnp.array([initial_values_dict["initial_raw_width"]] * n_pool_members)
+    if initial_values_dict.get("initial_pre_exp_scaling") is not None:
+        logit_pre_exp_scaling_np = np.log(
+            initial_values_dict["initial_pre_exp_scaling"]
+            / (1.0 - initial_values_dict["initial_pre_exp_scaling"])
+        )
+        logit_pre_exp_scaling = jnp.array([[logit_pre_exp_scaling_np] * n_pool_members])
+    else:
+        logit_pre_exp_scaling = jnp.array([[0.0] * n_pool_members])
 
-    raw_exponents = jnp.array(
-        [initial_values_dict["initial_raw_exponents"]] * n_pool_members
-    )
-
-    logit_pre_exp_scaling_np = np.log(
-        initial_values_dict["initial_pre_exp_scaling"]
-        / (1.0 - initial_values_dict["initial_pre_exp_scaling"])
-    )
-    logit_pre_exp_scaling = jnp.array([[logit_pre_exp_scaling_np] * n_pool_members])
     if log_for_k:
         params = {
             "log_k": log_k,
@@ -1048,6 +1065,21 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         else:
             raise NotImplementedError
         return params[index], context
+
+
+def retrieve_best(data_location, load_method, re_calc_hess, min_alt_obj = 0.0):
+    param, context = load_manually(data_location,load_method, re_calc_hess, min_alt_obj)
+    step = param["step"]
+    param.pop("step")
+    param.pop("hessian_trace")
+    param.pop("local_learning_rate")
+    param.pop("iterations_since_improvement")
+    
+    for key in param.keys():
+        if key != "subsidary_params":
+            param[key] = param[key][context]
+
+    return param, step
 
 
 def load_or_init(
@@ -1602,3 +1634,68 @@ def make_vmap_in_axes_dict(
     for key in keys_with_no_vamp:
         in_axes_dict[key] = None
     return in_axes_dict
+
+
+def generate_params_combinations(
+    initial_values_dict,
+    n_tokens,
+    n_subsidary_rules,
+    chunk_period,
+    n_parameter_sets,
+    k_per_day_range,
+    memory_days_range,
+    num_points_k_per_day=10,
+    num_points_memory_days=10,
+):
+    """
+    Generate parameter combinations with linearly-spaced values of k_per_day and memory_days.
+
+    Args:
+        initial_values_dict (dict): The initial values dictionary.
+        n_tokens (int): The number of tokens.
+        n_subsidary_rules (int): The number of subsidary rules.
+        chunk_period (int): The chunk period.
+        n_parameter_sets (int): The number of parameter sets.
+        k_per_day_range (tuple): The range (low, high) for k_per_day.
+        memory_days_range (tuple): The range (low, high) for memory_days.
+        num_points_k_per_day (int, optional): The number of points for k_per_day linspace. Defaults to 10.
+        num_points_memory_days (int, optional): The number of points for memory_days linspace. Defaults to 10.
+
+    Returns:
+        list: A list of dictionaries with all combinations of parameter values.
+    """
+    # Initialize base params
+    # base_params = init_params_singleton(
+    #     initial_values_dict, n_tokens, n_subsidary_rules, chunk_period
+    # )
+
+    # Define keys ranges for linspace generation
+    keys_ranges = {
+        "initial_k_per_day": k_per_day_range,
+        "initial_memory_length": memory_days_range,
+    }
+
+    # Define number of points for each key
+    num_points_per_key = {
+        "initial_k_per_day": num_points_k_per_day,
+        "initial_memory_length": num_points_memory_days,
+    }
+
+    # Generate param combinations
+    initial_values_dict_combinations = create_product_of_linspaces(
+        initial_values_dict.copy(), keys_ranges, num_points_per_key
+    )
+
+    # Fill in missing values from initial values
+    filled_param_combinations = [
+        fill_in_missing_values_from_init_singleton(
+            {},
+            i_v_d,
+            n_tokens,
+            n_subsidary_rules,
+            chunk_period,
+            n_parameter_sets,
+        )
+        for i_v_d in initial_values_dict_combinations
+    ]
+    return filled_param_combinations, initial_values_dict_combinations
