@@ -676,24 +676,24 @@ def calculate_calmar_ratio(portfolio_returns, rf_values):
     Calculate the Calmar Ratio for a given set of portfolio returns.
     """
     trading_days_per_year = 365
-    
+
     # Calculate annualized excess return
     excess_returns = portfolio_returns - rf_values
     mean_excess_return = np.mean(excess_returns)
-    annualized_excess_return = mean_excess_return * trading_days_per_year
-    
+    annualized_excess_return = (1 + mean_excess_return) ** trading_days_per_year - 1
+
     # Calculate maximum drawdown using total returns (not excess returns)
     cumulative_returns = np.cumprod(1 + portfolio_returns)
     peak = np.maximum.accumulate(cumulative_returns)
     drawdown = (cumulative_returns - peak) / peak
     max_drawdown = np.min(drawdown)
-    
+
     # Calculate the Calmar Ratio
     if max_drawdown == 0:
         return np.inf
     else:
         calmar_ratio = annualized_excess_return / abs(max_drawdown)
-    
+
     return calmar_ratio
 
 def calculate_capture_ratios(portfolio_returns, benchmark_returns):
