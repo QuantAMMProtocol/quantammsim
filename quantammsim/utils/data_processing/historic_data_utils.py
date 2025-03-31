@@ -10,7 +10,6 @@ import dask.dataframe as dd
 # from numba import float64
 # from numba import int64
 from Historic_Crypto import Cryptocurrencies, HistoricalData
-from binance_historical_data import BinanceDataDumper
 from datetime import datetime, timezone
 from importlib import resources as impresources
 from quantammsim import data
@@ -657,7 +656,7 @@ def get_binance_vision_data(token, numeraire, root):
     Returns:
         pd.DataFrame: DataFrame with standardized format or None if data not available
     """
-    # try:
+    from binance_historical_data import BinanceDataDumper
     # Initialize downloader in a subdirectory to keep monthly files separate
     vision_dir = os.path.join(root, "binance_vision_data")
     os.makedirs(vision_dir, exist_ok=True)
