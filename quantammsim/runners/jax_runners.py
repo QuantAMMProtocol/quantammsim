@@ -4,11 +4,11 @@ from copy import deepcopy
 from itertools import product
 from tqdm import tqdm
 import math
-
+import gc
 
 from jax.tree_util import Partial
-from jax import jit, vmap
-from jax import random
+from jax import jit, vmap, random
+from jax import clear_caches, clear_backends
 
 from quantammsim.utils.data_processing.historic_data_utils import (
     get_data_dict,
@@ -240,6 +240,7 @@ def train_on_historic_data(
         "arb_quality": run_fingerprint["arb_quality"],
         "numeraire": run_fingerprint["numeraire"],
         "do_trades": False,
+        "noise_trader_ratio": run_fingerprint["noise_trader_ratio"],
         "minimum_weight": run_fingerprint["minimum_weight"],
     }
 
@@ -694,7 +695,6 @@ def train_on_historic_data(
         return optuna_manager.study.best_trials
     else:
         raise NotImplementedError
-        
 
 
 def do_run_on_historic_data(
@@ -711,6 +711,7 @@ def do_run_on_historic_data(
     gas_cost_df=None,
     arb_fees_df=None,
     do_test_period=False,
+    low_data_mode=False,
 ):
     """
     Execute a simulation run on historic data using specified parameters and settings.
@@ -751,6 +752,8 @@ def do_run_on_historic_data(
         Each row should contain the unix timestamp and arb fee to be charged.
     do_test_period : bool, optional
         Whether to run the test period (default is False).
+    low_data_mode : bool, optional
+        Whether to delete the prices from the output dictionary (default is False).
 
     Returns:
     --------
@@ -932,6 +935,13 @@ def do_run_on_historic_data(
             dynamic_inputs_dict["gas_cost_array"],
             dynamic_inputs_dict["arb_fees_array"],
         )
+        if low_data_mode:
+            output_dict["final_prices"] = output_dict["prices"][-1]
+            output_dict["initial_reserves"] = output_dict["reserves"][0]
+            output_dict["initial_prices"] = output_dict["prices"][0]
+            del output_dict["prices"]
+            del output_dict["reserves"]
+            del output_dict["value"]
         output_dicts.append(output_dict)
         # Run forward pass for test data if required
         if do_test_period:
@@ -944,6 +954,13 @@ def do_run_on_historic_data(
                 dynamic_inputs_dict["test_gas_cost_array"],
                 dynamic_inputs_dict["test_arb_fees_array"],
             )
+            if low_data_mode:
+                output_dict_test["final_prices"] = output_dict_test["prices"][-1]
+                output_dict_test["initial_reserves"] = output_dict_test["reserves"][0]
+                output_dict_test["initial_prices"] = output_dict_test["prices"][0]
+                del output_dict_test["prices"]
+                del output_dict_test["reserves"]
+                del output_dict_test["value"]
             output_dicts_test.append(output_dict_test)
 
     # out = partial_forward_pass_nograd_batch(
@@ -957,6 +974,11 @@ def do_run_on_historic_data(
         if do_test_period:
             output_dicts_test = output_dicts_test[0]
     # Return results
+    gc.collect()
+    gc.collect()
+    # Clear any cached JAX computations to free memory
+    clear_caches()
+    clear_backends()
     if do_test_period:
         return output_dicts, output_dicts_test
     else:

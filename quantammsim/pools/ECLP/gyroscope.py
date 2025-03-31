@@ -737,7 +737,7 @@ class GyroscopePool(AbstractPool):
         return lam, phi
 
     @classmethod
-    def process_parameters(cls, update_rule_parameters, n_assets):
+    def process_parameters(cls, update_rule_parameters, run_fingerprint):
         """Process gyroscope pool parameters from web interface input."""
         result = {}
         # Process any remaining parameters in a default way

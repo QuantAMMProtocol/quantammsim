@@ -2,7 +2,7 @@ run_fingerprint_defaults = {
     "freq": "minute",
     "startDateString": "2021-02-03 00:00:00",
     "endDateString": "2022-06-03 00:00:00",
-    "endTestDateString": "2022-07-03 00:00:00",
+    "endTestDateString": None,
     "tokens": ["BTC", "USDC", "ETH"],
     "rule": "mean_reversion_channel",
     "optimisation_settings": {
@@ -22,6 +22,7 @@ run_fingerprint_defaults = {
         "include_flipped_training_data": False,
         "initial_random_key": 0,
         "method": "gradient_descent",
+        "force_scalar": False,
     },
     "initial_memory_length": 10.0,
     "initial_memory_length_delta": 0.0,

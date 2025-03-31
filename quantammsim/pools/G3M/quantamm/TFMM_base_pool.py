@@ -404,7 +404,7 @@ class TFMMBasePool(AbstractPool):
         )
 
         weights = dynamic_slice(weights, (0, 0), (bout_length - 1, n_assets))
-        
+
         return weights
 
     def calculate_all_signature_variations(self, params: Dict[str, Any]) -> jnp.ndarray:
@@ -469,7 +469,7 @@ class TFMMBasePool(AbstractPool):
         return True
 
     @classmethod
-    def process_parameters(cls, update_rule_parameters, n_assets):
+    def process_parameters(cls, update_rule_parameters, run_fingerprint):
         """
         Process TFMM pool parameters from web interface input.
 
@@ -478,12 +478,12 @@ class TFMMBasePool(AbstractPool):
 
         Parameters
         ----------
-        update_rule_parameters : List[Parameter]
+        update_rule_parameters : Dict[str, Any]
             Raw parameters from web interface, each containing:
             - name: Parameter identifier
             - value: Parameter values per token
-        n_assets : int
-            Number of tokens in pool
+        run_fingerprint : Dict[str, Any]
+            Run fingerprint dictionary
 
         Returns
         -------
@@ -502,9 +502,9 @@ class TFMMBasePool(AbstractPool):
         """
         result = {}
         processed_params = set()
-
+        n_assets = len(run_fingerprint["tokens"])
         # Process TFMM common parameters
-        memory_days_values = cls._process_memory_days(update_rule_parameters, n_assets)
+        memory_days_values = cls._process_memory_days(update_rule_parameters, n_assets, run_fingerprint["chunk_period"])
         if memory_days_values is not None:
             result.update(memory_days_values)
             processed_params.add("memory_days")
@@ -515,7 +515,9 @@ class TFMMBasePool(AbstractPool):
             processed_params.add("k_per_day")
 
         # Let specific pools process their parameters
-        specific_params = cls._process_specific_parameters(update_rule_parameters, n_assets)
+        specific_params = cls._process_specific_parameters(
+            update_rule_parameters, run_fingerprint
+        )
         if specific_params is not None:
             result.update(specific_params)
             # Assume any parameters returned by specific processing are handled
@@ -534,7 +536,7 @@ class TFMMBasePool(AbstractPool):
         return result
 
     @classmethod
-    def _process_memory_days(cls, update_rule_parameters, n_assets):
+    def _process_memory_days(cls, update_rule_parameters, n_assets, chunk_period):
         """
         Process memory_days parameter into logit_lamb values.
 
@@ -565,7 +567,7 @@ class TFMMBasePool(AbstractPool):
                 logit_lamb_vals = []
                 memory_days_values = urp.value
                 for tokenValue in urp.value:
-                    initial_lamb = memory_days_to_lamb(tokenValue)
+                    initial_lamb = memory_days_to_lamb(tokenValue, chunk_period)
                     logit_lamb = np.log(initial_lamb / (1.0 - initial_lamb))
                     logit_lamb_vals.append(logit_lamb)
                 if len(logit_lamb_vals) != n_assets:
@@ -610,7 +612,7 @@ class TFMMBasePool(AbstractPool):
         return None
 
     @classmethod
-    def _process_specific_parameters(cls, update_rule_parameters, n_assets):
+    def _process_specific_parameters(cls, update_rule_parameters, run_fingerprint):
         """
         Process pool-specific parameters.
 
@@ -619,10 +621,10 @@ class TFMMBasePool(AbstractPool):
 
         Parameters
         ----------
-        update_rule_parameters : List[Parameter]
+        update_rule_parameters : Dict[str, Any]
             Raw parameters to process
-        n_assets : int
-            Number of tokens in pool
+        run_fingerprint : Dict[str, Any]
+            Run fingerprint dictionary
 
         Returns
         -------

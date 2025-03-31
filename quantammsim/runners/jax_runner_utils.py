@@ -564,14 +564,14 @@ def nan_rollback(grads, params, old_params):
     >>> old_params = {"log_k": jnp.array([[0.05, 0.15], [0.25, 0.35]])}
     >>> rolled_back = nan_rollback(grads, params, old_params)
     """
-    if "log_k" in grads:
-        bool_idx = jnp.sum(jnp.isnan(grads["log_k"]), axis=-1, keepdims=True) > 0
-        return tree_map(
-            lambda p, old_p: jnp.where(bool_idx, old_p, p), params, old_params
-        )
-    else:
-        return params
+    for key in["log_k", "logit_lamb"]:
+        if key in grads:
+            bool_idx = jnp.sum(jnp.isnan(grads[key]), axis=-1, keepdims=True) > 0
+            params = tree_map(
+                lambda p, old_p: jnp.where(bool_idx, old_p, p), params, old_params
+            )
 
+    return params
 
 def get_unique_tokens(run_fingerprint):
     """Gets unique tokens from run fingerprint including subsidiary pools.

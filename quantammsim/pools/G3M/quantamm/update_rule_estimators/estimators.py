@@ -36,6 +36,7 @@ from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives 
     make_cov_kernel,
     _jax_ewma_at_infinity_via_conv_padded,
     _jax_ewma_at_infinity_via_scan,
+    _jax_gradients_at_infinity_via_conv_padded,
     _jax_gradients_at_infinity_via_conv_padded_with_alt_ewma,
     _jax_variance_at_infinity_via_conv,
     _jax_variance_at_infinity_via_scan,
@@ -138,6 +139,9 @@ def calc_gradients(
         alt_lamb = lamb
 
     if DEFAULT_BACKEND != "cpu":
+        lamb = jnp.broadcast_to(
+            lamb, update_rule_parameter_dict["initial_weights_logits"].shape
+        )
         ewma_kernel = make_ewma_kernel(
             lamb, safety_margin_max_memory_days, chunk_period
         )

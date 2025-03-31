@@ -185,7 +185,8 @@ class PowerChannelPool(MomentumPool):
             cap_lamb=True,
         )
 
-        exponents = squareplus(params.get("raw_exponents"))
+        exponents = jnp.clip(squareplus(params.get("raw_exponents")), a_min=1.0, a_max=None)
+
         raw_weight_outputs = _jax_power_channel_weight_update(
             gradients, k, exponents, pre_exp_scaling=pre_exp_scaling
         )
@@ -244,13 +245,15 @@ class PowerChannelPool(MomentumPool):
         # that, if only a singleton array is provided we expand it
         # to n_assets and use that vlaue for all assets.
         def process_initial_values(
-            initial_values_dict, key, n_assets, n_parameter_sets
+            initial_values_dict, key, n_assets, n_parameter_sets, force_scalar=False
         ):
             if key in initial_values_dict:
                 initial_value = initial_values_dict[key]
                 if isinstance(initial_value, (np.ndarray, jnp.ndarray, list)):
                     initial_value = np.array(initial_value)
-                    if initial_value.size == n_assets:
+                    if force_scalar:
+                        return np.array([initial_value] * n_parameter_sets)
+                    elif initial_value.size == n_assets:
                         return np.array([initial_value] * n_parameter_sets)
                     elif initial_value.size == 1:
                         return np.array([[initial_value] * n_assets] * n_parameter_sets)
@@ -261,16 +264,20 @@ class PowerChannelPool(MomentumPool):
                             f"{key} must be a singleton or a vector of length n_assets or a matrix of shape (n_parameter_sets, n_assets)"
                         )
                 else:
-                    return np.array([[initial_value] * n_assets] * n_parameter_sets)
+                    if force_scalar:
+                        return np.array([initial_value] * n_parameter_sets)
+                    else:
+                        return np.array([[initial_value] * n_assets] * n_parameter_sets)
             else:
                 raise ValueError(f"initial_values_dict must contain {key}")
 
+
         initial_weights_logits = process_initial_values(
-            initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets
+            initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets, force_scalar=False
         )
         log_k = np.log2(
             process_initial_values(
-                initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets
+                initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets, force_scalar=run_fingerprint["optimisation_settings"]["force_scalar"]
             )
         )
 
@@ -280,7 +287,10 @@ class PowerChannelPool(MomentumPool):
         )
 
         logit_lamb_np = np.log(initial_lamb / (1.0 - initial_lamb))
-        logit_lamb = np.array([[logit_lamb_np] * n_assets] * n_parameter_sets)
+        if run_fingerprint["optimisation_settings"]["force_scalar"]:
+            logit_lamb = np.array([[logit_lamb_np]] * n_parameter_sets)
+        else:
+            logit_lamb = np.array([[logit_lamb_np] * n_assets] * n_parameter_sets)
 
         # lamb delta is the difference in lamb needed for
         # lamb + delta lamb to give a final memory length
@@ -295,14 +305,20 @@ class PowerChannelPool(MomentumPool):
             initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
         )
         logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np
-        logit_delta_lamb = np.array(
-            [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
-        )
+        if run_fingerprint["optimisation_settings"]["force_scalar"]:
+            logit_delta_lamb = np.array([[logit_delta_lamb_np]] * n_parameter_sets)
+        else:
+            logit_delta_lamb = np.array(
+                [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
+            )
 
-        raw_exponents = np.array(
-            [[initial_values_dict["initial_raw_exponents"]] * n_assets]
-            * n_parameter_sets
-        )
+        if run_fingerprint["optimisation_settings"]["force_scalar"]:
+            raw_exponents = np.array([[initial_values_dict["initial_raw_exponents"]]] * n_parameter_sets)
+        else:
+            raw_exponents = np.array(
+                [[initial_values_dict["initial_raw_exponents"]] * n_assets]
+                * n_parameter_sets
+            )
 
         params = {
             "log_k": log_k,
@@ -317,7 +333,7 @@ class PowerChannelPool(MomentumPool):
         return params
 
     @classmethod
-    def _process_specific_parameters(cls, update_rule_parameters, n_assets):
+    def _process_specific_parameters(cls, update_rule_parameters, run_fingerprint):
         """Process mean reversion channel specific parameters."""
         result = {}
 
@@ -325,13 +341,13 @@ class PowerChannelPool(MomentumPool):
         for urp in update_rule_parameters:
             if urp.name == "exponent":
                 raw_exponents = [float(inverse_squareplus_np(val)) for val in urp.value]
-                if len(raw_exponents) != n_assets:
-                    raw_exponents = [raw_exponents[0]] * n_assets
+                if len(raw_exponents) != len(run_fingerprint["tokens"]):
+                    raw_exponents = [raw_exponents[0]] * len(run_fingerprint["tokens"])
                 result["raw_exponents"] = np.array(raw_exponents)
             elif urp.name == "pre_exp_scaling":
                 raw_pre_exp_scaling = [float(get_raw_value(val)) for val in urp.value]
-                if len(raw_pre_exp_scaling) != n_assets:
-                    raw_pre_exp_scaling = [raw_pre_exp_scaling[0]] * n_assets
+                if len(raw_pre_exp_scaling) != len(run_fingerprint["tokens"]):
+                    raw_pre_exp_scaling = [raw_pre_exp_scaling[0]] * len(run_fingerprint["tokens"])
                 result["raw_pre_exp_scaling"] = np.array(raw_pre_exp_scaling)
 
         return result

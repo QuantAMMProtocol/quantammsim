@@ -216,7 +216,7 @@ class AbstractPool(ABC):
         if n_parameter_sets > 1:
             if noise == "gaussian":
                 for key in params.keys():
-                    if key != "subsidary_params":
+                    if key != "subsidary_params" and key != "initial_weights_logits":
                         # Leave first row of each jax parameter unaltered, add
                         # gaussian noise to subsequent rows.
                         params[key][1:] = params[key][1:] + np.random.randn(
