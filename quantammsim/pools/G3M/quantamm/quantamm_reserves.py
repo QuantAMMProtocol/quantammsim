@@ -9,7 +9,7 @@ from jax import jit, vmap
 from jax import devices
 from jax.tree_util import Partial
 from jax.lax import scan
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 from jax import local_device_count, devices
 
 from functools import partial
@@ -21,6 +21,7 @@ from quantammsim.pools.G3M.optimal_n_pool_arb import (
     parallelised_optimal_trade_sifter,
 )
 from quantammsim.pools.G3M.G3M_trades import jitted_G3M_cond_trade
+from quantammsim.pools.noise_trades import calculate_reserves_after_noise_trade
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -90,6 +91,7 @@ def _jax_calc_quantAMM_reserves_with_fees_using_precalcs(
     arb_thresh=0.0,
     arb_fees=0.0,
     all_sig_variations=None,
+    noise_trader_ratio=0.0,
 ):
     """
     Calculate AMM reserves considering fees and arbitrage opportunities using signature variations,
@@ -116,6 +118,8 @@ def _jax_calc_quantAMM_reserves_with_fees_using_precalcs(
         Fees associated with arbitrage, by default 0.0.
     all_sig_variations : jnp.ndarray, optional
         Array of all signature variations used for arbitrage calculations.
+    noise_trader_ratio : float, optional
+        Ratio of noise traders to arbitrageurs, by default 0.0.
 
     Returns
     -------
@@ -187,6 +191,7 @@ def _jax_calc_quantAMM_reserves_with_fees_using_precalcs(
         all_sig_variations=all_sig_variations,
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
+        noise_trader_ratio=noise_trader_ratio,
     )
 
     carry_list_init = [
@@ -229,6 +234,7 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     gamma=0.997,
     arb_thresh=0.0,
     arb_fees=0.0,
+    noise_trader_ratio=0.0,
 ):
     """
     Calculate changes in AMM reserves considering fees and arbitrage opportunities using signature variations.
@@ -322,6 +328,14 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     )
     post_price_reserves = prev_reserves + optimal_arb_trade
 
+    # apply noise trade if noise_trader_ratio is greater than 0
+    post_price_reserves = jnp.where(
+        noise_trader_ratio > 0,
+        calculate_reserves_after_noise_trade(
+            optimal_arb_trade, post_price_reserves, prices, noise_trader_ratio, gamma
+        ),
+        post_price_reserves,
+    )
     # check if this is worth the cost to arbs
     # delta = post_price_reserves - prev_reserves
     # is this delta a good deal for the arb?
@@ -372,6 +386,14 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     )
     post_weight_reserves = reserves + optimal_arb_trade
 
+    # apply noise trade if noise_trader_ratio is greater than 0
+    post_weight_reserves = jnp.where(
+        noise_trader_ratio > 0,
+        calculate_reserves_after_noise_trade(
+            optimal_arb_trade, post_weight_reserves, prices, noise_trader_ratio, gamma
+        ),
+        post_weight_reserves,
+    )
     # check if this is worth the cost to arbs
     # delta = post_weight_reserves - reserves
     # is this delta a good deal for the arb?
@@ -398,7 +420,7 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     ], reserves
 
 
-@partial(jit, static_argnums=(5, 6, 7))
+@partial(jit, static_argnums=(5, 6,))
 def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using_precalcs(
     carry_list,
     input_list,
@@ -407,7 +429,6 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     active_trade_directions,
     n,
     do_trades,
-    do_arb,
 ):
     """
     Calculate changes in AMM reserves considering fees and arbitrage opportunities using signature variations.
@@ -446,14 +467,14 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
             Array containing the fees associated with arbitrage.
         trades: jnp.ndarray
             Array containing the indexs of the in and out tokens and the in amount for trades at each time.
+        do_arb: jnp.ndarray
+            Array containing whether or not to apply arbitrage at each time.
     all_sig_variations : jnp.ndarray
         Array of all signature variations used for arbitrage calculations.
     n : int
         Number of tokens or assets.
     do_trades : bool
         Whether or not to apply the trades
-    do_arb : bool
-        Whether or not to apply arbitrage
 
     Returns
     -------
@@ -495,7 +516,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     arb_thresh = input_list[9]
     arb_fees = input_list[10]
     trade = input_list[11]
-
+    do_arb = input_list[12]
     fees_are_being_charged = gamma != 1.0
 
     current_value = (prev_reserves * prices).sum()
@@ -719,6 +740,10 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
         arb_fees.size == 1, jnp.full(weights.shape[0], arb_fees), arb_fees
     )
 
+    do_arb = jnp.where(
+        isinstance(do_arb, bool) or do_arb.size == 1, jnp.full(weights.shape[0], do_arb), do_arb
+    )
+
     # pre-calculate some values that are repeatedly used in optimal arb calculations
 
     array_of_trues = jnp.ones((n_assets,), dtype=bool)
@@ -795,6 +820,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
             arb_thresh,
             arb_fees,
             trades,
+            do_arb,
         ],
     )
 

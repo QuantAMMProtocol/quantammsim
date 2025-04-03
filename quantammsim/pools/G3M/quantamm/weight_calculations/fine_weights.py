@@ -4,7 +4,7 @@ from jax import config
 config.update("jax_enable_x64", True)
 # config.update("jax_debug_nans", True)
 # config.update('jax_disable_jit', True)
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 from jax import local_device_count, devices
 
 DEFAULT_BACKEND = default_backend()
@@ -39,12 +39,16 @@ from quantammsim.pools.G3M.quantamm.weight_calculations.linear_interpolation imp
 from quantammsim.pools.G3M.quantamm.weight_calculations.non_linear_interpolation import (
     _jax_calc_approx_optimal_interpolation_block,
 )
-from quantammsim.core_simulator.param_utils import calc_alt_lamb, memory_days_to_lamb
+from quantammsim.core_simulator.param_utils import (
+    calc_alt_lamb,
+    memory_days_to_lamb,
+    jax_memory_days_to_lamb,
+)
 
 
 @partial(
     jit,
-    static_argnums=(4,5,6,),
+    static_argnums=(4,5,6,7,8,),
 )
 def _jax_calc_coarse_weights(
     raw_weight_outputs,
@@ -53,7 +57,9 @@ def _jax_calc_coarse_weights(
     update_rule_parameter_dict,
     max_memory_days,
     chunk_period,
-    mvpt=False,
+    weight_interpolation_period,
+    maximum_change,
+    raw_weight_outputs_are_themselves_weights=False,
 ):
     r"""calc weights from raw weight outputs, and make sure they fall inside
     guard-rails --- sum to 1, are larger than minimum value
@@ -76,12 +82,21 @@ def _jax_calc_coarse_weights(
     asset_arange = jnp.arange(n_assets)
 
     cap_lamb = True
-    if mvpt:
-        alt_lamb = calc_alt_lamb(update_rule_parameter_dict)
+    if raw_weight_outputs_are_themselves_weights:
+        # Determine which parameterization is being used
+        # allow for direct memory_days parameterization
+        if "memory_days_2" in update_rule_parameter_dict:
+            # Direct memory_days parameterization
+            memory_days = update_rule_parameter_dict["memory_days_2"]
+            alt_lamb = jax_memory_days_to_lamb(memory_days, chunk_period)
+        else:
+            # Original logit_lamb parameterization
+            alt_lamb = calc_alt_lamb(update_rule_parameter_dict)
         if cap_lamb:
             max_lamb = memory_days_to_lamb(max_memory_days, chunk_period)
             capped_alt_lamb = jnp.clip(alt_lamb, a_min=0.0, a_max=max_lamb)
             alt_lamb = capped_alt_lamb
+        # initial_weights = raw_weight_outputs[0]
     else:
         alt_lamb = None
 
@@ -91,20 +106,33 @@ def _jax_calc_coarse_weights(
         asset_arange=asset_arange,
         n_assets=n_assets,
         alt_lamb=alt_lamb,
-        mvpt=mvpt,
+        interpol_num=weight_interpolation_period + 1,
+        maximum_change=maximum_change,
+        raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
     )
 
-    carry_list_init = [initial_weights]
-
-    weights = jnp.zeros((n, n_assets), dtype=jnp.float64)
-
-    if mvpt:
-        weights = weights.at[0].set(raw_weight_outputs[0])
+    if raw_weight_outputs_are_themselves_weights:
+        # Apply guardrails to initial weights
+        initial_carry = [raw_weight_outputs[0]]
+        guardrailed_init, (actual_starts_init, scaled_diffs_init, target_weights_init) = (
+            _jax_calc_coarse_weight_scan_function(
+                initial_carry,
+                raw_weight_outputs[0],
+                minimum_weight=minimum_weight,
+                asset_arange=asset_arange,
+                n_assets=n_assets,
+                alt_lamb=alt_lamb,
+                interpol_num=2,  # interpol_num = 2 for immediate weight change
+                maximum_change=maximum_change,
+                raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
+            )
+        )
+        carry_list_init = [target_weights_init]
     else:
-        weights = weights.at[0].set(initial_weights)
-    weights = weights.at[1:].set(scan(scan_fn, carry_list_init, raw_weight_outputs)[1])
+        carry_list_init = [initial_weights]
 
-    return weights
+    _, (actual_starts, scaled_diffs, target_weights) = scan(scan_fn, carry_list_init, raw_weight_outputs)
+    return actual_starts, scaled_diffs, target_weights
 
 
 @partial(jit, static_argnums=(2, 4))
@@ -149,25 +177,21 @@ def calc_fine_weight_output(
     if minimum_weight == None:
         minimum_weight = 0.1 / n_assets
 
-    coarse_weights_cpu = _jax_calc_coarse_weights(
+    actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
         raw_weight_outputs,
         initial_weights,
         minimum_weight,
         params,
-        365.0,
+        run_fingerprint["max_memory_days"],
         chunk_period,
+        weight_interpolation_period,
+        maximum_change,
         raw_weight_outputs_are_themselves_weights,
     )
 
-    actual_starts_cpu, scaled_diffs_cpu = _jax_fine_weights_end_from_coarse_weights(
-        coarse_weights_cpu,
-        interpol_num=weight_interpolation_period + 1,
-        num=chunk_period + 1,
-        maximum_change=maximum_change,
-    )
-    coarse_weights = coarse_weights_cpu
     scaled_diffs_gpu = device_put(scaled_diffs_cpu, GPU_DEVICE)
     actual_starts_gpu = device_put(actual_starts_cpu, GPU_DEVICE)
+
     weights = _jax_fine_weights_from_actual_starts_and_diffs(
         actual_starts_gpu,
         scaled_diffs_gpu,
@@ -177,7 +201,15 @@ def calc_fine_weight_output(
         maximum_change=maximum_change,
         method=weight_interpolation_method,
     )
-    return weights
+    if raw_weight_outputs_are_themselves_weights:
+        return weights
+    else:
+        return jnp.vstack(
+            [
+                jnp.ones((chunk_period, n_assets), dtype=jnp.float64) * initial_weights,
+                weights,
+            ]
+        )
 
 
 calc_fine_weight_output_from_weight_changes = jit(
@@ -392,7 +424,7 @@ def _jax_calc_fine_weight_ends_only_scan_function(
 
 @partial(
     jit,
-    static_argnums=(6,),
+    static_argnums=(6,7,8),
 )
 def _jax_calc_coarse_weight_scan_function(
     carry_list,
@@ -401,7 +433,9 @@ def _jax_calc_coarse_weight_scan_function(
     asset_arange,
     n_assets,
     alt_lamb,
-    mvpt,
+    interpol_num,
+    maximum_change,
+    raw_weight_outputs_are_themselves_weights,
 ):
     """
     Calculate the coarse weights for the AMM simulator.
@@ -413,7 +447,7 @@ def _jax_calc_coarse_weight_scan_function(
         asset_arange (ndarray): Array of asset indices.
         n_assets (int): Number of assets.
         alt_lamb (float): Alternative lambda value.
-        mvpt (bool): Whether to use minimum variance targeting.
+        raw_weight_outputs_are_themselves_weights (bool): Whether raw weight outputs represent target weights (True) or weight changes (False).
 
     Returns:
         list: List containing the final weights.
@@ -425,7 +459,7 @@ def _jax_calc_coarse_weight_scan_function(
 
     # carry_list[0] is the previous weight value
 
-    prev_weights = carry_list[0]
+    prev_actual_position = carry_list[0]
 
     ## calc raw weight, previous weight plus delta
     ## note that the ith-indexed raw_weight_change
@@ -435,10 +469,10 @@ def _jax_calc_coarse_weight_scan_function(
     ## it is at the (i-1)th moment in time we calculate the
     ## weights we WISH to have at the ith moment, using
     ## all information available at the (i-1)th moment
-    if mvpt:
-        raw_weights = alt_lamb * prev_weights + (1 - alt_lamb) * raw_weight_outputs
+    if raw_weight_outputs_are_themselves_weights:
+        raw_weights = alt_lamb * prev_actual_position + (1 - alt_lamb) * raw_weight_outputs
     else:
-        raw_weights = prev_weights + raw_weight_outputs
+        raw_weights = prev_actual_position + raw_weight_outputs
     ## calc normed weights
     # if i > 5685:
     #     print(i, 'raw w', raw_weights)
@@ -466,17 +500,34 @@ def _jax_calc_coarse_weight_scan_function(
         normed_weight_update * remaining_weight / sum_of_other_weights,
         normed_weight_update,
     )
-    weights = normed_weight_update
+    target_weights = normed_weight_update
 
     ## if rounding means weights dont sum to one, do a little tweak:
 
-    raw_idx = jnp.argmax(weights)
+    raw_idx = jnp.argmax(target_weights)
     idx = raw_idx == asset_arange
-    corrected_weights = jnp.where(idx, weights - sum(weights) + 1.0, weights)
+    corrected_weights = jnp.where(
+        idx, target_weights - sum(target_weights) + 1.0, target_weights
+    )
 
     # note that argmax is not differentiable, so we take the
     # gradients of the uncorrected values and the values from the
     # corrected values
 
-    final_weights = weights + stop_gradient(corrected_weights - weights)
-    return [final_weights], final_weights
+    target_weights = target_weights + stop_gradient(corrected_weights - target_weights)
+
+    # Now apply maximum change restrictions
+    diff = 1 / (interpol_num - 1) * (target_weights - prev_actual_position)
+
+    idx = jnp.abs(diff) > maximum_change
+    sum_idx = jnp.sum(idx) > 0
+
+    max_value_present = jnp.max(jnp.abs(diff))
+    scale = maximum_change / (max_value_present + 1e-10)
+
+    scaled_diff = jnp.where(sum_idx, diff * scale, diff)
+
+    # Calculate actual position reached after applying both constraints
+    actual_position = prev_actual_position + scaled_diff * (interpol_num - 1)
+
+    return [actual_position], (prev_actual_position, scaled_diff, target_weights)

@@ -6,7 +6,7 @@ from itertools import product
 
 import numpy as np
 import jax.numpy as jnp
-from jax import jit
+from jax import jit, lax
 from jax import config
 
 from quantammsim.training.hessian_trace import hessian_trace
@@ -20,7 +20,21 @@ np.seterr(under="print")
 
 def check_run_fingerprint(run_fingerprint):
     """
-    Check that the run fingerprint is not malformed
+    Check that the run fingerprint is not malformed.
+
+    Parameters
+    ----------
+    run_fingerprint : dict
+        The run fingerprint to validate.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    AssertionError
+        If weight_interpolation_period is greater than chunk_period.
     """
     assert (
         run_fingerprint["weight_interpolation_period"]
@@ -32,14 +46,21 @@ def default_set_or_get(dictionary, key, default, augment=True):
     Retrieves the value for a given key from a dictionary. If the key does not exist,
     it sets the key to a default value and returns the default value.
 
-    Args:
-        dictionary (dict): The dictionary to search for the key.
-        key: The key to look up in the dictionary.
-        default: The default value to set and return if the key is not found.
-        augment (bool, optional): If True, the default value is added to the dictionary
-                                  if the key is not found. Defaults to True.
+    Parameters
+    ----------
+    dictionary : dict
+        The dictionary to search for the key.
+    key : str
+        The key to look up in the dictionary.
+    default : Any
+        The default value to set and return if the key is not found.
+    augment : bool, optional
+        If True, the default value is added to the dictionary if the key is not found.
+        Default is True.
 
-    Returns:
+    Returns
+    -------
+    Any
         The value associated with the key if it exists, otherwise the default value.
     """
     value = dictionary.get(key)
@@ -55,13 +76,18 @@ def default_set(dictionary, key, default):
     """
     Sets a default value for a given key in a dictionary if the key does not already exist.
 
-    Args:
-        dictionary (dict): The dictionary to update.
-        key: The key to check in the dictionary.
-        default: The default value to set if the key is not present.
+    Parameters
+    ----------
+    dictionary : dict
+        The dictionary to update.
+    key : str
+        The key to check in the dictionary.
+    default : Any
+        The default value to set if the key is not present.
 
-    Returns:
-        None
+    Returns
+    -------
+    None
     """
     value = dictionary.get(key)
     if value is None:
@@ -69,6 +95,20 @@ def default_set(dictionary, key, default):
 
 
 def recursive_default_set(target_dict, default_dict):
+    """
+    Recursively sets default values in a target dictionary based on a default dictionary.
+
+    Parameters
+    ----------
+    target_dict : dict
+        The dictionary to update with default values.
+    default_dict : dict
+        The dictionary containing the default values.
+
+    Returns
+    -------
+    None
+    """
     for key, value in default_dict.items():
         if isinstance(value, dict):
             if key not in target_dict:
@@ -79,17 +119,35 @@ def recursive_default_set(target_dict, default_dict):
 
 
 class NumpyEncoder(json.JSONEncoder):
-    """Special json encoder for numpy types"""
+    """
+    Special json encoder for numpy types.
+
+    Methods
+    -------
+    default(obj)
+        Convert numpy types to Python native types.
+    """
 
     def default(self, o):
+        """
+        Convert numpy types to Python native types.
+
+        Parameters
+        ----------
+        o : Any
+            The object to encode.
+
+        Returns
+        -------
+        Any
+            The encoded object.
+        """
         if isinstance(o, np.integer):
             return int(o)
         elif isinstance(o, np.floating):
             return float(o)
         elif isinstance(o, np.ndarray):
             return o.tolist()
-        # elif isinstance(o, dict):
-        #     return default(o)
         return json.JSONEncoder.default(self, o)
 
 
@@ -97,11 +155,15 @@ def get_run_location(run_fingerprint):
     """
     Get the run location based on the run fingerprint.
 
-    Args:
-        run_fingerprint (dict): The run fingerprint.
+    Parameters
+    ----------
+    run_fingerprint : dict
+        The run fingerprint.
 
-    Returns:
-        str: The run location.
+    Returns
+    -------
+    str
+        The run location.
     """
     run_location = "run_" + str(
         hashlib.sha256(
@@ -116,11 +178,15 @@ def dict_of_jnp_to_np(dictionary):
     """
     Convert dictionary values from jax numpy arrays to numpy arrays.
 
-    Args:
-        dictionary (dict): The dictionary to convert.
+    Parameters
+    ----------
+    dictionary : dict
+        The dictionary to convert.
 
-    Returns:
-        dict: The converted dictionary.
+    Returns
+    -------
+    dict
+        The converted dictionary.
     """
     for key in dictionary:
         if key != "subsidary_params":
@@ -132,11 +198,15 @@ def dict_of_jnp_to_list(dictionary):
     """
     Convert dictionary values from jax numpy arrays to lists.
 
-    Args:
-        dictionary (dict): The dictionary to convert.
+    Parameters
+    ----------
+    dictionary : dict
+        The dictionary to convert.
 
-    Returns:
-        dict: The converted dictionary.
+    Returns
+    -------
+    dict
+        The converted dictionary.
     """
     for key in dictionary:
         if key != "subsidary_params":
@@ -148,11 +218,15 @@ def dict_of_np_to_jnp(dictionary):
     """
     Convert dictionary values from numpy arrays to jax numpy arrays.
 
-    Args:
-        dictionary (dict): The dictionary to convert.
+    Parameters
+    ----------
+    dictionary : dict
+        The dictionary to convert.
 
-    Returns:
-        dict: The converted dictionary.
+    Returns
+    -------
+    dict
+        The converted dictionary.
     """
     for key in dictionary:
         if key != "subsidary_params":
@@ -165,14 +239,17 @@ def lamb_to_memory(lamb):
     """
     Convert lambda value to memory.
 
-    Args:
-        lamb (float): The lambda value.
+    Parameters
+    ----------
+    lamb : float
+        The lambda value.
 
-    Returns:
-        float: The memory value.
+    Returns
+    -------
+    float
+        The memory value.
     """
     memory = jnp.cbrt(6 * lamb / ((1 - lamb) ** 3.0)) * 4.0
-    # memory_days = np.clip(memory_days, a_min=0.0, a_max=365.0)
     return memory
 
 
@@ -180,13 +257,19 @@ def memory_days_to_lamb(memory_days, chunk_period=60):
     """
     Convert memory days to lambda value.
 
-    Args:
-        memory_days (float): The memory days value.
-        chunk_period (int, optional): The chunk period. Defaults to 60.
+    Parameters
+    ----------
+    memory_days : float
+        The memory days value.
+    chunk_period : int, optional
+        The chunk period. Default is 60.
 
-    Returns:
-        float: The lambda value.
+    Returns
+    -------
+    float
+        The lambda value.
     """
+
     scaled_memory_days = (1440.0 * memory_days / (2.0 * chunk_period)) ** 3 / 6.0
 
     smd = scaled_memory_days
@@ -200,26 +283,71 @@ def memory_days_to_lamb(memory_days, chunk_period=60):
     numerator_2 = np.cbrt((2 / 3))
     denominator_2 = numerator_1
 
-    lamb = numerator_1 / denominator_1 - numerator_2 / denominator_2 + 1.0
-    return lamb
+    # Handle division by zero by checking denominator
+    safe_div1 = np.divide(
+        numerator_1,
+        denominator_1,
+        out=np.zeros_like(numerator_1),
+        where=denominator_1 != 0,
+    )
+    safe_div2 = np.divide(
+        np.broadcast_to(numerator_2, denominator_2.shape),
+        denominator_2,
+        out=np.zeros_like(np.broadcast_to(numerator_2, denominator_2.shape)),
+        where=denominator_2 != 0,
+    )
+    lamb = np.nan_to_num(safe_div1 - safe_div2 + 1.0, nan=0.0, posinf=1.0, neginf=0.0)
+    return np.where(memory_days == 0.0, 0.0, lamb)
 
+
+def jax_memory_days_to_lamb(memory_days, chunk_period=60):
+    """
+    Convert memory days to lambda value using JAX operations.
+
+    Parameters
+    ----------
+    memory_days : float
+        The memory days value.
+    chunk_period : int, optional
+        The chunk period. Default is 60.
+
+    Returns
+    -------
+    float
+        The lambda value.
+    """
+    scaled_memory_days = (1440.0 * memory_days / (2.0 * chunk_period)) ** 3 / 6.0
+
+    smd = scaled_memory_days
+    smd2 = scaled_memory_days**2
+    smd3 = scaled_memory_days**3
+    smd4 = scaled_memory_days**4
+
+    numerator_1 = jnp.cbrt((jnp.sqrt(3 * (27 * smd4 + 4 * smd3)) - 9 * smd2))
+    denominator_1 = jnp.cbrt(2) * 3 ** (2.0 / 3.0) * smd
+
+    numerator_2 = jnp.cbrt((2 / 3))
+    denominator_2 = numerator_1
+
+    lamb = numerator_1 / denominator_1 - numerator_2 / denominator_2 + 1.0
+
+    return jnp.where(memory_days==0.0, 0.0, lamb)
 
 def memory_days_to_logit_lamb(memory_days, chunk_period=60):
     """
     Convert memory days to logit lambda value.
 
-    This function takes a memory days value and a chunk period,
-    and returns the corresponding logit lambda value.
-    The logit lambda value is a transformed version of the lambda value,
-    which is a measure of the memory of the system.
-    The chunk period is the time period over which the memory is calculated.
+    Parameters
+    ----------
+    memory_days : float
+        The memory days value.
+    chunk_period : int, optional
+        The chunk period. Default is 60.
 
-    Args:
-        memory_days (float): The memory days value.
-        chunk_period (int, optional): The chunk period. Defaults to 60.
-
-    Returns:
-        float: The logit lambda value.
+    Returns
+    -------
+    float
+        The logit lambda value.
     """
     lamb = memory_days_to_lamb(memory_days, chunk_period)
     logit_lamb = jnp.log(lamb / (1 - lamb))
@@ -231,12 +359,17 @@ def lamb_to_memory_days(lamb, chunk_period):
     """
     Convert lambda value to memory days.
 
-    Args:
-        lamb (float): The lambda value.
-        chunk_period (int): The chunk period in minutes.
+    Parameters
+    ----------
+    lamb : float
+        The lambda value.
+    chunk_period : int
+        The chunk period in minutes.
 
-    Returns:
-        float: The memory value.
+    Returns
+    -------
+    float
+        The memory value in days.
     """
     memory_days = jnp.cbrt(6 * lamb / ((1 - lamb) ** 3.0)) * 2 * chunk_period / 1440
     return memory_days
@@ -245,16 +378,17 @@ def lamb_to_memory_days(lamb, chunk_period):
 @jit
 def jax_logit_lamb_to_lamb(logit_lamb):
     """
-    Convert logit lambda to lambda value.
+    Convert logit lambda to lambda value using JAX operations.
 
-    This function applies the logistic function to convert a logit lambda value
-    to a lambda value between 0 and 1.
+    Parameters
+    ----------
+    logit_lamb : float
+        The logit lambda value.
 
-    Args:
-        logit_lamb (float): The logit lambda value.
-
-    Returns:
-        float: The lambda value between 0 and 1.
+    Returns
+    -------
+    float
+        The lambda value between 0 and 1.
     """
     lamb = jnp.exp(logit_lamb) / (1 + jnp.exp(logit_lamb))
     return lamb
@@ -263,15 +397,21 @@ def jax_logit_lamb_to_lamb(logit_lamb):
 @jit
 def lamb_to_memory_days_clipped(lamb, chunk_period, max_memory_days):
     """
-    Convert lambda value to memory days, clipped to a max value.
+    Convert lambda value to memory days, clipped to a maximum value.
 
-    Args:
-        lamb (float): The lambda value.
-        chunk_period (int): The chunk period in minutes.
-        max_memory_days (int): The max memory days.
+    Parameters
+    ----------
+    lamb : float
+        The lambda value.
+    chunk_period : int
+        The chunk period in minutes.
+    max_memory_days : float
+        The maximum allowed memory days.
 
-    Returns:
-        float: The memory value.
+    Returns
+    -------
+    float
+        The clipped memory value in days.
     """
     memory_days = jnp.clip(
         lamb_to_memory_days(lamb, chunk_period), a_min=0.0, a_max=max_memory_days
@@ -283,18 +423,21 @@ def calc_lamb(update_rule_parameter_dict):
     """
     Calculate the lambda value from the given update rule parameter dictionary.
 
-    This function extracts the "logit_lamb" value from the provided dictionary,
-    applies the logistic function to it, and returns the resulting lambda value.
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        A dictionary containing the update rule parameters.
+        Must include the key "logit_lamb".
 
-    Args:
-        update_rule_parameter_dict (dict): A dictionary containing the update rule parameters.
-            It must include the key "logit_lamb".
+    Returns
+    -------
+    float
+        The calculated lambda value.
 
-    Returns:
-        float: The calculated lambda value.
-
-    Raises:
-        Exception: If the "logit_lamb" key is not found in the update_rule_parameter_dict.
+    Raises
+    ------
+    KeyError
+        If "logit_lamb" key is not found in update_rule_parameter_dict.
     """
     if update_rule_parameter_dict.get("logit_lamb") is not None:
         logit_lamb = update_rule_parameter_dict["logit_lamb"]
@@ -308,18 +451,23 @@ def calc_alt_lamb(update_rule_parameter_dict):
     """
     Calculate the alternative lambda value based on the provided update rule parameters.
 
-    Args:
-        update_rule_parameter_dict (dict): A dictionary containing the update rule parameters.
-        Expected keys are:
-            - "logit_lamb": The logit lambda value.
-            - "logit_delta_lamb": The logit delta lambda value.
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        A dictionary containing the update rule parameters.
+        Must include keys:
+        - "logit_lamb": The logit lambda value
+        - "logit_delta_lamb": The logit delta lambda value
 
-    Returns:
-        float: The calculated alternative lambda value.
+    Returns
+    -------
+    float
+        The calculated alternative lambda value.
 
-    Raises:
-        Exception: If "logit_lamb" or "logit_delta_lamb" is not found
-        in the update_rule_parameter_dict.
+    Raises
+    ------
+    KeyError
+        If "logit_lamb" or "logit_delta_lamb" is not found in update_rule_parameter_dict.
     """
     if update_rule_parameter_dict.get("logit_lamb") is not None:
         logit_lamb = update_rule_parameter_dict["logit_lamb"]
@@ -335,23 +483,101 @@ def calc_alt_lamb(update_rule_parameter_dict):
     return alt_lamb
 
 
+def inverse_squareplus(y):
+    """
+    Calculate the inverse of the squareplus function.
+
+    Parameters
+    ----------
+    y : float or array_like
+        Input value(s).
+
+    Returns
+    -------
+    float or array_like
+        The inverse squareplus of the input.
+    """
+    y = jnp.asarray(y, dtype=jnp.float64)
+    return lax.div(lax.sub(lax.square(y), 1.0), y)
+
+
+def inverse_squareplus_np(y):
+    """
+    Calculate the inverse of the squareplus function using numpy.
+
+    Parameters
+    ----------
+    y : float or array_like
+        Input value(s).
+
+    Returns
+    -------
+    float or array_like
+        The inverse squareplus of the input.
+    """
+    return (y**2 - 1.0) / y
+
+def get_raw_value(value):
+    """
+    Get raw_value parameter from desired value.
+
+    Parameters
+    ----------
+    value : float
+        The input value.
+
+    Returns
+    -------
+    float
+        The log2 of the input value.
+    """
+    return np.log2(value)
+
+
+def get_log_amplitude(amplitude, memory_days):
+    """
+    Get log_amplitude parameter from desired amplitude and memory_days.
+
+    Parameters
+    ----------
+    amplitude : float
+        The amplitude value.
+    memory_days : float
+        The memory days value.
+
+    Returns
+    -------
+    float
+        The log2 of amplitude divided by memory_days.
+    """
+    return np.log2(amplitude / memory_days)
+
+
 def init_params_singleton(
     initial_values_dict, n_tokens, n_subsidary_rules=0, chunk_period=60, log_for_k=True
 ):
     """
     Initialize parameters for a singleton.
 
-    Args:
-        initial_values_dict (dict): The initial values dictionary.
-        n_tokens (int): The number of tokens.
-        n_subsidary_rules (int, optional): The number of subsidary rules. Defaults to 0.
-        chunk_period (int, optional): The chunk period. Defaults to 60.
+    Parameters
+    ----------
+    initial_values_dict : dict
+        The initial values dictionary.
+    n_tokens : int
+        The number of tokens.
+    n_subsidary_rules : int, optional
+        The number of subsidary rules. Default is 0.
+    chunk_period : int, optional
+        The chunk period. Default is 60.
+    log_for_k : bool, optional
+        Whether to use log scale for k parameter. Default is True.
 
-    Returns:
-        dict: The initialized parameters.
+    Returns
+    -------
+    dict
+        The initialized parameters.
     """
     n_pool_members = n_tokens + n_subsidary_rules
-
     if log_for_k:
         log_k = jnp.array(
             [np.log2(initial_values_dict["initial_k_per_day"])] * n_pool_members
@@ -367,45 +593,64 @@ def init_params_singleton(
     # lamb delta is the difference in lamb needed for
     # lamb + delta lamb to give a final memory length
     # of  initial_memory_length + initial_memory_length_delta
-    initial_lamb_plus_delta_lamb = memory_days_to_lamb(
-        initial_values_dict["initial_memory_length"]
-        + initial_values_dict["initial_memory_length_delta"],
-        chunk_period,
-    )
+    if initial_values_dict.get("initial_memory_length_delta") is not None:
+        initial_lamb_plus_delta_lamb = memory_days_to_lamb(
+            initial_values_dict["initial_memory_length"]
+            + initial_values_dict["initial_memory_length_delta"],
+            chunk_period,
+        )
+        logit_lamb_plus_delta_lamb_np = np.log(
+            initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
+        )
+        logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np
+        logit_delta_lamb = jnp.array([logit_delta_lamb_np] * n_pool_members)
+    else:
+        logit_delta_lamb = jnp.array([0.0] * n_pool_members)
 
-    logit_lamb_plus_delta_lamb_np = np.log(
-        initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
-    )
-    logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np
-    logit_delta_lamb = jnp.array([logit_delta_lamb_np] * n_pool_members)
+    if initial_values_dict.get("initial_weights_logits") is not None:
+        if type(initial_values_dict.get("initial_weights_logits")) not in [
+            np.array,
+            jnp.array,
+            list,
+        ]:
+            initial_weights_logits = jnp.array(
+                [initial_values_dict["initial_weights_logits"]] * n_pool_members
+            )
+        else:
+            initial_weights_logits = jnp.array(
+                initial_values_dict["initial_weights_logits"]
+            )
+    else:
+        initial_weights_logits = jnp.array([0.0] * n_pool_members)
 
-    if type(initial_values_dict["initial_weights_logits"]) not in [
-        np.array,
-        jnp.array,
-        list,
-    ]:
-        initial_weights_logits = jnp.array(
-            [initial_values_dict["initial_weights_logits"]] * n_pool_members
+    if initial_values_dict.get("initial_log_amplitude") is not None:
+        log_amplitude = jnp.array(
+            [initial_values_dict["initial_log_amplitude"]] * n_pool_members
         )
     else:
-        initial_weights_logits = jnp.array(
-            initial_values_dict["initial_weights_logits"]
+        log_amplitude = jnp.array([0.0] * n_pool_members)
+
+    if initial_values_dict.get("initial_raw_width") is not None:
+        raw_width = jnp.array([initial_values_dict["initial_raw_width"]] * n_pool_members)
+    else:
+        raw_width = jnp.array([0.0] * n_pool_members)
+
+    if initial_values_dict.get("initial_raw_exponents") is not None:
+        raw_exponents = jnp.array(
+            [initial_values_dict["initial_raw_exponents"]] * n_pool_members
         )
-    log_amplitude = jnp.array(
-        [initial_values_dict["initial_log_amplitude"]] * n_pool_members
-    )
+    else:
+        raw_exponents = jnp.array([0.0] * n_pool_members)
 
-    raw_width = jnp.array([initial_values_dict["initial_raw_width"]] * n_pool_members)
+    if initial_values_dict.get("initial_pre_exp_scaling") is not None:
+        logit_pre_exp_scaling_np = np.log(
+            initial_values_dict["initial_pre_exp_scaling"]
+            / (1.0 - initial_values_dict["initial_pre_exp_scaling"])
+        )
+        logit_pre_exp_scaling = jnp.array([[logit_pre_exp_scaling_np] * n_pool_members])
+    else:
+        logit_pre_exp_scaling = jnp.array([[0.0] * n_pool_members])
 
-    raw_exponents = jnp.array(
-        [initial_values_dict["initial_raw_exponents"]] * n_pool_members
-    )
-
-    logit_pre_exp_scaling_np = np.log(
-        initial_values_dict["initial_pre_exp_scaling"]
-        / (1.0 - initial_values_dict["initial_pre_exp_scaling"])
-    )
-    logit_pre_exp_scaling = jnp.array([[logit_pre_exp_scaling_np] * n_pool_members])
     if log_for_k:
         params = {
             "log_k": log_k,
@@ -444,16 +689,25 @@ def fill_in_missing_values_from_init_singleton(
     """
     Fill in missing values in parameters from initial values.
 
-    Args:
-        params (dict): The parameters.
-        initial_values_dict (dict): The initial values dictionary.
-        n_tokens (int): The number of tokens.
-        n_subsidary_rules (int, optional): The number of subsidary rules. Defaults to 0.
-        chunk_period (int, optional): The chunk period. Defaults to 60.
-        n_parameter_sets (int, optional): The number of parameter sets. Defaults to 1.
+    Parameters
+    ----------
+    params : dict
+        The parameters dictionary to update.
+    initial_values_dict : dict
+        The initial values dictionary.
+    n_tokens : int
+        The number of tokens.
+    n_subsidary_rules : int, optional
+        The number of subsidary rules. Default is 0.
+    chunk_period : int, optional
+        The chunk period. Default is 60.
+    log_for_k : bool, optional
+        Whether to use log scale for k parameter. Default is True.
 
-    Returns:
-        dict: The updated parameters.
+    Returns
+    -------
+    dict
+        The updated parameters dictionary.
     """
     initial_params = init_params_singleton(
         initial_values_dict, n_tokens, n_subsidary_rules, chunk_period, log_for_k
@@ -475,16 +729,25 @@ def init_params(
     """
     Initialize parameters.
 
-    Args:
-        initial_values_dict (dict): The initial values dictionary.
-        n_tokens (int): The number of tokens.
-        n_subsidary_rules (int, optional): The number of subsidary rules. Defaults to 0.
-        chunk_period (int, optional): The chunk period. Defaults to 60.
-        n_parameter_sets (int, optional): The number of parameter sets. Defaults to 1.
-        noise (str, optional): The type of noise. Defaults to "gaussian".
+    Parameters
+    ----------
+    initial_values_dict : dict
+        The initial values dictionary.
+    n_tokens : int
+        The number of tokens.
+    n_subsidary_rules : int, optional
+        The number of subsidary rules. Default is 0.
+    chunk_period : int, optional
+        The chunk period. Default is 60.
+    n_parameter_sets : int, optional
+        The number of parameter sets. Default is 1.
+    noise : str, optional
+        The type of noise to add. Default is "gaussian".
 
-    Returns:
-        dict: The initialized parameters.
+    Returns
+    -------
+    dict
+        The initialized parameters.
     """
     n_pool_members = n_tokens + n_subsidary_rules
     log_k = np.array(
@@ -587,16 +850,25 @@ def fill_in_missing_values_from_init(
     """
     Fill in missing values in parameters from initial values.
 
-    Args:
-        params (dict): The parameters.
-        initial_values_dict (dict): The initial values dictionary.
-        n_tokens (int): The number of tokens.
-        n_subsidary_rules (int, optional): The number of subsidary rules. Defaults to 0.
-        chunk_period (int, optional): The chunk period. Defaults to 60.
-        n_parameter_sets (int, optional): The number of parameter sets. Defaults to 1.
+    Parameters
+    ----------
+    params : dict
+        The parameters dictionary to update.
+    initial_values_dict : dict
+        The initial values dictionary.
+    n_tokens : int
+        The number of tokens.
+    n_subsidary_rules : int, optional
+        The number of subsidary rules. Default is 0.
+    chunk_period : int, optional
+        The chunk period. Default is 60.
+    n_parameter_sets : int, optional
+        The number of parameter sets. Default is 1.
 
-    Returns:
-        dict: The updated parameters.
+    Returns
+    -------
+    dict
+        The updated parameters dictionary.
     """
     initial_params = init_params(
         initial_values_dict,
@@ -615,13 +887,17 @@ def calc_hessian_from_loaded_params(params, partial_fixed_training_step):
     """
     Calculate the Hessian matrix from the loaded parameters.
 
-    Args:
-        params (dict): A dictionary of parameters.
-        partial_fixed_training_step (function): 
-            A function representing the partial fixed training step.
+    Parameters
+    ----------
+    params : dict
+        A dictionary of parameters.
+    partial_fixed_training_step : callable
+        A function representing the partial fixed training step.
 
-    Returns:
-        numpy.ndarray: The Hessian matrix calculated from the loaded parameters.
+    Returns
+    -------
+    numpy.ndarray
+        The Hessian matrix calculated from the loaded parameters.
     """
     params_local = deepcopy(params)
     if params_local.get("step") is not None:
@@ -630,7 +906,6 @@ def calc_hessian_from_loaded_params(params, partial_fixed_training_step):
         params_local.pop("test_objective")
     if params_local.get("train_objective") is not None:
         params_local.pop("train_objective")
-    # params_local.pop('hessian_trace')
     return np.array(
         hessian_trace(
             dict_of_np_to_jnp(params_local), partial_fixed_training_step
@@ -645,32 +920,24 @@ def load_result_array(run_location, key="objective", recalc_hess=False):
     Parameters
     ----------
     run_location : str
-        Path to the JSON results file
+        Path to the JSON results file.
     key : str, optional
-        Which value to extract from results, defaults to "objective"
+        Which value to extract from results. Default is "objective".
     recalc_hess : bool, optional
-        Whether to recalculate Hessian trace values, defaults to False
+        Whether to recalculate Hessian trace values. Default is False.
 
     Returns
     -------
     tuple
-        Two-element tuple containing:
-        - dict: Run fingerprint containing configuration details
-        - list: Array of values selected according to the key
-
-    Notes
-    -----
-    Loads results from JSON file at run_location and extracts:
-    1. Run fingerprint (first element)
-    2. Array of specified values from remaining elements
-
-    If recalc_hess=True, will recalculate Hessian trace values for each parameter set
+        A tuple containing:
+            run_fingerprint : dict
+                Configuration details and metadata for the simulation run
+            values : list
+                Array of values extracted from results based on specified key
     """
     if os.path.isfile(run_location):
         with open(run_location, encoding='utf-8') as json_file:
             params = json.load(json_file)
-            # if params:
-            #     calc()
             params = json.loads(params)
         if recalc_hess is True:
             if "hessian_trace" not in params[0].keys():
@@ -692,49 +959,38 @@ def load_result_array(run_location, key="objective", recalc_hess=False):
 
 
 def load_manually(run_location, load_method="last", recalc_hess=False, min_test=0.0):
-    """
-    Load and process parameter sets from a JSON results file with custom loading methods.
+    """Load and process parameter sets from a JSON results file with custom loading methods.
 
     Parameters
     ----------
     run_location : str
-        Path to the JSON results file
+        Path to the JSON results file.
     load_method : str, optional
-        Method for selecting parameter sets. Options:
-        - "last": Return last parameter set
-        - "best_objective": Return set with highest overall objective
-        - "best_train_objective": Return set with highest training objective
-        - "best_test_objective": Return set with highest test objective
-        - "best_train_min_test_objective": Return set with highest training objective meeting 
-        minimum test threshold
-        Defaults to "last"
+        Method for selecting parameter sets. One of:
+        'last' - Returns the last parameter set
+        'best_objective' - Returns set with highest overall objective
+        'best_train_objective' - Returns set with highest training objective
+        'best_test_objective' - Returns set with highest test objective
+        'best_train_min_test_objective' - Returns set with highest training objective
+        that meets minimum test threshold.
+        Defaults to 'last'.
+
     recalc_hess : bool, optional
-        Whether to recalculate Hessian trace values, defaults to False
+        Whether to recalculate Hessian trace values. Defaults to False.
     min_test : float, optional
-        Minimum test objective threshold when using "best_train_min_test_objective",
-        defaults to 0.0
+        Minimum test objective threshold for 'best_train_min_test_objective' method.
+        Defaults to 0.0.
 
     Returns
     -------
     tuple
         Two-element tuple containing:
-            - dict: Loaded parameters
-            - int: The index of the selected parameter set
-
-    Notes
-    -----
-    Loads results from JSON file and selects parameter set according to specified method.
-    If recalc_hess=True, will recalculate and save Hessian trace values.
-    For "best_train_min_test_objective", filters sets meeting min_test threshold before
-    selecting best training objective.
+        - dict: Loaded parameters
+        - int: The index of the selected parameter set
     """
     if os.path.isfile(run_location):
         with open(run_location, encoding='utf-8') as json_file:
             params = json.load(json_file)
-            # if params:
-
-            #     calc()
-
             params = json.loads(params)
         if recalc_hess is True:
             if "hessian_trace" not in params[0].keys():
@@ -811,6 +1067,21 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         return params[index], context
 
 
+def retrieve_best(data_location, load_method, re_calc_hess, min_alt_obj = 0.0):
+    param, context = load_manually(data_location,load_method, re_calc_hess, min_alt_obj)
+    step = param["step"]
+    param.pop("step")
+    param.pop("hessian_trace")
+    param.pop("local_learning_rate")
+    param.pop("iterations_since_improvement")
+    
+    for key in param.keys():
+        if key != "subsidary_params":
+            param[key] = param[key][context]
+
+    return param, step
+
+
 def load_or_init(
     run_fingerprint,
     initial_values_dict,
@@ -827,23 +1098,39 @@ def load_or_init(
     """
     Load or initialize parameters for the AMM simulator.
 
-    Args:
-        run_fingerprint (str): The fingerprint of the run.
-        initial_values_dict (dict): The initial values dictionary.
-        n_tokens (int): The number of tokens.
-        n_subsidary_rules (int): The number of subsidiary rules.
-        recalc_hess (bool, optional): Whether to recalculate the Hessian. Defaults to False.
-        chunk_period (int, optional): The chunk period. Defaults to 60.
-        force_init (bool, optional): Whether to force initialization. Defaults to False.
-        load_method (str, optional): The method to use for loading. Defaults to "last".
-        n_parameter_sets (int, optional): The number of parameter sets. Defaults to 1.
-        results_dir (str, optional): The directory for results. Defaults to "./results/".
-        partial_fixed_training_step (None, optional): The partial fixed training step. 
-        Defaults to None.
+    Parameters
+    ----------
+    run_fingerprint : str
+        The fingerprint of the run.
+    initial_values_dict : dict
+        The initial values dictionary.
+    n_tokens : int
+        The number of tokens.
+    n_subsidary_rules : int
+        The number of subsidiary rules.
+    recalc_hess : bool, optional
+        Whether to recalculate the Hessian. Default is False.
+    chunk_period : int, optional
+        The chunk period. Default is 60.
+    force_init : bool, optional
+        Whether to force initialization. Default is False.
+    load_method : str, optional
+        The method to use for loading. Default is "last".
+    n_parameter_sets : int, optional
+        The number of parameter sets. Default is 1.
+    results_dir : str, optional
+        The directory for results. Default is "./results/".
+    partial_fixed_training_step : callable, optional
+        The partial fixed training step. Default is None.
 
-    Returns:
-        tuple: A tuple containing the parameters and a boolean indicating 
-        whether they were loaded or initialized.
+    Returns
+    -------
+    tuple
+        A tuple containing:
+            params : dict
+                The loaded or initialized parameters
+            loaded : bool
+                Whether the parameters were loaded (True) or initialized (False)
     """
 
     run_location = results_dir + get_run_location(run_fingerprint) + ".json"
@@ -944,22 +1231,38 @@ def load(
     """
     Load parameters from a file and fill in missing values based on initial values.
 
-    Args:
-        run_location (str): The location of the file containing the parameters.
-        initial_values_dict (dict): A dictionary of initial values.
-        n_tokens (int): The number of tokens.
-        n_subsidary_rules (int): The number of subsidiary rules.
-        chunk_period (int, optional): The chunk period. Defaults to 60.
-        load_method (str, optional): The method to use for loading parameters.
-            Options are "last", "best_objective", and "best_train_objective".
-            Defaults to "last".
-        n_parameter_sets (int, optional): The number of parameter sets. Defaults to 1.
+    Parameters
+    ----------
+    run_location : str
+        The location of the file containing the parameters.
+    initial_values_dict : dict
+        A dictionary of initial values.
+    n_tokens : int
+        The number of tokens.
+    n_subsidary_rules : int
+        The number of subsidiary rules.
+    chunk_period : int, optional
+        The chunk period. Default is 60.
+    load_method : {'last', 'best_objective', 'best_train_objective'}, optional
+        The method to use for loading parameters. Default is 'last'.
+    n_parameter_sets : int, optional
+        The number of parameter sets. Default is 1.
 
-    Returns:
-        tuple: A tuple containing the loaded parameters and the context.
-    Raises:
-        Exception: If the run_location is not a file.
-        NotImplementedError: If an unsupported load_method is specified.
+    Returns
+    -------
+    tuple
+        A tuple containing:
+            params : dict
+                The loaded parameters
+            context : int or None
+                The context index for the loaded parameters
+
+    Raises
+    ------
+    FileNotFoundError
+        If the run_location file does not exist.
+    NotImplementedError
+        If an unsupported load_method is specified.
     """
 
     if os.path.isfile(run_location):
@@ -1018,15 +1321,21 @@ def make_composite_run_params(
     """
     Create composite run parameters for the AMM simulator.
 
-    Args:
-        composite_params (dict): The composite parameters for the AMM simulator.
-        list_of_subsidary_pool_run_dicts (list): A list of dictionaries containing 
-        the parameters for each subsidiary pool run.
-        initial_values_dict (dict): The initial values dictionary for the AMM simulator.
-        n_parameter_sets (int): The number of parameter sets.
+    Parameters
+    ----------
+    composite_params : dict
+        The composite parameters for the AMM simulator.
+    list_of_subsidary_pool_run_dicts : list
+        A list of dictionaries containing the parameters for each subsidiary pool run.
+    initial_values_dict : dict
+        The initial values dictionary for the AMM simulator.
+    n_parameter_sets : int
+        The number of parameter sets.
 
-    Returns:
-        dict: The composite run parameters for the AMM simulator.
+    Returns
+    -------
+    dict
+        The composite run parameters for the AMM simulator.
     """
     params = deepcopy(composite_params)
     params["subsidary_params"] = []
@@ -1053,14 +1362,21 @@ def create_product_of_linspaces(
     """
     Create a product of linspaces for chosen keys in the params dict.
 
-    Parameters:
-    - params (dict): The dictionary containing initial parameter values.
-    - keys_ranges (dict): The dictionary containing high and low values for each key.
-    - num_points_per_key (dict): The dictionary containing the number of points for each key.
-    - inverse_funcs (dict, optional): A dictionary of inverse functions for each key.
+    Parameters
+    ----------
+    params : dict
+        The dictionary containing initial parameter values.
+    keys_ranges : dict
+        The dictionary containing high and low values for each key.
+    num_points_per_key : dict
+        The dictionary containing the number of points for each key.
+    inverse_funcs : dict, optional
+        A dictionary of inverse functions for each key.
 
-    Returns:
-    - list: A list of dictionaries with all combinations of linspace values for the chosen keys.
+    Returns
+    -------
+    list
+        A list of dictionaries with all combinations of linspace values for the chosen keys.
     """
 
     # Create linspaces for each key
@@ -1092,12 +1408,17 @@ def create_product_of_arrays(params, keys_arrays):
     """
     Create a product of arrays for chosen keys in the params dict.
 
-    Parameters:
-    - params (dict): The dictionary containing initial parameter values.
-    - keys_arrays (dict): The dictionary containing the points for each key.
+    Parameters
+    ----------
+    params : dict
+        The dictionary containing initial parameter values.
+    keys_arrays : dict
+        The dictionary containing the points for each key.
 
-    Returns:
-    - list: A list of dictionaries with all combinations of linspace values for the chosen keys.
+    Returns
+    -------
+    list
+        A list of dictionaries with all combinations of linspace values for the chosen keys.
     """
 
     # Create the product of linspaces
@@ -1123,18 +1444,24 @@ def generate_run_fingerprint_combinations(
     """
     Generate run fingerprint combinations with specified ranges and scaling.
 
-    Args:
-        run_fingerprint (dict): The base run fingerprint.
-        keys_ranges (dict, optional): The dictionary containing high and low values for each key.
-            Defaults to logarithmic ranges for 'arb_frequency'.
-        num_points_per_key (dict, optional): The dictionary containing the number of 
-            points for each key.
-            Defaults to 10 points for each key.
-        inverse_funcs (dict, optional): A dictionary of inverse functions for each key.
-            Defaults to logarithmic scaling for 'arb_frequency'.
+    Parameters
+    ----------
+    run_fingerprint : dict
+        The base run fingerprint.
+    keys_ranges : dict, optional
+        The dictionary containing high and low values for each key.
+        Defaults to logarithmic ranges for 'arb_frequency'.
+    num_points_per_key : dict, optional
+        The dictionary containing the number of points for each key.
+        Defaults to 10 points for each key.
+    inverse_funcs : dict, optional
+        A dictionary of inverse functions for each key.
+        Defaults to logarithmic scaling for 'arb_frequency'.
 
-    Returns:
-        list: A list of dictionaries with all combinations of run fingerprint values.
+    Returns
+    -------
+    list
+        A list of dictionaries with all combinations of run fingerprint values.
     """
 
     # Default keys ranges
@@ -1164,14 +1491,15 @@ def make_log_range_with_zero(x):
     """
     Compute the exponential of a given value, with a special case for zero.
 
-    This function takes an input value `x` and returns the exponential of `x`.
-    If `x` is zero, the function returns zero instead of the exponential of zero.
+    Parameters
+    ----------
+    x : float
+        The input value for which the exponential is to be computed.
 
-    Parameters:
-    x (float): The input value for which the exponential is to be computed.
-
-    Returns:
-    float: The exponential of the input value `x`, or zero if `x` is zero.
+    Returns
+    -------
+    float
+        The exponential of the input value `x`, or zero if `x` is zero.
     """
     if x == 0:
         return 0
@@ -1183,12 +1511,17 @@ def combine_param_combinations(param_combinations, n_parameter_sets):
     """
     Combine single-row jnp arrays in param_combinations into multi-row jnp arrays.
 
-    Args:
-        param_combinations (list): List of dictionaries with single-row jnp arrays.
-        n_parameter_sets (int): Number of parameter sets to combine into each dictionary.
+    Parameters
+    ----------
+    param_combinations : list
+        List of dictionaries with single-row jnp arrays.
+    n_parameter_sets : int
+        Number of parameter sets to combine into each dictionary.
 
-    Returns:
-        list: List of dictionaries with multi-row jnp arrays.
+    Returns
+    -------
+    list
+        List of dictionaries with multi-row jnp arrays.
     """
 
     def combine_subsidary_params(subsidary_params_list):
@@ -1225,11 +1558,15 @@ def split_param_combinations(param_combinations):
     """
     Split multi-row jnp arrays in param_combinations into single-row jnp arrays.
 
-    Args:
-        param_combinations (list): List of dictionaries with multi-row jnp arrays.
+    Parameters
+    ----------
+    param_combinations : list
+        List of dictionaries with multi-row jnp arrays.
 
-    Returns:
-        list: List of dictionaries with single-row jnp arrays.
+    Returns
+    -------
+    list
+        List of dictionaries with single-row jnp arrays.
     """
 
     def split_subsidary_params(subsidary_params_dict):
@@ -1260,18 +1597,25 @@ def make_vmap_in_axes_dict(
     input_dict, in_axes, keys_to_recur_on, keys_with_no_vamp=[], n_repeats_of_recurred=0
 ):
     """
-    Create a dictionary specifying vmap axes for input parameters for use in function
-    quantammsim.core_simulator.forward_pass.forward_pass.
+    Create a dictionary specifying vmap axes for input parameters.
 
-    Args:
-        input_dict (dict): Dictionary of input parameters.
-        in_axes (int): The axis to vectorize over.
-        keys_to_recur_on (list): Keys in input_dict that should be recursively processed.
-        keys_with_no_vamp (list, optional): Keys that should not be vectorized. Defaults to [].
-        n_repeats_of_recurred (int, optional): Number of times to repeat recursion. Defaults to 0.
+    Parameters
+    ----------
+    input_dict : dict
+        Dictionary of input parameters.
+    in_axes : int
+        The axis to vectorize over.
+    keys_to_recur_on : list
+        Keys in input_dict that should be recursively processed.
+    keys_with_no_vamp : list, optional
+        Keys that should not be vectorized. Defaults to [].
+    n_repeats_of_recurred : int, optional
+        Number of times to repeat recursion. Defaults to 0.
 
-    Returns:
-        dict: Dictionary mapping parameter keys to their vmap axes specifications.
+    Returns
+    -------
+    dict
+        Dictionary mapping parameter keys to their vmap axes specifications.
     """
 
     in_axes_dict = dict()
@@ -1290,3 +1634,68 @@ def make_vmap_in_axes_dict(
     for key in keys_with_no_vamp:
         in_axes_dict[key] = None
     return in_axes_dict
+
+
+def generate_params_combinations(
+    initial_values_dict,
+    n_tokens,
+    n_subsidary_rules,
+    chunk_period,
+    n_parameter_sets,
+    k_per_day_range,
+    memory_days_range,
+    num_points_k_per_day=10,
+    num_points_memory_days=10,
+):
+    """
+    Generate parameter combinations with linearly-spaced values of k_per_day and memory_days.
+
+    Args:
+        initial_values_dict (dict): The initial values dictionary.
+        n_tokens (int): The number of tokens.
+        n_subsidary_rules (int): The number of subsidary rules.
+        chunk_period (int): The chunk period.
+        n_parameter_sets (int): The number of parameter sets.
+        k_per_day_range (tuple): The range (low, high) for k_per_day.
+        memory_days_range (tuple): The range (low, high) for memory_days.
+        num_points_k_per_day (int, optional): The number of points for k_per_day linspace. Defaults to 10.
+        num_points_memory_days (int, optional): The number of points for memory_days linspace. Defaults to 10.
+
+    Returns:
+        list: A list of dictionaries with all combinations of parameter values.
+    """
+    # Initialize base params
+    # base_params = init_params_singleton(
+    #     initial_values_dict, n_tokens, n_subsidary_rules, chunk_period
+    # )
+
+    # Define keys ranges for linspace generation
+    keys_ranges = {
+        "initial_k_per_day": k_per_day_range,
+        "initial_memory_length": memory_days_range,
+    }
+
+    # Define number of points for each key
+    num_points_per_key = {
+        "initial_k_per_day": num_points_k_per_day,
+        "initial_memory_length": num_points_memory_days,
+    }
+
+    # Generate param combinations
+    initial_values_dict_combinations = create_product_of_linspaces(
+        initial_values_dict.copy(), keys_ranges, num_points_per_key
+    )
+
+    # Fill in missing values from initial values
+    filled_param_combinations = [
+        fill_in_missing_values_from_init_singleton(
+            {},
+            i_v_d,
+            n_tokens,
+            n_subsidary_rules,
+            chunk_period,
+            n_parameter_sets,
+        )
+        for i_v_d in initial_values_dict_combinations
+    ]
+    return filled_param_combinations, initial_values_dict_combinations

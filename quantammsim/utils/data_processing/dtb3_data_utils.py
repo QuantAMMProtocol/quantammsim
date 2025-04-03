@@ -42,12 +42,13 @@ def filter_dtb3_values(filename, start_date, end_date, target_directory=None):
     )
     filtered_df = df.loc[mask]
 
-    # Save the DataFrame to a CSV file
-    filtered_df.to_csv("filtered_debug_rf.csv", index=False)
-
     # Fill blank date rows with previous "DTB3" value
     filtered_df["DTB3"].replace(".", float("nan"), inplace=True)
+
     filtered_df["DTB3"].fillna(method="ffill", inplace=True)
+
+    # Backfill missing "DTB3" values
+    filtered_df["DTB3"].fillna(method="bfill", inplace=True)
 
     # Convert DTB3 column to numpy array
     dtb3_values = filtered_df["DTB3"].astype(float).to_numpy()

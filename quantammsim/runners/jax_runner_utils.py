@@ -30,6 +30,107 @@ import plotly.graph_objects as go
 from optuna.visualization import plot_optimization_history, plot_param_importances
 import numpy as np
 
+
+from typing import Dict, Any
+
+
+def create_trial_params(
+    trial: Any,  # optuna.Trial, but avoid direct dependency
+    param_config: Dict,
+    params: Dict,
+    run_fingerprint: Dict,
+    n_assets: int,
+) -> Dict:
+    """
+    Create trial parameters for Optuna optimization.
+    
+    Parameters:
+    -----------
+    trial : optuna.Trial
+        The Optuna trial object
+    param_config : dict
+        Configuration for parameter optimization. Each parameter can have:
+        - low: float, lower bound
+        - high: float, upper bound
+        - log_scale: bool, whether to use log scale
+        - scalar: bool, whether to use same value for all assets
+    params : dict
+        Current parameter values, used for shape information
+    run_fingerprint : dict
+        Run configuration
+    n_assets : int
+        Number of assets
+        
+    Returns:
+    --------
+    dict
+        Trial parameters dictionary
+    
+    Raises:
+    -------
+    ValueError
+        If parameter shapes are invalid or required config is missing
+    """
+    trial_params = {}
+    
+    for key, value in params.items():
+        if key == "subsidary_params":
+            continue
+            
+        # Verify value has correct shape
+        if not hasattr(value, 'shape') or len(value.shape) < 2:
+            raise ValueError(f"Parameter {key} must have at least 2 dimensions")
+            
+        param_length = value.shape[1]
+        
+        config = param_config.get(key, {})
+        # Set defaults while preserving any existing config
+        default_config = {
+            "low": -10.0,
+            "high": 10.0,
+            "log_scale": False,
+            "scalar": False
+        }
+        config = {**default_config, **config}
+            
+        # Handle logit_delta_lamb parameters
+        if key.startswith("logit_delta_lamb") and not run_fingerprint.get(
+            "use_alt_lamb", False
+        ):
+            trial_params[key] = jnp.zeros(param_length)
+            continue
+            
+        # Handle initial_weights_logits specially
+        if key == "initial_weights_logits":
+            trial_params[key] = jnp.zeros(n_assets)
+            continue
+            
+        # Handle scalar vs vector parameters
+        if config["scalar"]:
+            # Create single value and repeat
+            param_value = trial.suggest_float(
+                key,  # Use key directly for scalar params
+                config["low"],
+                config["high"],
+                log=config["log_scale"],
+            )
+            trial_params[key] = jnp.full(param_length, param_value)
+        else:
+            # Create array of different values
+            trial_params[key] = jnp.array(
+                [
+                    trial.suggest_float(
+                        f"{key}_{i}",
+                        config["low"],
+                        config["high"],
+                        log=config["log_scale"],
+                    )
+                    for i in range(param_length)
+                ]
+            )
+    
+    return trial_params
+
 def generate_evaluation_points(
     start_idx, end_idx, bout_length, n_points, min_spacing, random_key=0
 ):
@@ -88,15 +189,18 @@ def get_best_balanced_solution(study):
     # Normalize each objective to [0,1]
     
     # Use the helper function
-    best_idx = find_best_balanced_solution(trials, len(study.directions))
+    if len(trials) > 1:
+        best_idx = find_best_balanced_solution(trials, len(study.directions))
+    else:
+        best_idx = 0
     return trials[best_idx].params, trials[best_idx].values, best_idx
 
 
 class OptunaManager:
-    def __init__(self, run_fingerprint, output_dir=None):
+    def __init__(self, run_fingerprint):
         self.run_fingerprint = run_fingerprint
         self.optuna_settings = run_fingerprint["optimisation_settings"]["optuna_settings"]
-        self.output_dir = output_dir or Path("optuna_studies")
+        self.output_dir = Path(run_fingerprint["optimisation_settings"]["optuna_settings"].get("output_dir", "optuna_studies"))
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.study = None
         self.logger = self._setup_logger()
@@ -113,7 +217,7 @@ class OptunaManager:
 
         # Console handler
         # ch = logging.StreamHandler()
-        #         ch.setLevel(logging.ERROR)
+        # ch.setLevel(logging.INFO)
 
         # Formatter
         formatter = logging.Formatter(
@@ -460,14 +564,14 @@ def nan_rollback(grads, params, old_params):
     >>> old_params = {"log_k": jnp.array([[0.05, 0.15], [0.25, 0.35]])}
     >>> rolled_back = nan_rollback(grads, params, old_params)
     """
-    if "log_k" in grads:
-        bool_idx = jnp.sum(jnp.isnan(grads["log_k"]), axis=-1, keepdims=True) > 0
-        return tree_map(
-            lambda p, old_p: jnp.where(bool_idx, old_p, p), params, old_params
-        )
-    else:
-        return params
+    for key in["log_k", "logit_lamb"]:
+        if key in grads:
+            bool_idx = jnp.sum(jnp.isnan(grads[key]), axis=-1, keepdims=True) > 0
+            params = tree_map(
+                lambda p, old_p: jnp.where(bool_idx, old_p, p), params, old_params
+            )
 
+    return params
 
 def get_unique_tokens(run_fingerprint):
     """Gets unique tokens from run fingerprint including subsidiary pools.

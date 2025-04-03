@@ -2,7 +2,7 @@
 from jax import config
 
 config.update("jax_enable_x64", True)
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 from jax import local_device_count, devices
 
 DEFAULT_BACKEND = default_backend()
@@ -19,7 +19,6 @@ from jax import jit, vmap
 from jax import devices, device_put
 from jax import tree_util
 from jax.lax import stop_gradient, dynamic_slice
-from jax.nn import softmax
 
 from quantammsim.pools.G3M.quantamm.TFMM_base_pool import TFMMBasePool
 from quantammsim.core_simulator.param_utils import (
@@ -210,7 +209,7 @@ class MomentumPool(TFMMBasePool):
 
         Notes
         -----
-        Uses the `momentum_calc_fine_weight_output` function to perform the actual
+        Uses the `calc_fine_weight_output_from_weight_changes` function to perform the actual
         refinement. The implementation of this function should handle details such as weight
         interpolation, maximum change limits, and ensuring weights sum to 1.
         """
@@ -218,7 +217,7 @@ class MomentumPool(TFMMBasePool):
             raw_weight_output, initial_weights, run_fingerprint, params
         )
 
-    def _init_base_parameters(
+    def init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -269,13 +268,15 @@ class MomentumPool(TFMMBasePool):
         # that, if only a singleton array is provided we expand it
         # to n_assets and use that vlaue for all assets.
         def process_initial_values(
-            initial_values_dict, key, n_assets, n_parameter_sets
+            initial_values_dict, key, n_assets, n_parameter_sets, force_scalar=False
         ):
             if key in initial_values_dict:
                 initial_value = initial_values_dict[key]
                 if isinstance(initial_value, (np.ndarray, jnp.ndarray, list)):
                     initial_value = np.array(initial_value)
-                    if initial_value.size == n_assets:
+                    if force_scalar:
+                        return np.array([initial_value] * n_parameter_sets)
+                    elif initial_value.size == n_assets:
                         return np.array([initial_value] * n_parameter_sets)
                     elif initial_value.size == 1:
                         return np.array([[initial_value] * n_assets] * n_parameter_sets)
@@ -286,16 +287,19 @@ class MomentumPool(TFMMBasePool):
                             f"{key} must be a singleton or a vector of length n_assets or a matrix of shape (n_parameter_sets, n_assets)"
                         )
                 else:
-                    return np.array([[initial_value] * n_assets] * n_parameter_sets)
+                    if force_scalar:
+                        return np.array([initial_value] * n_parameter_sets)
+                    else:
+                        return np.array([[initial_value] * n_assets] * n_parameter_sets)
             else:
                 raise ValueError(f"initial_values_dict must contain {key}")
 
         initial_weights_logits = process_initial_values(
-            initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets
+            initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets, force_scalar=False
         )
         log_k = np.log2(
             process_initial_values(
-                initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets
+                initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets, force_scalar=run_fingerprint["optimisation_settings"]["force_scalar"]
             )
         )
 
@@ -305,7 +309,10 @@ class MomentumPool(TFMMBasePool):
         )
 
         logit_lamb_np = np.log(initial_lamb / (1.0 - initial_lamb))
-        logit_lamb = np.array([[logit_lamb_np] * n_assets] * n_parameter_sets)
+        if run_fingerprint["optimisation_settings"]["force_scalar"]:
+            logit_lamb = np.array([[logit_lamb_np]] * n_parameter_sets)
+        else:
+            logit_lamb = np.array([[logit_lamb_np] * n_assets] * n_parameter_sets)
 
         # lamb delta is the difference in lamb needed for
         # lamb + delta lamb to give a final memory length
@@ -323,7 +330,10 @@ class MomentumPool(TFMMBasePool):
         logit_delta_lamb = np.array(
             [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
         )
-
+        if run_fingerprint["optimisation_settings"]["force_scalar"]:
+            logit_delta_lamb = np.array(
+                [[logit_delta_lamb_np]] * n_parameter_sets
+            )
         params = {
             "log_k": log_k,
             "logit_lamb": logit_lamb,

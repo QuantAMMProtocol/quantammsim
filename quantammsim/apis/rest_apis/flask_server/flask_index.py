@@ -39,7 +39,7 @@ app.config["JWT_SECRET_KEY"] = (
     "2b25014d8e591e91cc4e3bfc3a7561983e06bc7ff0a140bcecca3c0a15d31c5e"
 )
 
-@app.route("/runSimulation", methods=["POST"])
+@app.route("/api/runSimulation", methods=["POST"])
 def runSimulation():
     """
     Handle the POST request to run a simulation.
@@ -64,7 +64,7 @@ def runSimulation():
     return jsonString
 
 
-@app.route("/runFinancialAnalysis", methods=["POST"])
+@app.route("/api/runFinancialAnalysis", methods=["POST"])
 def runFinancialAnalysis():
     """
     Handle the POST request to run a financial analysis.
@@ -106,7 +106,7 @@ def runFinancialAnalysis():
     return jsonString
 
 
-@app.route("/loadHistoricDailyPrices", methods=["POST"])
+@app.route("/api/loadHistoricDailyPrices", methods=["POST"])
 def loadHistoricDailyPrices():
     """
     Handle the POST request to load historic daily prices.
@@ -124,11 +124,12 @@ def loadHistoricDailyPrices():
     dto = LoadPriceHistoryRequestDto(request_data)
     root = "../../../../quantammsim/data/"
     historic = get_historic_daily_csv_data([dto.coinCode], root)
+    result = historic.to_json(orient="records") # Is this the right way to do this?
     parsed = json.loads(result)
     jsonString = json.dumps(parsed)
     return jsonString
 
-@app.route("/loadCoinComparisonData", methods=["POST"])
+@app.route("/api/loadCoinComparisonData", methods=["POST"])
 def loadCoinComparisonData():
     """
     Handle the POST request to load coin comparison data.
@@ -150,7 +151,7 @@ def loadCoinComparisonData():
     return jsonString
 
 
-@app.route("/products", methods=["GET"])
+@app.route("/api/products", methods=["GET"])
 def products():
     """
     Handle the GET request to retrieve product information.
@@ -170,7 +171,7 @@ def products():
     return content
 
 
-@app.route("/filters", methods=["GET"])
+@app.route("/api/filters", methods=["GET"])
 def filters():
     """
     Handle the GET request to retrieve filter information.
@@ -189,6 +190,13 @@ def filters():
 
     return content
 
+@app.route("/api/test", methods=["GET"])
+def test():
+    return "Hello World"
+
+@app.route("/health", methods=["GET"])
+def health():
+    return "OK"
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port="5001")
+    app.run(host="0.0.0.0", port="5001")

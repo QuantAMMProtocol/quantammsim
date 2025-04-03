@@ -9,7 +9,7 @@ from jax import jit, vmap, devices
 from jax.tree_util import Partial
 from jax.lax import scan
 
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 
 from quantammsim.pools.G3M.optimal_n_pool_arb import (
     precalc_shared_values_for_all_signatures,

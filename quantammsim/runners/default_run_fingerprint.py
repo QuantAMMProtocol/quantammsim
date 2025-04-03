@@ -2,8 +2,8 @@ run_fingerprint_defaults = {
     "freq": "minute",
     "startDateString": "2021-02-03 00:00:00",
     "endDateString": "2022-06-03 00:00:00",
-    "endTestDateString": "2022-07-03 00:00:00",
-    "tokens": ["BTC", "DAI", "ETH"],
+    "endTestDateString": None,
+    "tokens": ["BTC", "USDC", "ETH"],
     "rule": "mean_reversion_channel",
     "optimisation_settings": {
         "base_lr": 0.01,
@@ -22,6 +22,7 @@ run_fingerprint_defaults = {
         "include_flipped_training_data": False,
         "initial_random_key": 0,
         "method": "gradient_descent",
+        "force_scalar": False,
     },
     "initial_memory_length": 10.0,
     "initial_memory_length_delta": 0.0,
@@ -46,7 +47,11 @@ run_fingerprint_defaults = {
     "arb_frequency": 1,
     "arb_quality": 1.0,
     "do_trades": False,
+    "numeraire": None,
     "do_arb": True,
+    "max_memory_days": 365,
+    "noise_trader_ratio": 0.0,
+    "minimum_weight": None, # will be set to 0.1 / n_assets
 }
 
 
@@ -66,41 +71,79 @@ optuna_settings = {
         "min_improvement": 0.001,  # Minimum relative improvement
     },
     "multi_objective": False,
+    "make_scalar": False,
     "parameter_config": {
         "memory_length": {
             "low": 1,
-            "high": 365,
+            "high": 200,
             "log_scale": True,
+            "scalar": False,
         },
         "memory_length_delta": {
             "low": 0.1,
             "high": 100,
             "log_scale": True,
+            "scalar": False,
+        },
+        "log_k": {
+            "low": -10.0,
+            "high": 10.0,
+            "log_scale": False,
+            "scalar": False,
         },
         "k_per_day": {
             "low": 0.1,
             "high": 1000,
             "log_scale": True,
+            "scalar": False,
         },
         "weights_logits": {
             "low": -10,
             "high": 10,
             "log_scale": False,
+            "scalar": False,
         },
         "log_amplitude": {
             "low": -10,
             "high": 10,
             "log_scale": False,
+            "scalar": False,
         },
         "raw_width": {
             "low": -10,
             "high": 10,
             "log_scale": False,
+            "scalar": False,
         },
         "raw_exponents": {
+            "low": 0,
+            "high": 10,
+            "log_scale": False,
+            "scalar": False,
+        },
+        "raw_pre_exp_scaling": {
             "low": -10,
             "high": 10,
             "log_scale": False,
+            "scalar": False,
+        },
+        "memory_days_1": {
+            "low": 0.5,
+            "high": 200,
+            "log_scale": True,
+            "scalar": False,
+        },
+        "memory_days_2": {
+            "low": 0.5,
+            "high": 200,
+            "log_scale": True,
+            "scalar": False,
+        },
+        "logit_lamb": {
+            "low": -10,
+            "high": 10,
+            "log_scale": False,
+            "scalar": False,
         },
     },
 }

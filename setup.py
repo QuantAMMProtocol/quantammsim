@@ -2,6 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="quantammsim",
+    version="0.1.0",
     packages=find_packages(),
     install_requires=[
         "jax>=0.4.0",
@@ -17,12 +18,20 @@ setup(
         "tqdm",
         "optuna",
         "pyarrow",
+        "plotly",
+        "bidask",
+        "Historic_Crypto",
+        "gdown",
+        "BinanceDataDumper",
+        "dask",
     ],
     extras_require={
         "dev": [
-            "pytest",
+            "pytest>=6.0",
             "black",
             "flake8",
+            "pytest-cov",
+            "hypothesis",
         ],
         "docs": [
             "sphinx",

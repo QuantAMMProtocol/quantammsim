@@ -5,12 +5,17 @@ from jax import tree_util
 
 from quantammsim.pools.G3M.balancer.balancer import BalancerPool
 from quantammsim.pools.G3M.quantamm.momentum_pool import MomentumPool
+from quantammsim.pools.G3M.quantamm.antimomentum_pool import AntiMomentumPool
 from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
 from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import (
     MeanReversionChannelPool,
 )
 from quantammsim.pools.G3M.quantamm.difference_momentum_pool import DifferenceMomentumPool
 from quantammsim.pools.G3M.quantamm.sinusoid_pool import SinusoidPool
+from quantammsim.pools.G3M.quantamm.index_market_cap_pool import IndexMarketCapPool
+from quantammsim.pools.G3M.quantamm.hodling_index_pool import HodlingIndexPool
+from quantammsim.pools.G3M.quantamm.trad_hodling_index_pool import TradHodlingIndexPool
+from quantammsim.pools.G3M.quantamm.min_variance_pool import MinVariancePool
 from quantammsim.pools.hodl_pool import HODLPool
 from quantammsim.pools.FM_AMM.cow_pool import CowPool
 from quantammsim.pools.ECLP.gyroscope import GyroscopePool
@@ -128,6 +133,8 @@ def create_pool(rule):
         base_pool = BalancerPool()
     elif base_rule == "momentum":
         base_pool = MomentumPool()
+    elif base_rule == "anti_momentum":
+        base_pool = AntiMomentumPool()
     elif base_rule == "power_channel":
         base_pool = PowerChannelPool()
     elif base_rule == "mean_reversion_channel":
@@ -136,6 +143,14 @@ def create_pool(rule):
         base_pool = DifferenceMomentumPool()
     elif base_rule == "sinusoid":
         base_pool = SinusoidPool()
+    elif base_rule == "index_market_cap":
+        base_pool = IndexMarketCapPool()
+    elif base_rule == "hodling_index_market_cap":
+        base_pool = HodlingIndexPool()
+    elif base_rule == "trad_hodling_index_market_cap":
+        base_pool = TradHodlingIndexPool()
+    elif base_rule == "min_variance":
+        base_pool = MinVariancePool()
     elif base_rule == "hodl":
         base_pool = HODLPool()
     elif base_rule == "cow":

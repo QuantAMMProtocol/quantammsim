@@ -1,8 +1,6 @@
 Core Simulator
 ==============
 
-.. automodule:: quantammsim.core_simulator
-   :noindex:
 
 Forward Pass
 ------------

@@ -3,8 +3,11 @@ from typing import Dict, Any, Optional
 import numpy as np
 
 import jax.numpy as jnp
+from jax.nn import softmax
+from jax.lax import stop_gradient
 from jax import tree_util
 
+from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 
 class AbstractPool(ABC):
     """
@@ -16,15 +19,25 @@ class AbstractPool(ABC):
 
     Methods
     -------
-    calculate_reserve_changes(params, run_fingerprint, prices, start_index, additional_oracle_input)
-        Calculate changes in reserves based on weights, prices, and parameters.
+    calculate_reserves_with_fees(params, run_fingerprint, prices, start_index, additional_oracle_input)
+        Calculate reserve changes with fees and arbitrage enabled.
+        
+        Used when fees are non-zero and arbitrage is enabled. Handles arbitrage thresholds,
+        trading costs, and fee calculations. Less performant than zero-fees case.
 
-    calculate_reserve_changes_zero_fees(params, run_fingerprint, prices, 
-    start_index, additional_oracle_input)
-        Calculate reserve changes assuming zero fees, based on weights, prices, and parameters.
+    calculate_reserves_zero_fees(params, run_fingerprint, prices, start_index, additional_oracle_input) 
+        Calculate reserve changes assuming zero fees.
 
-    initialize_parameters(initial_values_dict, run_fingerprint, n_assets, n_parameter_sets, noise)
-        Initialize the pool's parameters.
+        Fast, vectorized implementation for the zero-fees case. Uses parallel computation
+        since arbitrageurs will always trade to exactly match external market prices.
+        Should be overridden with fees=0 version of calculate_reserves_with_fees if no
+        faster implementation exists.
+
+    calculate_reserves_with_dynamic_inputs(params, run_fingerprint, prices, start_index, additional_oracle_input)
+        Calculate reserve changes with time-varying parameters.
+        
+        Handles cases where pool properties like fees, arbitrage thresholds, or weights
+        can change over time. Required for pools with dynamic parameters.
 
     Notes
     -----
@@ -98,7 +111,7 @@ class AbstractPool(ABC):
     ) -> Dict[str, Any]:
         """Initialize pool parameters and apply any extensions from mixins."""
         # Get base parameters
-        params = self._init_base_parameters(
+        params = self.init_base_parameters(
             initial_values_dict, run_fingerprint, n_assets, n_parameter_sets, noise
         )
 
@@ -109,8 +122,84 @@ class AbstractPool(ABC):
 
         return params
 
+    def calculate_initial_weights(
+        self, params: Dict[str, jnp.ndarray], *args, **kwargs
+    ) -> jnp.ndarray:
+        """
+        Calculate initial pool weights from initial logits or from directly-provided weights.
+        If both are provided, the weights calculated from logits take precendence.
+
+        Uses softmax with stop_gradient to ensure weights remain constant
+        during any optimization.
+
+        Parameters
+        ----------
+        params : Dict[str, jnp.ndarray]
+            Must contain 'initial_weights_logits' key or 'initial_weights' key
+        *args, **kwargs
+            Not used, kept for interface compatibility
+
+        Returns
+        -------
+        jnp.ndarray
+            Fixed normalized weights
+
+        Notes
+        -----
+        Using 'initial_weights_logits' means that the calculated initial weights
+        have +ve entries and sum to one by construction. If 'initial_weights' is
+        used the values are used unchecked.
+        """
+        initial_weights_logits = params.get("initial_weights_logits", None)
+        initial_weights = params.get("initial_weights", None)
+        if initial_weights_logits is not None:
+            # we dont't want to change the initial weights during any training
+            # so wrap them in a stop_grad
+            weights = softmax(stop_gradient(initial_weights_logits))
+        elif initial_weights is not None:
+            # we dont't want to change the initial weights during any training
+            # so wrap them in a stop_grad
+            weights = stop_gradient(initial_weights)
+        else:
+            raise ValueError(
+                "At least one of 'initial_weights_logits' and 'initial_weights' must be provided"
+            )
+        return weights
+
+    def calculate_weights(
+        self, params: Dict[str, jnp.ndarray], *args, **kwargs
+    ) -> jnp.ndarray:
+        """
+        This function will be overridden for any pools that a) have weights and b) have weights that vary.
+        As so many of the pools modelled in this package have weights (Balancer [G3M], Cow [FM-AMM], QuantAMM [TFMM])
+        this is helpful to have here (though this method is overriden for QuantAMM [TFMM] pools).
+
+        This method is used by some hooks that rely on having access to a pools weights over time. If a pool is to work
+        with all hooks, this method should be ensured to implement the correct logic for that pool. See GyroscopePool
+        for an example where a custom implementation was needed for the sake of hook compatibility.
+
+        Parameters
+        ----------
+        params : Dict[str, jnp.ndarray]
+            Must contain 'initial_weights_logits' key or 'initial_weights' key
+        *args, **kwargs
+            Not used, kept for interface compatibility
+
+        Returns
+        -------
+        jnp.ndarray
+            Fixed normalized weights
+
+        Notes
+        -----
+        Using 'initial_weights_logits' means that the calculated initial weights
+        have +ve entries and sum to one by construction. If 'initial_weights' is used the
+        values are used unchecked.
+        """
+        return self.calculate_initial_weights(params, *args, **kwargs)
+
     @abstractmethod
-    def _init_base_parameters(
+    def init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -127,7 +216,7 @@ class AbstractPool(ABC):
         if n_parameter_sets > 1:
             if noise == "gaussian":
                 for key in params.keys():
-                    if key != "subsidary_params":
+                    if key != "subsidary_params" and key != "initial_weights_logits":
                         # Leave first row of each jax parameter unaltered, add
                         # gaussian noise to subsequent rows.
                         params[key][1:] = params[key][1:] + np.random.randn(
@@ -147,13 +236,61 @@ class AbstractPool(ABC):
     def _tree_unflatten(cls, aux_data, children):
         return cls(*children, **aux_data)
 
-    @abstractmethod
-    def make_vmap_in_axes(self, input_dict: Dict[str, Any], n_repeats_of_recurred: int):
-        pass
+    def make_vmap_in_axes(self, params: Dict[str, Any], n_repeats_of_recurred: int = 0):
+        """
+        Configure JAX vectorization axes for pool parameters.
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters
+        n_repeats_of_recurred : int
+            Number of times to repeat recurrent parameters
+
+        Returns
+        -------
+        Dict[str, Any]
+            vmap axes configuration
+        """
+        return make_vmap_in_axes_dict(params, 0, [], [], n_repeats_of_recurred)
 
     @abstractmethod
     def is_trainable(self):
         pass
+
+    @classmethod
+    def process_parameters(cls, update_rule_parameters, n_assets):
+        """
+        Default implementation for processing pool parameters from web interface input.
+
+        Performs simple conversion of parameter values to numpy arrays while preserving names.
+        Override this method in subclasses that need custom parameter processing.
+
+        Parameters
+        ----------
+        update_rule_parameters : List[UpdateRuleParameter]
+            List of parameters from the web interface
+
+        Returns
+        -------
+        Dict[str, np.ndarray]
+            Processed parameters ready for pool initialization
+        """
+        result = {}
+        for urp in update_rule_parameters:
+            result[urp.name] = np.array(urp.value)
+        return result
+
+    def weights_needs_original_methods(self) -> bool:
+        """Indicates if calculate_weights needs access to original pool methods.
+        
+        Returns
+        -------
+        bool
+            False by default - most pools don't need original methods. Override in subclasses
+            if they do.
+        """
+        return False
 
 
 tree_util.register_pytree_node(

@@ -1,6 +1,6 @@
 import pandas as pd
 from datetime import datetime, timezone
-
+import numpy as np
 
 def unixtimestamp_to_datetime(unixtimestamp, scaling=1000):
     return datetime.utcfromtimestamp(int(unixtimestamp / scaling)).strftime(
@@ -34,5 +34,5 @@ def datetime_to_unixtimestamp(date_time, str_format="%Y-%m-%d %H:%M"):
     )
 
 
-def pddatetime_to_unixtimestamp(date_time):
-    return date_time.values.astype(np.int64) // 10**9
+def pddatetime_to_unixtimestamp(date_time, scaling=10**6):
+    return date_time.values.astype(np.int64) // scaling

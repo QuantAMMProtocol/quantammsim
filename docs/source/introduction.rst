@@ -29,6 +29,7 @@ tokens and facilitate trades. The library supports several types of pools:
 * **Balancer Pools**: Traditional constant-weight geometric-mean AMM pools as implemented in `Balancer`_.
 * **CowAMM Pools**: Pool that require post-trade quoted prices match the trade execution price, as
   described in `this paper`_ and implemented in the `CowAMM`_ DeFi protocol.
+* **Gyroscope Pools**: Pools that use elliptical curves as the trading function, able to provide concentrated liquidity within price bounds while still having a smooth trading function and fungible liquidity.
 
 Runners
 ~~~~~~~
@@ -47,7 +48,15 @@ As well as simple backtest simulations, the package also supports the training o
 their performance on historic or synthetic data. This is most relevant for QuantAMM pools, as they
 themselves *run* strategies and those strategies include parameters that must be chosen by a pool creator. For 
 example, using the appropriate runner, a user could tune a QuantAMM pool that implements a momentum strategy
-to maximize the Sharpe ratio (over a chosen price series) by varying the agressiveness and lookback period of the strategy.
+to maximize the Sharpe ratio (over a chosen price series) by varying the aggressiveness and lookback period of the strategy.
+
+Hooks
+~~~~~
+
+Hooks are a way to customize the behavior of AMM pools. They are functions that are called at various points in the pools operation/in the simulator.
+In this package, hooks are used to alter the fees charged by pools, for example tuning fees up or down as asset volatility changes.
+These hooks can contain parameters that can then be tuned as part of the optimization process, for example aiming to minimise the drawdown of the pool.
+This functionality works with pools that otherwise have no parameters that one would otherwise tune, such as base Balancer pools.
 
 Run Fingerprints
 ~~~~~~~~~~~~~~~~
@@ -65,7 +74,7 @@ Run fingerprints are dictionaries that define the settings for a simulation. The
 Key Features
 ------------
 
-* Simulation of multiple AMM protocols (Balancer, QuantAMM and CowAMM)
+* Simulation of multiple AMM protocols (Balancer, QuantAMM, CowAMM and Gyroscope)
 * Various weight-updating strategies for QuantAMM pools
 * Historical data analysis
 * Performance metrics calculation
@@ -76,16 +85,23 @@ Quick Start
 .. code-block:: python
 
    from quantammsim.runners.jax_runners import do_run_on_historic_data
+   import jax.numpy as jnp
    
    run_fingerprint = {
-       'tokens': ['BTC', 'DAI'],
-       'rule': 'momentum',
+       'tokens': ['BTC', 'USDC'],
+       'rule': 'balancer',
        'initial_pool_value': 1000000.0,
        'startDateString': '2024-01-01 00:00:00',
        'endDateString': '2024-06-15 00:00:00',
    }
    
-   result = do_run_on_historic_data(run_fingerprint)
+    # Initialise pool parameters, equal weights. Equivalent to a Uniswap v2 poo;
+    params = {
+       "initial_weights": jnp.array([0.5, 0.5]),
+    }
+
+    # Run simulation
+    result = do_run_on_historic_data(run_fingerprint, params, verbose=True)
 
 .. _this paper: https://arxiv.org/abs/2307.02074
 .. _the TFMM litepaper: https://cdn.prod.website-files.com/6616670ddddc931f1dd3aa73/6617c4c2381409947dc42c7a_TFMM_litepaper.pdf

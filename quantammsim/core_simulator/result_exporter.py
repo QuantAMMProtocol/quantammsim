@@ -18,17 +18,21 @@ np.seterr(under="print")
 
 def get_run_location(run_fingerprint):
     """
-    Generates a unique run location string based on the provided run fingerprint.
+    Generates a unique identifier string based on the provided run fingerprint.
 
     The function takes a dictionary representing the run fingerprint, converts it to a JSON string,
-    and then computes its SHA-256 hash. The resulting hash is used to create a unique run location
-    string prefixed with "run_".
+    and then computes its SHA-256 hash. The resulting hash is used to create a unique identifier
+    string with a "run\_" prefix.
 
-    Args:
-        run_fingerprint (dict): A dictionary representing the run fingerprint.
+    Parameters
+    ----------
+    run_fingerprint : dict
+        A dictionary representing the run fingerprint.
 
-    Returns:
-        str: A unique run location string based on the SHA-256 hash of the run fingerprint.
+    Returns
+    -------
+    str
+        A unique identifier string formatted as "run\_" followed by a SHA-256 hash
     """
     run_location = "run_" + str(
         hashlib.sha256(
@@ -134,7 +138,8 @@ def save_multi_params(
 
     Notes
     -----
-    Saves the data to a JSON file at ./results/<run_hash>.json
+    Saves the data to a JSON file at ``./results/run_<sha256_hash>.json`` where the hash
+    is generated from the run_fingerprint using SHA-256.
     If file exists, appends new parameter sets to existing data
     Converts JAX arrays to numpy arrays before saving
     """
@@ -157,6 +162,7 @@ def save_multi_params(
     if os.path.isfile(run_location) is False:
         results = [run_fingerprint] + params
         dumped = json.dumps(results, cls=NumpyEncoder, sort_keys=True)
+        os.makedirs(os.path.dirname(run_location), exist_ok=True)
         with open(run_location, "w", encoding="utf-8") as json_file:
             json.dump(dumped, json_file, indent=4)
     else:
@@ -203,7 +209,8 @@ def save_params(
 
     Notes
     -----
-    Saves the data to a JSON file at ./results/<run_hash>.json
+    Saves the data to a JSON file at ``./results/run_<sha256_hash>.json`` where the hash
+    is generated from the run_fingerprint using SHA-256.
     If file exists, appends new parameter set to existing data
     Converts JAX arrays to numpy arrays before saving
     """
