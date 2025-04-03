@@ -2,7 +2,7 @@
 from jax import config
 
 config.update("jax_enable_x64", True)
-from jax.lib.xla_bridge import default_backend
+from jax import default_backend
 from jax import local_device_count, devices
 
 DEFAULT_BACKEND = default_backend()
@@ -75,7 +75,7 @@ def _jax_sinusoid_weight_update(prices, amplitude, frequency, phase, initial_wei
     The function assumes that inputs are JAX arrays for efficient computation.
     """
     weights = initial_weights + amplitude * jnp.sin(frequency * jnp.arange(len(prices))[:, None] + phase)
-    # weights = weights / jnp.sum(weights, axis=-1, keepdims=True)
+    weights = weights / jnp.sum(weights, axis=-1, keepdims=True)
     return weights
 
 
@@ -172,7 +172,7 @@ class SinusoidPool(TFMMBasePool):
             cap_lamb=True,
         )
         
-        raw_weight_outputs = _jax_sinusoid_weight_update(prices, params["amplitude"], params["frequency"], params["phase"], initial_weights)
+        raw_weight_outputs = _jax_sinusoid_weight_update(chunkwise_price_values[:-1], - gradients * k, params["frequency"], params["phase"], initial_weights)
         return raw_weight_outputs
 
     @partial(jit, static_argnums=(3))
@@ -224,7 +224,7 @@ class SinusoidPool(TFMMBasePool):
             params_for_direct_weight_output,
         )
 
-    def _init_base_parameters(
+    def init_base_parameters(
         self,
         initial_values_dict: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
