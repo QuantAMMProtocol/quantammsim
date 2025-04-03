@@ -158,6 +158,20 @@ class SinusoidPool(TFMMBasePool):
         to be applied to the previous weights. These will be refined in subsequent steps.
         """
         initial_weights = softmax(params["initial_weights_logits"])
+        memory_days = lamb_to_memory_days_clipped(
+            calc_lamb(params), run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"]
+        )
+        k = calc_k(params, memory_days)
+        chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
+        gradients = calc_gradients(
+            params,
+            chunkwise_price_values,
+            run_fingerprint["chunk_period"],
+            run_fingerprint["max_memory_days"],
+            run_fingerprint["use_alt_lamb"],
+            cap_lamb=True,
+        )
+        
         raw_weight_outputs = _jax_sinusoid_weight_update(prices, params["amplitude"], params["frequency"], params["phase"], initial_weights)
         return raw_weight_outputs
 
@@ -261,7 +275,7 @@ class SinusoidPool(TFMMBasePool):
         # that, if only a singleton array is provided we expand it
         # to n_assets and use that vlaue for all assets.
         def process_initial_values(
-            initial_values_dict, key, n_assets, n_parameter_sets
+            initial_values_dict, key, n_assets, n_parameter_sets, force_scalar=False
         ):
             if key in initial_values_dict:
                 initial_value = initial_values_dict[key]
@@ -289,6 +303,48 @@ class SinusoidPool(TFMMBasePool):
         initial_values_dict["amplitude"] = 0.01
         initial_values_dict["frequency"] = 2 * jnp.pi / (60 * 24)
         initial_values_dict["phase"] = 0.0
+
+        initial_weights_logits = process_initial_values(
+            initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets, force_scalar=False
+        )
+        log_k = np.log2(
+            process_initial_values(
+                initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets, force_scalar=run_fingerprint["optimisation_settings"]["force_scalar"]
+            )
+        )
+
+        initial_lamb = memory_days_to_lamb(
+            initial_values_dict["initial_memory_length"],
+            run_fingerprint["chunk_period"],
+        )
+
+        logit_lamb_np = np.log(initial_lamb / (1.0 - initial_lamb))
+        if run_fingerprint["optimisation_settings"]["force_scalar"]:
+            logit_lamb = np.array([[logit_lamb_np]] * n_parameter_sets)
+        else:
+            logit_lamb = np.array([[logit_lamb_np] * n_assets] * n_parameter_sets)
+
+        # lamb delta is the difference in lamb needed for
+        # lamb + delta lamb to give a final memory length
+        # of  initial_memory_length + initial_memory_length_delta
+        initial_lamb_plus_delta_lamb = memory_days_to_lamb(
+            initial_values_dict["initial_memory_length"]
+            + initial_values_dict["initial_memory_length_delta"],
+            run_fingerprint["chunk_period"],
+        )
+
+        logit_lamb_plus_delta_lamb_np = np.log(
+            initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
+        )
+        logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np
+        logit_delta_lamb = np.array(
+            [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
+        )
+        if run_fingerprint["optimisation_settings"]["force_scalar"]:
+            logit_delta_lamb = np.array(
+                [[logit_delta_lamb_np]] * n_parameter_sets
+            )
+
         amplitude = process_initial_values(
             initial_values_dict, "amplitude", n_assets, n_parameter_sets
         )
@@ -299,11 +355,14 @@ class SinusoidPool(TFMMBasePool):
             initial_values_dict, "phase", n_assets, n_parameter_sets
         )
         params = {
+            "log_k": log_k,
+            "logit_lamb": logit_lamb,
+            "logit_delta_lamb": logit_delta_lamb,
+            "initial_weights_logits": initial_weights_logits,
+            "subsidary_params": [],
             "amplitude": amplitude,
             "frequency": frequency,
             "phase": phase,
-            "initial_weights_logits": initial_weights_logits,
-            "subsidary_params": [],
         }
 
         params = self.add_noise(params, noise, n_parameter_sets)
