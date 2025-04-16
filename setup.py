@@ -22,7 +22,7 @@ setup(
         "bidask",
         "Historic_Crypto",
         "gdown",
-        "BinanceDataDumper",
+        "binance_historical_data",
         "dask",
     ],
     extras_require={
