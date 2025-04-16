@@ -349,7 +349,7 @@ def perform_return_analysis(returns, dailyRfValues):
         "Annualized Sharpe Ratio": sharpe["annualized_sharpe_ratio"],
         "Annualized Sortino Ratio": sortino.item(),
         "Annualized Calmer Ratio": calmar.item(),
-        "Annualized Omega Ratio": omega["Annualized Omega Ratio"].item(),
+        "Annualized Omega Ratio": omega["Omega Ratio"].item(),
         "Return on VaR": rov["Return on VaR"].item(),
         "Annualized Return on VaR": rov["Annualized Return on VaR"].item(),
         "Annualized Information Ratio": information_ratio["information_ratio"],
