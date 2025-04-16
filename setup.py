@@ -24,6 +24,8 @@ setup(
         "gdown",
         "binance_historical_data",
         "dask",
+        "jsonpickle",
+        "flask_cors",
     ],
     extras_require={
         "dev": [
