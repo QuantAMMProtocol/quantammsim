@@ -24,6 +24,8 @@ setup(
         "gdown",
         "BinanceDataDumper",
         "dask",
+        "jsonpickle",
+        "flask_cors",
     ],
     extras_require={
         "dev": [
