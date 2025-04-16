@@ -145,17 +145,10 @@ def run_pool_simulation(simulationRunDto):
         if urp.name == "weight_interpolation_period":
             weight_interpolation_period = urp.value
 
-    test_window_end = (simulationRunDto.endDate + 2 * 24 * 60 * 60 * 1000) / 1000
-    test_window_end_str = unixtimestamp_to_precise_datetime(
-        test_window_end, scaling=1.0
-    )
-
-    test_window_end_str = test_window_end_str.split()[0] + " 00:00:00"
 
     run_fingerprint = {
         "startDateString": simulationRunDto.startDateString,
         "endDateString": simulationRunDto.endDateString,
-        "endTestDateString": test_window_end_str,
         "tokens": tokens,
         "rule": update_rule,
         "bout_offset": 14400,
