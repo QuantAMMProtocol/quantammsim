@@ -113,9 +113,9 @@ run_fingerprint = {
     'initial_pool_value': 1000000.0
 }
 # Initialise pool parameters, equal weights. Equivalent to a Uniswap v2 pool;
-    params = {
-       "initial_weights": jnp.array([0.5, 0.5]),
-    }
+params = {
+    "initial_weights": jnp.array([0.5, 0.5]),
+}
 
 # Run simulation
 result = do_run_on_historic_data(run_fingerprint, params, verbose=True)
