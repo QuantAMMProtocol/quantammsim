@@ -51,7 +51,7 @@ def calculate_jensens_alpha(portfolio_returns, rf_values, benchmark_returns):
         average_rf_rate + beta * (average_benchmark_return - average_rf_rate)
     )
 
-    annualized_jensens_alpha = jensens_alpha * np.sqrt(365)
+    annualized_jensens_alpha = jensens_alpha * 365
     return annualized_jensens_alpha
 
 
@@ -129,9 +129,14 @@ def calculate_tracking_error(portfolio_returns, benchmark_returns):
     Returns:
     float: Tracking Error
     """
-    # Calculate the differences between portfolio and benchmark returns
-    tracking_error = np.sqrt(np.mean((portfolio_returns - benchmark_returns) ** 2))
-    return tracking_error
+    # Calculate active returns (portfolio minus benchmark)
+    active_returns = portfolio_returns - benchmark_returns
+    
+    # Calculate the sample standard deviation of active returns
+    # (ddof=1 uses the sample standard deviation formula)
+    daily_tracking_error = np.std(active_returns, ddof=1)
+
+    return daily_tracking_error
 
 
 def calculate_tracking_error_and_information_ratio(
