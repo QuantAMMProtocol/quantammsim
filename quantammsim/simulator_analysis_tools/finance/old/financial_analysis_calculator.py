@@ -11,10 +11,6 @@ def perform_financial_analysis(portfolio_returns, hodl_returns, dailyRfValues):
     porfolio_sortino = faf.calculate_sortino_ratio(portfolio_returns, dailyRfValues)
     hodl_sortino = faf.calculate_sortino_ratio(hodl_returns, dailyRfValues)
 
-    # Calculate the Calmar ratio
-    porfolio_calmar = faf.calculate_calmar_ratio(portfolio_returns, dailyRfValues)
-    hodl_calmar = faf.calculate_calmar_ratio(hodl_returns, dailyRfValues)
-
     # Calculate the Omega ratio
     porfolio_omega = faf.calculate_omega_ratio(portfolio_returns, dailyRfValues)
     hodl_omega = faf.calculate_omega_ratio(hodl_returns, dailyRfValues)
@@ -52,7 +48,6 @@ def perform_financial_analysis(portfolio_returns, hodl_returns, dailyRfValues):
             "return": portfolio_cumulative_returns[-1] - 1,
             "sharpe": porfolio_sharpe,
             "sortino": porfolio_sortino,
-            "calmar": porfolio_calmar,
             "omega": porfolio_omega,
             "rov": porfolio_rov,
             "capture_hodl_rb": porfolio_capture_hodl,
@@ -66,7 +61,6 @@ def perform_financial_analysis(portfolio_returns, hodl_returns, dailyRfValues):
             "return": hodl_cumulative_returns[-1] - 1,
             "sharpe": hodl_sharpe,
             "sortino": hodl_sortino,
-            "calmar": hodl_calmar,
             "omega": hodl_omega,
             "rov": hodl_rov,
             "distribution": hodl_distribution,

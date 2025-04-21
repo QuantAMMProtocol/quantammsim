@@ -11,7 +11,6 @@ from quantammsim.simulator_analysis_tools.finance.financial_analysis_functions i
     calculate_portfolio_risk_metrics,
     calculate_return_on_VaR,
     calculate_omega_ratio,
-    calculate_calmar_ratio,
     calculate_capture_ratios,
     calculate_distribution_statistics,
 )
@@ -98,14 +97,6 @@ def test_calculate_omega_ratio(sample_data):
     assert isinstance(omega_ratio, float)
     assert isinstance(probability_positive, float)
     assert isinstance(probability_negative, float)
-
-
-def test_calculate_calmar_ratio(sample_data):
-    portfolio_returns, _, _, _ = sample_data
-
-    calmar_ratio = calculate_calmar_ratio(portfolio_returns, rf_values)
-
-    assert isinstance(calmar_ratio, float)
 
 
 def test_calculate_capture_ratios(sample_data):

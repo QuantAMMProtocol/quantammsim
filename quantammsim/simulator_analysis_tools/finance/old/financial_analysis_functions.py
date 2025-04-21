@@ -553,42 +553,6 @@ def calculate_omega_ratio(portfolio_returns, rf_values, threshold=0):
 
     return { 'Omega Ratio': omega_ratio, 'Probability Positive': probability_positive, 'Probability Negative': probability_negative } 
 
-
-def calculate_calmar_ratio(portfolio_returns, rf_values):
-    """
-    Calculate the Calmar Ratio for a given set of portfolio returns.
-
-    Parameters:
-    portfolio_returns (np.array): Daily returns of the portfolio.
-    rf_values (np.array): Daily risk-free rates.
-
-    Returns:
-    float: Calmar Ratio
-    """
-    trading_days_per_year = 252  # Typically, there are 252 trading days in a year
-
-    # Calculate the excess returns by subtracting risk-free rate
-    excess_returns = portfolio_returns - rf_values
-
-    # Calculate the cumulative returns
-    cumulative_returns = np.cumprod(1 + excess_returns)
-
-    # Calculate the annualized return
-    total_return = cumulative_returns[-1]
-    num_days = len(excess_returns)
-    annualized_return = (total_return ** (trading_days_per_year / num_days)) - 1
-
-    # Calculate the maximum drawdown
-    peak = np.maximum.accumulate(cumulative_returns)
-    drawdown = (cumulative_returns - peak) / peak
-    max_drawdown = np.min(drawdown)
-
-    # Calculate the Calmar Ratio
-    calmar_ratio = annualized_return / abs(max_drawdown)
-
-    return calmar_ratio
-
-
 def calculate_capture_ratios(portfolio_returns, benchmark_returns):
     """
     Calculate the Upside Capture Ratio, Downside Capture Ratio, and Total Capture Ratio for a portfolio relative to a benchmark.

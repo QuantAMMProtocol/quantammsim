@@ -303,7 +303,6 @@ def perform_return_analysis(returns, dailyRfValues):
             - Sharpe Ratio
             - Annualized Sharpe Ratio
             - Annualized Sortino Ratio
-            - Annualized Calmar Ratio
             - Annualized Omega Ratio
             - Return on VaR
             - Annualized Return on VaR
@@ -319,9 +318,6 @@ def perform_return_analysis(returns, dailyRfValues):
 
     # Calculate the Sortino ratio
     sortino = faf.calculate_sortino_ratio(returns, dailyRfValues)
-
-    # Calculate the Calmar ratio
-    calmar = faf.calculate_calmar_ratio(returns, dailyRfValues)
 
     # Calculate the Omega ratio
     omega = faf.calculate_omega_ratio(returns, dailyRfValues)
@@ -348,7 +344,6 @@ def perform_return_analysis(returns, dailyRfValues):
         "Sharpe Ratio": sharpe["sharpe_ratio"],
         "Annualized Sharpe Ratio": sharpe["annualized_sharpe_ratio"],
         "Annualized Sortino Ratio": sortino.item(),
-        "Annualized Calmer Ratio": calmar.item(),
         "Annualized Omega Ratio": omega["Omega Ratio"].item(),
         "Return on VaR": rov["Return on VaR"].item(),
         "Annualized Return on VaR": rov["Annualized Return on VaR"].item(),
@@ -488,7 +483,7 @@ def perform_financial_analysis(
     Performs comprehensive financial analysis comparing portfolio performance against HODL benchmarks.
 
     Calculates various risk-adjusted return metrics, ratios, and statistics including:
-    - Sharpe, Sortino, Calmar, and Omega ratios
+    - Sharpe, Sortino, and Omega ratios
     - Information ratio and tracking error vs benchmarks
     - Return on VaR and capture ratios
     - Portfolio risk metrics and VaR
@@ -514,10 +509,6 @@ def perform_financial_analysis(
     # Calculate the Sortino ratio
     porfolio_sortino = faf.calculate_sortino_ratio(portfolio_returns, dailyRfValues)
     hodl_sortino = faf.calculate_sortino_ratio(hodl_returns, dailyRfValues)
-
-    # Calculate the Calmar ratio
-    porfolio_calmar = faf.calculate_calmar_ratio(portfolio_returns, dailyRfValues)
-    hodl_calmar = faf.calculate_calmar_ratio(hodl_returns, dailyRfValues)
 
     # Calculate the Omega ratio
     porfolio_omega = faf.calculate_omega_ratio(portfolio_returns, dailyRfValues)
@@ -567,7 +558,6 @@ def perform_financial_analysis(
             "return": portfolio_cumulative_returns[-1] - 1,
             "sharpe": porfolio_sharpe,
             "sortino": porfolio_sortino,
-            "calmar": porfolio_calmar,
             "omega": porfolio_omega,
             "rov": porfolio_rov,
             "capture_hodl_rb": porfolio_capture_hodl,
@@ -581,7 +571,6 @@ def perform_financial_analysis(
             "return": hodl_cumulative_returns[-1] - 1,
             "sharpe": hodl_sharpe,
             "sortino": hodl_sortino,
-            "calmar": hodl_calmar,
             "omega": hodl_omega,
             "rov": hodl_rov,
             "distribution": hodl_distribution,
