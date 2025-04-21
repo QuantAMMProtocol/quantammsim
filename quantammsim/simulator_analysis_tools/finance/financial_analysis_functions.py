@@ -51,7 +51,7 @@ def calculate_jensens_alpha(portfolio_returns, rf_values, benchmark_returns):
         average_rf_rate + beta * (average_benchmark_return - average_rf_rate)
     )
 
-    annualized_jensens_alpha = jensens_alpha * np.sqrt(365)
+    annualized_jensens_alpha = ((1.0 + jensens_alpha) ** 365) - 1.0
     return annualized_jensens_alpha
 
 
@@ -129,9 +129,14 @@ def calculate_tracking_error(portfolio_returns, benchmark_returns):
     Returns:
     float: Tracking Error
     """
-    # Calculate the differences between portfolio and benchmark returns
-    tracking_error = np.sqrt(np.mean((portfolio_returns - benchmark_returns) ** 2))
-    return tracking_error
+    # Calculate active returns (portfolio minus benchmark)
+    active_returns = portfolio_returns - benchmark_returns
+
+    # Calculate the sample standard deviation of active returns
+    # (ddof=1 uses the sample standard deviation formula)
+    daily_tracking_error = np.std(active_returns, ddof=1)
+
+    return daily_tracking_error
 
 
 def calculate_tracking_error_and_information_ratio(
@@ -670,31 +675,6 @@ def calculate_omega_ratio(portfolio_returns, rf_values, threshold=0):
         "Probability Negative": probability_negative,
     }
 
-
-def calculate_calmar_ratio(portfolio_returns, rf_values):
-    """
-    Calculate the Calmar Ratio for a given set of portfolio returns.
-    """
-    trading_days_per_year = 365
-
-    # Calculate annualized excess return
-    excess_returns = portfolio_returns - rf_values
-    mean_excess_return = np.mean(excess_returns)
-    annualized_excess_return = (1 + mean_excess_return) ** trading_days_per_year - 1
-
-    # Calculate maximum drawdown using total returns (not excess returns)
-    cumulative_returns = np.cumprod(1 + portfolio_returns)
-    peak = np.maximum.accumulate(cumulative_returns)
-    drawdown = (cumulative_returns - peak) / peak
-    max_drawdown = np.min(drawdown)
-
-    # Calculate the Calmar Ratio
-    if max_drawdown == 0:
-        return np.inf
-    else:
-        calmar_ratio = annualized_excess_return / abs(max_drawdown)
-
-    return calmar_ratio
 
 def calculate_capture_ratios(portfolio_returns, benchmark_returns):
     """
