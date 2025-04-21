@@ -51,7 +51,7 @@ def calculate_jensens_alpha(portfolio_returns, rf_values, benchmark_returns):
         average_rf_rate + beta * (average_benchmark_return - average_rf_rate)
     )
 
-    annualized_jensens_alpha = jensens_alpha * 365
+    annualized_jensens_alpha = ((1.0 + jensens_alpha) ** 365) - 1.0
     return annualized_jensens_alpha
 
 
@@ -131,7 +131,7 @@ def calculate_tracking_error(portfolio_returns, benchmark_returns):
     """
     # Calculate active returns (portfolio minus benchmark)
     active_returns = portfolio_returns - benchmark_returns
-    
+
     # Calculate the sample standard deviation of active returns
     # (ddof=1 uses the sample standard deviation formula)
     daily_tracking_error = np.std(active_returns, ddof=1)
@@ -674,6 +674,7 @@ def calculate_omega_ratio(portfolio_returns, rf_values, threshold=0):
         "Probability Positive": probability_positive,
         "Probability Negative": probability_negative,
     }
+
 
 def calculate_capture_ratios(portfolio_returns, benchmark_returns):
     """
