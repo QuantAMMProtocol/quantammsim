@@ -992,6 +992,19 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         with open(run_location, encoding='utf-8') as json_file:
             params = json.load(json_file)
             params = json.loads(params)
+
+        # Check if params length exceeds 1.5x the number of iterations
+        if len(params) > 1.5 * params[0]["optimisation_settings"]["n_iterations"]:
+            # Find last index where step == 0
+            last_step_zero_idx = -1
+            for i in range(len(params)-1, 0, -1):
+                if params[i].get("step", -1) == 0:
+                    last_step_zero_idx = i
+                    break
+            
+            # Keep only 0th row and rows from last step==0 onwards
+            if last_step_zero_idx != -1:
+                params = [params[0]] + params[last_step_zero_idx:]
         if recalc_hess is True:
             if "hessian_trace" not in params[0].keys():
                 for i in range(len(params)):
@@ -1019,6 +1032,18 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
             objectives = [p["test_objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
             context = np.argmax(np.nanmax(objectives, axis=0))
+        elif load_method == "best_objective_of_last":
+            objectives = [params[-1]["objective"]]
+            index = -1
+            context = np.argmax(np.nanmax(objectives))
+        elif load_method == "best_train_objective_of_last":
+            objectives = [params[-1]["train_objective"]]
+            index = -1
+            context = np.argmax(np.nanmax(objectives))
+        elif load_method == "best_test_objective_of_last":
+            objectives = [params[-1]["test_objective"]]
+            index = -1
+            context = np.argmax(np.nanmax(objectives))
         elif load_method == "best_train_min_test_objective":
             objectives = []
             for p in params[1:]:
