@@ -874,12 +874,13 @@ def update_historic_data(token, root):
     # if ticker is in a harcoded dict, load from parquet
 
     assets = [
-    {"pair_id": 3010484, "token": "PEPE"},
-    {"pair_id": 1497, "token": "BAL"},
-    {"pair_id": 5241020, "token": "VVV"},
-    {"pair_id": 5388941, "token": "KAITO"},
-    {"pair_id": 4569519, "token": "DEGEN"},
-    {"pair_id": 4567392, "token": "VIRTUAL"},
+        {"pair_id": 3010484, "token": "PEPE"},
+        {"pair_id": 1497, "token": "BAL"},
+        {"pair_id": 5241020, "token": "VVV"},
+        {"pair_id": 5388941, "token": "KAITO"},
+        {"pair_id": 4569519, "token": "DEGEN"},
+        {"pair_id": 4567392, "token": "VIRTUAL"},
+        {"pair_id": 3507227, "token": "ONDO"},
     ]
     if token in [asset["token"] for asset in assets]:
         print("Filling remaining gaps with candles data")
@@ -888,11 +889,10 @@ def update_historic_data(token, root):
         exchange_df = forward_fill_ohlcv_data(exchange_df.copy(), asset["token"])
         concated_df, filled_candles_unix_values = merge_exchange_data_frames(concated_df, exchange_df, token, root, "raw_candles_data/", "Candles_")
         filled_timestamps["Candles"] = filled_candles_unix_values
-
+        concated_df.index.name = "unix"
     # Ensure data is properly sorted and has no duplicates
     concated_df = concated_df.sort_index()
     concated_df = concated_df[~concated_df.index.duplicated(keep="first")]
-
     # Reset index for CSV export
     concated_df = concated_df.reset_index()
 
@@ -1555,26 +1555,27 @@ def get_data_dict(
             * 1000
         )
 
-        (
-            start_idx_test,
-            end_idx_test,
-            bout_length_test,
-            unix_values_test,
-            price_values_test,
-            oracle_values_test,
-            remainder_idx_test,
-        ) = start_and_end_calcs(
-            unix_values,
-            prices=prices,
-            start_date=startDateTest,
-            end_date=endDateTest,
-        )
+        if do_test_period:
+            (
+                start_idx_test,
+                end_idx_test,
+                bout_length_test,
+                unix_values_test,
+                price_values_test,
+                oracle_values_test,
+                remainder_idx_test,
+            ) = start_and_end_calcs(
+                unix_values,
+                prices=prices,
+                start_date=startDateTest,
+                end_date=endDateTest,
+            )
 
-        data_dict["prices_test"] = price_values_test
-        data_dict["start_idx_test"] = start_idx_test
-        data_dict["end_idx_test"] = end_idx_test
-        data_dict["bout_length_test"] = bout_length_test
-        data_dict["unix_values_test"] = unix_values_test
+            data_dict["prices_test"] = price_values_test
+            data_dict["start_idx_test"] = start_idx_test
+            data_dict["end_idx_test"] = end_idx_test
+            data_dict["bout_length_test"] = bout_length_test
+            data_dict["unix_values_test"] = unix_values_test
         if return_slippage:
             spread_test = spread[remainder_idx_test:]
             spread_test = spread_test[: int(n_chunks) * chunk_period]
