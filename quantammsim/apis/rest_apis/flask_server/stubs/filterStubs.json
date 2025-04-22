@@ -18,6 +18,7 @@
     },
     {
         "poolType": [
+            "QUANT_AMM_WEIGHTED",
             "COMPOSABLE_STABLE",
             "COW_AMM",
             "ELEMENT",
