@@ -124,6 +124,14 @@ def train_on_historic_data(
         "initial_log_amplitude": run_fingerprint["initial_log_amplitude"],
         "initial_raw_width": run_fingerprint["initial_raw_width"],
         "initial_raw_exponents": run_fingerprint["initial_raw_exponents"],
+        "initial_raw_exponents_up": run_fingerprint["initial_raw_exponents_up"],
+        "initial_raw_exponents_down": run_fingerprint["initial_raw_exponents_down"],
+        "initial_raw_alpha": run_fingerprint["initial_raw_alpha"],
+        "initial_risk_on": run_fingerprint["initial_risk_on"],
+        "initial_risk_off": run_fingerprint["initial_risk_off"],
+        "initial_raw_kelly_kappa": run_fingerprint["initial_raw_kelly_kappa"],
+        "initial_logit_lamb_vol": run_fingerprint["initial_logit_lamb_vol"],
+        "initial_raw_entropy_floor": run_fingerprint["initial_raw_entropy_floor"],
         "initial_pre_exp_scaling": run_fingerprint["maximum_change"],
     }
 

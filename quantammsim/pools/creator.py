@@ -10,6 +10,7 @@ from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
 from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import (
     MeanReversionChannelPool,
 )
+from quantammsim.pools.G3M.quantamm.flexible_channel_pool import FlexibleChannelPool
 from quantammsim.pools.G3M.quantamm.difference_momentum_pool import DifferenceMomentumPool
 from quantammsim.pools.G3M.quantamm.index_market_cap_pool import IndexMarketCapPool
 from quantammsim.pools.G3M.quantamm.hodling_index_pool import HodlingIndexPool
@@ -90,6 +91,7 @@ def create_pool(rule):
         - "momentum": Momentum-based G3M pool variant
         - "power_channel": Power law G3M pool variant
         - "mean_reversion_channel": Mean reversion G3M pool variant
+        - "flexible_channel": Flexible channel G3M pool variant
         - "hodl": Basic HODL strategy pool
         - "cow": CoW AMM pool implementation
 
@@ -138,6 +140,8 @@ def create_pool(rule):
         base_pool = PowerChannelPool()
     elif base_rule == "mean_reversion_channel":
         base_pool = MeanReversionChannelPool()
+    elif base_rule == "flexible_channel":
+        base_pool = FlexibleChannelPool()
     elif base_rule == "difference_momentum":
         base_pool = DifferenceMomentumPool()
     elif base_rule == "index_market_cap":

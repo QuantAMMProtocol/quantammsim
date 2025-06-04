@@ -7,6 +7,7 @@ from .G3M.quantamm.antimomentum_pool import AntiMomentumPool
 from .G3M.quantamm.difference_momentum_pool import DifferenceMomentumPool
 from .G3M.quantamm.power_channel_pool import PowerChannelPool
 from .G3M.quantamm.mean_reversion_channel_pool import MeanReversionChannelPool
+from .G3M.quantamm.flexible_channel_pool import FlexibleChannelPool
 from .G3M.quantamm.min_variance_pool import MinVariancePool
 from .FM_AMM.cow_pool import CowPool
 from .ECLP.gyroscope import GyroscopePool
@@ -20,6 +21,7 @@ __all__ = [
     "AntiMomentumPool",
     "PowerChannelPool",
     "MeanReversionChannelPool",
+    "FlexibleChannelPool",
     "MinVariancePool",
     "CowPool",
     "GyroscopePool",
