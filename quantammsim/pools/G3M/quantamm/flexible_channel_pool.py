@@ -133,139 +133,141 @@ class FlexibleChannelPool(MomentumPool):
     # ─────────────────────────────────────────────────────────────────
     #  calculate_raw_weights_outputs  (final, mutation-safe)
     # ─────────────────────────────────────────────────────────────────
-
     @partial(jit, static_argnums=(2,))
     def calculate_raw_weights_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
-        prices: jnp.ndarray,  # (T_total, N)
+        prices: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-        fp = run_fingerprint
-        S, N = params["log_k"].shape
+        fp, chunk = run_fingerprint, run_fingerprint["chunk_period"]
 
-        # —— helper to compute 2**x with overflow guard ——————————————
-        ln2 = jnp.log(2.0)
+        # --- prices → (T , N) --------------------------------------------
+        prices = prices[:, None] if prices.ndim == 1 else prices
+        T, N   = prices.shape
 
-        def pow2_safe(x):
-            return jnp.exp(jnp.clip(squareplus(x) * ln2, a_min=-60.0, a_max=60.0))
+        # --- one parameter-set only (S == 1) ------------------------------
+        log_k = jnp.atleast_2d(params["log_k"])
+        if log_k.shape[0] != 1:
+            raise ValueError("FlexibleChannelPool expects a single parameter-set (S=1)")
+        log_k = log_k[0]                                           # (N,)
 
-        # 0) realised σ̂_i(t)  (EWMA with trainable λσ)
-        lookback = fp.get("vol_lookback", 90)
-        chunk_prices = prices[:: fp["chunk_period"]]
-        window = chunk_prices[-(lookback + 1) :]  # (L+1,N)
-        log_ret_sq = jnp.square(jnp.log(window[1:] / window[:-1]))
+        ln2        = jnp.log(2.0)
+        pow2_safe  = lambda x: jnp.exp(jnp.clip(squareplus(x)*ln2, -60., 60.))
 
-        lambda_vol = jnn.sigmoid(params["logit_lamb_vol"])  # (S,N)
+        # ╭──────────────────────────────────────────────────────────────╮
+        # │ 1. Realised volatility σ̂ᵢ  (EWMA with trainable λσᵢ)        │
+        # ╰──────────────────────────────────────────────────────────────╯
+        chunk_p    = prices[::chunk]
+        if chunk_p.ndim == 1: chunk_p = chunk_p[:, None]
+        L          = fp.get("vol_lookback", 90)
+        win        = chunk_p[-(L+1):]
+        log_ret_sq = jnp.square(jnp.log(win[1:] / win[:-1]))       # (L , N)
 
-        def ewma_1d(x, lam):
-            def step(c, xi):
-                return c * lam + xi * (1 - lam), None
+        λσ = jnn.sigmoid(params["logit_lamb_vol"]).reshape(N,)     # (N,)
 
-            last, _ = lax.scan(step, x[0], x[1:])
+        def ewma(series, lam):
+            def step(c, x): return c*lam + x*(1-lam), None
+            last, _ = lax.scan(step, series[0], series[1:])
             return jnp.sqrt(last + 1e-12)
 
-        sigma_hat = vmap(vmap(ewma_1d, in_axes=(1, 0), out_axes=1), in_axes=(None, 0))(
-            log_ret_sq, lambda_vol
-        )  # (S,N)
+        σ̂ = vmap(ewma)(log_ret_sq.T, λσ)                          # (N,)
 
-        # 1) adaptive width & Kelly-scaled k
-        width_env = pow2_safe(params["raw_width"]) * sigma_hat
+        # ╭──────────────────────────────────────────────────────────────╮
+        # │ 2. Vector   memory_daysᵢ  &  kᵢ                             │
+        # ╰──────────────────────────────────────────────────────────────╯
+        mem_days_vec = lamb_to_memory_days_clipped(
+            calc_lamb(params), chunk, fp["max_memory_days"])       # (N,)  already
+        mem_days_vec = jnp.squeeze(mem_days_vec)                   # ensure 1-D
 
-        memory_days = lamb_to_memory_days_clipped(
-            calc_lamb(params), fp["chunk_period"], fp["max_memory_days"]
-        )  # (S,)
-        k_plain = calc_k(params, memory_days)  # (S,N)
+        k_plain = calc_k(params, mem_days_vec)                     # (N,)
+        κ       = pow2_safe(params["raw_kelly_kappa"]).reshape(N,)
+        k_vec   = k_plain * κ / jnp.clip(σ̂, 1e-9, None)           # (N,)
 
-        kappa = pow2_safe(params["raw_kelly_kappa"])  # (S,N)
-        k = k_plain * kappa / jnp.clip(sigma_hat, 1e-9, None)  # avoid Inf
+        # ╭──────────────────────────────────────────────────────────────╮
+        # │ 3. Envelope width, α, exponents, amplitude                  │
+        # ╰──────────────────────────────────────────────────────────────╯
+        width_env = pow2_safe(params["raw_width"]).reshape(N,) * σ̂
+        α         = pow2_safe(params["raw_alpha"]).reshape(N,)
+        exp_up    = squareplus(params["raw_exponents_up"]).reshape(N,)
+        exp_dn    = squareplus(params["raw_exponents_down"]).reshape(N,)
 
-        # 2) β  (pre-exp scaling)
-        if (
-            fp["use_pre_exp_scaling"]
-            and params.get("logit_pre_exp_scaling") is not None
-        ):
-            beta = jnn.sigmoid(params["logit_pre_exp_scaling"])
-        elif (
-            fp["use_pre_exp_scaling"] and params.get("raw_pre_exp_scaling") is not None
-        ):
-            beta = pow2_safe(params["raw_pre_exp_scaling"])
+        amp_raw   = pow2_safe(params["log_amplitude"]).reshape(-1)
+        amp_raw   = jnp.full((N,), amp_raw.item()) if amp_raw.size == 1 else amp_raw
+        amplitude = amp_raw * mem_days_vec                         # (N,)
+
+        # ╭──────────────────────────────────────────────────────────────╮
+        # │ 4. Pre-exp scaling β                                         │
+        # ╰──────────────────────────────────────────────────────────────╯
+        if fp["use_pre_exp_scaling"] and params.get("logit_pre_exp_scaling") is not None:
+            β = jnn.sigmoid(params["logit_pre_exp_scaling"])
+        elif fp["use_pre_exp_scaling"] and params.get("raw_pre_exp_scaling") is not None:
+            β = pow2_safe(params["raw_pre_exp_scaling"])
         else:
-            beta = 0.5
-        beta = jnp.broadcast_to(beta, (S, N))
+            β = 0.5
+        β = jnp.broadcast_to(β, (N,))
 
-        # 3) main-λ gradients
-        grads = calc_gradients(
-            params,
-            chunk_prices,
-            fp["chunk_period"],
-            fp["max_memory_days"],
-            fp["use_alt_lamb"],
-            cap_lamb=True,
-        )  # (S,N)
+        # ╭──────────────────────────────────────────────────────────────╮
+        # │ 5. Risk routing                                             │
+        # ╰──────────────────────────────────────────────────────────────╯
+        ρ_off = jnn.sigmoid(params["logit_risk_off"]).reshape(N,)
+        ρ_on  = jnn.sigmoid(params["logit_risk_on"]).reshape(N,)
 
-        # 4) Π⁺  (profit skim)
-        port_prices = jnp.mean(prices, axis=1).reshape(-1, 1)
-        profit_pos = jnp.maximum(
-            0.0,
-            calc_gradients(
-                params,
-                port_prices,
-                fp["chunk_period"],
-                fp["max_memory_days"],
-                fp["use_alt_lamb"],
-                cap_lamb=True,
-            ),
-        )  # (S,1)
+        # ╭──────────────────────────────────────────────────────────────╮
+        # │ 6. Time-series gradients & portfolio signals                 │
+        # ╰──────────────────────────────────────────────────────────────╯
+        grad_ts = calc_gradients(
+            params, chunk_p, chunk, fp["max_memory_days"],
+            fp["use_alt_lamb"], cap_lamb=True)                      # (T_chunks , N)
 
-        # 5) Πᴅ⁻  (draw-down, λᴅ)  – build shallow copy (no mutation)
+        port_p   = prices.mean(1, keepdims=True)
+        port_c   = port_p[::chunk]
+        port_b   = jnp.repeat(port_c, N, axis=1)
+
+        port_grad = calc_gradients(
+            params, port_b, chunk, fp["max_memory_days"],
+            fp["use_alt_lamb"], cap_lamb=True)                      # (T_chunks , N)
+        Π_pos_ts  = jnp.maximum(0., port_grad.mean(1, keepdims=True))  # (T_chunks ,1)
+
         params_dd = dict(params, logit_lamb=params["logit_lamb_drawdown"])
-        drawdown_neg = jnp.maximum(
-            0.0,
-            -calc_gradients(
-                params_dd,
-                port_prices,
-                fp["chunk_period"],
-                fp["max_memory_days"],
-                fp["use_alt_lamb"],
-                cap_lamb=True,
-            ),
-        )  # (S,1)
+        dd_grad   = calc_gradients(
+            params_dd, port_b, chunk, fp["max_memory_days"],
+            fp["use_alt_lamb"], cap_lamb=True)
+        Π_dd_ts   = jnp.maximum(0., -dd_grad.mean(1, keepdims=True))   # (T_chunks ,1)
 
-        # 6) deterministic transforms
-        alpha = pow2_safe(params["raw_alpha"])
-        exp_up = squareplus(params["raw_exponents_up"])
-        exp_dn = squareplus(params["raw_exponents_down"])
-        amplitude = pow2_safe(params["log_amplitude"]) * memory_days[:, None]
-        risk_off = jnn.sigmoid(params["logit_risk_off"])
-        risk_on = jnn.sigmoid(params["logit_risk_on"])
+        # ╭──────────────────────────────────────────────────────────────╮
+        # │ 7. vmap kernel                                               │
+        # ╰──────────────────────────────────────────────────────────────╯
+        def kernel(pg, Πp, Πd):
+            return _jax_flexible_channel_weight_update(
+                pg[None,:], k_vec[None,:], width_env[None,:],
+                amplitude[None,:], α[None,:],
+                exp_up[None,:], exp_dn[None,:],
+                ρ_off[None,:], ρ_on[None,:],
+                Πp[None,:],  Πd[None,:],
+                pre_exp_scaling = β[None,:]
+            )[0]
 
-        # 7) kernel
-        raw = _jax_flexible_channel_weight_update(
-            price_gradient=grads,
-            k=k,
-            width_env=width_env,
-            amplitude=amplitude,
-            alpha=alpha,
-            exponents_up=exp_up,
-            exponents_down=exp_dn,
-            risk_off=risk_off,
-            risk_on=risk_on,
-            profit_pos=profit_pos,
-            drawdown_neg=drawdown_neg,
-            pre_exp_scaling=beta,
-        )
+        raw_ts = vmap(kernel)(grad_ts, Π_pos_ts, Π_dd_ts)            # (T_chunks , N)
 
-        # 8) entropy guard-rail (√-shrink, branch-free)
-        prev_w = fp["prev_weights"]  # (S,N)
-        new_w = jnp.clip(prev_w + raw, 1e-12)
-        new_w /= new_w.sum(axis=-1, keepdims=True)
-        ent = -jnp.sum(new_w * jnp.log(new_w), axis=-1, keepdims=True)
-        H_min = jnn.softplus(params["raw_entropy_floor"])  # (S,1)
-        gamma = jnp.sqrt(jnp.clip(H_min / ent, a_min=0.0))
-        gamma = jnp.minimum(gamma, 1.0)
-        return raw * gamma
+        # ╭──────────────────────────────────────────────────────────────╮
+        # │ 8. Entropy guard-rail                                        │
+        # ╰──────────────────────────────────────────────────────────────╯
+        H_min = jnn.softplus(params["raw_entropy_floor"]).mean()      # scalar (0-D)
+
+        prev0 = fp.get("prev_weights",
+                    jnp.full((N,), 1.0 / N, dtype=raw_ts.dtype))
+
+        def shrink(prev, dw):
+            w  = jnp.clip(prev + dw, 1e-12)
+            w /= w.sum()
+            ent = -jnp.sum(w * jnp.log(w))
+            γ   = jnp.minimum(jnp.sqrt(jnp.clip(H_min / ent, 0.0)), 1.0)
+            return w, dw * γ
+
+        _, shrunk = lax.scan(shrink, prev0, raw_ts)                  # (T_chunks , N)
+        return shrunk
 
         # ─────────────────────────────────────────────────────────────────
 
@@ -280,32 +282,29 @@ class FlexibleChannelPool(MomentumPool):
         noise: str = "gaussian",
     ) -> Dict[str, Any]:
         """
-        Build the parameter dictionary in *internal* representation:
-
-            • log_k
-            • logit_lamb, logit_delta_lamb
-            • logit_lamb_drawdown      (NEW: λᴅ)
-            • raw_width, raw_alpha
-            • raw_exponents_up / down
-            • raw_pre_exp_scaling
-            • log_amplitude
-            • logit_risk_off / logit_risk_on
-            • initial_weights_logits
-            • subsidary_params
-
-        The helper _expand() makes every key accept:
-            scalar, length-n_assets vector, or
-            (n_parameter_sets, n_assets) matrix.
+        Build the parameter dictionary in internal (trainable) form.
+        All broadcasted arrays are copied to guarantee they are write-able.
         """
         np.random.seed(0)
+        eps = 1e-6  # for prob→logit clipping
+        force_scalar = run_fingerprint["optimisation_settings"]["force_scalar"]
 
-        # ── helper for broadcasting & validation ──────────────────────
+        # -----------------------------------------------------------------
+        # inside init_base_parameters  – replace _expand
+        # -----------------------------------------------------------------
         def _expand(key: str, *, force_scalar: bool = False) -> np.ndarray:
             if key not in initial_values_dict:
                 raise ValueError(f"initial_values_dict missing '{key}'")
             val = np.asarray(initial_values_dict[key])
+
+            # ── scalar-per-set case → replicate across assets ───────────
             if force_scalar:
-                return np.broadcast_to(val, (n_parameter_sets, 1))
+                scalar = val.item() if val.size == 1 else float(val.squeeze())
+                return np.full(
+                    (n_parameter_sets, n_assets), scalar, dtype=val.dtype
+                ).copy()
+
+            # ── normal broadcasting rules ───────────────────────────────
             if val.size == 1:
                 val = np.full((n_assets,), val.item())
             if val.shape == (n_assets,):
@@ -315,75 +314,69 @@ class FlexibleChannelPool(MomentumPool):
                     f"'{key}' must be scalar, len-{n_assets} vector, or "
                     f"({n_parameter_sets},{n_assets}) array"
                 )
-            return val
+            return val.copy()  # ensure write-able
 
-        force_scalar = run_fingerprint["optimisation_settings"]["force_scalar"]
+        # 1) k
+        log_k = np.log2(_expand("initial_k_per_day", force_scalar=force_scalar))
 
-        # ── 1) Basic aggressiveness k ─────────────────────────────────
-        initial_k_per_day = _expand("initial_k_per_day", force_scalar=force_scalar)
-        log_k = np.log2(initial_k_per_day)  # (S,N)
+        # 2) main λ + Δλ
+        chunk = run_fingerprint["chunk_period"]
 
-        # ── 2) Main λ and Δλ ──────────────────────────────────────────
-        initial_mem_len = initial_values_dict["initial_memory_length"]
-        lamb_main = memory_days_to_lamb(
-            initial_mem_len, run_fingerprint["chunk_period"]
-        )
-        logit_lamb = np.log(lamb_main / (1.0 - lamb_main))
+        def _logit_lambda(mem_days):
+            l = memory_days_to_lamb(mem_days, chunk)
+            return np.log(l / (1 - l))
+
+        init_mem = initial_values_dict["initial_memory_length"]
+        logit_lamb = _logit_lambda(init_mem)
         logit_lamb = np.broadcast_to(
             logit_lamb, (n_parameter_sets, 1 if force_scalar else n_assets)
-        )
+        ).copy()
 
-        delta_mem = initial_values_dict["initial_memory_length_delta"]
-        lamb_plus_delta = memory_days_to_lamb(
-            initial_mem_len + delta_mem, run_fingerprint["chunk_period"]
-        )
-        logit_lamb_plus_delta = np.log(lamb_plus_delta / (1.0 - lamb_plus_delta))
-        logit_delta_lamb = logit_lamb_plus_delta - logit_lamb
+        delta = initial_values_dict["initial_memory_length_delta"]
+        logit_delta_lamb = _logit_lambda(init_mem + delta) - _logit_lambda(init_mem)
+        logit_delta_lamb = np.broadcast_to(logit_delta_lamb, logit_lamb.shape).copy()
 
-        # ── 3) Draw-down λᴅ  (separate memory) ────────────────────────
-        initial_mem_len_dd = initial_values_dict["initial_memory_length_drawdown"]
-        lamb_dd = memory_days_to_lamb(
-            initial_mem_len_dd, run_fingerprint["chunk_period"]
-        )
-        logit_lamb_drawdown = np.log(lamb_dd / (1.0 - lamb_dd))
+        # 3) draw-down λᴅ  (fallback to main λ)
+        mem_dd = initial_values_dict.get("initial_memory_length_drawdown", init_mem)
+        logit_lamb_drawdown = _logit_lambda(mem_dd)
         logit_lamb_drawdown = np.broadcast_to(
-            logit_lamb_drawdown, (n_parameter_sets, 1 if force_scalar else n_assets)
-        )
+            logit_lamb_drawdown, logit_lamb.shape
+        ).copy()
 
-        # ── 4) Shape parameters (per-token) ───────────────────────────
+        # 4) per-token raw params
         log_amplitude = _expand("initial_log_amplitude", force_scalar=force_scalar)
         raw_width = _expand("initial_raw_width", force_scalar=force_scalar)
         raw_alpha = _expand("initial_raw_alpha", force_scalar=force_scalar)
         raw_exp_up = _expand("initial_raw_exponents_up", force_scalar=force_scalar)
         raw_exp_down = _expand("initial_raw_exponents_down", force_scalar=force_scalar)
 
-        # pre-exp scaling β  (log₂ space, may be scalar or vector)
-        raw_pre_exp_scaling = _expand(
-            "initial_raw_pre_exp_scaling", force_scalar=force_scalar
-        )
+        raw_pre_beta_np = np.log2(initial_values_dict["initial_pre_exp_scaling"])
+        if force_scalar:
+            raw_pre_exp_scaling = np.full((n_parameter_sets, 1), raw_pre_beta_np)
+        else:
+            raw_pre_exp_scaling = np.full((n_parameter_sets, n_assets), raw_pre_beta_np)
+        raw_pre_exp_scaling = raw_pre_exp_scaling.copy()
 
-        # ── 5) Risk routing knobs (probabilities → logits) ────────────
-        risk_off_prob = _expand("initial_risk_off")  # already prob
-        risk_on_prob = _expand("initial_risk_on")
-        logit_risk_off = np.log(risk_off_prob / (1.0 - risk_off_prob))
-        logit_risk_on = np.log(risk_on_prob / (1.0 - risk_on_prob))
+        # 5) risk prob → logit  (clipped, mutable)
+        risk_off_prob = np.clip(_expand("initial_risk_off"), eps, 1 - eps)
+        risk_on_prob = np.clip(_expand("initial_risk_on"), eps, 1 - eps)
+        logit_risk_off = np.log(risk_off_prob / (1 - risk_off_prob))
+        logit_risk_on = np.log(risk_on_prob / (1 - risk_on_prob))
 
-        # ── 6) Initial weight logits (softmax space) ──────────────────
-        initial_weights_logits = _expand("initial_weights_logits", force_scalar=False)
+        # 6) weight logits
+        initial_weights_logits = _expand("initial_weights_logits")
 
-        # ── inside init_base_parameters (add after other per-token knobs) ──
+        # 7) new trainables
         raw_kelly_kappa = _expand("initial_raw_kelly_kappa", force_scalar=force_scalar)
         logit_lamb_vol = _expand("initial_logit_lamb_vol", force_scalar=force_scalar)
-        raw_entropy_floor = _expand(
-            "initial_raw_entropy_floor", force_scalar=True
-        )  # one per set
+        raw_entropy_floor = _expand("initial_raw_entropy_floor", force_scalar=True)
 
-        # ── 7) Pack dictionary ────────────────────────────────────────
+        # 8) pack dict
         params = {
             "log_k": log_k,
             "logit_lamb": logit_lamb,
             "logit_delta_lamb": logit_delta_lamb,
-            "logit_lamb_drawdown": logit_lamb_drawdown,  # NEW
+            "logit_lamb_drawdown": logit_lamb_drawdown,
             "initial_weights_logits": initial_weights_logits,
             "log_amplitude": log_amplitude,
             "raw_width": raw_width,
@@ -395,10 +388,11 @@ class FlexibleChannelPool(MomentumPool):
             "logit_risk_on": logit_risk_on,
             "raw_kelly_kappa": raw_kelly_kappa,
             "logit_lamb_vol": logit_lamb_vol,
-            "raw_entropy_floor": raw_entropy_floor,  # one per set
+            "raw_entropy_floor": raw_entropy_floor,
             "subsidary_params": [],
         }
 
+        # add Gaussian noise (expects arrays to be write-able)
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
 
@@ -411,10 +405,10 @@ class FlexibleChannelPool(MomentumPool):
         update_rule_parameters,
         run_fingerprint: Dict[str, Any],
     ) -> Dict[str, Any]:
-        tokens  = run_fingerprint["tokens"]
-        n_tok   = len(tokens)
-        cp      = run_fingerprint["chunk_period"]
-        S_sets  = run_fingerprint["n_parameter_sets"]
+        tokens = run_fingerprint["tokens"]
+        n_tok = len(tokens)
+        cp = run_fingerprint["chunk_period"]
+        S_sets = run_fingerprint["n_parameter_sets"]
 
         def _broadcast(vals, fn=lambda x: x):
             out = [fn(v) for v in vals]
@@ -439,41 +433,47 @@ class FlexibleChannelPool(MomentumPool):
             elif n == "alpha":
                 res["raw_alpha"] = jnp.array(_broadcast(v, get_raw_value))
             elif n == "exponent_up":
-                res["raw_exponents_up"] = jnp.array(_broadcast(v, inverse_squareplus_np))
+                res["raw_exponents_up"] = jnp.array(
+                    _broadcast(v, inverse_squareplus_np)
+                )
             elif n == "exponent_down":
-                res["raw_exponents_down"] = jnp.array(_broadcast(v, inverse_squareplus_np))
+                res["raw_exponents_down"] = jnp.array(
+                    _broadcast(v, inverse_squareplus_np)
+                )
             elif n == "pre_exp_scaling":
                 res["raw_pre_exp_scaling"] = jnp.array(_broadcast(v, get_raw_value))
             elif n == "risk_off":
                 probs = _broadcast(v, float)
-                res["logit_risk_off"] = jnp.array([np.log(p/(1-p)) for p in probs])
+                res["logit_risk_off"] = jnp.array([np.log(p / (1 - p)) for p in probs])
             elif n == "risk_on":
                 probs = _broadcast(v, float)
-                res["logit_risk_on"] = jnp.array([np.log(p/(1-p)) for p in probs])
+                res["logit_risk_on"] = jnp.array([np.log(p / (1 - p)) for p in probs])
             elif n == "kelly_kappa":
                 res["raw_kelly_kappa"] = jnp.array(_broadcast(v, get_raw_value))
             elif n == "vol_memory_days":
                 lambs = [memory_days_to_lamb(d, cp) for d in _broadcast(v, float)]
-                res["logit_lamb_vol"] = jnp.array([np.log(l/(1-l)) for l in lambs])
+                res["logit_lamb_vol"] = jnp.array([np.log(l / (1 - l)) for l in lambs])
             elif n == "entropy_floor":
                 val = float(get_raw_value(v[0] if isinstance(v, (list, tuple)) else v))
-                res["raw_entropy_floor"] = jnp.full((S_sets, 1), val)    # (S,1)
+                res["raw_entropy_floor"] = jnp.full((S_sets, 1), val)  # (S,1)
             elif n == "amplitude":
                 tmp_amp = _broadcast(v, float)
 
         # draw-down λᴅ
         if md_dd is not None:
             lambs_dd = [memory_days_to_lamb(d, cp) for d in _broadcast(md_dd, float)]
-            res["logit_lamb_drawdown"] = jnp.array([np.log(l/(1-l)) for l in lambs_dd])
+            res["logit_lamb_drawdown"] = jnp.array(
+                [np.log(l / (1 - l)) for l in lambs_dd]
+            )
 
         # amplitude
         if tmp_amp is not None:
             if md_main is None:
                 raise ValueError("`amplitude` requires `memory_days`.")
             md_main_b = _broadcast(md_main, float)
-            res["log_amplitude"] = jnp.array([
-                get_log_amplitude(a, m) for a, m in zip(tmp_amp, md_main_b)
-            ])
+            res["log_amplitude"] = jnp.array(
+                [get_log_amplitude(a, m) for a, m in zip(tmp_amp, md_main_b)]
+            )
 
         return res
 
