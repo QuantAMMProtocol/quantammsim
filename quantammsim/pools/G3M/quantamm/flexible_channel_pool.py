@@ -130,147 +130,183 @@ class FlexibleChannelPool(MomentumPool):
         """
         super().__init__()
 
-    # ─────────────────────────────────────────────────────────────────
-    #  calculate_raw_weights_outputs  (final, mutation-safe)
-    # ─────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────────
+    #  calculate_raw_weights_outputs  (history-aware version)
+    # ─────────────────────────────────────────────────────────────────────────────
     @partial(jit, static_argnums=(2,))
     def calculate_raw_weights_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
-        prices: jnp.ndarray,
+        prices: jnp.ndarray,  # (T ,) or (T ,N)
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         fp, chunk = run_fingerprint, run_fingerprint["chunk_period"]
 
-        # --- prices → (T , N) --------------------------------------------
+        # ── prices → (T , N) ----------------------------------------------------
         prices = prices[:, None] if prices.ndim == 1 else prices
-        T, N   = prices.shape
+        T, N = prices.shape
 
-        # --- one parameter-set only (S == 1) ------------------------------
-        log_k = jnp.atleast_2d(params["log_k"])
-        if log_k.shape[0] != 1:
-            raise ValueError("FlexibleChannelPool expects a single parameter-set (S=1)")
-        log_k = log_k[0]                                           # (N,)
+        # ── single parameter-set (S == 1) --------------------------------------
+        log_k = jnp.squeeze(jnp.asarray(params["log_k"]))  # (N,)
+        S = 1
 
-        ln2        = jnp.log(2.0)
-        pow2_safe  = lambda x: jnp.exp(jnp.clip(squareplus(x)*ln2, -60., 60.))
+        # helper ─ 2**x with overflow guard
+        ln2 = jnp.log(2.0)
+        pow2 = lambda x: jnp.exp(jnp.clip(squareplus(x) * ln2, -60.0, 60.0))
 
-        # ╭──────────────────────────────────────────────────────────────╮
-        # │ 1. Realised volatility σ̂ᵢ  (EWMA with trainable λσᵢ)        │
-        # ╰──────────────────────────────────────────────────────────────╯
-        chunk_p    = prices[::chunk]
-        if chunk_p.ndim == 1: chunk_p = chunk_p[:, None]
-        L          = fp.get("vol_lookback", 90)
-        win        = chunk_p[-(L+1):]
-        log_ret_sq = jnp.square(jnp.log(win[1:] / win[:-1]))       # (L , N)
+        # ╭──────────────────────────────────────────────────────────────────╮
+        # │ 1. realised σ̂ᵢ(t)  from entire history (EWMA, trainable λσᵢ)   │
+        # ╰──────────────────────────────────────────────────────────────────╯
+        chunk_p = prices[::chunk]  # (Tʹ , N)
+        ret_sq = jnp.square(jnp.log(chunk_p[1:] / chunk_p[:-1]))  # (Tʹ-1 , N)
 
-        λσ = jnn.sigmoid(params["logit_lamb_vol"]).reshape(N,)     # (N,)
+        λσ = jnn.sigmoid(params["logit_lamb_vol"]).reshape(
+            N,
+        )  # (N,)
 
         def ewma(series, lam):
-            def step(c, x): return c*lam + x*(1-lam), None
+            def step(c, x):
+                return c * lam + x * (1.0 - lam), None
+
             last, _ = lax.scan(step, series[0], series[1:])
             return jnp.sqrt(last + 1e-12)
 
-        σ̂ = vmap(ewma)(log_ret_sq.T, λσ)                          # (N,)
+        σ̂ = vmap(ewma)(ret_sq.T, λσ)  # (N,)
 
-        # ╭──────────────────────────────────────────────────────────────╮
-        # │ 2. Vector   memory_daysᵢ  &  kᵢ                             │
-        # ╰──────────────────────────────────────────────────────────────╯
-        mem_days_vec = lamb_to_memory_days_clipped(
-            calc_lamb(params), chunk, fp["max_memory_days"])       # (N,)  already
-        mem_days_vec = jnp.squeeze(mem_days_vec)                   # ensure 1-D
+        # ╭──────────────────────────────────────────────────────────────────╮
+        # │ 2. per-token memory_daysᵢ   &   kᵢ (Kelly scaled)               │
+        # ╰──────────────────────────────────────────────────────────────────╯
+        mem_days = jnp.squeeze(
+            lamb_to_memory_days_clipped(calc_lamb(params), chunk, fp["max_memory_days"])
+        )  # (N,)
 
-        k_plain = calc_k(params, mem_days_vec)                     # (N,)
-        κ       = pow2_safe(params["raw_kelly_kappa"]).reshape(N,)
-        k_vec   = k_plain * κ / jnp.clip(σ̂, 1e-9, None)           # (N,)
+        k_plain = (2.0**log_k) / jnp.clip(mem_days, 1e-3, None)  # (N,)
+        κ = pow2(params["raw_kelly_kappa"]).reshape(
+            N,
+        )
+        k_vec = k_plain * κ / jnp.clip(σ̂, 1e-9, None)  # (N,)
 
-        # ╭──────────────────────────────────────────────────────────────╮
-        # │ 3. Envelope width, α, exponents, amplitude                  │
-        # ╰──────────────────────────────────────────────────────────────╯
-        width_env = pow2_safe(params["raw_width"]).reshape(N,) * σ̂
-        α         = pow2_safe(params["raw_alpha"]).reshape(N,)
-        exp_up    = squareplus(params["raw_exponents_up"]).reshape(N,)
-        exp_dn    = squareplus(params["raw_exponents_down"]).reshape(N,)
+        # ╭──────────────────────────────────────────────────────────────────╮
+        # │ 3. deterministic per-token knobs                                │
+        # ╰──────────────────────────────────────────────────────────────────╯
+        width_env = (
+            pow2(params["raw_width"]).reshape(
+                N,
+            )
+            * σ̂
+        )
+        alpha = pow2(params["raw_alpha"]).reshape(
+            N,
+        )
+        exp_up = squareplus(params["raw_exponents_up"]).reshape(
+            N,
+        )
+        exp_dn = squareplus(params["raw_exponents_down"]).reshape(
+            N,
+        )
 
-        amp_raw   = pow2_safe(params["log_amplitude"]).reshape(-1)
-        amp_raw   = jnp.full((N,), amp_raw.item()) if amp_raw.size == 1 else amp_raw
-        amplitude = amp_raw * mem_days_vec                         # (N,)
+        amp_raw = pow2(params["log_amplitude"]).reshape(-1)
+        amp_raw = jnp.full((N,), amp_raw.item()) if amp_raw.size == 1 else amp_raw
+        amplitude = amp_raw * mem_days  # (N,)
 
-        # ╭──────────────────────────────────────────────────────────────╮
-        # │ 4. Pre-exp scaling β                                         │
-        # ╰──────────────────────────────────────────────────────────────╯
-        if fp["use_pre_exp_scaling"] and params.get("logit_pre_exp_scaling") is not None:
-            β = jnn.sigmoid(params["logit_pre_exp_scaling"])
-        elif fp["use_pre_exp_scaling"] and params.get("raw_pre_exp_scaling") is not None:
-            β = pow2_safe(params["raw_pre_exp_scaling"])
-        else:
-            β = 0.5
+        β = (
+            jnn.sigmoid(params["logit_pre_exp_scaling"])
+            if fp["use_pre_exp_scaling"]
+            and params.get("logit_pre_exp_scaling") is not None
+            else (
+                pow2(params["raw_pre_exp_scaling"])
+                if fp["use_pre_exp_scaling"]
+                and params.get("raw_pre_exp_scaling") is not None
+                else 0.5
+            )
+        )
         β = jnp.broadcast_to(β, (N,))
 
-        # ╭──────────────────────────────────────────────────────────────╮
-        # │ 5. Risk routing                                             │
-        # ╰──────────────────────────────────────────────────────────────╯
-        ρ_off = jnn.sigmoid(params["logit_risk_off"]).reshape(N,)
-        ρ_on  = jnn.sigmoid(params["logit_risk_on"]).reshape(N,)
+        ρ_off = jnn.sigmoid(params["logit_risk_off"]).reshape(
+            N,
+        )
+        ρ_on = jnn.sigmoid(params["logit_risk_on"]).reshape(
+            N,
+        )
 
-        # ╭──────────────────────────────────────────────────────────────╮
-        # │ 6. Time-series gradients & portfolio signals                 │
-        # ╰──────────────────────────────────────────────────────────────╯
+        # ╭──────────────────────────────────────────────────────────────────╮
+        # │ 4. full *time-series* EWMA-gradients (one per chunk)            │
+        # ╰──────────────────────────────────────────────────────────────────╯
         grad_ts = calc_gradients(
-            params, chunk_p, chunk, fp["max_memory_days"],
-            fp["use_alt_lamb"], cap_lamb=True)                      # (T_chunks , N)
+            params,
+            chunk_p,
+            chunk,
+            fp["max_memory_days"],
+            fp["use_alt_lamb"],
+            cap_lamb=True,
+        )  # (Tʹ-1 , N)
 
-        port_p   = prices.mean(1, keepdims=True)
-        port_c   = port_p[::chunk]
-        port_b   = jnp.repeat(port_c, N, axis=1)
+        # Portfolio-level EWMA for profit-skim & draw-down
+        port_p = prices.mean(1, keepdims=True)  # (T ,1)
+        port_c = port_p[::chunk]  # (Tʹ ,1)
+        port_rep = jnp.repeat(port_c, N, axis=1)
 
         port_grad = calc_gradients(
-            params, port_b, chunk, fp["max_memory_days"],
-            fp["use_alt_lamb"], cap_lamb=True)                      # (T_chunks , N)
-        Π_pos_ts  = jnp.maximum(0., port_grad.mean(1, keepdims=True))  # (T_chunks ,1)
+            params,
+            port_rep,
+            chunk,
+            fp["max_memory_days"],
+            fp["use_alt_lamb"],
+            cap_lamb=True,
+        )  # (Tʹ-1 , N)
+        Π_pos_ts = jnp.maximum(0.0, port_grad.mean(1, keepdims=True))  # (Tʹ-1 ,1)
 
         params_dd = dict(params, logit_lamb=params["logit_lamb_drawdown"])
-        dd_grad   = calc_gradients(
-            params_dd, port_b, chunk, fp["max_memory_days"],
-            fp["use_alt_lamb"], cap_lamb=True)
-        Π_dd_ts   = jnp.maximum(0., -dd_grad.mean(1, keepdims=True))   # (T_chunks ,1)
+        dd_grad = calc_gradients(
+            params_dd,
+            port_rep,
+            chunk,
+            fp["max_memory_days"],
+            fp["use_alt_lamb"],
+            cap_lamb=True,
+        )
+        Π_dd_ts = jnp.maximum(0.0, -dd_grad.mean(1, keepdims=True))  # (Tʹ-1 ,1)
 
-        # ╭──────────────────────────────────────────────────────────────╮
-        # │ 7. vmap kernel                                               │
-        # ╰──────────────────────────────────────────────────────────────╯
+        # ╭──────────────────────────────────────────────────────────────────╮
+        # │ 5. kernel over the *whole* history                              │
+        # ╰──────────────────────────────────────────────────────────────────╯
         def kernel(pg, Πp, Πd):
             return _jax_flexible_channel_weight_update(
-                pg[None,:], k_vec[None,:], width_env[None,:],
-                amplitude[None,:], α[None,:],
-                exp_up[None,:], exp_dn[None,:],
-                ρ_off[None,:], ρ_on[None,:],
-                Πp[None,:],  Πd[None,:],
-                pre_exp_scaling = β[None,:]
+                pg[None, :],
+                k_vec[None, :],
+                width_env[None, :],
+                amplitude[None, :],
+                alpha[None, :],
+                exp_up[None, :],
+                exp_dn[None, :],
+                ρ_off[None, :],
+                ρ_on[None, :],
+                Πp[None, :],
+                Πd[None, :],
+                pre_exp_scaling=β[None, :],
             )[0]
 
-        raw_ts = vmap(kernel)(grad_ts, Π_pos_ts, Π_dd_ts)            # (T_chunks , N)
+        raw_ts = vmap(kernel)(grad_ts, Π_pos_ts, Π_dd_ts)  # (Tʹ-1 , N)
 
-        # ╭──────────────────────────────────────────────────────────────╮
-        # │ 8. Entropy guard-rail                                        │
-        # ╰──────────────────────────────────────────────────────────────╯
-        H_min = jnn.softplus(params["raw_entropy_floor"]).mean()      # scalar (0-D)
+        # ╭──────────────────────────────────────────────────────────────────╮
+        # │ 6. entropy guard-rail                                           │
+        # ╰──────────────────────────────────────────────────────────────────╯
+        H_min = jnn.softplus(params["raw_entropy_floor"]).mean()  # scalar
 
-        prev0 = fp.get("prev_weights",
-                    jnp.full((N,), 1.0 / N, dtype=raw_ts.dtype))
+        prev0 = fp.get("prev_weights", jnp.full((N,), 1.0 / N, dtype=raw_ts.dtype))
 
         def shrink(prev, dw):
-            w  = jnp.clip(prev + dw, 1e-12)
+            w = jnp.clip(prev + dw, 1e-12)
             w /= w.sum()
             ent = -jnp.sum(w * jnp.log(w))
-            γ   = jnp.minimum(jnp.sqrt(jnp.clip(H_min / ent, 0.0)), 1.0)
+            γ = jnp.minimum(jnp.sqrt(jnp.clip(H_min / ent, 0.0)), 1.0)
             return w, dw * γ
 
-        _, shrunk = lax.scan(shrink, prev0, raw_ts)                  # (T_chunks , N)
+        _, shrunk = lax.scan(shrink, prev0, raw_ts)  # (Tʹ-1 , N)
         return shrunk
 
-        # ─────────────────────────────────────────────────────────────────
-
+    # ─────────────────────────────────────────────────────────────────
     #  init_base_parameters   (fully fixed)
     # ─────────────────────────────────────────────────────────────────
     def init_base_parameters(

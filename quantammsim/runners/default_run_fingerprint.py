@@ -31,16 +31,16 @@ run_fingerprint_defaults = {
     "initial_weights_logits": 1.0,
     "initial_log_amplitude": -10.0,
     "initial_raw_width": -8.0,
-    "initial_raw_alpha": 1.0,
-    "initial_raw_exponents_up": 0.0,
-    "initial_raw_exponents_down": 0.0,
-    "initial_raw_exponents": 0.0,
-    "initial_risk_on": 0.0,
-    "initial_risk_off": 0.0,
-    "initial_raw_kelly_kappa": 0.0,
-    "initial_logit_lamb_vol": 0.0,
-    "initial_raw_entropy_floor": 0.0,
-    "initial_memory_length_drawdown": 0,
+    "initial_raw_alpha": 0.80,
+    "initial_raw_exponents_up": 0.10,
+    "initial_raw_exponents_down": 1.20,
+    "initial_raw_exponents": 0.00,
+    "initial_risk_on": 0.50,
+    "initial_risk_off": 0.50,
+    "initial_raw_kelly_kappa": 1.00,
+    "initial_logit_lamb_vol": -2.00,
+    "initial_raw_entropy_floor": -3.00,
+    "initial_memory_length_drawdown": 3,
     "subsidary_pools": [],
     "maximum_change": 3e-4,
     "chunk_period": 60,
@@ -60,7 +60,7 @@ run_fingerprint_defaults = {
     "do_arb": True,
     "max_memory_days": 365,
     "noise_trader_ratio": 0.0,
-    "minimum_weight": None, # will be set to 0.1 / n_assets
+    "minimum_weight": None,  # will be set to 0.1 / n_assets
 }
 
 
