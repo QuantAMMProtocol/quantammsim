@@ -1,12 +1,12 @@
 import time
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 from flask import Flask, request
 import json
 import jsonpickle
-
-# from training_result import TrainingResult
 from flask_cors import CORS
+import pandas as pd
+import os
 
 from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
     FinancialAnalysisResult,
@@ -62,6 +62,64 @@ def runSimulation():
     jsonString = json.dumps(resultJSON, indent=4)
 
     return jsonString
+
+@app.route("/api/runAuditLog", methods=["POST"])
+def runAuditLog():
+    """
+    Handle the POST request to log audit information.
+
+    This function retrieves a msgpack file labeled with today's Unix timestamp,
+    updates the log with the provided audit information, and saves the updated file.
+
+    Returns
+    -------
+    str
+        A success message.
+    """
+
+    # Retrieve the request data
+    request_data = request.get_json()
+    audit_info = {
+        "timestamp": request_data["timestamp"],
+        "user": request_data["user"],
+        "page": request_data["page"],
+        "tosAgreement": request_data["tosAgreement"],
+        "isMobile": request_data["isMobile"],  # New field added
+    }
+
+    # Generate today's Unix timestamp filename
+    today_unix_timestamp = int(datetime.now().timestamp())
+    file_name = f"{today_unix_timestamp}.msgpack"
+    file_path = os.path.join("./audit_logs", file_name)
+
+    # Load or create the DataFrame
+    if os.path.exists(file_path):
+        df = pd.read_msgpack(file_path)
+    else:
+        df = pd.DataFrame(columns=["timestamp", "user", "page", "tosAgreement", "isMobile", "count"])
+
+    # Check if the row exists
+    row_filter = (
+        (df["timestamp"] == audit_info["timestamp"])
+        & (df["user"] == audit_info["user"])
+        & (df["page"] == audit_info["page"])
+        & (df["tosAgreement"] == audit_info["tosAgreement"])
+        & (df["isMobile"] == audit_info["isMobile"])  # Include new field in filter
+    )
+
+    if df[row_filter].empty:
+        # Add a new row with count = 1
+        audit_info["count"] = 1
+        df = pd.concat([df, pd.DataFrame([audit_info])], ignore_index=True)
+    else:
+        # Increment the count for the existing row
+        df.loc[row_filter, "count"] += 1
+
+    # Save the updated DataFrame back to the msgpack file
+    os.makedirs("./audit_logs", exist_ok=True)
+    df.to_msgpack(file_path)
+
+    return json.dumps({"message": "Audit log updated successfully."})
 
 
 @app.route("/api/runFinancialAnalysis", methods=["POST"])
