@@ -62,7 +62,6 @@ def runSimulation():
     jsonString = json.dumps(resultJSON, indent=4)
 
     return jsonString
-
 @app.route("/api/runAuditLog", methods=["POST"])
 def runAuditLog():
     """
@@ -85,9 +84,9 @@ def runAuditLog():
         "page": request_data["page"],
         "tosAgreement": request_data["tosAgreement"],
         "isMobile": request_data["isMobile"],  # New field added
+        "timezone": request_data["timestamp"].split(",")[-1].strip(),  # Extract timezone
     }
 
-    # Generate today's Unix timestamp filename
     today_unix_timestamp = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
 
     audit_info = {
@@ -95,36 +94,33 @@ def runAuditLog():
         "user": request_data["user"],
         "page": request_data["page"],
         "tosAgreement": request_data["tosAgreement"],
-        "isMobile": request_data["isMobile"],  # New field added
+        "isMobile": request_data["isMobile"], 
+        "timezone": request_data["timestamp"].split(",")[-1].strip(),  
     }
 
     file_name = f"{today_unix_timestamp}.msgpack"
     file_path = os.path.join("./audit_logs", file_name)
 
-    # Load or create the DataFrame
     if os.path.exists(file_path):
         df = pd.read_msgpack(file_path)
     else:
-        df = pd.DataFrame(columns=["timestamp", "user", "page", "tosAgreement", "isMobile", "count"])
+        df = pd.DataFrame(columns=["timestamp", "user", "page", "tosAgreement", "isMobile", "timezone", "count"])
 
-    # Check if the row exists
     row_filter = (
         (df["timestamp"] == audit_info["timestamp"])
         & (df["user"] == audit_info["user"])
         & (df["page"] == audit_info["page"])
         & (df["tosAgreement"] == audit_info["tosAgreement"])
         & (df["isMobile"] == audit_info["isMobile"])  # Include new field in filter
+        & (df["timezone"] == audit_info["timezone"])  # Include timezone in filter
     )
 
     if df[row_filter].empty:
-        # Add a new row with count = 1
         audit_info["count"] = 1
         df = pd.concat([df, pd.DataFrame([audit_info])], ignore_index=True)
     else:
-        # Increment the count for the existing row
         df.loc[row_filter, "count"] += 1
 
-    # Save the updated DataFrame back to the msgpack file
     os.makedirs("./audit_logs", exist_ok=True)
     df.to_msgpack(file_path)
 
