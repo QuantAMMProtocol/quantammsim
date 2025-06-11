@@ -88,7 +88,16 @@ def runAuditLog():
     }
 
     # Generate today's Unix timestamp filename
-    today_unix_timestamp = int(datetime.now().timestamp())
+    today_unix_timestamp = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+
+    audit_info = {
+        "timestamp": int(datetime.now().replace(second=0, microsecond=0).timestamp()),
+        "user": request_data["user"],
+        "page": request_data["page"],
+        "tosAgreement": request_data["tosAgreement"],
+        "isMobile": request_data["isMobile"],  # New field added
+    }
+
     file_name = f"{today_unix_timestamp}.msgpack"
     file_path = os.path.join("./audit_logs", file_name)
 
