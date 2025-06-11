@@ -88,14 +88,16 @@ def runAuditLog():
     }
 
     today_unix_timestamp = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+   
+    timezone = request_data["timestamp"].split(",")[-1].strip() if "," in request_data.get("timestamp", "") else "Unknown"
 
     audit_info = {
         "timestamp": int(datetime.now().replace(second=0, microsecond=0).timestamp()),
         "user": request_data["user"],
         "page": request_data["page"],
         "tosAgreement": request_data["tosAgreement"],
-        "isMobile": request_data["isMobile"], 
-        "timezone": request_data["timestamp"].split(",")[-1].strip(),  
+        "isMobile": request_data["isMobile"],
+        "timezone": timezone,
     }
 
     file_name = f"{today_unix_timestamp}.msgpack"
