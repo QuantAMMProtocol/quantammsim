@@ -43,6 +43,7 @@ app.config["JWT_SECRET_KEY"] = (
     "2b25014d8e591e91cc4e3bfc3a7561983e06bc7ff0a140bcecca3c0a15d31c5e"
 )
 
+
 @app.route("/api/runSimulation", methods=["POST"])
 def runSimulation():
     """
@@ -67,7 +68,11 @@ def runSimulation():
 
     return jsonString
 
-PEPPER = os.environ.get("IP_HASH_PEPPER", app.config["JWT_SECRET_KEY"]).encode()  # 32 random bytes
+
+PEPPER = os.environ.get(
+    "IP_HASH_PEPPER", app.config["JWT_SECRET_KEY"]
+).encode()  # 32 random bytes
+
 
 def canonical_ip(raw_ip: str) -> str:
     """First hop, trimmed, canonical textual representation."""
@@ -77,9 +82,11 @@ def canonical_ip(raw_ip: str) -> str:
         first = first.split(":")[0]
     return str(ipaddress.ip_address(first))
 
+
 def hash_ip(ip: str) -> str:
     """Deterministic, keyed, one-way hash of an IP address."""
     return hmac.new(PEPPER, ip.encode(), hashlib.sha256).hexdigest()
+
 
 @app.route("/api/runAuditLog", methods=["POST"])
 def runAuditLog():
@@ -103,10 +110,16 @@ def runAuditLog():
     )
     hashed_ip = hash_ip(requester_ip)
 
-    timezone = request_data["timestamp"].split(",")[-1].strip() if "," in request_data.get("timestamp", "") else "Unknown"
+    timezone = (
+        request_data["timestamp"].split(",")[-1].strip()
+        if "," in request_data.get("timestamp", "")
+        else "Unknown"
+    )
 
     audit_info = {
-        "timestamp": int(datetime.now(tz.utc).replace(second=0, microsecond=0).timestamp()),
+        "timestamp": int(
+            datetime.now(tz.utc).replace(second=0, microsecond=0).timestamp()
+        ),
         "user": request_data["user"],  # FingerprintJS visitorId from front-end
         "page": request_data["page"],
         "tosAgreement": request_data["tosAgreement"],
@@ -115,14 +128,27 @@ def runAuditLog():
         "flask_user": hashed_ip,  # pseudonymised IP
     }
 
-    today_unix_timestamp = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    today_unix_timestamp = int(
+        datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    )
     file_name = f"{today_unix_timestamp}.parquet"
     file_path = os.path.join("./audit_logs", file_name)
 
     if os.path.exists(file_path):
         df = pd.read_parquet(file_path, engine="pyarrow")
     else:
-        df = pd.DataFrame(columns=["timestamp", "user", "page", "tosAgreement", "isMobile", "timezone", "flask_user", "count"])
+        df = pd.DataFrame(
+            columns=[
+                "timestamp",
+                "user",
+                "page",
+                "tosAgreement",
+                "isMobile",
+                "timezone",
+                "flask_user",
+                "count",
+            ]
+        )
 
     row_filter = (
         (df["timestamp"] == audit_info["timestamp"])
@@ -145,6 +171,7 @@ def runAuditLog():
 
     return json.dumps({"message": "Audit log updated successfully."})
 
+
 @app.route("/api/runFinancialAnalysis", methods=["POST"])
 def runFinancialAnalysis():
     """
@@ -162,8 +189,8 @@ def runFinancialAnalysis():
     request_data = request.get_json()
     dto = FinancialAnalysisRequestDto(request_data)
 
-    portfolio_returns, benchmark_returns, _, _ = (
-        process_return_array(dto.returns, dto.benchmarks)
+    portfolio_returns, benchmark_returns, _, _ = process_return_array(
+        dto.returns, dto.benchmarks
     )
 
     start_timestamp = dto.returns[0][0]
@@ -205,10 +232,11 @@ def loadHistoricDailyPrices():
     dto = LoadPriceHistoryRequestDto(request_data)
     root = "../../../../quantammsim/data/"
     historic = get_historic_daily_csv_data([dto.coinCode], root)
-    result = historic.to_json(orient="records") # Is this the right way to do this?
+    result = historic.to_json(orient="records")  # Is this the right way to do this?
     parsed = json.loads(result)
     jsonString = json.dumps(parsed)
     return jsonString
+
 
 @app.route("/api/loadCoinComparisonData", methods=["POST"])
 def loadCoinComparisonData():
@@ -271,13 +299,16 @@ def filters():
 
     return content
 
+
 @app.route("/api/test", methods=["GET"])
 def test():
     return "Hello World"
 
+
 @app.route("/health", methods=["GET"])
 def health():
     return "OK"
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port="5001")
