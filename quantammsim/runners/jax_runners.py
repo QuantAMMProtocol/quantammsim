@@ -8,7 +8,7 @@ import gc
 
 from jax.tree_util import Partial
 from jax import jit, vmap, random
-from jax import clear_caches, clear_backends
+from jax import clear_caches
 
 from quantammsim.utils.data_processing.historic_data_utils import (
     get_data_dict,
@@ -980,7 +980,6 @@ def do_run_on_historic_data(
     gc.collect()
     # Clear any cached JAX computations to free memory
     clear_caches()
-    clear_backends()
     if do_test_period:
         return output_dicts, output_dicts_test
     else:
