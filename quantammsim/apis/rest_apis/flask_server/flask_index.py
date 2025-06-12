@@ -103,13 +103,15 @@ def runAuditLog():
     )
     hashed_ip = hash_ip(requester_ip)
 
+    timezone = request_data["timestamp"].split(",")[-1].strip() if "," in request_data.get("timestamp", "") else "Unknown"
+
     audit_info = {
         "timestamp": int(datetime.now(tz.utc).replace(second=0, microsecond=0).timestamp()),
         "user": request_data["user"],  # FingerprintJS visitorId from front-end
         "page": request_data["page"],
         "tosAgreement": request_data["tosAgreement"],
         "isMobile": request_data["isMobile"],
-        "timezone": request_data["timezone"],
+        "timezone": timezone,
         "flask_user": hashed_ip,  # pseudonymised IP
     }
 
