@@ -7,6 +7,7 @@ import jsonpickle
 from flask_cors import CORS
 import pandas as pd
 import os
+import hashlib
 
 from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
     FinancialAnalysisResult,
@@ -67,7 +68,7 @@ def runAuditLog():
     """
     Handle the POST request to log audit information.
 
-    This function retrieves a msgpack file labeled with today's Unix timestamp,
+    This function retrieves a parquet file labeled with today's Unix timestamp,
     updates the log with the provided audit information, and saves the updated file.
 
     Returns
@@ -78,18 +79,14 @@ def runAuditLog():
 
     # Retrieve the request data
     request_data = request.get_json()
-    audit_info = {
-        "timestamp": request_data["timestamp"],
-        "user": request_data["user"],
-        "page": request_data["page"],
-        "tosAgreement": request_data["tosAgreement"],
-        "isMobile": request_data["isMobile"],  # New field added
-        "timezone": request_data["timestamp"].split(",")[-1].strip(),  # Extract timezone
-    }
+    timezone = (
+        request_data["timestamp"].split(",")[-1].strip().split(" ", 1)[-1]
+        if "," in request_data.get("timestamp", "")
+        else "Unknown"
+    )
 
-    today_unix_timestamp = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
-   
-    timezone = request_data["timestamp"].split(",")[-1].strip() if "," in request_data.get("timestamp", "") else "Unknown"
+    requester_ip = request.remote_addr
+    hashed_ip = hashlib.sha256(requester_ip.encode()).hexdigest()
 
     audit_info = {
         "timestamp": int(datetime.now().replace(second=0, microsecond=0).timestamp()),
@@ -98,23 +95,28 @@ def runAuditLog():
         "tosAgreement": request_data["tosAgreement"],
         "isMobile": request_data["isMobile"],
         "timezone": timezone,
+        "flask_user": hashed_ip,  # Store the hashed IP address of the requester
     }
 
-    file_name = f"{today_unix_timestamp}.msgpack"
+    today_unix_timestamp = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    file_name = f"{today_unix_timestamp}.parquet"
     file_path = os.path.join("./audit_logs", file_name)
 
     if os.path.exists(file_path):
-        df = pd.read_msgpack(file_path)
+        df = pd.read_parquet(file_path, engine="pyarrow")
+        print("existing")
+        print(df)
     else:
-        df = pd.DataFrame(columns=["timestamp", "user", "page", "tosAgreement", "isMobile", "timezone", "count"])
+        df = pd.DataFrame(columns=["timestamp", "user", "page", "tosAgreement", "isMobile", "timezone", "flask_user", "count"])
 
     row_filter = (
         (df["timestamp"] == audit_info["timestamp"])
         & (df["user"] == audit_info["user"])
         & (df["page"] == audit_info["page"])
         & (df["tosAgreement"] == audit_info["tosAgreement"])
-        & (df["isMobile"] == audit_info["isMobile"])  # Include new field in filter
-        & (df["timezone"] == audit_info["timezone"])  # Include timezone in filter
+        & (df["isMobile"] == audit_info["isMobile"])
+        & (df["timezone"] == audit_info["timezone"])
+        & (df["flask_user"] == audit_info["flask_user"])
     )
 
     if df[row_filter].empty:
@@ -124,10 +126,11 @@ def runAuditLog():
         df.loc[row_filter, "count"] += 1
 
     os.makedirs("./audit_logs", exist_ok=True)
-    df.to_msgpack(file_path)
+    print("new df")
+    print(df)
+    df.to_parquet(file_path, engine="pyarrow")
 
     return json.dumps({"message": "Audit log updated successfully."})
-
 
 @app.route("/api/runFinancialAnalysis", methods=["POST"])
 def runFinancialAnalysis():
