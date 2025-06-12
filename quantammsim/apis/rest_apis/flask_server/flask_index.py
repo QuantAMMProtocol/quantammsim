@@ -8,6 +8,9 @@ from flask_cors import CORS
 import pandas as pd
 import os
 import hashlib
+import hmac
+import ipaddress
+from datetime import timezone as tz
 
 from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
     FinancialAnalysisResult,
@@ -63,6 +66,21 @@ def runSimulation():
     jsonString = json.dumps(resultJSON, indent=4)
 
     return jsonString
+
+PEPPER = os.environ.get("IP_HASH_PEPPER", app.config["JWT_SECRET_KEY"]).encode()  # 32 random bytes
+
+def canonical_ip(raw_ip: str) -> str:
+    """First hop, trimmed, canonical textual representation."""
+    first = raw_ip.split(",")[0].strip()  # X-Forwarded-For support
+    # strip :port on IPv4
+    if first.count(":") == 1 and "." in first:
+        first = first.split(":")[0]
+    return str(ipaddress.ip_address(first))
+
+def hash_ip(ip: str) -> str:
+    """Deterministic, keyed, one-way hash of an IP address."""
+    return hmac.new(PEPPER, ip.encode(), hashlib.sha256).hexdigest()
+
 @app.route("/api/runAuditLog", methods=["POST"])
 def runAuditLog():
     """
@@ -79,23 +97,20 @@ def runAuditLog():
 
     # Retrieve the request data
     request_data = request.get_json()
-    timezone = (
-        request_data["timestamp"].split(",")[-1].strip().split(" ", 1)[-1]
-        if "," in request_data.get("timestamp", "")
-        else "Unknown"
-    )
 
-    requester_ip = request.remote_addr
-    hashed_ip = hashlib.sha256(requester_ip.encode()).hexdigest()
+    requester_ip = canonical_ip(
+        request.headers.get("X-Forwarded-For", request.remote_addr)
+    )
+    hashed_ip = hash_ip(requester_ip)
 
     audit_info = {
-        "timestamp": int(datetime.now().replace(second=0, microsecond=0).timestamp()),
-        "user": request_data["user"],
+        "timestamp": int(datetime.now(tz.utc).replace(second=0, microsecond=0).timestamp()),
+        "user": request_data["user"],  # FingerprintJS visitorId from front-end
         "page": request_data["page"],
         "tosAgreement": request_data["tosAgreement"],
         "isMobile": request_data["isMobile"],
-        "timezone": timezone,
-        "flask_user": hashed_ip,  # Store the hashed IP address of the requester
+        "timezone": request_data["timezone"],
+        "flask_user": hashed_ip,  # pseudonymised IP
     }
 
     today_unix_timestamp = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
@@ -104,8 +119,6 @@ def runAuditLog():
 
     if os.path.exists(file_path):
         df = pd.read_parquet(file_path, engine="pyarrow")
-        print("existing")
-        print(df)
     else:
         df = pd.DataFrame(columns=["timestamp", "user", "page", "tosAgreement", "isMobile", "timezone", "flask_user", "count"])
 
@@ -126,8 +139,6 @@ def runAuditLog():
         df.loc[row_filter, "count"] += 1
 
     os.makedirs("./audit_logs", exist_ok=True)
-    print("new df")
-    print(df)
     df.to_parquet(file_path, engine="pyarrow")
 
     return json.dumps({"message": "Audit log updated successfully."})
