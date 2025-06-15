@@ -1134,11 +1134,8 @@ def load_or_init(
     """
 
     run_location = results_dir + get_run_location(run_fingerprint) + ".json"
-    print("Loading or initializing parameters from:")
-    print(run_location)
-    print("force init")
-    print(force_init)
     if force_init:
+        print("force init")
         params = init_params(
             initial_values_dict,
             n_tokens,
@@ -1148,6 +1145,7 @@ def load_or_init(
         )
         loaded = False
     elif os.path.isfile(run_location):
+        print("Loading from: ", run_location)
         print("found file")
         with open(run_location, encoding='utf-8') as json_file:
             params = json.load(json_file)
@@ -1197,10 +1195,6 @@ def load_or_init(
                 n_parameter_sets=n_parameter_sets,
             )
 
-        print("params2")
-        print(params)
-        print(load_method)
-
         if load_method == "last":
             index = -1
         elif load_method == "best_objective":
@@ -1229,10 +1223,6 @@ def load_or_init(
             n_parameter_sets=n_parameter_sets,
         )
         loaded = False
-        print("else")
-    print("final params")
-    print(params)
-    print(loaded)
     return params, loaded
 
 
