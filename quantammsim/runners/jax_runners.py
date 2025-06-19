@@ -8,12 +8,8 @@ import gc
 
 from jax.tree_util import Partial
 from jax import jit, vmap, random
-<<<<<<< HEAD
 from jax import clear_caches, clear_backends
 from jax.tree_util import tree_map
-=======
-from jax import clear_caches
->>>>>>> main
 
 from quantammsim.utils.data_processing.historic_data_utils import (
     get_data_dict,
@@ -421,7 +417,6 @@ def train_on_historic_data(
                 optimisation_settings=run_fingerprint["optimisation_settings"],
             )
 
-<<<<<<< HEAD
             if run_fingerprint["optimisation_settings"]["optimiser"] == "adam":
                 # Adam update with state maintenance
                 params, objective_value, old_params, grads, opt_state = update(
@@ -432,13 +427,6 @@ def train_on_historic_data(
                 params, objective_value, old_params, grads = update(
                     params, start_indexes, local_learning_rate
                 )
-=======
-            params, objective_value, old_params, grads = update(
-                params, start_indexes, local_learning_rate
-            )
-
-            #params = nan_rollback(grads, params, old_params)
->>>>>>> main
 
             train_objective = partial_forward_pass_nograd_returns_train(
                 params,
@@ -1062,7 +1050,6 @@ def do_run_on_historic_data(
     else:
         return output_dicts
 
-
 def do_run_on_historic_data_with_provided_coarse_weights(
     run_fingerprint,
     coarse_weights,
@@ -1331,17 +1318,3 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         "raw_weight_outputs": raw_weight_outputs,
     }
     return return_dict
-    # if hasattr(pool, "calculate_readouts"):
-    #     return_dict.update({
-    #         "readouts": pool.calculate_readouts(
-    #             params, static_dict, prices, start_index, additional_oracle_input=None
-    #         )
-    #     })
-    #     return return_dict
-    # return _calculate_return_value(
-    #     return_val,
-    #     reserves,
-    #     local_prices,
-    #     value_over_time,
-    #     initial_reserves=reserves[0],
-    # )
