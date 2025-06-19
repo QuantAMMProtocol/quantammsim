@@ -502,10 +502,8 @@ def create_opt_state_in_axes_dict(opt_state):
     """Create in_axes dict for optimizer state based on its actual structure."""
 
     def _create_axes_for_leaf(leaf):
-        print(f"Processing leaf: {leaf}, type: {type(leaf)}")
         # Handle empty lists specifically - they should not be vmapped over
         if isinstance(leaf, list) and len(leaf) == 0:
-            print(f"Found empty list, returning None")
             return None
         elif hasattr(leaf, "shape") and len(leaf.shape) > 0:
             # If first dimension >= 1, it's batched (map over first dimension)
@@ -513,17 +511,12 @@ def create_opt_state_in_axes_dict(opt_state):
                 print(f"Found batched array with shape {leaf.shape}, returning 0")
                 return 0
             else:
-                print(f"Found non-batched array with shape {leaf.shape}, returning None")
                 return None
         elif hasattr(leaf, "__len__") and len(leaf) == 0:
             # Any empty sequence - don't map over
-            print(f"Found empty sequence, returning None")
             return None
         else:
             # Other types (like EmptyState) - don't map over
-            print(f"Found other type {type(leaf)}, returning None")
             return None
 
-    result = tree_map(_create_axes_for_leaf, opt_state)
-    print(f"Final result: {result}")
-    return result
+    return tree_map(_create_axes_for_leaf, opt_state)

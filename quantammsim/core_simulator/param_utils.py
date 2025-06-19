@@ -1160,6 +1160,7 @@ def load_or_init(
 
     run_location = results_dir + get_run_location(run_fingerprint) + ".json"
     if force_init:
+        print("force init")
         params = init_params(
             initial_values_dict,
             n_tokens,
@@ -1169,11 +1170,15 @@ def load_or_init(
         )
         loaded = False
     elif os.path.isfile(run_location):
+        print("Loading from: ", run_location)
+        print("found file")
         with open(run_location, encoding='utf-8') as json_file:
             params = json.load(json_file)
             # if params:
             #     calc()
             params = json.loads(params)
+            print("params")
+            print(params)
         if recalc_hess is True:
             if "hessian_trace" not in params[0].keys():
                 for i in range(len(params)):
@@ -1192,6 +1197,7 @@ def load_or_init(
                 dumped = json.dumps(params, cls=NumpyEncoder)
                 with open(run_location, "w", encoding='utf-8') as json_file:
                     json.dump(dumped, json_file, indent=4)
+        
         if isinstance(params, list):
             params = [
                 fill_in_missing_values_from_init(
@@ -1213,6 +1219,7 @@ def load_or_init(
                 chunk_period,
                 n_parameter_sets=n_parameter_sets,
             )
+
         if load_method == "last":
             index = -1
         elif load_method == "best_objective":
