@@ -9,6 +9,7 @@ import gc
 from jax.tree_util import Partial
 from jax import jit, vmap, random
 from jax import clear_caches, clear_backends
+from jax.tree_util import tree_map
 
 from quantammsim.utils.data_processing.historic_data_utils import (
     get_data_dict,
@@ -23,6 +24,8 @@ from quantammsim.core_simulator.windowing_utils import get_indices
 
 from quantammsim.training.backpropagation import (
     update_from_partial_training_step_factory,
+    update_from_partial_training_step_factory_with_optax,
+    create_opt_state_in_axes_dict,
 )
 from quantammsim.core_simulator.param_utils import (
     recursive_default_set,
@@ -164,6 +167,7 @@ def train_on_historic_data(
         end_time_test_string=run_fingerprint["endTestDateString"],
         max_mc_version=run_fingerprint["optimisation_settings"]["max_mc_version"],
         price_data=price_data,
+        do_test_period=True,
     )
     max_memory_days = data_dict["max_memory_days"]
     print("max_memory_days: ", max_memory_days)
@@ -304,16 +308,32 @@ def train_on_historic_data(
         partial_training_step, start_index=(data_dict["start_idx"], 0)
     )
 
-    update_batch = update_from_partial_training_step_factory(
-        partial_training_step,
-        run_fingerprint["optimisation_settings"]["train_on_hessian_trace"],
-        partial_fixed_training_step,
+    # Create static dictionaries for training and testing
+    reserves_values_train_static_dict = base_static_dict.copy()
+    reserves_values_train_static_dict["return_val"] = "reserves_and_values"
+    reserves_values_train_static_dict["bout_length"] = data_dict["bout_length"]
+    partial_forward_pass_nograd_batch_reserves_values_train = jit(
+        vmap(
+            Partial(
+                forward_pass_nograd,
+                static_dict=Hashabledict(reserves_values_train_static_dict),
+                pool=pool,
+            ),
+            in_axes=nograd_in_axes,
+        )
     )
 
-    update = jit(
+    reserves_values_test_static_dict = base_static_dict.copy()
+    reserves_values_test_static_dict["return_val"] = "reserves_and_values"
+    reserves_values_test_static_dict["bout_length"] = data_dict["bout_length_test"]
+    partial_forward_pass_nograd_batch_reserves_values_test = jit(
         vmap(
-            update_batch,
-            in_axes=[params_in_axes_dict, None, None],
+            Partial(
+                forward_pass_nograd,
+                static_dict=Hashabledict(reserves_values_test_static_dict),
+                pool=pool,
+            ),
+            in_axes=nograd_in_axes,
         )
     )
 
@@ -331,10 +351,49 @@ def train_on_historic_data(
         if run_fingerprint["optimisation_settings"]["optimiser"] == "adam":
             import optax
 
-            opt = optax.inject_hyperparams(optax.adam)(
-                learning_rate=local_learning_rate
+            # Create Adam optimizer with the specified learning rate
+            optimizer = optax.adam(learning_rate=local_learning_rate)
+
+            # Initialize optimizer state for each parameter set
+            # For multiple parameter sets, each needs its own optimizer state
+            # if n_parameter_sets > 1:
+            # Use vmap to vectorize optimizer initialization over parameter sets
+            init_optimizer = lambda params: optimizer.init(params)
+            batched_init = vmap(init_optimizer, in_axes=[params_in_axes_dict])
+            opt_state = batched_init(params)
+            # else:
+            # opt_state = optimizer.init(params)
+
+            opt_state_in_axes_dict = create_opt_state_in_axes_dict(opt_state)
+            # Use optax-based update function
+            update_batch = update_from_partial_training_step_factory_with_optax(
+                partial_training_step,
+                optimizer,
+                run_fingerprint["optimisation_settings"]["train_on_hessian_trace"],
+                partial_fixed_training_step,
             )
-            raise NotImplementedError
+            update = jit(
+                vmap(
+                    update_batch,
+                    in_axes=[params_in_axes_dict, None, None, opt_state_in_axes_dict],
+                )
+            )
+
+        elif run_fingerprint["optimisation_settings"]["optimiser"] == "sgd":
+
+            update_batch = update_from_partial_training_step_factory(
+                partial_training_step,
+                run_fingerprint["optimisation_settings"]["train_on_hessian_trace"],
+                partial_fixed_training_step,
+            )
+
+            update = jit(
+                vmap(
+                    update_batch,
+                    in_axes=[params_in_axes_dict, None, None],
+                )
+            )
+
         elif run_fingerprint["optimisation_settings"]["optimiser"] != "sgd":
             raise NotImplementedError
 
@@ -355,11 +414,16 @@ def train_on_historic_data(
                 optimisation_settings=run_fingerprint["optimisation_settings"],
             )
 
-            params, objective_value, old_params, grads = update(
-                params, start_indexes, local_learning_rate
-            )
-
-            params = nan_rollback(grads, params, old_params)
+            if run_fingerprint["optimisation_settings"]["optimiser"] == "adam":
+                # Adam update with state maintenance
+                params, objective_value, old_params, grads, opt_state = update(
+                    params, start_indexes, local_learning_rate, opt_state
+                )
+            else:
+                # Regular SGD update
+                params, objective_value, old_params, grads = update(
+                    params, start_indexes, local_learning_rate
+                )
 
             train_objective = partial_forward_pass_nograd_returns_train(
                 params,
@@ -372,6 +436,17 @@ def train_on_historic_data(
                 (data_dict["start_idx_test"], 0),
                 data_dict["prices_test"],
             )
+            train_outputs = partial_forward_pass_nograd_batch_reserves_values_train(
+                params,
+                (data_dict["start_idx"], 0),
+                data_dict["prices"],
+            )
+            test_outputs = partial_forward_pass_nograd_batch_reserves_values_test(
+                params,
+                (data_dict["start_idx_test"], 0),
+                data_dict["prices_test"],
+            )
+
             paramSteps.append(deepcopy(params))
             trainingSteps.append(np.array(train_objective.copy()))
             testSteps.append(np.array(test_objective.copy()))
@@ -489,20 +564,6 @@ def train_on_historic_data(
             ),
             "log_scale": False,
         }
-        # run_fingerprint["optimisation_settings"]["optuna_settings"]["parameter_config"][
-        #     "logit_delta_lamb"
-        # ] = {
-        #     "low": float(
-        #         memory_days_to_logit_lamb(
-        #             0.5, chunk_period=run_fingerprint["chunk_period"]
-        #         )
-        #     ),
-        #     "high": float(
-        #         memory_days_to_logit_lamb(
-        #             200.0, chunk_period=run_fingerprint["chunk_period"]
-        #         )
-        #     ),
-        # }
 
         # Create objective with parameter configuration and validation
         def objective(trial):
@@ -511,9 +572,9 @@ def train_on_historic_data(
                     "optuna_settings"
                 ]["parameter_config"]
 
-                if run_fingerprint["optimisation_settings"][
-                    "optuna_settings"
-                ]["make_scalar"]:
+                if run_fingerprint["optimisation_settings"]["optuna_settings"][
+                    "make_scalar"
+                ]:
                     # Set scalar=True for all parameter configurations
                     for param_key in param_config:
                         param_config[param_key]["scalar"] = True
@@ -1194,7 +1255,9 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     # take coarse weights and convert to array of fine weights
     initial_weights = coarse_weights["weights"][0]
     # Repeat the last row of coarse weights
-    coarse_weights_padded = jnp.vstack([coarse_weights["weights"], coarse_weights["weights"][-1]])
+    coarse_weights_padded = jnp.vstack(
+        [coarse_weights["weights"], coarse_weights["weights"][-1]]
+    )
     raw_weight_outputs = jnp.diff(coarse_weights_padded, axis=0)
     actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
         raw_weight_outputs,
@@ -1215,20 +1278,19 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         interpol_num=chunk_period + 1,
         num=chunk_period + 1,
         maximum_change=1.0,
-        method='linear',
+        method="linear",
     )
     # undo padding
-    weights = weights[:(-1*chunk_period+1)]
+    weights = weights[: (-1 * chunk_period + 1)]
 
     # Check that weights[::chunk_period] matches coarse_weights["weights"]
     # Get weights at coarse timesteps
     coarse_timestep_weights = weights[::chunk_period]
 
     # Compare with original coarse weights
-    weights_match = jnp.allclose(coarse_timestep_weights, coarse_weights["weights"], rtol=1e-10)
-    # if not weights_match:
-    #     max_diff = jnp.max(jnp.abs(coarse_timestep_weights - coarse_weights["weights"]))
-    #     raise ValueError(f"Interpolated weights do not match coarse weights. Max difference: {max_diff}")
+    weights_match = jnp.allclose(
+        coarse_timestep_weights, coarse_weights["weights"], rtol=1e-10
+    )
 
     start_index = data_dict["start_idx"]
     end_index = data_dict["end_idx"]
@@ -1237,8 +1299,14 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     local_unix_values = data_dict["unix_values"][start_index:end_index]
 
     reserves = pool.calculate_reserves_with_fees(
-            params, NestedHashabledict(static_dict), data_dict["prices"], start_index=None, local_prices=HashableArrayWrapper(local_prices), weights=HashableArrayWrapper(weights), initial_reserves=HashableArrayWrapper(params["initial_reserves"])
-        )
+        params,
+        NestedHashabledict(static_dict),
+        data_dict["prices"],
+        start_index=None,
+        local_prices=HashableArrayWrapper(local_prices),
+        weights=HashableArrayWrapper(weights),
+        initial_reserves=HashableArrayWrapper(params["initial_reserves"]),
+    )
     value_over_time = jnp.sum(jnp.multiply(reserves, local_prices), axis=-1)
     return_dict = {
         "final_reserves": reserves[-1],

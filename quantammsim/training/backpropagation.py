@@ -27,7 +27,7 @@ else:
 
 import jax.numpy as jnp
 from jax import grad, jit, vmap
-from jax import tree_map
+from jax import tree_map, tree_flatten, tree_unflatten
 from jax import jacfwd, jacrev, jvp
 from jax import devices
 
@@ -37,6 +37,8 @@ import numpy as np
 
 from quantammsim.training.hessian_trace import hessian_trace
 from functools import partial
+
+import optax
 
 
 np.seterr(all="raise")
@@ -354,3 +356,174 @@ def hvp(f, primals, tangents):
         The Hessian-vector product at the specified point.
     """
     return jvp(grad(f), primals, tangents)[1]
+
+
+def update_factory_with_optax(batched_objective, optimizer):
+    """Creates an update function using optax optimizer.
+
+    This function creates a JIT-compiled update function that uses an optax optimizer
+    while maintaining the same interface as the other update functions.
+
+    Parameters
+    ----------
+    batched_objective : callable
+        The objective function to be optimized.
+    optimizer : optax.GradientTransformation
+        The optax optimizer to use.
+
+    Returns
+    -------
+    callable
+        A JIT-compiled update function that takes parameters, start indexes, and learning rate
+        as input and returns a tuple containing:
+        - Updated parameters after one optimizer step
+        - Current objective value
+        - Original parameters (before update)
+        - Computed gradients
+        - Optimizer state (for maintaining across iterations)
+    """
+
+    @jit
+    def update(params, start_indexes, learning_rate, opt_state=None):
+        grads = grad(batched_objective)(params, start_indexes)
+        
+        # Initialize optimizer state if not provided
+        if opt_state is None:
+            opt_state = optimizer.init(params)
+        
+        # Apply optimizer update
+        updates, new_opt_state = optimizer.update(grads, opt_state, params)
+        new_params = optax.apply_updates(params, updates)
+        
+        return (
+            new_params,
+            batched_objective(params, start_indexes),
+            params,
+            grads,
+            new_opt_state,
+        )
+
+    return update
+
+
+def update_with_hessian_factory_with_optax(batched_objective_with_hessian, optimizer):
+    """Creates an update function using optax optimizer with Hessian regularization.
+
+    Similar to update_factory_with_optax, but works with an objective function that includes Hessian
+    trace regularization.
+
+    Parameters
+    ----------
+    batched_objective_with_hessian : callable
+        The objective function with Hessian regularization to be optimized.
+    optimizer : optax.GradientTransformation
+        The optax optimizer to use.
+
+    Returns
+    -------
+    callable
+        A JIT-compiled update function that takes parameters, start indexes, and learning rate
+        as input and returns a tuple containing:
+        - Updated parameters after one optimizer step
+        - Current objective value (including Hessian term)
+        - Original parameters (before update)
+        - Computed gradients
+        - Optimizer state (for maintaining across iterations)
+    """
+
+    @jit
+    def update_with_hessian(params, start_indexes, learning_rate, opt_state=None):
+        grads = grad(batched_objective_with_hessian)(params, start_indexes)
+        
+        # Initialize optimizer state if not provided
+        if opt_state is None:
+            opt_state = optimizer.init(params)
+        
+        # Apply optimizer update
+        updates, new_opt_state = optimizer.update(grads, opt_state, params)
+        new_params = optax.apply_updates(params, updates)
+        
+        return (
+            new_params,
+            batched_objective_with_hessian(params, start_indexes),
+            params,
+            grads,
+            new_opt_state,
+        )
+
+    return update_with_hessian
+
+
+def update_from_partial_training_step_factory_with_optax(
+    partial_training_step,
+    optimizer,
+    train_on_hessian_trace=False,
+    partial_fixed_training_step=None,
+):
+    """Creates a complete update function from a partial training step using optax optimizer.
+
+    This is a high-level factory function that combines the other factories to create
+    a complete update function using optax optimizers.
+
+    Parameters
+    ----------
+    partial_training_step : callable
+        The base training step function to be wrapped.
+    optimizer : optax.GradientTransformation
+        The optax optimizer to use.
+    train_on_hessian_trace : bool, optional
+        Whether to include Hessian trace regularization, by default False.
+    partial_fixed_training_step : callable, optional
+        The function used to compute Hessian trace when train_on_hessian_trace is True.
+        Required if train_on_hessian_trace is True.
+
+    Returns
+    -------
+    callable
+        A JIT-compiled update function that implements the complete training step,
+        either with or without Hessian regularization, using the specified optax optimizer.
+    """
+    batched_partial_training_step = batched_partial_training_step_factory(
+        partial_training_step
+    )
+
+    if train_on_hessian_trace:
+        batched_objective_with_hessian = batched_objective_with_hessian_factory(
+            batched_partial_training_step, partial_fixed_training_step
+        )
+        update = update_with_hessian_factory_with_optax(batched_objective_with_hessian, optimizer)
+    else:
+        batched_objective = batched_objective_factory(batched_partial_training_step)
+        update = update_factory_with_optax(batched_objective, optimizer)
+    return update
+
+
+def create_opt_state_in_axes_dict(opt_state):
+    """Create in_axes dict for optimizer state based on its actual structure."""
+
+    def _create_axes_for_leaf(leaf):
+        print(f"Processing leaf: {leaf}, type: {type(leaf)}")
+        # Handle empty lists specifically - they should not be vmapped over
+        if isinstance(leaf, list) and len(leaf) == 0:
+            print(f"Found empty list, returning None")
+            return None
+        elif hasattr(leaf, "shape") and len(leaf.shape) > 0:
+            # If first dimension >= 1, it's batched (map over first dimension)
+            if leaf.shape[0] >= 1:  # Changed from > 1 to >= 1
+                print(f"Found batched array with shape {leaf.shape}, returning 0")
+                return 0
+            else:
+                print(f"Found non-batched array with shape {leaf.shape}, returning None")
+                return None
+        elif hasattr(leaf, "__len__") and len(leaf) == 0:
+            # Any empty sequence - don't map over
+            print(f"Found empty sequence, returning None")
+            return None
+        else:
+            # Other types (like EmptyState) - don't map over
+            print(f"Found other type {type(leaf)}, returning None")
+            return None
+
+    result = tree_map(_create_axes_for_leaf, opt_state)
+    print(f"Final result: {result}")
+    return result
