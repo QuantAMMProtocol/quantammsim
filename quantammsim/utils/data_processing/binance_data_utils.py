@@ -12,6 +12,8 @@ def concat_csv_files(root, save_root, token1, token2, prefix, postfix, years_arr
             root + prefix + token1 + token2 + "_" + year + postfix + "*.csv"
         )
     dataframes = []
+    # Create save directory if it doesn't exist
+    os.makedirs(save_root, exist_ok=True)
 
     for filename in filenames:
         file_path = filename
