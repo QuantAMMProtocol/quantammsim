@@ -31,8 +31,8 @@ from optuna.visualization import plot_optimization_history, plot_param_importanc
 import numpy as np
 
 
-from typing import Dict, Any
-
+from typing import Dict, Any, Generic, TypeVar
+T = TypeVar('T')      # Declare type variable
 
 def create_trial_params(
     trial: Any,  # optuna.Trial, but avoid direct dependency
@@ -500,6 +500,32 @@ class NestedHashabledict(dict):
         if not isinstance(other, dict):
             return False
         return self.__key() == NestedHashabledict(other).__key()
+
+
+class HashableArrayWrapper(Generic[T]):
+    def __init__(self, val: T):
+        self.val = val
+
+    def __getattribute__(self, prop):
+        if prop == "val" or prop == "__hash__" or prop == "__eq__":
+            return super(HashableArrayWrapper, self).__getattribute__(prop)
+        return getattr(self.val, prop)
+
+    def __getitem__(self, key):
+        return self.val[key]
+
+    def __setitem__(self, key, val):
+        self.val[key] = val
+
+    def __hash__(self):
+        return hash(self.val.tobytes())
+
+    def __eq__(self, other):
+        if isinstance(other, HashableArrayWrapper):
+            return self.__hash__() == other.__hash__()
+
+        f = getattr(self.val, "__eq__")
+        return f(self, other)
 
 
 def get_run_location(run_fingerprint):
