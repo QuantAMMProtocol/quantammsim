@@ -27,7 +27,7 @@ else:
 
 import jax.numpy as jnp
 from jax import grad, jit, vmap
-from jax import tree_map, tree_flatten, tree_unflatten
+from jax.tree_util import tree_map, tree_flatten, tree_unflatten
 from jax import jacfwd, jacrev, jvp
 from jax import devices
 
@@ -508,7 +508,6 @@ def create_opt_state_in_axes_dict(opt_state):
         elif hasattr(leaf, "shape") and len(leaf.shape) > 0:
             # If first dimension >= 1, it's batched (map over first dimension)
             if leaf.shape[0] >= 1:  # Changed from > 1 to >= 1
-                print(f"Found batched array with shape {leaf.shape}, returning 0")
                 return 0
             else:
                 return None
@@ -520,3 +519,94 @@ def create_opt_state_in_axes_dict(opt_state):
             return None
 
     return tree_map(_create_axes_for_leaf, opt_state)
+
+
+def _create_base_optimizer(optimizer_type, learning_rate):
+    """Create a base optimizer with the given learning rate."""
+    # note that learning_rate can be a float or a schedule
+    if optimizer_type == "adam":
+        return optax.adam(learning_rate=learning_rate)
+    elif optimizer_type == "sgd":
+        return optax.sgd(learning_rate=learning_rate)
+    else:
+        raise ValueError(f"Unknown optimizer type: {optimizer_type}")
+
+
+def _create_lr_schedule(settings):
+    """Create a learning rate schedule based on settings."""
+    base_lr = settings.get("base_lr", 0.001)
+    min_lr = settings.get("min_lr", 1e-6)
+    n_iterations = settings.get("n_iterations", 1000)
+    schedule_type = settings.get("lr_schedule_type", "constant")
+
+    if schedule_type == "constant":
+        return base_lr
+
+    elif schedule_type == "cosine":
+        return optax.cosine_decay_schedule(
+            init_value=base_lr, 
+            decay_steps=n_iterations,  # Use n_iterations
+            end_value=min_lr
+        )
+
+    elif schedule_type == "exponential":
+        # Calculate decay_rate from decay_lr_ratio
+        # If we want to decay from base_lr to min_lr over n_iterations steps
+        # with exponential decay, we need to solve: min_lr = base_lr * (decay_rate)^n_iterations
+        # So: decay_rate = (min_lr / base_lr)^(1/n_iterations)
+        decay_rate = (min_lr / base_lr) ** (1.0 / n_iterations)
+        return optax.exponential_decay(
+            init_value=base_lr, 
+            transition_steps=n_iterations,  # Use n_iterations
+            decay_rate=decay_rate
+        )
+
+    elif schedule_type == "warmup_cosine":
+        warmup_steps = settings.get("warmup_steps", 100)
+        return optax.warmup_cosine_decay_schedule(
+            init_value=base_lr,
+            peak_value=base_lr,
+            warmup_steps=warmup_steps,
+            decay_steps=n_iterations,  # Use n_iterations
+            end_value=min_lr
+        )
+
+    else:
+        raise ValueError(f"Unknown learning rate schedule type: {schedule_type}")
+
+
+def create_optimizer_chain(run_fingerprint):
+    settings = run_fingerprint["optimisation_settings"]
+    base_lr = settings.get("base_lr", 0.001)
+
+    # Create base optimizer with LR=1.0 (will be scaled by schedule)
+    if settings["optimiser"] == "adam":
+        base_optimizer = optax.adam(learning_rate=1.0)
+    elif settings["optimiser"] == "sgd":
+        base_optimizer = optax.sgd(learning_rate=1.0)
+    else:
+        raise ValueError(f"Unknown optimizer: {settings['optimiser']}")
+
+    # Create vanilla LR schedule
+    lr_schedule = _create_lr_schedule(settings)
+
+    # Build base optimizer chain
+    optimizer_chain = optax.chain(optax.scale(lr_schedule), base_optimizer)
+
+    # Add plateau reduction if enabled
+    if settings.get("use_plateau_decay", False):
+        min_lr = settings.get("min_lr", 1e-6)
+        plateau_reduction = optax.contrib.reduce_on_plateau(
+            factor=settings.get("decay_lr_ratio", 0.5),
+            patience=settings.get("decay_lr_plateau", 10),
+            min_scale=min_lr / base_lr,
+        )
+        optimizer_chain = optax.chain(plateau_reduction, optimizer_chain)
+
+    # Add gradient clipping if enabled
+    if settings.get("use_gradient_clipping", False):
+        optimizer_chain = optax.chain(
+            optax.clip_by_global_norm(settings["clip_norm"]), optimizer_chain
+        )
+
+    return optimizer_chain

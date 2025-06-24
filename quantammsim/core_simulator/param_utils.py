@@ -1731,3 +1731,31 @@ def generate_params_combinations(
         for i_v_d in initial_values_dict_combinations
     ]
     return filled_param_combinations, initial_values_dict_combinations
+
+
+def process_initial_values(
+    initial_values_dict, key, n_assets, n_parameter_sets, force_scalar=False
+):
+    if key in initial_values_dict:
+        initial_value = initial_values_dict[key]
+        if isinstance(initial_value, (np.ndarray, jnp.ndarray, list)):
+            initial_value = np.array(initial_value)
+            if force_scalar:
+                return np.array([initial_value] * n_parameter_sets)
+            elif initial_value.size == n_assets:
+                return np.array([initial_value] * n_parameter_sets)
+            elif initial_value.size == 1:
+                return np.array([[initial_value] * n_assets] * n_parameter_sets)
+            elif initial_value.shape == (n_parameter_sets, n_assets):
+                return initial_value
+            else:
+                raise ValueError(
+                    f"{key} must be a singleton or a vector of length n_assets or a matrix of shape (n_parameter_sets, n_assets)"
+                )
+        else:
+            if force_scalar:
+                return np.array([initial_value] * n_parameter_sets)
+            else:
+                return np.array([[initial_value] * n_assets] * n_parameter_sets)
+    else:
+        raise ValueError(f"initial_values_dict must contain {key}")

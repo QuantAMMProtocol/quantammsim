@@ -5,7 +5,7 @@ from itertools import product
 from tqdm import tqdm
 import math
 import gc
-
+import os
 from jax.tree_util import Partial
 from jax import jit, vmap, random
 from jax import clear_caches, clear_backends
@@ -31,7 +31,8 @@ from quantammsim.core_simulator.param_utils import (
     recursive_default_set,
     check_run_fingerprint,
     memory_days_to_logit_lamb,
-    load_or_init,
+    retrieve_best,
+    process_initial_values,
 )
 
 from quantammsim.core_simulator.result_exporter import (
@@ -63,6 +64,7 @@ def train_on_historic_data(
     force_init=False,
     price_data=None,
     verbose=True,
+    run_location=None,
 ):
     """
     Train a model on historical price data using JAX.
@@ -84,6 +86,8 @@ def train_on_historic_data(
         The historical price data to train on. If None, data will be loaded from a file.
     verbose : bool, optional
         If True, print detailed progress information (default is True).
+    run_location : str, optional
+        The location of the run to load from. If None, the run will be initialized.
 
     Returns:
     --------
@@ -177,48 +181,43 @@ def train_on_historic_data(
 
     assert bout_length_window > 0
 
-    params, loaded = load_or_init(
-        run_fingerprint,
-        inital_params,
-        n_tokens,
-        0,
-        chunk_period=chunk_period,
-        force_init=force_init,
-        load_method="last",
-        n_parameter_sets=n_parameter_sets,
-    )
+    if run_location is None:
+        run_location = './results/' + get_run_location(run_fingerprint) + ".json"
 
+    if os.path.isfile(run_location):
+        print("Loading from: ", run_location)
+        print("found file")
+        params, step = retrieve_best(run_location, "best_train_objective", False, None)
+        loaded = True
+    else:
+        loaded = False
     # Create pool
     pool = create_pool(rule)
 
     # pool must be trainable
     assert pool.is_trainable(), "The selected pool must be trainable for this operation"
-    
+
     if not loaded:
         params = pool.init_parameters(
             inital_params, run_fingerprint, n_tokens, n_parameter_sets
         )
-        loaded = False
-
-    if verbose:
-        print("Using Loaded Params?: ", loaded)
-
-    if loaded:
-        offset = params["step"] + 1
+        offset = 0
+    else:
+        if verbose:
+            print("Using Loaded Params?: ", loaded)
+        offset = step + 1
         if verbose:
             print("loaded params ", params)
             print("starting at step ", offset)
         best_train_objective = np.array(params["objective"])
-        params.pop("step")
-        params.pop("test_objective")
-        params.pop("train_objective")
-        params.pop("hessian_trace")
-        local_learning_rate = np.array(params["local_learning_rate"])
-        params.pop("local_learning_rate")
-        iterations_since_improvement = np.array(params["iterations_since_improvement"])
-        params.pop("iterations_since_improvement")
-    else:
-        offset = 0
+        for key in ["step", "test_objective", "train_objective", "hessian_trace", "local_learning_rate", "iterations_since_improvement"]:
+            if key in params:
+                params.pop(key)
+        for key, value in params.items():
+            params[key] = process_initial_values(
+                params, key, n_assets, n_parameter_sets, force_scalar=True
+            )
+        params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale=0.1)
 
     params_in_axes_dict = pool.make_vmap_in_axes(params)
     base_static_dict = {
