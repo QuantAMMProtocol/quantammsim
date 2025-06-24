@@ -211,7 +211,7 @@ class AbstractPool(ABC):
         pass
 
     def add_noise(
-        self, params: Dict[str, np.ndarray], noise: str, n_parameter_sets: int
+        self, params: Dict[str, np.ndarray], noise: str, n_parameter_sets: int, noise_scale: float = 1.0
     ) -> Dict[str, jnp.ndarray]:
         if n_parameter_sets > 1:
             if noise == "gaussian":
@@ -219,7 +219,7 @@ class AbstractPool(ABC):
                     if key != "subsidary_params" and key != "initial_weights_logits":
                         # Leave first row of each jax parameter unaltered, add
                         # gaussian noise to subsequent rows.
-                        params[key][1:] = params[key][1:] + np.random.randn(
+                        params[key][1:] = params[key][1:] + noise_scale * np.random.randn(
                             *params[key][1:].shape
                         )
         for key in params.keys():
@@ -259,7 +259,7 @@ class AbstractPool(ABC):
         pass
 
     @classmethod
-    def process_parameters(cls, update_rule_parameters, n_assets):
+    def process_parameters(cls, update_rule_parameters, run_fingerprint):
         """
         Default implementation for processing pool parameters from web interface input.
 
@@ -268,9 +268,10 @@ class AbstractPool(ABC):
 
         Parameters
         ----------
-        update_rule_parameters : List[UpdateRuleParameter]
-            List of parameters from the web interface
-
+        update_rule_parameters : Dict[str, Any]
+            Dict of parameters from the web interface
+        run_fingerprint : Dict[str, Any]
+            Run fingerprint dictionary
         Returns
         -------
         Dict[str, np.ndarray]
