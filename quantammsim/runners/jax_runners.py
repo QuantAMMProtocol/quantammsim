@@ -188,7 +188,7 @@ def train_on_historic_data(
         print("Loading from: ", run_location)
         print("found file")
         params, step = retrieve_best(run_location, "best_train_objective", False, None)
-        params["substitute_params"] = None
+        params["subsidary_params"] = []
         loaded = True
     else:
         loaded = False
