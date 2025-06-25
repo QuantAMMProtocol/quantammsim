@@ -188,7 +188,6 @@ def train_on_historic_data(
         print("Loading from: ", run_location)
         print("found file")
         params, step = retrieve_best(run_location, "best_train_objective", False, None)
-        params["subsidary_params"] = []
         loaded = True
     else:
         loaded = False
@@ -218,6 +217,7 @@ def train_on_historic_data(
             params[key] = process_initial_values(
                 params, key, n_assets, n_parameter_sets, force_scalar=True
             )
+        params["subsidary_params"] = []
         params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale=0.1)
 
     params_in_axes_dict = pool.make_vmap_in_axes(params)
