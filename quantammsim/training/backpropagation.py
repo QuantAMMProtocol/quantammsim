@@ -26,7 +26,7 @@ else:
 # print(devices("cpu"))
 
 import jax.numpy as jnp
-from jax import grad, jit, vmap
+from jax import grad, value_and_grad, jit, vmap
 from jax.tree_util import tree_map, tree_flatten, tree_unflatten
 from jax import jacfwd, jacrev, jvp
 from jax import devices
@@ -192,10 +192,10 @@ def update_factory(batched_objective):
 
     @jit
     def update(params, start_indexes, learning_rate):
-        grads = grad(batched_objective)(params, start_indexes)
+        objective_value, grads = value_and_grad(batched_objective)(params, start_indexes)
         return (
             tree_map(lambda p, g: p + learning_rate * g, params, grads),
-            batched_objective(params, start_indexes),
+            objective_value,
             params,
             grads,
         )
@@ -227,10 +227,10 @@ def update_with_hessian_factory(batched_objective_with_hessian):
 
     @jit
     def update_with_hessian(params, start_indexes, learning_rate):
-        grads = grad(batched_objective_with_hessian)(params, start_indexes)
+        objective_value, grads = value_and_grad(batched_objective_with_hessian)(params, start_indexes)
         return (
             tree_map(lambda p, g: p + learning_rate * g, params, grads),
-            batched_objective_with_hessian(params, start_indexes),
+            objective_value,
             params,
             grads,
         )
@@ -262,10 +262,10 @@ def update_singleton_factory(objective):
 
     @jit
     def update_singleton(params, start_indexes, learning_rate):
-        grads = grad(objective)(params, start_indexes)
+        objective_value, grads = value_and_grad(objective)(params, start_indexes)
         return (
             tree_map(lambda p, g: p + learning_rate * g, params, grads),
-            objective(params, start_indexes),
+            objective_value,
             params,
             grads,
         )
@@ -385,8 +385,7 @@ def update_factory_with_optax(batched_objective, optimizer):
 
     @jit
     def update(params, start_indexes, learning_rate, opt_state=None):
-        grads = grad(batched_objective)(params, start_indexes)
-        
+        objective_value, grads = value_and_grad(batched_objective)(params, start_indexes)        
         # Initialize optimizer state if not provided
         if opt_state is None:
             opt_state = optimizer.init(params)
@@ -397,7 +396,7 @@ def update_factory_with_optax(batched_objective, optimizer):
         
         return (
             new_params,
-            batched_objective(params, start_indexes),
+            objective_value,
             params,
             grads,
             new_opt_state,
@@ -433,7 +432,7 @@ def update_with_hessian_factory_with_optax(batched_objective_with_hessian, optim
 
     @jit
     def update_with_hessian(params, start_indexes, learning_rate, opt_state=None):
-        grads = grad(batched_objective_with_hessian)(params, start_indexes)
+        objective_value, grads = value_and_grad(batched_objective_with_hessian)(params, start_indexes)
         
         # Initialize optimizer state if not provided
         if opt_state is None:
@@ -445,7 +444,7 @@ def update_with_hessian_factory_with_optax(batched_objective_with_hessian, optim
         
         return (
             new_params,
-            batched_objective_with_hessian(params, start_indexes),
+            objective_value,
             params,
             grads,
             new_opt_state,
