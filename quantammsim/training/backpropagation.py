@@ -389,11 +389,13 @@ def update_factory_with_optax(batched_objective, optimizer):
         # Initialize optimizer state if not provided
         if opt_state is None:
             opt_state = optimizer.init(params)
-        
+
+        neg_grads = tree_map(lambda g: -g, grads)
+
         # Apply optimizer update
-        updates, new_opt_state = optimizer.update(grads, opt_state, params)
+        updates, new_opt_state = optimizer.update(neg_grads, opt_state, params)
         new_params = optax.apply_updates(params, updates)
-        
+
         return (
             new_params,
             objective_value,
@@ -433,13 +435,14 @@ def update_with_hessian_factory_with_optax(batched_objective_with_hessian, optim
     @jit
     def update_with_hessian(params, start_indexes, learning_rate, opt_state=None):
         objective_value, grads = value_and_grad(batched_objective_with_hessian)(params, start_indexes)
-        
         # Initialize optimizer state if not provided
         if opt_state is None:
             opt_state = optimizer.init(params)
         
+        neg_grads = tree_map(lambda g: -g, grads)
+
         # Apply optimizer update
-        updates, new_opt_state = optimizer.update(grads, opt_state, params)
+        updates, new_opt_state = optimizer.update(neg_grads, opt_state, params)
         new_params = optax.apply_updates(params, updates)
         
         return (
