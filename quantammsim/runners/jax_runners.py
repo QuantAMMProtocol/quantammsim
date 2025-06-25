@@ -311,33 +311,33 @@ def train_on_historic_data(
     )
 
     # Create static dictionaries for training and testing
-    reserves_values_train_static_dict = base_static_dict.copy()
-    reserves_values_train_static_dict["return_val"] = "reserves_and_values"
-    reserves_values_train_static_dict["bout_length"] = data_dict["bout_length"]
-    partial_forward_pass_nograd_batch_reserves_values_train = jit(
-        vmap(
-            Partial(
-                forward_pass_nograd,
-                static_dict=Hashabledict(reserves_values_train_static_dict),
-                pool=pool,
-            ),
-            in_axes=nograd_in_axes,
-        )
-    )
+    # reserves_values_train_static_dict = base_static_dict.copy()
+    # reserves_values_train_static_dict["return_val"] = "reserves_and_values"
+    # reserves_values_train_static_dict["bout_length"] = data_dict["bout_length"]
+    # partial_forward_pass_nograd_batch_reserves_values_train = jit(
+    #     vmap(
+    #         Partial(
+    #             forward_pass_nograd,
+    #             static_dict=Hashabledict(reserves_values_train_static_dict),
+    #             pool=pool,
+    #         ),
+    #         in_axes=nograd_in_axes,
+    #     )
+    # )
 
-    reserves_values_test_static_dict = base_static_dict.copy()
-    reserves_values_test_static_dict["return_val"] = "reserves_and_values"
-    reserves_values_test_static_dict["bout_length"] = data_dict["bout_length_test"]
-    partial_forward_pass_nograd_batch_reserves_values_test = jit(
-        vmap(
-            Partial(
-                forward_pass_nograd,
-                static_dict=Hashabledict(reserves_values_test_static_dict),
-                pool=pool,
-            ),
-            in_axes=nograd_in_axes,
-        )
-    )
+    # reserves_values_test_static_dict = base_static_dict.copy()
+    # reserves_values_test_static_dict["return_val"] = "reserves_and_values"
+    # reserves_values_test_static_dict["bout_length"] = data_dict["bout_length_test"]
+    # partial_forward_pass_nograd_batch_reserves_values_test = jit(
+    #     vmap(
+    #         Partial(
+    #             forward_pass_nograd,
+    #             static_dict=Hashabledict(reserves_values_test_static_dict),
+    #             pool=pool,
+    #         ),
+    #         in_axes=nograd_in_axes,
+    #     )
+    # )
 
     best_train_objective = -100.0
     local_learning_rate = run_fingerprint["optimisation_settings"]["base_lr"]
@@ -438,16 +438,16 @@ def train_on_historic_data(
                 (data_dict["start_idx_test"], 0),
                 data_dict["prices_test"],
             )
-            train_outputs = partial_forward_pass_nograd_batch_reserves_values_train(
-                params,
-                (data_dict["start_idx"], 0),
-                data_dict["prices"],
-            )
-            test_outputs = partial_forward_pass_nograd_batch_reserves_values_test(
-                params,
-                (data_dict["start_idx_test"], 0),
-                data_dict["prices_test"],
-            )
+            # train_outputs = partial_forward_pass_nograd_batch_reserves_values_train(
+            #     params,
+            #     (data_dict["start_idx"], 0),
+            #     data_dict["prices"],
+            # )
+            # test_outputs = partial_forward_pass_nograd_batch_reserves_values_test(
+            #     params,
+            #     (data_dict["start_idx_test"], 0),
+            #     data_dict["prices_test"],
+            # )
 
             paramSteps.append(deepcopy(params))
             trainingSteps.append(np.array(train_objective.copy()))
