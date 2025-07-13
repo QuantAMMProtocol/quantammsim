@@ -542,7 +542,7 @@ def _create_lr_schedule(settings):
     schedule_type = settings.get("lr_schedule_type", "constant")
 
     if schedule_type == "constant":
-        return base_lr
+        return optax.constant_schedule(base_lr)
 
     elif schedule_type == "cosine":
         return optax.cosine_decay_schedule(
@@ -581,14 +581,14 @@ def create_optimizer_chain(run_fingerprint):
     settings = run_fingerprint["optimisation_settings"]
     base_lr = settings["base_lr"]
 
-    # Create base optimizer with LR=1.0 (will be scaled by schedule)
+    # Create base optimizer with lr=base_lr (will be scaled by schedule)
     base_optimizer = _create_base_optimizer(settings["optimiser"], base_lr)
 
     # Create vanilla LR schedule
     lr_schedule = _create_lr_schedule(settings)
 
     # Build base optimizer chain
-    optimizer_chain = optax.chain(base_optimizer, optax.scale(lr_schedule))
+    optimizer_chain = optax.chain(base_optimizer, optax.scale_by_schedule(lr_schedule))
 
     # Add plateau reduction if enabled
     if settings["use_plateau_decay"]:
@@ -601,7 +601,7 @@ def create_optimizer_chain(run_fingerprint):
     # Add gradient clipping if enabled
     if settings["use_gradient_clipping"]:
         optimizer_chain = optax.chain(
-            optimizer_chain, optax.clip_by_global_norm(settings["clip_norm"])
+            optax.clip_by_global_norm(settings["clip_norm"], optimizer_chain)
         )
 
     return optimizer_chain
