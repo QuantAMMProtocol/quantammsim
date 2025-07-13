@@ -26,6 +26,7 @@ from quantammsim.training.backpropagation import (
     update_from_partial_training_step_factory,
     update_from_partial_training_step_factory_with_optax,
     create_opt_state_in_axes_dict,
+    create_optimizer_chain,
 )
 from quantammsim.core_simulator.param_utils import (
     recursive_default_set,
@@ -211,9 +212,11 @@ def train_on_historic_data(
             print("loaded params ", params)
             print("starting at step ", offset)
         best_train_objective = np.array(params["objective"])
-        for key in ["step", "test_objective", "train_objective", "hessian_trace", "local_learning_rate", "iterations_since_improvement"]:
+        for key in ["step", "test_objective", "train_objective", "hessian_trace", "local_learning_rate", "iterations_since_improvement", "objective"]:
             if key in params:
                 params.pop(key)
+        if run_fingerprint["optimisation_settings"]["method"] == "optuna":
+            n_parameter_sets = 1
         for key, value in params.items():
             params[key] = process_initial_values(
                 params, key, n_assets, n_parameter_sets, force_scalar=True
@@ -356,7 +359,7 @@ def train_on_historic_data(
             import optax
 
             # Create Adam optimizer with the specified learning rate
-            optimizer = optax.adam(learning_rate=local_learning_rate)
+            optimizer = create_optimizer_chain(run_fingerprint)
 
             # Initialize optimizer state for each parameter set
             # For multiple parameter sets, each needs its own optimizer state
@@ -417,7 +420,6 @@ def train_on_historic_data(
                 key=random_key,
                 optimisation_settings=run_fingerprint["optimisation_settings"],
             )
-
             if run_fingerprint["optimisation_settings"]["optimiser"] == "adam":
                 # Adam update with state maintenance
                 params, objective_value, old_params, grads, opt_state = update(
@@ -428,7 +430,6 @@ def train_on_historic_data(
                 params, objective_value, old_params, grads = update(
                     params, start_indexes, local_learning_rate
                 )
-
             train_objective = partial_forward_pass_nograd_returns_train(
                 params,
                 (data_dict["start_idx"], 0),
@@ -593,7 +594,6 @@ def train_on_historic_data(
                     (data_dict["start_idx"], 0),
                     data_dict["prices"],
                 )
-
                 # Calculate objectives for each evaluation point through slicing
                 train_objectives = []
                 for start_offset in evaluation_starts:
@@ -737,7 +737,6 @@ def train_on_historic_data(
 
         # Run optimization
         optuna_manager.optimize(objective)
-
         if verbose:
             if run_fingerprint["optimisation_settings"]["optuna_settings"][
                 "multi_objective"
