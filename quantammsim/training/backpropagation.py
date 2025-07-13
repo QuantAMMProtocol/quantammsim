@@ -546,9 +546,9 @@ def _create_lr_schedule(settings):
 
     elif schedule_type == "cosine":
         return optax.cosine_decay_schedule(
-            init_value=base_lr, 
+            init_value=base_lr,
             decay_steps=n_iterations,  # Use n_iterations
-            end_value=min_lr
+            alpha=min_lr / base_lr,
         )
 
     elif schedule_type == "exponential":
@@ -564,7 +564,7 @@ def _create_lr_schedule(settings):
         )
 
     elif schedule_type == "warmup_cosine":
-        warmup_steps = settings.get("warmup_steps", 100)
+        warmup_steps = settings["warmup_steps"]
         return optax.warmup_cosine_decay_schedule(
             init_value=base_lr,
             peak_value=base_lr,
@@ -579,36 +579,29 @@ def _create_lr_schedule(settings):
 
 def create_optimizer_chain(run_fingerprint):
     settings = run_fingerprint["optimisation_settings"]
-    base_lr = settings.get("base_lr", 0.001)
+    base_lr = settings["base_lr"]
 
     # Create base optimizer with LR=1.0 (will be scaled by schedule)
-    if settings["optimiser"] == "adam":
-        base_optimizer = optax.adam(learning_rate=1.0)
-    elif settings["optimiser"] == "sgd":
-        base_optimizer = optax.sgd(learning_rate=1.0)
-    else:
-        raise ValueError(f"Unknown optimizer: {settings['optimiser']}")
+    base_optimizer = _create_base_optimizer(settings["optimiser"], base_lr)
 
     # Create vanilla LR schedule
     lr_schedule = _create_lr_schedule(settings)
 
     # Build base optimizer chain
-    optimizer_chain = optax.chain(optax.scale(lr_schedule), base_optimizer)
+    optimizer_chain = optax.chain(base_optimizer, optax.scale(lr_schedule))
 
     # Add plateau reduction if enabled
-    if settings.get("use_plateau_decay", False):
-        min_lr = settings.get("min_lr", 1e-6)
+    if settings["use_plateau_decay"]:
         plateau_reduction = optax.contrib.reduce_on_plateau(
-            factor=settings.get("decay_lr_ratio", 0.5),
-            patience=settings.get("decay_lr_plateau", 10),
-            min_scale=min_lr / base_lr,
+            factor=settings["decay_lr_ratio"],
+            patience=settings["decay_lr_plateau"],
         )
-        optimizer_chain = optax.chain(plateau_reduction, optimizer_chain)
+        optimizer_chain = optax.chain(optimizer_chain, plateau_reduction)
 
     # Add gradient clipping if enabled
-    if settings.get("use_gradient_clipping", False):
+    if settings["use_gradient_clipping"]:
         optimizer_chain = optax.chain(
-            optax.clip_by_global_norm(settings["clip_norm"]), optimizer_chain
+            optimizer_chain, optax.clip_by_global_norm(settings["clip_norm"])
         )
 
     return optimizer_chain
