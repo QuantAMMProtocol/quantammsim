@@ -23,6 +23,11 @@ run_fingerprint_defaults = {
         "initial_random_key": 0,
         "method": "gradient_descent",
         "force_scalar": False,
+        "use_plateau_decay": False,
+        "use_gradient_clipping": False,
+        "clip_norm": 10.0,
+        "lr_schedule_type": "constant",
+        "warmup_steps": 100,
     },
     "initial_memory_length": 10.0,
     "initial_memory_length_delta": 0.0,
@@ -51,11 +56,8 @@ run_fingerprint_defaults = {
     "do_arb": True,
     "max_memory_days": 365,
     "noise_trader_ratio": 0.0,
-    "minimum_weight": None, # will be set to 0.1 / n_assets
+    "minimum_weight": None,  # will be set to 0.1 / n_assets
     # Gradient clipping configuration for stable training
-    "use_gradient_clipping": True,
-    "clip_norm": 10.0,
-    "clip_by_param_type": True,
 }
 
 
