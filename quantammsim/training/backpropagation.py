@@ -566,11 +566,11 @@ def _create_lr_schedule(settings):
     elif schedule_type == "warmup_cosine":
         warmup_steps = settings["warmup_steps"]
         return optax.warmup_cosine_decay_schedule(
-            init_value=base_lr,
+            init_value=min_lr,
             peak_value=base_lr,
             warmup_steps=warmup_steps,
             decay_steps=n_iterations,  # Use n_iterations
-            end_value=min_lr
+            end_value=min_lr,
         )
 
     else:
