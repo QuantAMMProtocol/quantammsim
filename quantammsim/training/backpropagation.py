@@ -393,7 +393,7 @@ def update_factory_with_optax(batched_objective, optimizer):
         neg_grads = tree_map(lambda g: -g, grads)
 
         # Apply optimizer update
-        updates, new_opt_state = optimizer.update(neg_grads, opt_state, params)
+        updates, new_opt_state = optimizer.update(neg_grads, opt_state, params, value=-objective_value)
         new_params = optax.apply_updates(params, updates)
 
         return (
@@ -442,7 +442,7 @@ def update_with_hessian_factory_with_optax(batched_objective_with_hessian, optim
         neg_grads = tree_map(lambda g: -g, grads)
 
         # Apply optimizer update
-        updates, new_opt_state = optimizer.update(neg_grads, opt_state, params)
+        updates, new_opt_state = optimizer.update(neg_grads, opt_state, params, value=-objective_value)
         new_params = optax.apply_updates(params, updates)
         
         return (
