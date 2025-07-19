@@ -392,8 +392,13 @@ def update_factory_with_optax(batched_objective, optimizer):
 
         neg_grads = tree_map(lambda g: -g, grads)
 
-        # Apply optimizer update
-        updates, new_opt_state = optimizer.update(neg_grads, opt_state, params, value=-objective_value)
+        # Apply optimizer update, cast to float32 to avoid type errors as optax doesn't use float64 internally for state
+        updates, new_opt_state = optimizer.update(
+            neg_grads,
+            opt_state,
+            params,
+            value=jnp.array(-objective_value, dtype=jnp.float32),
+        )
         new_params = optax.apply_updates(params, updates)
 
         return (
@@ -438,13 +443,18 @@ def update_with_hessian_factory_with_optax(batched_objective_with_hessian, optim
         # Initialize optimizer state if not provided
         if opt_state is None:
             opt_state = optimizer.init(params)
-        
+
         neg_grads = tree_map(lambda g: -g, grads)
 
-        # Apply optimizer update
-        updates, new_opt_state = optimizer.update(neg_grads, opt_state, params, value=-objective_value)
+        # Apply optimizer update, cast to float32 to avoid type errors as optax doesn't use float64 internally for state
+        updates, new_opt_state = optimizer.update(
+            neg_grads,
+            opt_state,
+            params,
+            value=jnp.array(-objective_value, dtype=jnp.float32),
+        )
         new_params = optax.apply_updates(params, updates)
-        
+
         return (
             new_params,
             objective_value,
