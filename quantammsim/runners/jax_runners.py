@@ -42,7 +42,8 @@ from quantammsim.core_simulator.result_exporter import (
 )
 
 from quantammsim.runners.jax_runner_utils import (
-    nan_rollback,
+    nan_param_reinit,
+    has_nan_grads,
     Hashabledict,
     NestedHashabledict,
     HashableArrayWrapper,
@@ -128,7 +129,7 @@ def train_on_historic_data(
         run_fingerprint["optimisation_settings"]["initial_random_key"]
     )
 
-    inital_params = {
+    initial_params = {
         "initial_memory_length": run_fingerprint["initial_memory_length"],
         "initial_memory_length_delta": run_fingerprint["initial_memory_length_delta"],
         "initial_k_per_day": run_fingerprint["initial_k_per_day"],
@@ -201,7 +202,7 @@ def train_on_historic_data(
 
     if not loaded:
         params = pool.init_parameters(
-            inital_params, run_fingerprint, n_tokens, n_parameter_sets
+            initial_params, run_fingerprint, n_tokens, n_parameter_sets
         )
         offset = 0
     else:
@@ -217,6 +218,7 @@ def train_on_historic_data(
                 params.pop(key)
         if run_fingerprint["optimisation_settings"]["method"] == "optuna":
             n_parameter_sets = 1
+            params["initial_weights"] = jnp.array([0.97 / 3, 0.97 / 3, 0.03, 0.97 / 3])
         for key, value in params.items():
             params[key] = process_initial_values(
                 params, key, n_assets, n_parameter_sets, force_scalar=True
@@ -430,6 +432,18 @@ def train_on_historic_data(
                 params, objective_value, old_params, grads = update(
                     params, start_indexes, local_learning_rate
                 )
+
+            params = nan_param_reinit(
+                params,
+                grads,
+                pool,
+                initial_params,
+                run_fingerprint,
+                n_tokens,
+                n_parameter_sets,
+            )
+
+
             train_objective = partial_forward_pass_nograd_returns_train(
                 params,
                 (data_dict["start_idx"], 0),
@@ -586,7 +600,7 @@ def train_on_historic_data(
                 # param_config["log_k"]["scalar"] = False
                 # param_config["k_per_day"]["scalar"] = False
                 trial_params = create_trial_params(
-                    trial, param_config, params, run_fingerprint, n_assets
+                    trial, {}, params, run_fingerprint, n_assets, expand_around=True
                 )
                 # Training evaluation
                 train_outputs = partial_forward_pass_nograd_batch_reserves_values_train(
