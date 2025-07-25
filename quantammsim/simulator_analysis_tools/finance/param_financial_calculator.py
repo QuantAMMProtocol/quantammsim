@@ -160,6 +160,8 @@ def run_pool_simulation(simulationRunDto):
         "numeraire": getattr(simulationRunDto.pool, "poolNumeraireCoinCode", None),
         "chunk_period": int(chunk_period[0]),
         "weight_interpolation_period": int(weight_interpolation_period[0]),
+        "arb_quality": float(next((urp.value[0] for urp in update_rule_parameters if urp.name == "arb_quality"), 0.0)),
+        "noise_trader_ratio": float(next((urp.value[0] for urp in update_rule_parameters if urp.name == "noise_trader_ratio"), 0.0)),
     }
 
     pool = create_pool(update_rule)
