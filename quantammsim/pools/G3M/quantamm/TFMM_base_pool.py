@@ -273,6 +273,7 @@ class TFMMBasePool(AbstractPool):
             trade_array,
             run_fingerprint["do_trades"],
             run_fingerprint["do_arb"],
+            run_fingerprint["noise_trader_ratio"],
         )
         return reserves
 
