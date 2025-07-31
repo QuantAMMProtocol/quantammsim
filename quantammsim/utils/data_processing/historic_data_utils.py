@@ -27,6 +27,12 @@ from quantammsim.utils.data_processing.amalgamated_data_utils import (
     fill_missing_rows_with_historical_data,
     forward_fill_ohlcv_data,
 )
+from quantammsim.utils.data_processing.cmc_data_utils import (
+    fill_missing_rows_with_cmc_historical_data,
+)
+from quantammsim.utils.data_processing.aerodrome_data_utils import (
+    fill_missing_rows_with_aerodrome_data,
+)
 from quantammsim.utils.data_processing.minute_daily_conversion_utils import (
     calculate_annualised_daily_volatility_from_minute_data,
     expand_daily_to_minute_data,
@@ -80,6 +86,9 @@ def start_and_end_calcs(
         if oracle_values is not None:
             oracle_values = oracle_values[remainder_idx:]
 
+        print("start_date: ", start_date)
+        print("end_date: ", end_date)
+        print("unix_values: ", unix_values)
         start_idx = np.where(unix_values == start_date)[0][0]
         end_idx = np.where(unix_values == end_date)[0][0] + 1
     else:
@@ -779,7 +788,7 @@ def update_historic_data(token, root):
     filled_timestamps = {}
     concated_df = get_binance_vision_data(token, "USDT", root)
     if concated_df is not None:
-        print(f"No Binance vision data available for {token}")
+        print(f"Binance vision data available for {token}")
         if concated_df.index.name != "unix":
             concated_df.set_index("unix", inplace=True)
         filled_binance_vision_unix_values = concated_df.index.tolist()
@@ -871,15 +880,39 @@ def update_historic_data(token, root):
     if filled_historical_unix_values:
         filled_timestamps["Historical"] = filled_historical_unix_values
 
+    # Fill with PAXG historical data if this is PAXG
+    if token == "PAXG" or token == "BTC" or token == "USDC" or token == "AERO" or token == "ETH":
+        if token == "AERO":
+            # load up parquet file
+            print("Loading AERO parquet data")
+            df = pd.read_parquet(root + "AERO_USD.parquet")
+            df = df.rename(columns={
+                'open': 'open_AERO',
+                'high': 'high_AERO', 
+                'low': 'low_AERO',
+                'close': 'close_AERO',
+                'volume': 'Volume AERO'
+            })
+            df.index.name = 'unix'
+            raise Exception
+            concated_df, filled_aero_unix_values = merge_exchange_data_frames(concated_df, df, token, root, "raw_aero_data/", "AERO_")
+            filled_timestamps["AERO"] = filled_aero_unix_values
+        print("Filling remaining gaps with CMC historical data")
+        concated_df, filled_cmc_unix_values = fill_missing_rows_with_cmc_historical_data(
+            concated_df.copy(), root + "CMC_data/", token
+        )
+        if filled_cmc_unix_values:
+            filled_timestamps["CMC_Historical"] = filled_cmc_unix_values
     # if ticker is in a harcoded dict, load from parquet
 
     assets = [
-    {"pair_id": 3010484, "token": "PEPE"},
-    {"pair_id": 1497, "token": "BAL"},
-    {"pair_id": 5241020, "token": "VVV"},
-    {"pair_id": 5388941, "token": "KAITO"},
-    {"pair_id": 4569519, "token": "DEGEN"},
-    {"pair_id": 4567392, "token": "VIRTUAL"},
+        {"pair_id": 3010484, "token": "PEPE"},
+        {"pair_id": 1497, "token": "BAL"},
+        {"pair_id": 5241020, "token": "VVV"},
+        {"pair_id": 5388941, "token": "KAITO"},
+        {"pair_id": 4569519, "token": "DEGEN"},
+        {"pair_id": 4567392, "token": "VIRTUAL"},
+        {"pair_id": 3507227, "token": "ONDO"},
     ]
     if token in [asset["token"] for asset in assets]:
         print("Filling remaining gaps with candles data")
@@ -888,11 +921,19 @@ def update_historic_data(token, root):
         exchange_df = forward_fill_ohlcv_data(exchange_df.copy(), asset["token"])
         concated_df, filled_candles_unix_values = merge_exchange_data_frames(concated_df, exchange_df, token, root, "raw_candles_data/", "Candles_")
         filled_timestamps["Candles"] = filled_candles_unix_values
+        concated_df.index.name = "unix"
 
+    print("Filling remaining gaps with aerodrome data")
+    concated_df, filled_aerodrome_unix_values = fill_missing_rows_with_aerodrome_data(
+        concated_df.copy(), token, root + "raw_aerodrome_data/"
+    )
+    if filled_aerodrome_unix_values:
+        filled_timestamps["Aerodrome"] = filled_aerodrome_unix_values
+        print("Filled aerodrome data")
+        print(len(filled_aerodrome_unix_values))
     # Ensure data is properly sorted and has no duplicates
     concated_df = concated_df.sort_index()
     concated_df = concated_df[~concated_df.index.duplicated(keep="first")]
-
     # Reset index for CSV export
     concated_df = concated_df.reset_index()
 
@@ -1009,9 +1050,52 @@ def update_historic_data(token, root):
     concated_df["date"] = concated_df["date"].astype(str)
     concated_df["symbol"] = concated_df["symbol"].astype(str)
     # Try direct parquet save without conversion
+
+    # Check if last row is at 23:59
+    last_row = concated_df.iloc[-1]
+    last_datetime = pd.to_datetime(last_row['date'])
+
+    if last_datetime.hour == 23 and last_datetime.minute == 59:
+        # Create midnight row by copying last row
+        midnight_row = last_row.copy()
+
+        # Update unix timestamp and date for midnight
+        midnight_unix = last_row['unix'] + 60000  # Add 1 minute (60000 ms)
+        midnight_datetime = unixtimestamp_to_precise_datetime(midnight_unix)
+
+        midnight_row['unix'] = midnight_unix
+        midnight_row['date'] = str(midnight_datetime)
+
+        # Append midnight row
+        concated_df = pd.concat([concated_df, pd.DataFrame([midnight_row])], ignore_index=True)
+
+    # if last_datetime.hour == 23 and last_datetime.minute == 59:
+    #     # Create 1441 rows by copying last row
+    #     new_rows = []
+    #     for i in range(1441):
+    #         new_row = last_row.copy()
+    #         if token == "BTC":
+    #             new_row["close"] = 94037.9
+    #         elif token == "PAXG":
+    #             new_row['close'] = 3369.31351999
+    #         elif token == "USDC":
+    #             new_row["close"] = 1.0000082
+    #         # Update unix timestamp and date for each minute
+    #         new_unix = last_row['unix'] + (i+1)*60000  # Add i+1 minutes
+    #         new_datetime = unixtimestamp_to_precise_datetime(new_unix)
+
+    #         new_row['unix'] = new_unix
+    #         new_row['date'] = str(new_datetime)
+
+    #         new_rows.append(new_row)
+
+    #     # Append all new rows
+    #     concated_df = pd.concat([concated_df, pd.DataFrame(new_rows)], ignore_index=True)
+    # raise Exception("Stop here")
     concated_df.to_parquet(parquetPath, engine="pyarrow")
 
     print(f"Completed processing for {token}")
+    print(concated_df.tail())
     return concated_df
 
 
@@ -1301,13 +1385,14 @@ def get_data_dict(
         * 1000
     )
 
-    if data_kind == "historic":
+    if data_kind == "historic" or data_kind == "step":
         if price_data is None:
             price_data = get_historic_parquet_data(list_of_tickers, cols, root)
         unix_values = price_data.index.to_numpy()
         prices = price_data.filter(
             items=["close_" + ticker for ticker in list_of_tickers]
         ).to_numpy()
+        
         # if return_slippage:
         #     spread = np.array(
         #         [
@@ -1402,6 +1487,14 @@ def get_data_dict(
     if start_idx / 1440 < max_memory_days:
         max_memory_days = start_idx / 1440 - 1.0
 
+    if data_kind == "step":
+        # Create test pattern: all tokens = 1.0, except first token steps to 10.0 halfway
+        # Useful for testing/visualizing strategy responses to sharp price movements
+        prices_rebased = np.ones_like(prices_rebased)
+        mid_point = start_idx + (bout_length // 2)  # Calculate midpoint within bout
+        prices_rebased[mid_point:, 0] = 10.0  # Step up first token halfway through bout
+        if return_slippage or return_gas_prices or return_supply:
+            print("Warning: Using step data with slippage/gas/supply may not be meaningful")
     # n_chunks = (len(prices) - remainder_idx) / chunk_period
     n_chunks = int((len(prices) - remainder_idx) / 1440) * 1440 / chunk_period
     # check that we can cleanly divide data into 'chunk_period' units
@@ -1500,8 +1593,8 @@ def get_data_dict(
 
             supply_data.append(aligned_supply["circulating_supply"].values)
 
-    prices_rebased = prices_rebased[: round(n_chunks * chunk_period)]
-    unix_values_rebased = unix_values_rebased[: round(n_chunks * chunk_period)]
+    # prices_rebased = prices_rebased[: round(n_chunks * chunk_period)]
+    # unix_values_rebased = unix_values_rebased[: round(n_chunks * chunk_period)]
 
     # if return_slippage:
     #     spread_rebased = spread[: int(n_chunks) * chunk_period]
@@ -1555,26 +1648,27 @@ def get_data_dict(
             * 1000
         )
 
-        (
-            start_idx_test,
-            end_idx_test,
-            bout_length_test,
-            unix_values_test,
-            price_values_test,
-            oracle_values_test,
-            remainder_idx_test,
-        ) = start_and_end_calcs(
-            unix_values,
-            prices=prices,
-            start_date=startDateTest,
-            end_date=endDateTest,
-        )
+        if do_test_period:
+            (
+                start_idx_test,
+                end_idx_test,
+                bout_length_test,
+                unix_values_test,
+                price_values_test,
+                oracle_values_test,
+                remainder_idx_test,
+            ) = start_and_end_calcs(
+                unix_values,
+                prices=prices,
+                start_date=startDateTest,
+                end_date=endDateTest,
+            )
 
-        data_dict["prices_test"] = price_values_test
-        data_dict["start_idx_test"] = start_idx_test
-        data_dict["end_idx_test"] = end_idx_test
-        data_dict["bout_length_test"] = bout_length_test
-        data_dict["unix_values_test"] = unix_values_test
+            data_dict["prices_test"] = price_values_test
+            data_dict["start_idx_test"] = start_idx_test
+            data_dict["end_idx_test"] = end_idx_test
+            data_dict["bout_length_test"] = bout_length_test
+            data_dict["unix_values_test"] = unix_values_test
         if return_slippage:
             spread_test = spread[remainder_idx_test:]
             spread_test = spread_test[: int(n_chunks) * chunk_period]

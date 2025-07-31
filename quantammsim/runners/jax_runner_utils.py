@@ -6,7 +6,7 @@ import hashlib
 
 # again, this only works on startup!
 from jax import config
-from jax.tree_util import tree_map
+from jax.tree_util import tree_map, tree_reduce
 import jax.numpy as jnp
 
 from quantammsim.core_simulator.windowing_utils import (
@@ -31,8 +31,8 @@ from optuna.visualization import plot_optimization_history, plot_param_importanc
 import numpy as np
 
 
-from typing import Dict, Any
-
+from typing import Dict, Any, Generic, TypeVar
+T = TypeVar('T')      # Declare type variable
 
 def create_trial_params(
     trial: Any,  # optuna.Trial, but avoid direct dependency
@@ -40,6 +40,7 @@ def create_trial_params(
     params: Dict,
     run_fingerprint: Dict,
     n_assets: int,
+    expand_around=False
 ) -> Dict:
     """
     Create trial parameters for Optuna optimization.
@@ -72,39 +73,48 @@ def create_trial_params(
         If parameter shapes are invalid or required config is missing
     """
     trial_params = {}
-    
     for key, value in params.items():
         if key == "subsidary_params":
             continue
-            
+
         # Verify value has correct shape
         if not hasattr(value, 'shape') or len(value.shape) < 2:
             raise ValueError(f"Parameter {key} must have at least 2 dimensions")
-            
+
         param_length = value.shape[1]
-        
+
         config = param_config.get(key, {})
         # Set defaults while preserving any existing config
-        default_config = {
-            "low": -10.0,
-            "high": 10.0,
-            "log_scale": False,
-            "scalar": False
-        }
+        if expand_around:
+            default_config = {
+                    "low": 0.1,
+                    "high": 0.1,
+                    "log_scale": False,
+                    "scalar": False
+                }
+        else:
+            default_config = {
+                "low": -10.0,
+                "high": 10.0,
+                "log_scale": False,
+                "scalar": False
+            }
         config = {**default_config, **config}
-            
         # Handle logit_delta_lamb parameters
         if key.startswith("logit_delta_lamb") and not run_fingerprint.get(
             "use_alt_lamb", False
         ):
             trial_params[key] = jnp.zeros(param_length)
             continue
-            
+
         # Handle initial_weights_logits specially
         if key == "initial_weights_logits":
             trial_params[key] = jnp.zeros(n_assets)
             continue
-            
+        if key == "initial_weights":
+            trial_params[key] = value
+            continue
+
         # Handle scalar vs vector parameters
         if config["scalar"]:
             # Create single value and repeat
@@ -121,14 +131,21 @@ def create_trial_params(
                 [
                     trial.suggest_float(
                         f"{key}_{i}",
-                        config["low"],
-                        config["high"],
+                        (
+                            config["low"]
+                            if not expand_around
+                            else float(params[key][0][i]) - config["low"]
+                        ),
+                        (
+                            config["high"]
+                            if not expand_around
+                            else float(params[key][0][i]) + config["high"]
+                        ),
                         log=config["log_scale"],
                     )
                     for i in range(param_length)
                 ]
             )
-    
     return trial_params
 
 def generate_evaluation_points(
@@ -502,6 +519,32 @@ class NestedHashabledict(dict):
         return self.__key() == NestedHashabledict(other).__key()
 
 
+class HashableArrayWrapper(Generic[T]):
+    def __init__(self, val: T):
+        self.val = val
+
+    def __getattribute__(self, prop):
+        if prop == "val" or prop == "__hash__" or prop == "__eq__":
+            return super(HashableArrayWrapper, self).__getattribute__(prop)
+        return getattr(self.val, prop)
+
+    def __getitem__(self, key):
+        return self.val[key]
+
+    def __setitem__(self, key, val):
+        self.val[key] = val
+
+    def __hash__(self):
+        return hash(self.val.tobytes())
+
+    def __eq__(self, other):
+        if isinstance(other, HashableArrayWrapper):
+            return self.__hash__() == other.__hash__()
+
+        f = getattr(self.val, "__eq__")
+        return f(self, other)
+
+
 def get_run_location(run_fingerprint):
     """Generate a unique run location identifier based on the run fingerprint.
 
@@ -572,6 +615,42 @@ def nan_rollback(grads, params, old_params):
             )
 
     return params
+
+
+def has_nan_grads(grad_tree):
+    """Check if any gradients contain NaN values."""
+
+    def check_nan(x):
+        return jnp.any(jnp.isnan(x))
+
+    return tree_reduce(lambda acc, x: acc or check_nan(x), grad_tree, initializer=False)
+
+
+def nan_param_reinit(
+    params, grads, pool, initial_params, run_fingerprint, n_tokens, n_parameter_sets
+):
+    """Reinitialize parameters with previous values when gradients contain NaNs."""
+    if has_nan_grads(grads):
+        new_noised_params = pool.init_parameters(
+            initial_params, run_fingerprint, n_tokens, n_parameter_sets
+        )
+        # For each parameter set index
+        for i in range(len(next(iter(grads.values())))):
+            # Check if any key has NaNs for this parameter set
+            has_nans = False
+            for key in grads:
+                if key not in ["initial_weights", "initial_weights_logits", "subsidary_params"]:
+                    if jnp.any(jnp.isnan(grads[key][i])):
+                        has_nans = True
+                        break
+
+            # If NaNs found, replace all params for this index
+            if has_nans:
+                for key in params:
+                    if key not in ["initial_weights", "initial_weights_logits", "subsidary_params"]:
+                        params[key] = params[key].at[i].set(new_noised_params[key][i])
+    return params
+
 
 def get_unique_tokens(run_fingerprint):
     """Gets unique tokens from run fingerprint including subsidiary pools.
