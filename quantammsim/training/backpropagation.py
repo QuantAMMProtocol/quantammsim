@@ -27,7 +27,7 @@ else:
 
 import jax.numpy as jnp
 from jax import grad, jit, vmap
-from jax import tree_map
+from jax.tree_util import tree_map
 from jax import jacfwd, jacrev, jvp
 from jax import devices
 

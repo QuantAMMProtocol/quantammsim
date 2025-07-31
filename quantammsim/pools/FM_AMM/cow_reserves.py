@@ -14,6 +14,7 @@ from jax.tree_util import Partial
 from functools import partial
 
 from quantammsim.pools.FM_AMM.FMAMM_trades import jitted_FMAMM_cond_trade
+from quantammsim.pools.noise_trades import calculate_reserves_after_noise_trade
 
 np.seterr(all="raise")
 np.seterr(under="print")
@@ -187,7 +188,7 @@ def align_FMAMM_onearb_jax(reserves, price):
 
 @jit
 def _jax_calc_cowamm_reserves_with_fees_scan_function(
-    carry_list, prices, weights, gamma=0.997, arb_thresh=0.0, arb_fees=0.0
+    carry_list, prices, weights, gamma=0.997, arb_thresh=0.0, arb_fees=0.0, noise_trader_ratio=0.0
 ):
     """
     Calculate changes in COW AMM (FM-AMM) reserves considering fees and arbitrage opportunities.
@@ -210,6 +211,8 @@ def _jax_calc_cowamm_reserves_with_fees_scan_function(
         Threshold for profitable arbitrage, by default 0.0.
     arb_fees : float, optional
         Fees associated with arbitrage, by default 0.0.
+    noise_trader_ratio : float, optional
+        Ratio of noise traders to signal traders, by default 0.0
 
     Returns
     -------
@@ -259,13 +262,25 @@ def _jax_calc_cowamm_reserves_with_fees_scan_function(
         jnp.maximum(0, align_reserves - prev_reserves) * (1 - gamma) / gamma
     )
 
+    align_reserves = jnp.where(
+        noise_trader_ratio > 0,
+        calculate_reserves_after_noise_trade(
+            align_reserves - prev_reserves,
+            align_reserves,
+            prices,
+            noise_trader_ratio,
+            gamma,
+        ),
+        align_reserves,
+    )
+
     reserves = jnp.where(outside_no_arb_region, align_reserves, prev_reserves)
     return [prices, reserves], reserves
 
 
 @jit
 def _jax_calc_cowamm_reserves_with_fees(
-    initial_reserves, prices, weight=0.5, fees=0.003, arb_thresh=0.0, arb_fees=0.0
+    initial_reserves, prices, weight=0.5, fees=0.003, arb_thresh=0.0, arb_fees=0.0, noise_trader_ratio=0.0
 ):
     """
     Calculate AMM reserves considering fees for CowAMM where weights
@@ -289,6 +304,8 @@ def _jax_calc_cowamm_reserves_with_fees(
         Threshold for profitable arbitrage, by default 0.0.
     arb_fees : float, optional
         Fees associated with arbitrage, by default 0.0.
+    noise_trader_ratio : float, optional
+        Ratio of noise traders to signal traders, by default 0.0
 
     Returns
     -------
@@ -313,6 +330,7 @@ def _jax_calc_cowamm_reserves_with_fees(
         gamma=gamma,
         arb_thresh=arb_thresh,
         arb_fees=arb_fees,
+        noise_trader_ratio=noise_trader_ratio,
     )
 
     carry_list_init = [initial_prices, initial_reserves]
@@ -329,6 +347,7 @@ def _jax_calc_cowamm_reserves_one_arb_with_fees_scan_function(
     gamma=0.997,
     arb_thresh=0.0,
     arb_fees=0.0,
+    noise_trader_ratio=0.0
 ):
     """
     Calculate changes in COW AMM (FM-AMM) reserves considering fees and arbitrage opportunities.
@@ -351,6 +370,8 @@ def _jax_calc_cowamm_reserves_one_arb_with_fees_scan_function(
         Threshold for profitable arbitrage, by default 0.0.
     arb_fees : float, optional
         Fees associated with arbitrage, by default 0.0.
+    noise_trader_ratio : float, optional
+        Ratio of noise traders to signal traders, by default 0.0
 
     Returns
     -------
@@ -410,6 +431,14 @@ def _jax_calc_cowamm_reserves_one_arb_with_fees_scan_function(
     delta = mask @ overall_trades
     align_reserves = prev_reserves + delta
 
+    align_reserves = jnp.where(
+        noise_trader_ratio > 0,
+        calculate_reserves_after_noise_trade(
+            delta, align_reserves, prices, noise_trader_ratio, gamma
+        ),
+        align_reserves,
+    )
+
     # check if this is worth the cost to arbs
     # is this delta a good deal for the arb?
     profit_to_arb = correct_profit - arb_thresh
@@ -417,12 +446,13 @@ def _jax_calc_cowamm_reserves_one_arb_with_fees_scan_function(
     arb_external_rebalance_cost = 0.5 * arb_fees * (jnp.abs(delta) * prices).sum()
     arb_profitable = profit_to_arb >= arb_external_rebalance_cost
     reserves = jnp.where(arb_profitable, align_reserves, prev_reserves)
+
     return [prices, reserves], reserves
 
 
 @jit
 def _jax_calc_cowamm_reserves_one_arb_with_fees(
-    initial_reserves, prices, weight=0.5, fees=0.003, arb_thresh=0.0, arb_fees=0.0
+    initial_reserves, prices, weight=0.5, fees=0.003, arb_thresh=0.0, arb_fees=0.0, noise_trader_ratio=0.0
 ):
     """
     Calculate AMM reserves considering fees for CowAMM
@@ -446,6 +476,8 @@ def _jax_calc_cowamm_reserves_one_arb_with_fees(
         Threshold for profitable arbitrage, by default 0.0.
     arb_fees : float, optional
         Fees associated with arbitrage, by default 0.0.
+    noise_trader_ratio : float, optional
+        Ratio of noise traders to signal traders, by default 0.0
 
     Returns
     -------
@@ -468,6 +500,7 @@ def _jax_calc_cowamm_reserves_one_arb_with_fees(
         gamma=gamma,
         arb_thresh=arb_thresh,
         arb_fees=arb_fees,
+        noise_trader_ratio=noise_trader_ratio,
     )
 
     carry_list_init = [initial_prices, initial_reserves]
@@ -638,7 +671,7 @@ _jax_calc_cowamm_reserve_ratio_vmapped = vmap(_jax_calc_cowamm_reserve_ratio)
     ),
 )
 def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
-    carry_list, input_list, arb_quality, weights, do_trades=True, do_arb=True
+    carry_list, input_list, arb_quality, weights, do_trades=True, do_arb=True, noise_trader_ratio=0.0
 ):
     """
     Calculate changes in COW AMM (FM-AMM) reserves considering fees and arbitrage opportunities.
@@ -661,6 +694,11 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
             Threshold for profitable arbitrage, by default 0.0.
         arb_fees : float, optional
             Fees associated with arbitrage, by default 0.0.
+        trade : jnp.ndarray
+            Array of trades for each timestep. Format for each row:
+            trades[0] = index of token to trade in to pool
+            trades[1] = index of token to trade out of pool
+            trades[2] = amount of 'token in' to trade
     arb_quality : float
         Quality of arbitrage execution, between 0 and 1. Higher values mean more efficient arbitrage.
     weights : jnp.ndarray
@@ -669,6 +707,8 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
         Whether to execute trades.
     do_arb : bool
         Whether to execute arbitrage trades.
+    noise_trader_ratio : float, optional
+        Ratio of noise traders to signal traders, by default 0.0
 
     Returns
     -------
@@ -699,6 +739,7 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
             gamma=gamma,
             arb_thresh=arb_thresh,
             arb_fees=arb_fees,
+            noise_trader_ratio=noise_trader_ratio,
         )[-1]
 
         reserves_with_one_arb = (
@@ -709,6 +750,7 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
                 gamma=gamma,
                 arb_thresh=arb_thresh,
                 arb_fees=arb_fees,
+                noise_trader_ratio=noise_trader_ratio,
             )[-1]
         )
 
@@ -738,6 +780,7 @@ def _jax_calc_cowamm_reserves_with_dynamic_inputs(
     trades=None,
     do_trades=True,
     do_arb=True,
+    noise_trader_ratio=0.0,
 ):
     """
     Calculate AMM reserves considering fees for CowAMM
@@ -769,6 +812,8 @@ def _jax_calc_cowamm_reserves_with_dynamic_inputs(
         Whether to process trades, by default False
     do_arb : bool, optional
         Whether to process arbitrage, by default True
+    noise_trader_ratio : float, optional
+        Ratio of noise traders to signal traders, by default 0.0
 
     Returns
     -------
@@ -789,6 +834,7 @@ def _jax_calc_cowamm_reserves_with_dynamic_inputs(
         do_trades=do_trades,
         do_arb=do_arb,
         arb_quality=arb_quality,
+        noise_trader_ratio=noise_trader_ratio,
     )
 
     carry_list_init = [initial_prices, initial_reserves]
@@ -797,206 +843,3 @@ def _jax_calc_cowamm_reserves_with_dynamic_inputs(
     )
 
     return reserves
-
-
-# @jit
-# def _jax_calc_cowamm_reserves_with_weights_with_fees_scan_function(
-#     carry_list, prices, weights, gamma=0.997, arb_thresh=0.0, arb_fees=0.0
-# ):
-#     """
-#     Calculate changes in COW AMM (FM-AMM) reserves considering fees and arbitrage opportunities.
-
-#     This function extends the basic reserve calculation by incorporating transaction fees
-#     and potential arbitrage opportunities, following the methodology described in the
-#     FM-AMM paper.
-
-#     Parameters
-#     ----------
-#     carry_list : list
-#         List containing the previous prices and reserves.
-#     prices : jnp.ndarray
-#         Array containing the current prices.
-#     weights : jnp.ndarray
-#         Array containing the weights of the pool.
-#     gamma : float, optional
-#         Fee factor for no-arbitrage bounds, by default 0.997.
-#     arb_thresh : float, optional
-#         Threshold for profitable arbitrage, by default 0.0.
-#     arb_fees : float, optional
-#         Fees associated with arbitrage, by default 0.0.
-
-#     Returns
-#     -------
-#     list
-#         Updated list containing the new weights, prices, and reserves.
-#     jnp.ndarray
-#         Array of reserves.
-#     """
-
-#     # carry_list[1] is previous reserves
-#     prev_reserves = carry_list[1]
-
-#     # first find quoted price
-#     current_price = (prev_reserves[1] / prev_reserves[0]) * (weights[0] / weights[1])
-
-#     # envelope of no arb region
-#     ### see if prices are out of envelope
-#     bid_price = ask_price = prices[0] / prices[1]
-#     align_price_if_current_price_below_bid = bid_price * gamma * (1 - arb_fees)
-#     align_price_if_current_price_above_ask = ask_price / gamma / (1 - arb_fees)
-#     current_price_below_bid = current_price <= align_price_if_current_price_below_bid
-#     current_price_above_ask = align_price_if_current_price_above_ask <= current_price
-#     outside_no_arb_region = jnp.any(current_price_below_bid | current_price_above_ask)
-
-#     # now construct new values of reserves, profit, for IF
-#     # we are out of region -- and then use jnp where function to 'paste in'
-#     # values if outside_no_arb_region is True and trade is profitable to arb
-#     # We have to handle two cases here, for if prices are above or below the
-#     # no-arb region
-
-#     align_price = jnp.where(
-#         current_price_below_bid,
-#         align_price_if_current_price_below_bid,
-#         current_price,
-#     )
-#     align_price = jnp.where(
-#         current_price_above_ask,
-#         align_price_if_current_price_above_ask,
-#         align_price,
-#     )
-#     # calc align reserves including added trading fees paid to reserves
-#     align_reserves = (
-#         align_FMAMM_jax(prev_reserves * weights[::-1] * 2.0, align_price)
-#         - prev_reserves * weights[::-1] * 2.0
-#         + prev_reserves
-#     )
-#     align_reserves += (
-#         jnp.maximum(0, align_reserves - prev_reserves) * (1 - gamma) / gamma
-#     )
-
-#     reserves = jnp.where(outside_no_arb_region, align_reserves, prev_reserves)
-
-#     return [prices, reserves], reserves
-
-
-# @jit
-# def _jax_calc_cowamm_reserves_with_weights_with_fees(
-#     initial_reserves, prices, weights, fees=0.003, arb_thresh=0.0, arb_fees=0.0
-# ):
-#     """
-#     Calculate AMM reserves considering fees for CowAMM where weights
-#     (which can be other than 50-50) are used.
-
-#     This function computes the changes in reserves for a CowAMM that takes into account
-#     transaction fees and potential arbitrage opportunities. It uses a scan operation
-#     to apply these calculations over multiple timesteps.
-
-#     Parameters
-#     ----------
-#     initial_reserves : jnp.ndarray
-#         Initial reserves at the start of the calculation.
-#     prices : jnp.ndarray
-#         Two-dimensional array of asset prices over time.
-#     weights : jnp.ndarray
-#         Array containing the weights of the pool.
-#     fees : float, optional
-#         Swap fee charged on transactions, by default 0.003.
-#     arb_thresh : float, optional
-#         Threshold for profitable arbitrage, by default 0.0.
-#     arb_fees : float, optional
-#         Fees associated with arbitrage, by default 0.0.
-
-#     Returns
-#     -------
-#     jnp.ndarray
-#         The reserves array, indicating the changes in reserves over time.
-#     """
-
-#     n_assets = prices.shape[1]
-#     assert n_assets == 2
-
-#     initial_prices = prices[0]
-
-#     gamma = 1.0 - fees
-
-#     scan_fn = Partial(
-#         _jax_calc_cowamm_reserves_with_weights_with_fees_scan_function,
-#         weights=weights,
-#         gamma=gamma,
-#         arb_thresh=arb_thresh,
-#         arb_fees=arb_fees,
-#     )
-
-#     carry_list_init = [initial_prices, initial_reserves]
-#     _, reserves = scan(scan_fn, carry_list_init, prices)
-
-#     return reserves
-
-
-if __name__ == "__main__":
-    print("testing")
-    # Test zero fees scan function
-    import jax.numpy as jnp
-
-    # Set up test inputs
-    carry_list = [jnp.array([100.0, 100.0])]  # Previous reserves
-    prices = jnp.array([20.0, 1.0])  # Current prices
-    gamma = 0.997
-    arb_thresh = 0.0
-    arb_fees = 0.0
-
-    # Run test
-    result = _jax_calc_cowamm_reserves_one_arb_zero_fees_scan_function(
-        carry_list, prices, arb_thresh=arb_thresh, arb_fees=arb_fees
-    )
-
-    print("Test _jax_calc_cowamm_reserves_one_arb_zero_fees_scan_function:")
-    print(f"Input carry list: {carry_list}")
-    print(f"Input prices: {prices}")
-    print(f"Result: {result}")
-
-    from quantammsim.pools.G3M.balancer.balancer_reserves import (
-        _jax_calc_balancer_reserve_ratio,
-    )
-
-    # Test balancer reserve ratio calculation
-    print("\nTest _jax_calc_balancer_reserve_ratio:")
-    prev_prices = jnp.array([1.0, 1.0])  # Previous prices
-    weights = jnp.array([0.5, 0.5])  # Equal weights
-    prices = jnp.array([20.0, 1.0])  # Current prices
-
-    result = _jax_calc_balancer_reserve_ratio(prev_prices, weights, prices)
-    initial_reserves = jnp.array([100.0, 100.0])
-    balancer_reserves = initial_reserves * result
-    # print(f"Previous prices: {prev_prices}")
-    # print(f"Weights: {weights}")
-    # print(f"Current prices: {prices}")
-    # print(f"Reserves: {balancer_reserves}")
-    # print(f"Reserves: {0.5*(balancer_reserves - initial_reserves)}")
-    # print(f"Reserves: {initial_reserves + 0.5*(balancer_reserves - initial_reserves)}")
-
-    for fees in [0.0, 0.01, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
-        if fees == 0.0:
-            result = _jax_calc_cowamm_reserves_with_fees_scan_function(
-                [prev_prices, initial_reserves],
-                prices,
-                weights=jnp.array([0.8, 0.2]),
-                arb_thresh=arb_thresh,
-                arb_fees=arb_fees,
-                gamma=1.0,
-            )[-1]
-            profit = -((result - initial_reserves) * prices).sum()
-        else:
-            result = _jax_calc_cowamm_reserves_with_fees_scan_function(
-                [prev_prices, initial_reserves],
-                prices,
-                weights=jnp.array([0.8, 0.2]),
-                gamma=1.0 - fees,
-                arb_thresh=arb_thresh,
-                arb_fees=arb_fees,
-            )[-1]
-            profit = -((result - initial_reserves) * prices).sum()
-        value = (result * prices).sum()
-        print(f"Reserves from feeding {fees} fees into fees: {result}")
-        print(f"Value from feeding {fees} fees into fees: {value}")
-        print(f"Profit from feeding {fees} fees into fees: {profit}")

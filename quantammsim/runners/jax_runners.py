@@ -28,6 +28,7 @@ from quantammsim.core_simulator.param_utils import (
     recursive_default_set,
     check_run_fingerprint,
     memory_days_to_logit_lamb,
+    load_or_init,
 )
 
 from quantammsim.core_simulator.result_exporter import (
@@ -179,26 +180,28 @@ def train_on_historic_data(
 
     assert bout_length_window > 0
 
-    # params, loaded = load_or_init(
-    #     run_fingerprint,
-    #     inital_params,
-    #     n_tokens,
-    #     n_subsidary_rules,
-    #     chunk_period=chunk_period,
-    #     force_init=force_init,
-    #     load_method="last",
-    #     n_parameter_sets=n_parameter_sets,
-    # )
+    params, loaded = load_or_init(
+        run_fingerprint,
+        inital_params,
+        n_tokens,
+        0,
+        chunk_period=chunk_period,
+        force_init=force_init,
+        load_method="last",
+        n_parameter_sets=n_parameter_sets,
+    )
 
     # Create pool
     pool = create_pool(rule)
 
     # pool must be trainable
     assert pool.is_trainable(), "The selected pool must be trainable for this operation"
-    params = pool.init_parameters(
-        inital_params, run_fingerprint, n_tokens, n_parameter_sets
-    )
-    loaded = False
+    
+    if not loaded:
+        params = pool.init_parameters(
+            inital_params, run_fingerprint, n_tokens, n_parameter_sets
+        )
+        loaded = False
 
     if verbose:
         print("Using Loaded Params?: ", loaded)
@@ -366,7 +369,7 @@ def train_on_historic_data(
                 params, start_indexes, local_learning_rate
             )
 
-            params = nan_rollback(grads, params, old_params)
+            #params = nan_rollback(grads, params, old_params)
 
             train_objective = partial_forward_pass_nograd_returns_train(
                 params,
@@ -425,7 +428,6 @@ def train_on_historic_data(
                 stepSteps = []
         if verbose:
             print("final objective value: ", objective_value)
-            print("best train params", best_train_params)
         return best_train_params
     elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
 
