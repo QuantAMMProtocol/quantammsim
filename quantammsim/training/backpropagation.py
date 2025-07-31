@@ -611,7 +611,7 @@ def create_optimizer_chain(run_fingerprint):
     # Add gradient clipping if enabled
     if settings["use_gradient_clipping"]:
         optimizer_chain = optax.chain(
-            optax.clip_by_global_norm(settings["clip_norm"], optimizer_chain)
+            optax.clip_by_global_norm(settings["clip_norm"]), optimizer_chain
         )
 
     return optimizer_chain
