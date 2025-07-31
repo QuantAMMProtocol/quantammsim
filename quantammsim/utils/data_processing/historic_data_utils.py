@@ -1069,29 +1069,6 @@ def update_historic_data(token, root):
         # Append midnight row
         concated_df = pd.concat([concated_df, pd.DataFrame([midnight_row])], ignore_index=True)
 
-    # if last_datetime.hour == 23 and last_datetime.minute == 59:
-    #     # Create 1441 rows by copying last row
-    #     new_rows = []
-    #     for i in range(1441):
-    #         new_row = last_row.copy()
-    #         if token == "BTC":
-    #             new_row["close"] = 94037.9
-    #         elif token == "PAXG":
-    #             new_row['close'] = 3369.31351999
-    #         elif token == "USDC":
-    #             new_row["close"] = 1.0000082
-    #         # Update unix timestamp and date for each minute
-    #         new_unix = last_row['unix'] + (i+1)*60000  # Add i+1 minutes
-    #         new_datetime = unixtimestamp_to_precise_datetime(new_unix)
-
-    #         new_row['unix'] = new_unix
-    #         new_row['date'] = str(new_datetime)
-
-    #         new_rows.append(new_row)
-
-    #     # Append all new rows
-    #     concated_df = pd.concat([concated_df, pd.DataFrame(new_rows)], ignore_index=True)
-    # raise Exception("Stop here")
     concated_df.to_parquet(parquetPath, engine="pyarrow")
 
     print(f"Completed processing for {token}")
