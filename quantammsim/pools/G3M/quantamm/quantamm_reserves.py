@@ -429,6 +429,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     active_trade_directions,
     n,
     do_trades,
+    noise_trader_ratio=0.0,
 ):
     """
     Calculate changes in AMM reserves considering fees and arbitrage opportunities using signature variations.
@@ -475,6 +476,8 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
         Number of tokens or assets.
     do_trades : bool
         Whether or not to apply the trades
+    noise_trader_ratio : float, optional
+        Ratio of noise traders to signal traders, by default 0.0
 
     Returns
     -------
@@ -562,6 +565,14 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     )
     post_price_reserves = prev_reserves + optimal_arb_trade
 
+    # apply noise trade if noise_trader_ratio is greater than 0
+    post_price_reserves = jnp.where(
+        noise_trader_ratio > 0,
+        calculate_reserves_after_noise_trade(
+            optimal_arb_trade, post_price_reserves, prices, noise_trader_ratio, gamma
+        ),
+        post_price_reserves,
+    )
     # check if this is worth the cost to arbs
     # delta = post_price_reserves - prev_reserves
     # is this delta a good deal for the arb?
@@ -631,6 +642,14 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     )
     post_weight_reserves = reserves + optimal_arb_trade
 
+    # apply noise trade if noise_trader_ratio is greater than 0
+    post_weight_reserves = jnp.where(
+        noise_trader_ratio > 0,
+        calculate_reserves_after_noise_trade(
+            optimal_arb_trade, post_weight_reserves, prices, noise_trader_ratio, gamma
+        ),
+        post_weight_reserves,
+    )
     # check if this is worth the cost to arbs
     # delta = post_weight_reserves - reserves
     # is this delta a good deal for the arb?
@@ -669,6 +688,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
     trades=None,
     do_trades=False,
     do_arb=True,
+    noise_trader_ratio=0.0,
 ):
     """
     Calculate AMM reserves considering fees and arbitrage opportunities using signature variations,
@@ -705,6 +725,8 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
         Whether or not to apply the trades, by default False
     do_arb : bool, optional
         Whether or not to apply arbitrage, by default True
+    noise_trader_ratio : float, optional
+        Ratio of noise traders to signal traders, by default 0.0
 
     Returns
     -------
@@ -791,6 +813,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
         active_trade_directions=active_trade_directions,
         do_trades=do_trades,
         do_arb=do_arb,
+        noise_trader_ratio=noise_trader_ratio,
     )
 
     carry_list_init = [
