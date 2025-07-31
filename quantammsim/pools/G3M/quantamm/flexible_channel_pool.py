@@ -223,12 +223,9 @@ class FlexibleChannelPool(MomentumPool):
         )
         β = jnp.broadcast_to(β, (N,))
 
-        ρ_off = jnn.sigmoid(params["logit_risk_off"]).reshape(
-            N,
-        )
-        ρ_on = jnn.sigmoid(params["logit_risk_on"]).reshape(
-            N,
-        )
+        ρ_off = jnn.sigmoid(stop_gradient(params["logit_risk_off"])).reshape(N,)
+        ρ_on  = jnn.sigmoid(stop_gradient(params["logit_risk_on"])).reshape(N,)
+
 
         # ╭──────────────────────────────────────────────────────────────────╮
         # │ 4. full *time-series* EWMA-gradients (one per chunk)            │

@@ -8,7 +8,7 @@ import gc
 import os
 from jax.tree_util import Partial
 from jax import jit, vmap, random
-from jax import clear_caches, clear_backends
+from jax import clear_caches
 from jax.tree_util import tree_map
 
 from quantammsim.utils.data_processing.historic_data_utils import (
@@ -459,7 +459,7 @@ def train_on_historic_data(
                 if verbose:
                     print(step, "Objective: ", objective_value)
                     print(step, "train_objective", train_objective)
-                    print(step, "test_objective", test_objective)
+                    #print(step, "test_objective", test_objective)
                     print(step, "local_learning_rate", local_learning_rate)
                 save_multi_params(
                     deepcopy(run_fingerprint),
