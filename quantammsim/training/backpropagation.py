@@ -26,8 +26,8 @@ else:
 # print(devices("cpu"))
 
 import jax.numpy as jnp
-from jax import grad, jit, vmap
-from jax.tree_util import tree_map
+from jax import grad, value_and_grad, jit, vmap
+from jax.tree_util import tree_map, tree_flatten, tree_unflatten
 from jax import jacfwd, jacrev, jvp
 from jax import devices
 
@@ -37,6 +37,8 @@ import numpy as np
 
 from quantammsim.training.hessian_trace import hessian_trace
 from functools import partial
+
+import optax
 
 
 np.seterr(all="raise")
@@ -190,10 +192,10 @@ def update_factory(batched_objective):
 
     @jit
     def update(params, start_indexes, learning_rate):
-        grads = grad(batched_objective)(params, start_indexes)
+        objective_value, grads = value_and_grad(batched_objective)(params, start_indexes)
         return (
             tree_map(lambda p, g: p + learning_rate * g, params, grads),
-            batched_objective(params, start_indexes),
+            objective_value,
             params,
             grads,
         )
@@ -225,10 +227,10 @@ def update_with_hessian_factory(batched_objective_with_hessian):
 
     @jit
     def update_with_hessian(params, start_indexes, learning_rate):
-        grads = grad(batched_objective_with_hessian)(params, start_indexes)
+        objective_value, grads = value_and_grad(batched_objective_with_hessian)(params, start_indexes)
         return (
             tree_map(lambda p, g: p + learning_rate * g, params, grads),
-            batched_objective_with_hessian(params, start_indexes),
+            objective_value,
             params,
             grads,
         )
@@ -260,10 +262,10 @@ def update_singleton_factory(objective):
 
     @jit
     def update_singleton(params, start_indexes, learning_rate):
-        grads = grad(objective)(params, start_indexes)
+        objective_value, grads = value_and_grad(objective)(params, start_indexes)
         return (
             tree_map(lambda p, g: p + learning_rate * g, params, grads),
-            objective(params, start_indexes),
+            objective_value,
             params,
             grads,
         )
@@ -354,3 +356,262 @@ def hvp(f, primals, tangents):
         The Hessian-vector product at the specified point.
     """
     return jvp(grad(f), primals, tangents)[1]
+
+
+def update_factory_with_optax(batched_objective, optimizer):
+    """Creates an update function using optax optimizer.
+
+    This function creates a JIT-compiled update function that uses an optax optimizer
+    while maintaining the same interface as the other update functions.
+
+    Parameters
+    ----------
+    batched_objective : callable
+        The objective function to be optimized.
+    optimizer : optax.GradientTransformation
+        The optax optimizer to use.
+
+    Returns
+    -------
+    callable
+        A JIT-compiled update function that takes parameters, start indexes, and learning rate
+        as input and returns a tuple containing:
+        - Updated parameters after one optimizer step
+        - Current objective value
+        - Original parameters (before update)
+        - Computed gradients
+        - Optimizer state (for maintaining across iterations)
+    """
+
+    @jit
+    def update(params, start_indexes, learning_rate, opt_state=None):
+        objective_value, grads = value_and_grad(batched_objective)(params, start_indexes)        
+        # Initialize optimizer state if not provided
+        if opt_state is None:
+            opt_state = optimizer.init(params)
+
+        neg_grads = tree_map(lambda g: -g, grads)
+
+        # Apply optimizer update, cast to float32 to avoid type errors as optax doesn't use float64 internally for state
+        updates, new_opt_state = optimizer.update(
+            neg_grads,
+            opt_state,
+            params,
+            value=jnp.array(-objective_value, dtype=jnp.float32),
+        )
+        new_params = optax.apply_updates(params, updates)
+
+        return (
+            new_params,
+            objective_value,
+            params,
+            grads,
+            new_opt_state,
+        )
+
+    return update
+
+
+def update_with_hessian_factory_with_optax(batched_objective_with_hessian, optimizer):
+    """Creates an update function using optax optimizer with Hessian regularization.
+
+    Similar to update_factory_with_optax, but works with an objective function that includes Hessian
+    trace regularization.
+
+    Parameters
+    ----------
+    batched_objective_with_hessian : callable
+        The objective function with Hessian regularization to be optimized.
+    optimizer : optax.GradientTransformation
+        The optax optimizer to use.
+
+    Returns
+    -------
+    callable
+        A JIT-compiled update function that takes parameters, start indexes, and learning rate
+        as input and returns a tuple containing:
+        - Updated parameters after one optimizer step
+        - Current objective value (including Hessian term)
+        - Original parameters (before update)
+        - Computed gradients
+        - Optimizer state (for maintaining across iterations)
+    """
+
+    @jit
+    def update_with_hessian(params, start_indexes, learning_rate, opt_state=None):
+        objective_value, grads = value_and_grad(batched_objective_with_hessian)(params, start_indexes)
+        # Initialize optimizer state if not provided
+        if opt_state is None:
+            opt_state = optimizer.init(params)
+
+        neg_grads = tree_map(lambda g: -g, grads)
+
+        # Apply optimizer update, cast to float32 to avoid type errors as optax doesn't use float64 internally for state
+        updates, new_opt_state = optimizer.update(
+            neg_grads,
+            opt_state,
+            params,
+            value=jnp.array(-objective_value, dtype=jnp.float32),
+        )
+        new_params = optax.apply_updates(params, updates)
+
+        return (
+            new_params,
+            objective_value,
+            params,
+            grads,
+            new_opt_state,
+        )
+
+    return update_with_hessian
+
+
+def update_from_partial_training_step_factory_with_optax(
+    partial_training_step,
+    optimizer,
+    train_on_hessian_trace=False,
+    partial_fixed_training_step=None,
+):
+    """Creates a complete update function from a partial training step using optax optimizer.
+
+    This is a high-level factory function that combines the other factories to create
+    a complete update function using optax optimizers.
+
+    Parameters
+    ----------
+    partial_training_step : callable
+        The base training step function to be wrapped.
+    optimizer : optax.GradientTransformation
+        The optax optimizer to use.
+    train_on_hessian_trace : bool, optional
+        Whether to include Hessian trace regularization, by default False.
+    partial_fixed_training_step : callable, optional
+        The function used to compute Hessian trace when train_on_hessian_trace is True.
+        Required if train_on_hessian_trace is True.
+
+    Returns
+    -------
+    callable
+        A JIT-compiled update function that implements the complete training step,
+        either with or without Hessian regularization, using the specified optax optimizer.
+    """
+    batched_partial_training_step = batched_partial_training_step_factory(
+        partial_training_step
+    )
+
+    if train_on_hessian_trace:
+        batched_objective_with_hessian = batched_objective_with_hessian_factory(
+            batched_partial_training_step, partial_fixed_training_step
+        )
+        update = update_with_hessian_factory_with_optax(batched_objective_with_hessian, optimizer)
+    else:
+        batched_objective = batched_objective_factory(batched_partial_training_step)
+        update = update_factory_with_optax(batched_objective, optimizer)
+    return update
+
+
+def create_opt_state_in_axes_dict(opt_state):
+    """Create in_axes dict for optimizer state based on its actual structure."""
+
+    def _create_axes_for_leaf(leaf):
+        # Handle empty lists specifically - they should not be vmapped over
+        if isinstance(leaf, list) and len(leaf) == 0:
+            return None
+        elif hasattr(leaf, "shape") and len(leaf.shape) > 0:
+            # If first dimension >= 1, it's batched (map over first dimension)
+            if leaf.shape[0] >= 1:  # Changed from > 1 to >= 1
+                return 0
+            else:
+                return None
+        elif hasattr(leaf, "__len__") and len(leaf) == 0:
+            # Any empty sequence - don't map over
+            return None
+        else:
+            # Other types (like EmptyState) - don't map over
+            return None
+
+    return tree_map(_create_axes_for_leaf, opt_state)
+
+
+def _create_base_optimizer(optimizer_type, learning_rate):
+    """Create a base optimizer with the given learning rate."""
+    # note that learning_rate can be a float or a schedule
+    if optimizer_type == "adam":
+        return optax.adam(learning_rate=learning_rate)
+    elif optimizer_type == "sgd":
+        return optax.sgd(learning_rate=learning_rate)
+    else:
+        raise ValueError(f"Unknown optimizer type: {optimizer_type}")
+
+
+def _create_lr_schedule(settings):
+    """Create a learning rate schedule based on settings."""
+    base_lr = settings.get("base_lr", 0.001)
+    min_lr = settings.get("min_lr", 1e-6)
+    n_iterations = settings.get("n_iterations", 1000)
+    schedule_type = settings.get("lr_schedule_type", "constant")
+
+    if schedule_type == "constant":
+        return optax.constant_schedule(base_lr)
+
+    elif schedule_type == "cosine":
+        return optax.cosine_decay_schedule(
+            init_value=base_lr,
+            decay_steps=n_iterations,  # Use n_iterations
+            alpha=min_lr / base_lr,
+        )
+
+    elif schedule_type == "exponential":
+        # Calculate decay_rate from decay_lr_ratio
+        # If we want to decay from base_lr to min_lr over n_iterations steps
+        # with exponential decay, we need to solve: min_lr = base_lr * (decay_rate)^n_iterations
+        # So: decay_rate = (min_lr / base_lr)^(1/n_iterations)
+        decay_rate = (min_lr / base_lr) ** (1.0 / n_iterations)
+        return optax.exponential_decay(
+            init_value=base_lr, 
+            transition_steps=n_iterations,  # Use n_iterations
+            decay_rate=decay_rate
+        )
+
+    elif schedule_type == "warmup_cosine":
+        warmup_steps = settings["warmup_steps"]
+        return optax.warmup_cosine_decay_schedule(
+            init_value=min_lr,
+            peak_value=base_lr,
+            warmup_steps=warmup_steps,
+            decay_steps=n_iterations,  # Use n_iterations
+            end_value=min_lr,
+        )
+
+    else:
+        raise ValueError(f"Unknown learning rate schedule type: {schedule_type}")
+
+
+def create_optimizer_chain(run_fingerprint):
+    settings = run_fingerprint["optimisation_settings"]
+    base_lr = settings["base_lr"]
+
+    # Create base optimizer with lr=base_lr (will be scaled by schedule)
+    base_optimizer = _create_base_optimizer(settings["optimiser"], base_lr)
+
+    # Create vanilla LR schedule
+    lr_schedule = _create_lr_schedule(settings)
+
+    # Build base optimizer chain
+    optimizer_chain = optax.chain(base_optimizer, optax.scale_by_schedule(lr_schedule))
+
+    # Add plateau reduction if enabled
+    if settings["use_plateau_decay"]:
+        plateau_reduction = optax.contrib.reduce_on_plateau(
+            factor=settings["decay_lr_ratio"],
+            patience=settings["decay_lr_plateau"],
+        )
+        optimizer_chain = optax.chain(optimizer_chain, plateau_reduction)
+
+    # Add gradient clipping if enabled
+    if settings["use_gradient_clipping"]:
+        optimizer_chain = optax.chain(
+            optax.clip_by_global_norm(settings["clip_norm"]), optimizer_chain
+        )
+
+    return optimizer_chain
