@@ -57,7 +57,6 @@ run_fingerprint_defaults = {
     "max_memory_days": 365,
     "noise_trader_ratio": 0.0,
     "minimum_weight": None,  # will be set to 0.1 / n_assets
-    # Gradient clipping configuration for stable training
 }
 
 
