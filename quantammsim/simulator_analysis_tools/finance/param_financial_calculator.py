@@ -127,7 +127,7 @@ def run_pool_simulation(simulationRunDto):
         for constituent in simulationRunDto.pool.poolConstituents
     ]
 
-    total_initial_value = sum(initial_value_per_token)
+    total_initial_value = jnp.sum(initial_value_per_token)
 
     initial_value_ratio = [val / total_initial_value for val in initial_value_per_token]
 
