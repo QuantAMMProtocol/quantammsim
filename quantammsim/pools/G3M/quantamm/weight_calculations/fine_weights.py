@@ -18,7 +18,7 @@ else:
 
 
 import jax.numpy as jnp
-from jax import jit, vmap
+from jax import jit, vmap, lax
 from jax import devices, device_put
 from jax.tree_util import Partial
 from jax.lax import scan, stop_gradient
@@ -44,6 +44,19 @@ from quantammsim.core_simulator.param_utils import (
     memory_days_to_lamb,
     jax_memory_days_to_lamb,
 )
+
+def ste_clip(x, lo, hi):
+    y = jnp.clip(x, lo, hi)
+    # forward: y; backward: identity wrt x
+    return x + lax.stop_gradient(y - x)
+
+def ste_scaled_diff(diff, maximum_change):
+    max_val = jnp.max(jnp.abs(diff))
+    scale = maximum_change / (max_val + 1e-10)
+    needs_scale = (max_val > maximum_change)
+    scaled = jnp.where(needs_scale, diff * scale, diff)
+    # forward: scaled (cap applied); backward: identity wrt diff
+    return diff + lax.stop_gradient(scaled - diff)
 
 
 @partial(
@@ -94,7 +107,7 @@ def _jax_calc_coarse_weights(
             alt_lamb = calc_alt_lamb(update_rule_parameter_dict)
         if cap_lamb:
             max_lamb = memory_days_to_lamb(max_memory_days, chunk_period)
-            capped_alt_lamb = jnp.clip(alt_lamb, a_min=0.0, a_max=max_lamb)
+            capped_alt_lamb = ste_clip(alt_lamb, lo=0.0, hi=max_lamb)
             alt_lamb = capped_alt_lamb
         # initial_weights = raw_weight_outputs[0]
     else:
@@ -397,23 +410,8 @@ def _jax_calc_fine_weight_ends_only_scan_function(
 
     diff = 1 / (interpol_num - 1) * (stop - actual_start)
 
-    # check that no changes will be above the allowed largest
-    # instance-to-instance change in weights, if there are set
-    # them to the max value (with correct sign!).
-    idx = jnp.abs(diff) > maximum_change
-
-    # are any out of bounds?
-    sum_idx = jnp.sum(idx) > 0
-    
-    # sum_idx = jnp.expand_dims(jnp.sum(idx) > 0,1)
-    # radically simple approach: if any entries are greater
-    # in absolute values than the allowed max value, multiply all entries
-    # by the ratio of the max value to the allowed max value
-
-    max_value_present = jnp.max(jnp.abs(diff))
-    scale = maximum_change / (max_value_present + 1e-10)
-
-    scaled_diff = jnp.where(array_of_trues * sum_idx, diff * scale, diff)
+    # STE max-change: forward caps; backward treats as identity for grads
+    scaled_diff = ste_scaled_diff(diff, maximum_change)
 
     actual_stop = actual_start + scaled_diff * (interpol_num - 1)
 
@@ -483,10 +481,8 @@ def _jax_calc_coarse_weight_scan_function(
     n_less_than_min = jnp.sum(idx)
     idy = normed_weight_update > maximum_weight
 
-    # set values too small to minimum_weight
-    normed_weight_update = jnp.where(idx, minimum_weight, normed_weight_update)
-    # set values too big to maximum_weight
-    normed_weight_update = jnp.where(idy, maximum_weight, normed_weight_update)
+    normed_weight_update = ste_clip(normed_weight_update, minimum_weight, maximum_weight)
+
     # calculate 'left over' weight, 1 - n * epsilon
     remaining_weight = 1 - n_less_than_min * minimum_weight
     ## now distribute this 'left over' weight to other weight-slots
@@ -514,16 +510,10 @@ def _jax_calc_coarse_weight_scan_function(
 
     target_weights = target_weights + stop_gradient(corrected_weights - target_weights)
 
-    # Now apply maximum change restrictions
     diff = 1 / (interpol_num - 1) * (target_weights - prev_actual_position)
 
-    idx = jnp.abs(diff) > maximum_change
-    sum_idx = jnp.sum(idx) > 0
-
-    max_value_present = jnp.max(jnp.abs(diff))
-    scale = maximum_change / (max_value_present + 1e-10)
-
-    scaled_diff = jnp.where(sum_idx, diff * scale, diff)
+    # STE max-change: forward caps; backward passes gradients as if unscaled
+    scaled_diff = ste_scaled_diff(diff, maximum_change)
 
     # Calculate actual position reached after applying both constraints
     actual_position = prev_actual_position + scaled_diff * (interpol_num - 1)
