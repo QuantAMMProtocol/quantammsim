@@ -404,10 +404,8 @@ def _jax_calc_fine_weight_ends_only_scan_function(
 
     # are any out of bounds?
     sum_idx = jnp.sum(idx) > 0
+    
     # sum_idx = jnp.expand_dims(jnp.sum(idx) > 0,1)
-
-    gated_idx = sum_idx * idx
-
     # radically simple approach: if any entries are greater
     # in absolute values than the allowed max value, multiply all entries
     # by the ratio of the max value to the allowed max value
