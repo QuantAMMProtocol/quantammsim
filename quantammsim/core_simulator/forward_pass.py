@@ -27,6 +27,32 @@ np.seterr(all="raise")
 np.seterr(under="print")
 
 
+def _daily_log_sharpe(values: jnp.ndarray) -> jnp.ndarray:
+    """
+    Daily Sharpe on log close-to-close returns.
+    values: [T] minute-level NAV (value_over_time).
+    Uses 1 day = 1440 minutes; annualizes with sqrt(365).
+    """
+    k = jnp.array(1440, dtype=jnp.int32)          # minutes per day
+    T = values.shape[0]
+    N = (T - 1) // k                               # number of full daily intervals
+
+    # Indices for daily opens (start) and closes (end)
+    idx_start = jnp.arange(N, dtype=jnp.int32) * k
+    idx_end   = idx_start + k
+
+    start_vals = values[idx_start]
+    end_vals   = values[idx_end]
+
+    # Daily log returns, stabilized
+    log_rets = jnp.log(end_vals + 1e-12) - jnp.log(start_vals + 1e-12)
+
+    mean = log_rets.mean()
+    std  = log_rets.std()
+
+    # Annualize daily stats (calendar days)
+    return jnp.sqrt(365.0) * (mean / (std + 1e-8))
+
 def _calculate_max_drawdown(value_over_time, duration=7 * 24 * 60):
     """Calculate maximum drawdown on a chosen basis."""
     n_complete_chunks = (len(value_over_time) // duration) * duration
@@ -263,6 +289,7 @@ def _calculate_return_value(
         # ),
         "sharpe": lambda: jnp.sqrt(365 * 24 * 60)
         * ((pool_returns).mean() / pool_returns.std()),
+        "daily_log_sharpe": lambda: _daily_log_sharpe(value_over_time),
         "returns": lambda: value_over_time[-1] / value_over_time[0] - 1.0,
         "returns_over_hodl": lambda: (
             value_over_time[-1]
