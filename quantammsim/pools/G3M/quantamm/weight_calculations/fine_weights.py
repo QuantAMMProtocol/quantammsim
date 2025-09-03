@@ -45,19 +45,21 @@ from quantammsim.core_simulator.param_utils import (
     jax_memory_days_to_lamb,
 )
 
-def ste_clip(x, lo, hi):
-    y = jnp.clip(x, lo, hi)
+def ste(x, y):
     # forward: y; backward: identity wrt x
     return x + lax.stop_gradient(y - x)
 
-def ste_scaled_diff(diff, maximum_change):
+def ste_clip(x, lo, hi):
+    y = jnp.clip(x, lo, hi)
+    # forward: y; backward: identity wrt x
+    return ste(x, y)
+
+def scale_diff(diff, maximum_change):
     max_val = jnp.max(jnp.abs(diff))
     scale = maximum_change / (max_val + 1e-10)
-    needs_scale = (max_val > maximum_change)
+    needs_scale = max_val > maximum_change
     scaled = jnp.where(needs_scale, diff * scale, diff)
-    # forward: scaled (cap applied); backward: identity wrt diff
-    return diff + lax.stop_gradient(scaled - diff)
-
+    return scaled
 
 @partial(
     jit,
@@ -411,7 +413,10 @@ def _jax_calc_fine_weight_ends_only_scan_function(
     diff = 1 / (interpol_num - 1) * (stop - actual_start)
 
     # STE max-change: forward caps; backward treats as identity for grads
-    scaled_diff = ste_scaled_diff(diff, maximum_change)
+    scaled_diff = scale_diff(diff, maximum_change)
+
+    if run_fingerprint["ste_max_change"]:
+        scaled_diff = ste(diff, scaled_diff)
 
     actual_stop = actual_start + scaled_diff * (interpol_num - 1)
 
@@ -481,7 +486,10 @@ def _jax_calc_coarse_weight_scan_function(
     n_less_than_min = jnp.sum(idx)
     idy = normed_weight_update > maximum_weight
 
-    normed_weight_update = ste_clip(normed_weight_update, minimum_weight, maximum_weight)
+    if run_fingerprint["ste_min_max_weight"]:
+        normed_weight_update = ste_clip(normed_weight_update, minimum_weight, maximum_weight)
+    else:
+        normed_weight_update = jnp.clip(normed_weight_update, minimum_weight, maximum_weight)
 
     # calculate 'left over' weight, 1 - n * epsilon
     remaining_weight = 1 - n_less_than_min * minimum_weight
@@ -513,7 +521,10 @@ def _jax_calc_coarse_weight_scan_function(
     diff = 1 / (interpol_num - 1) * (target_weights - prev_actual_position)
 
     # STE max-change: forward caps; backward passes gradients as if unscaled
-    scaled_diff = ste_scaled_diff(diff, maximum_change)
+    scaled_diff = scale_diff(diff, maximum_change)
+
+    if run_fingerprint["ste_max_change"]:
+        scaled_diff = ste(diff, scaled_diff)
 
     # Calculate actual position reached after applying both constraints
     actual_position = prev_actual_position + scaled_diff * (interpol_num - 1)
