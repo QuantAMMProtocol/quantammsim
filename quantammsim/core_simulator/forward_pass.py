@@ -30,22 +30,13 @@ np.seterr(under="print")
 def _daily_log_sharpe(values: jnp.ndarray) -> jnp.ndarray:
     """
     Daily Sharpe on log close-to-close returns.
-    values: [T] minute-level NAV (value_over_time).
     Uses 1 day = 1440 minutes; annualizes with sqrt(365).
     """
-    k = jnp.array(1440, dtype=jnp.int32)          # minutes per day
-    T = values.shape[0]
-    N = (T - 1) // k                               # number of full daily intervals
-
-    # Indices for daily opens (start) and closes (end)
-    idx_start = jnp.arange(N, dtype=jnp.int32) * k
-    idx_end   = idx_start + k
-
-    start_vals = values[idx_start]
-    end_vals   = values[idx_end]
-
-    # Daily log returns, stabilized
-    log_rets = jnp.log(end_vals + 1e-12) - jnp.log(start_vals + 1e-12)
+    # Sample daily values using stride slice
+    daily_values = values[::1440]
+    
+    # Calculate daily log returns
+    log_rets = jnp.diff(jnp.log(daily_values + 1e-12))
 
     mean = log_rets.mean()
     std  = log_rets.std()
@@ -280,7 +271,11 @@ def _calculate_return_value(
     pool_returns = None
     if return_val in ["sharpe", "returns", "returns_over_hodl"]:
         pool_returns = jnp.diff(value_over_time) / value_over_time[:-1]
-
+    if return_val == "daily_sharpe":
+        daily_returns = (
+            jnp.diff(value_over_time[::24 * 60])
+            / value_over_time[::24 * 60][:-1]
+        )
     return_metrics = {
         # "sharpe": lambda: jnp.sqrt(365 * 24 * 60)
         # * (
@@ -289,6 +284,8 @@ def _calculate_return_value(
         # ),
         "sharpe": lambda: jnp.sqrt(365 * 24 * 60)
         * ((pool_returns).mean() / pool_returns.std()),
+        "daily_sharpe": lambda: jnp.sqrt(365)
+        * (daily_returns.mean() / daily_returns.std()),
         "daily_log_sharpe": lambda: _daily_log_sharpe(value_over_time),
         "returns": lambda: value_over_time[-1] / value_over_time[0] - 1.0,
         "returns_over_hodl": lambda: (
