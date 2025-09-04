@@ -255,6 +255,8 @@ def train_on_historic_data(
         "do_trades": False,
         "noise_trader_ratio": run_fingerprint["noise_trader_ratio"],
         "minimum_weight": run_fingerprint["minimum_weight"],
+        "ste_max_change": run_fingerprint["ste_max_change"],
+        "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
     }
 
     partial_training_step = Partial(
@@ -920,6 +922,8 @@ def do_run_on_historic_data(
         "numeraire": run_fingerprint["numeraire"],
         "noise_trader_ratio": run_fingerprint["noise_trader_ratio"],
         "minimum_weight": run_fingerprint["minimum_weight"],
+        "ste_max_change": run_fingerprint["ste_max_change"],
+        "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
     }
 
     # Create static dictionaries for training and testing
@@ -1213,6 +1217,8 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         "numeraire": run_fingerprint["numeraire"],
         "noise_trader_ratio": run_fingerprint["noise_trader_ratio"],
         "minimum_weight": run_fingerprint["minimum_weight"],
+        "ste_max_change": run_fingerprint["ste_max_change"],
+        "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
     }
 
     # Create static dictionaries for training and testing

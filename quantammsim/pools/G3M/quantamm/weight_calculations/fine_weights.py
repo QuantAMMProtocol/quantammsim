@@ -63,7 +63,7 @@ def scale_diff(diff, maximum_change):
 
 @partial(
     jit,
-    static_argnums=(4,5,6,7,8,),
+    static_argnums=(4,5,6,7,8,9,10),
 )
 def _jax_calc_coarse_weights(
     raw_weight_outputs,
@@ -75,6 +75,8 @@ def _jax_calc_coarse_weights(
     weight_interpolation_period,
     maximum_change,
     raw_weight_outputs_are_themselves_weights=False,
+    ste_max_change=False,
+    ste_min_max_weight=False,
 ):
     r"""calc weights from raw weight outputs, and make sure they fall inside
     guard-rails --- sum to 1, are larger than minimum value
@@ -85,6 +87,22 @@ def _jax_calc_coarse_weights(
         A 1-dimenisional numpy array
     minimum_weight : float64
         The minimum value (between 0 and 1/n_cols)
+    update_rule_parameter_dict : dict
+        The update rule parameters
+    max_memory_days : float64
+        The maximum memory days
+    chunk_period : float64
+        The chunk period
+    weight_interpolation_period : float64
+        The weight interpolation period
+    maximum_change : float64
+        The maximum change
+    raw_weight_outputs_are_themselves_weights : bool
+        Whether the raw weight outputs are themselves weights
+    ste_max_change : bool
+        Whether to use ste max change
+    ste_min_max_weight : bool
+        Whether to use ste min max weight
 
     Returns
     -------
@@ -124,6 +142,8 @@ def _jax_calc_coarse_weights(
         interpol_num=weight_interpolation_period + 1,
         maximum_change=maximum_change,
         raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
+        ste_max_change=ste_max_change,
+        ste_min_max_weight=ste_min_max_weight,
     )
 
     if raw_weight_outputs_are_themselves_weights:
@@ -140,6 +160,8 @@ def _jax_calc_coarse_weights(
                 interpol_num=2,  # interpol_num = 2 for immediate weight change
                 maximum_change=maximum_change,
                 raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
+                ste_max_change=ste_max_change,
+                ste_min_max_weight=ste_min_max_weight,
             )
         )
         carry_list_init = [target_weights_init]
@@ -189,6 +211,8 @@ def calc_fine_weight_output(
     weight_interpolation_method = run_fingerprint["weight_interpolation_method"]
     minimum_weight = run_fingerprint.get("minimum_weight")
     n_assets = run_fingerprint["n_assets"]
+    ste_max_change = run_fingerprint["ste_max_change"]
+    ste_min_max_weight = run_fingerprint["ste_min_max_weight"]
     if minimum_weight == None:
         minimum_weight = 0.1 / n_assets
 
@@ -202,6 +226,8 @@ def calc_fine_weight_output(
         weight_interpolation_period,
         maximum_change,
         raw_weight_outputs_are_themselves_weights,
+        ste_max_change,
+        ste_min_max_weight,
     )
 
     scaled_diffs_gpu = device_put(scaled_diffs_cpu, GPU_DEVICE)
@@ -310,7 +336,7 @@ def _jax_fine_weights_from_actual_starts_and_diffs(
     ),
 )
 def _jax_fine_weights_end_from_coarse_weights(
-    coarse_weights, interpol_num, num, maximum_change
+    coarse_weights, interpol_num, num, maximum_change, ste_max_change
 ):
     r"""calc fine weights from coarse weight changes
     ----------
@@ -322,6 +348,9 @@ def _jax_fine_weights_end_from_coarse_weights(
         How many timesteps to map one coarse interval to
     maximum_change : float64
         maximum scalar change in w, for step sizes
+    ste_max_change : bool
+        Whether to use ste max change
+
     Returns
     -------
     jnp.ndarray
@@ -346,6 +375,7 @@ def _jax_fine_weights_end_from_coarse_weights(
         n_assets=n_assets,
         fine_ones=fine_ones,
         array_of_trues=array_of_trues,
+        ste_max_change=ste_max_change,
     )
 
     carry_list_init = [initial_weights]
@@ -359,10 +389,7 @@ def _jax_fine_weights_end_from_coarse_weights(
 
 @partial(
     jit,
-    static_argnums=(
-        2,
-        3,
-    ),
+    static_argnums=(2,3,5,6,7,8,9),
 )
 def _jax_calc_fine_weight_ends_only_scan_function(
     carry_list,
@@ -374,6 +401,7 @@ def _jax_calc_fine_weight_ends_only_scan_function(
     n_assets,
     fine_ones,
     array_of_trues,
+    ste_max_change,
 ):
     """
     Calculate the fine weights using a scan function.
@@ -415,7 +443,7 @@ def _jax_calc_fine_weight_ends_only_scan_function(
     # STE max-change: forward caps; backward treats as identity for grads
     scaled_diff = scale_diff(diff, maximum_change)
 
-    if run_fingerprint["ste_max_change"]:
+    if ste_max_change:
         scaled_diff = ste(diff, scaled_diff)
 
     actual_stop = actual_start + scaled_diff * (interpol_num - 1)
@@ -425,7 +453,7 @@ def _jax_calc_fine_weight_ends_only_scan_function(
 
 @partial(
     jit,
-    static_argnums=(6,7,8),
+    static_argnums=(6,7,8,9,10),
 )
 def _jax_calc_coarse_weight_scan_function(
     carry_list,
@@ -437,6 +465,8 @@ def _jax_calc_coarse_weight_scan_function(
     interpol_num,
     maximum_change,
     raw_weight_outputs_are_themselves_weights,
+    ste_max_change,
+    ste_min_max_weight,
 ):
     """
     Calculate the coarse weights for the AMM simulator.
@@ -486,7 +516,7 @@ def _jax_calc_coarse_weight_scan_function(
     n_less_than_min = jnp.sum(idx)
     idy = normed_weight_update > maximum_weight
 
-    if run_fingerprint["ste_min_max_weight"]:
+    if ste_min_max_weight:
         normed_weight_update = ste_clip(normed_weight_update, minimum_weight, maximum_weight)
     else:
         normed_weight_update = jnp.clip(normed_weight_update, minimum_weight, maximum_weight)
@@ -523,7 +553,7 @@ def _jax_calc_coarse_weight_scan_function(
     # STE max-change: forward caps; backward passes gradients as if unscaled
     scaled_diff = scale_diff(diff, maximum_change)
 
-    if run_fingerprint["ste_max_change"]:
+    if ste_max_change:
         scaled_diff = ste(diff, scaled_diff)
 
     # Calculate actual position reached after applying both constraints
