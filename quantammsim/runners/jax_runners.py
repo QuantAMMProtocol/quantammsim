@@ -8,7 +8,7 @@ import gc
 import os
 from jax.tree_util import Partial
 from jax import jit, vmap, random
-from jax import clear_caches, clear_backends
+from jax import clear_caches
 from jax.tree_util import tree_map
 
 from quantammsim.utils.data_processing.historic_data_utils import (
