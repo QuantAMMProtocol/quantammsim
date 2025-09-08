@@ -404,10 +404,8 @@ def _jax_calc_fine_weight_ends_only_scan_function(
 
     # are any out of bounds?
     sum_idx = jnp.sum(idx) > 0
+    
     # sum_idx = jnp.expand_dims(jnp.sum(idx) > 0,1)
-
-    gated_idx = sum_idx * idx
-
     # radically simple approach: if any entries are greater
     # in absolute values than the allowed max value, multiply all entries
     # by the ratio of the max value to the allowed max value
@@ -476,7 +474,7 @@ def _jax_calc_coarse_weight_scan_function(
     ## calc normed weights
     # if i > 5685:
     #     print(i, 'raw w', raw_weights)
-    normed_weight_update = raw_weights / sum(raw_weights)
+    normed_weight_update = raw_weights / jnp.sum(raw_weights)
 
     maximum_weight = 1.0 - (n_assets - 1) * minimum_weight
     ## check values are all above minimum weight
@@ -507,7 +505,7 @@ def _jax_calc_coarse_weight_scan_function(
     raw_idx = jnp.argmax(target_weights)
     idx = raw_idx == asset_arange
     corrected_weights = jnp.where(
-        idx, target_weights - sum(target_weights) + 1.0, target_weights
+        idx, target_weights - jnp.sum(target_weights) + 1.0, target_weights
     )
 
     # note that argmax is not differentiable, so we take the

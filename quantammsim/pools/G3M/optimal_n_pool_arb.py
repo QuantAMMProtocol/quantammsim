@@ -32,11 +32,11 @@ def compare_signatures(sig1, sig2):
     args: sig1, sig2: np.array of signatures
 
     """
-    if sum(sig1[sig1 != 0] == sig2[sig1 != 0]) == len(sig1[sig1 != 0]):
+    if jnp.sum(sig1[sig1 != 0] == sig2[sig1 != 0]) == len(sig1[sig1 != 0]):
         return True
-    elif sum(sig1[sig2 != 0] == sig2[sig2 != 0]) == len(sig2[sig2 != 0]):
+    elif jnp.sum(sig1[sig2 != 0] == sig2[sig2 != 0]) == len(sig2[sig2 != 0]):
         return True
-    elif sum(sig1 == sig2) != len(sig1):
+    elif jnp.sum(sig1 == sig2) != len(sig1):
         # print('SIG NOT MATCH')
         return False
     else:

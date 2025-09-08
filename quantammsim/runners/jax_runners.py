@@ -587,7 +587,7 @@ def train_on_historic_data(
                     )
                     train_objectives.append(train_value)
 
-                mean_train_value = sum(train_objectives) / len(train_objectives)
+                mean_train_value = jnp.sum(train_objectives) / len(train_objectives)
                 train_value = _calculate_return_value(
                     run_fingerprint["return_val"],
                     train_outputs["reserves"],
