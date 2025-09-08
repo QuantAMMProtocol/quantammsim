@@ -18,7 +18,7 @@ else:
 
 
 import jax.numpy as jnp
-from jax import jit, vmap, lax
+from jax import jit, vmap
 from jax import devices, device_put
 from jax.tree_util import Partial
 from jax.lax import scan, stop_gradient
@@ -47,7 +47,7 @@ from quantammsim.core_simulator.param_utils import (
 
 def ste(x, y):
     # forward: y; backward: identity wrt x
-    return x + lax.stop_gradient(y - x)
+    return x + stop_gradient(y - x)
 
 def ste_clip(x, lo, hi):
     y = jnp.clip(x, lo, hi)
