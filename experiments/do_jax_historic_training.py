@@ -33,13 +33,6 @@ if __name__ == "__main__":
         file = open("log_training_products.txt", "a")
         file.write(str(i) + run_location + "\n")  # Write some text
         file.close()  # Close the file
-        params = {
-            "initial_weights_logits": jnp.array([0.0, 10.0, 10.0]),
-            "k": jnp.array([10.0, 10.0, 10.0]),
-            "logit_lamb": jnp.array([10.0, 10.0, 10.0]),
-            "logit_delta_lamb": jnp.array([0.0, 0.0, 0.0]),
-        }
-
         train_on_historic_data(run, iterations_per_print=100)
 
         i = i + 1

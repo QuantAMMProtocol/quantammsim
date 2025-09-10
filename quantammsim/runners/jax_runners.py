@@ -1111,6 +1111,9 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         _jax_calc_coarse_weights,
         _jax_fine_weights_from_actual_starts_and_diffs,
     )
+    from quantammsim.pools.G3M.quantamm.quantamm_reserves import (
+        _jax_calc_quantAMM_reserves_with_dynamic_inputs,
+    )
 
     # Set default values for run_fingerprint and its optimisation_settings
     recursive_default_set(run_fingerprint, run_fingerprint_defaults)
@@ -1278,15 +1281,90 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     local_prices = data_dict["prices"][start_index:end_index]
     local_unix_values = data_dict["unix_values"][start_index:end_index]
 
-    reserves = pool.calculate_reserves_with_fees(
-        params,
-        NestedHashabledict(static_dict),
-        data_dict["prices"],
-        start_index=None,
-        local_prices=HashableArrayWrapper(local_prices),
-        weights=HashableArrayWrapper(weights),
-        initial_reserves=HashableArrayWrapper(params["initial_reserves"]),
+    # reserves = pool.calculate_reserves_with_fees(
+    #     params,
+    #     NestedHashabledict(static_dict),
+    #     data_dict["prices"],
+    #     start_index=None,
+    #     local_prices=HashableArrayWrapper(local_prices),
+    #     weights=HashableArrayWrapper(weights),
+    #     initial_reserves=HashableArrayWrapper(params["initial_reserves"]),
+    # )
+    fees_array = dynamic_inputs_dict.get("fees_array")
+    arb_thresh_array = dynamic_inputs_dict.get("gas_cost_array")
+    arb_fees_array = dynamic_inputs_dict.get("arb_fees_array")
+    trade_array = dynamic_inputs_dict.get("trades")
+    lp_supply_array = dynamic_inputs_dict.get("lp_supply_array")
+
+    if fees_array is None:
+        fees_array = jnp.array([static_dict["fees"]])
+    if arb_thresh_array is None:
+        arb_thresh_array = jnp.array([static_dict["gas_cost"]])
+    if arb_fees_array is None:
+        arb_fees_array = jnp.array([static_dict["arb_fees"]])
+
+        # initial_pool_value = run_fingerprint["initial_pool_value"]
+        # initial_value_per_token = arb_acted_upon_weights[0] * initial_pool_value
+        # initial_reserves = initial_value_per_token / arb_acted_upon_local_prices[0]
+
+    initial_reserves = params["initial_reserves"]
+
+    # any of fees_array, arb_thresh_array, arb_fees_array, trade_array, and lp_supply_array
+    # can be singletons, in which case we repeat them for the length of the bout.
+
+    # Determine the maximum leading dimension
+    max_len = bout_length - 1
+    if run_fingerprint["arb_frequency"] != 1:
+        max_len = max_len // run_fingerprint["arb_frequency"]
+    # Broadcast input arrays to match the maximum leading dimension.
+    # If they are singletons, this will just repeat them for the length of the bout.
+    # If they are arrays of length bout_length, this will cause no change.
+    fees_array_broadcast = jnp.broadcast_to(
+        fees_array, (max_len,) + fees_array.shape[1:]
     )
+    arb_thresh_array_broadcast = jnp.broadcast_to(
+        arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:]
+    )
+    arb_fees_array_broadcast = jnp.broadcast_to(
+        arb_fees_array, (max_len,) + arb_fees_array.shape[1:]
+    )
+    # if lp_supply_array is not provided, we set it to a constant of 1.0
+    if lp_supply_array is None:
+        lp_supply_array = jnp.array(1.0)
+
+    lp_supply_array_broadcast = jnp.broadcast_to(
+        lp_supply_array, (max_len,) + lp_supply_array.shape[1:]
+    )
+    # if we are doing trades, the trades array must be of the same length as the other arrays
+    if run_fingerprint["do_trades"]:
+        assert trade_array.shape[0] == max_len
+    reserves = _jax_calc_quantAMM_reserves_with_dynamic_inputs(
+        initial_reserves,
+        weights,
+        local_prices,
+        fees_array_broadcast,
+        arb_thresh_array_broadcast,
+        arb_fees_array_broadcast,
+        jnp.array(static_dict["all_sig_variations"]),
+        None,
+        run_fingerprint["do_trades"],
+        run_fingerprint["do_arb"],
+        run_fingerprint["noise_trader_ratio"],
+        lp_supply_array_broadcast,
+    )
+    # reserves = pool.calculate_reserves_with_dynamic_inputs(
+    #     params
+    #     NestedHashabledict(static_dict),
+    #     data_dict["prices"],
+    #     start_index=None,
+    #     fees_array=fees_array,
+    #     arb_thresh_array=arb_thresh_array,
+    #     arb_fees_array=arb_fees_array,
+    #     trade_array=None,
+    #     lp_supply_array=lp_supply_array,
+    #     additional_oracle_input = None,
+    # )
+
     value_over_time = jnp.sum(jnp.multiply(reserves, local_prices), axis=-1)
     return_dict = {
         "final_reserves": reserves[-1],
