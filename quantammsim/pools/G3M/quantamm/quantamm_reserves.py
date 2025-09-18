@@ -532,8 +532,8 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     # conservative assumption, as the pool actually benefits from unbalanced
     # deposits and withdrawals.
 
-    if lp_supply != prev_lp_supply:
-        prev_reserves = prev_reserves * lp_supply / prev_lp_supply
+    lp_supply_change = lp_supply != prev_lp_supply
+    prev_reserves = jnp.where(lp_supply_change, prev_reserves * lp_supply / prev_lp_supply, prev_reserves)
     prev_lp_supply = lp_supply
 
     current_value = (prev_reserves * prices).sum()
@@ -687,6 +687,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
         prices,
         reserves,
         counter,
+        lp_supply,
     ], reserves
 
 
@@ -835,7 +836,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
         do_trades=do_trades,
-        do_arb=do_arb,
+        # do_arb=do_arb,
         noise_trader_ratio=noise_trader_ratio,
     )
 

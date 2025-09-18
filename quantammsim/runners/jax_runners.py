@@ -1042,6 +1042,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     fees_df=None,
     gas_cost_df=None,
     arb_fees_df=None,
+    lp_supply_df=None,
     do_test_period=False,
     low_data_mode=False,
 ):
@@ -1082,6 +1083,9 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     arb_fees_df : pd.DataFrame, optional
         Arbitrage fees to apply over time.
         Each row should contain the unix timestamp and arb fee to be charged.
+    lp_supply_df : pd.DataFrame, optional
+        LP supply over time.
+        Each row should contain the unix timestamp and LP supply.
     do_test_period : bool, optional
         Whether to run the test period (default is False).
     low_data_mode : bool, optional
@@ -1155,6 +1159,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         fees_df,
         gas_cost_df,
         arb_fees_df,
+        lp_supply_df,
         do_test_period=do_test_period,
     )
 
@@ -1269,6 +1274,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     # Check that weights[::chunk_period] matches coarse_weights["weights"]
     # Get weights at coarse timesteps
     coarse_timestep_weights = weights[::chunk_period]
+    weights = weights[:-1]
 
     # Compare with original coarse weights
     weights_match = jnp.allclose(
@@ -1276,7 +1282,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     )
 
     start_index = data_dict["start_idx"]
-    end_index = data_dict["end_idx"]
+    end_index = data_dict["end_idx"] - 1
 
     local_prices = data_dict["prices"][start_index:end_index]
     local_unix_values = data_dict["unix_values"][start_index:end_index]
@@ -1314,8 +1320,18 @@ def do_run_on_historic_data_with_provided_coarse_weights(
 
     # Determine the maximum leading dimension
     max_len = bout_length - 1
+
     if run_fingerprint["arb_frequency"] != 1:
         max_len = max_len // run_fingerprint["arb_frequency"]
+
+    fees_array = fees_array[:max_len]
+    arb_thresh_array = arb_thresh_array[:max_len]
+    arb_thresh_array = arb_thresh_array * 0.0
+    arb_fees_array = arb_fees_array[:max_len]
+    if lp_supply_array is not None:
+        lp_supply_array = lp_supply_array[:max_len]
+    if trade_array is not None:
+        trade_array = trade_array[:max_len]
     # Broadcast input arrays to match the maximum leading dimension.
     # If they are singletons, this will just repeat them for the length of the bout.
     # If they are arrays of length bout_length, this will cause no change.
