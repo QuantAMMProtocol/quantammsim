@@ -14,6 +14,7 @@ Minimal changes to core running functionality:
 - Collect all per-window results and plot a unified value curve at the end.
 
 Optional: --dump-diagnostics writes JSON/CSV checkpoints.
+NEW: --debug-window-index gates diagnostics INSIDE the loop; global dumps unchanged.
 
 NOTE: All plots are plain Matplotlib (no LaTeX).
 """
@@ -153,6 +154,13 @@ def load_scraped_pool_data(data_dir="./sonic_macro"):
             continue
     combined_df = pd.concat(dfs, ignore_index=True)
     combined_df = combined_df.sort_values('timestamp').reset_index(drop=True)
+    # Dump combined_df to CSV for diagnostics
+    try:
+        out_path = Path("./results_windows")
+        out_path.mkdir(parents=True, exist_ok=True)
+        combined_df.to_csv(out_path / "combined_df.csv", index=False)
+    except Exception as e:
+        print(f"Warning: failed to dump combined_df CSV: {e}")
 
     # Tokens + sort indices (compute indices from the unsorted names, then sort labels)
     token_columns = [col for col in combined_df.columns if col.endswith('_balance')]
@@ -219,6 +227,27 @@ def load_scraped_pool_data(data_dir="./sonic_macro"):
         if f"{token}_price" in combined_df.columns:
             ordered_prices[:, i] = combined_df[f"{token}_price"].values
 
+    try:
+        # Determine output directory from CLI args or default
+        out_dir = "./results_windows"
+        out_path = Path(out_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        ts = combined_df["timestamp"].to_numpy(dtype=np.int64)
+
+        # Dump ordered balances
+        df_bal = pd.DataFrame({"timestamp": ts})
+        for i, token in enumerate(tokens):
+            df_bal[token] = ordered_balances[:, i]
+        df_bal.to_csv(out_path / "ordered_balances.csv", index=False)
+
+        # Dump ordered prices
+        df_px = pd.DataFrame({"timestamp": ts})
+        for i, token in enumerate(tokens):
+            df_px[token] = ordered_prices[:, i]
+        df_px.to_csv(out_path / "ordered_prices.csv", index=False)
+    except Exception as e:
+        print(f"Warning: failed to dump ordered balances/prices diagnostics: {e}")
     # Build weights array and sample daily; apply column reindex like single-run
     weights_array = np.concatenate(
         [[np.array(w) for w in combined_df['weights_first_four']],
@@ -240,6 +269,17 @@ def load_scraped_pool_data(data_dir="./sonic_macro"):
         "weights": jnp.array(cw_weights),
         "unix_values": jnp.array(cw_unix),
     }
+    # Save coarse weights as a 2-column CSV: [unix, weights_json]
+    try:
+        out_path = Path("./results_windows")
+        out_path.mkdir(parents=True, exist_ok=True)
+        df_cw_2col = pd.DataFrame({
+            "unix": cw_unix.astype(np.int64),
+            "weights": [json.dumps([float(x) for x in row]) for row in cw_weights],
+        })
+        df_cw_2col.to_csv(out_path / "coarse_weights_2col.csv", index=False)
+    except Exception as e:
+        print(f"Warning: failed to dump 2-column coarse weights: {e}")
 
     fees_df = pd.DataFrame({'unix': combined_df['timestamp'].values,
                             'fees': combined_df['fee_data'].values})
@@ -275,7 +315,7 @@ DEFAULT_FINGERPRINT = {
     "rule": "power_channel",
 }
 
-def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool):
+def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool, debug_window_index: int | None):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 1) Load scraped data + coarse weights
@@ -285,7 +325,7 @@ def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool):
     cw_unix = np.asarray(cw["unix_values"]).astype(np.int64)
     cw_w = np.asarray(cw["weights"], dtype=np.float64)
 
-    # Optional: dump the full coarse-weight table (pre-window)
+    # Optional: dump the full coarse-weight table (pre-window) — global, unaffected by debug index
     if dump_diagnostics:
         df_cw = pd.DataFrame({"timestamp": cw_unix})
         _cw = cw_w if cw_w.ndim == 2 else cw_w[:, None]
@@ -324,7 +364,7 @@ def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool):
         full_ts = scraped["full_data"]["timestamp"].values.astype(np.int64)
         match_idx = np.where(full_ts == u0)[0]
         start_idx = int(match_idx[0]) if match_idx.size else int(np.clip(np.searchsorted(full_ts, u0), 0, len(full_ts) - 1))
-
+        print(f"[Window {idx}] start_idx in full data: {start_idx}, timestamp: {full_ts[start_idx]} (target {u0})")
         params = {
             "initial_weights": jnp.array(w2[0]),
             "initial_reserves": jnp.array(scraped["ordered_balances"][start_idx]),
@@ -334,8 +374,9 @@ def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool):
             "raw_exponents": jnp.array([0.0] * len(tokens)),
         }
 
-        # Diagnostics per window
-        if dump_diagnostics:
+        # -------------------- Diagnostics per window (gated by args) --------------------
+        do_dump = bool(dump_diagnostics and (debug_window_index is None or debug_window_index == idx))
+        if do_dump:
             di = {
                 "window_index": idx,
                 "start_ms": u0,
@@ -377,10 +418,10 @@ def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool):
             # coarse_weights (2 x n weights + 2 unix timestamps)
             try:
                 cw_ser = {
-                "coarse_weights": {
-                    "unix_values": np.asarray(cw_window["unix_values"]).astype(int).tolist(),
-                    "weights": np.asarray(cw_window["weights"]).tolist(),
-                }
+                    "coarse_weights": {
+                        "unix_values": np.asarray(cw_window["unix_values"]).astype(int).tolist(),
+                        "weights": np.asarray(cw_window["weights"]).tolist(),
+                    }
                 }
                 print(json.dumps(cw_ser, indent=2))
             except Exception as e:
@@ -389,10 +430,10 @@ def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool):
             # params (vectors per token)
             try:
                 params_ser = {
-                "params": {
-                    k: np.asarray(v).tolist()
-                    for k, v in params.items()
-                }
+                    "params": {
+                        k: np.asarray(v).tolist()
+                        for k, v in params.items()
+                    }
                 }
                 print(json.dumps(params_ser, indent=2))
             except Exception as e:
@@ -415,7 +456,8 @@ def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool):
             _df_meta_and_head(scraped["gas_cost_df"], "gas_cost_df")
             _df_meta_and_head(scraped["lp_supply_df"], "lp_supply_df")
             _df_meta_and_head(scraped["arb_fees_df"], "arb_fees_df")
-        
+        # -------------------------------------------------------------------------------
+
         print(f"[Window {idx}] Starting run from {start_iso} to {end_iso}...")
         print(f"  Initial weights: {w2[0].tolist()}")
         print(f"  Initial reserves: {scraped['ordered_balances'][start_idx].tolist()}")
@@ -426,6 +468,7 @@ def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool):
         print(f"  Coarse weights (second row): {w2[1].tolist()}")
         print(f"  Params: log_k={params['log_k'].tolist()}, logit_delta_lamb={params['logit_delta_lamb'].tolist()}, logit_lamb={params['logit_lamb'].tolist()}, raw_exponents={params['raw_exponents'].tolist()}")
         print("  Running...")
+
         # Run the simulation for this window
         result = do_run_on_historic_data_with_provided_coarse_weights(
             run_fingerprint=fingerprint,
@@ -436,8 +479,10 @@ def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool):
             lp_supply_df=scraped["lp_supply_df"],
             arb_fees_df=scraped["arb_fees_df"],
         )
-                # ---------------- Correct, window-aligned plotting block (time-aware + plain y) ----------------
+
+        # ---------------- Correct, window-aligned plotting block (time-aware + plain y) ----------------
         from matplotlib import dates as mdates, ticker as mticker
+        
 
         print(f"[Window {idx}] Run complete. Output has {len(result['value'])} time points.")
         print(f"  Final pool value: {result['value'][-1]}")
@@ -528,7 +573,6 @@ def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool):
         plot_weights(result, fingerprint, plot_prefix=run_name, plot_dir=str(out_dir))
         # ----------------------------------------------------------------------------------------------
 
-
         # Collect unified values (concatenate)
         unified_values.append(np.asarray(result["value"], dtype=np.float64))
 
@@ -550,19 +594,33 @@ def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool):
 
 def main(data_dir: str = "./sonic_macro",
          out_dir: str = "./results_windows",
-         dump_diagnostics: bool = False):
+         dump_diagnostics: bool = False,
+         debug_window_index: int | None = None):
     """
     Programmatic entrypoint. Call this from Python.
     """
-    run_windows(data_dir=data_dir, out_dir=Path(out_dir), dump_diagnostics=dump_diagnostics)
+    run_windows(
+        data_dir=data_dir,
+        out_dir=Path(out_dir),
+        dump_diagnostics=dump_diagnostics,
+        debug_window_index=debug_window_index
+    )
 
 def cli_main():
     p = argparse.ArgumentParser()
     p.add_argument("--data-dir", type=str, default="./sonic_macro")
     p.add_argument("--out-dir", type=str, default="./results_windows")
     p.add_argument("--dump-diagnostics", action="store_true")
+    p.add_argument("--debug-window-index", type=int, default=None,
+                   help="When set, emit diagnostics only for this window index. "
+                        "If omitted, diagnostics (when enabled) are emitted for every window.")
     args = p.parse_args()
-    main(data_dir=args.data_dir, out_dir=args.out_dir, dump_diagnostics=args.dump_diagnostics)
+    main(
+        data_dir=args.data_dir,
+        out_dir=args.out_dir,
+        dump_diagnostics=args.dump_diagnostics,
+        debug_window_index=args.debug_window_index
+    )
 
 if __name__ == "__main__":
     cli_main()
