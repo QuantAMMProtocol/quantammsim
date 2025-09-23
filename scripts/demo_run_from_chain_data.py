@@ -6,7 +6,6 @@ from quantammsim.core_simulator.windowing_utils import filter_reserves_by_data_i
 from quantammsim.runners.jax_runners import (
     do_run_on_historic_data_with_provided_coarse_weights,
 )
-import debug
 import itertools
 import matplotlib.pyplot as plt
 import matplotlib as mpl
