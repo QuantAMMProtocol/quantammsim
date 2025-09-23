@@ -20,7 +20,7 @@ from quantammsim.core_simulator.forward_pass import (
     forward_pass_nograd,
     _calculate_return_value,
 )
-from quantammsim.core_simulator.windowing_utils import get_indices
+from quantammsim.core_simulator.windowing_utils import get_indices, filter_coarse_weights_by_data_indices
 
 from quantammsim.training.backpropagation import (
     update_from_partial_training_step_factory,
@@ -752,6 +752,7 @@ def do_run_on_historic_data(
     fees_df=None,
     gas_cost_df=None,
     arb_fees_df=None,
+    lp_supply_df=None,
     do_test_period=False,
     low_data_mode=False,
 ):
@@ -858,6 +859,7 @@ def do_run_on_historic_data(
         fees_df,
         gas_cost_df,
         arb_fees_df,
+        lp_supply_df,
         do_test_period=do_test_period,
     )
 
@@ -1240,6 +1242,8 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     return_val = static_dict["return_val"]
     bout_length = static_dict["bout_length"]
 
+    # filter coarse weights using the start and end indices
+    coarse_weights = filter_coarse_weights_by_data_indices(coarse_weights, data_dict)
     # take coarse weights and convert to array of fine weights
     initial_weights = coarse_weights["weights"][0]
     # Repeat the last row of coarse weights
@@ -1368,18 +1372,6 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         run_fingerprint["noise_trader_ratio"],
         lp_supply_array_broadcast,
     )
-    # reserves = pool.calculate_reserves_with_dynamic_inputs(
-    #     params
-    #     NestedHashabledict(static_dict),
-    #     data_dict["prices"],
-    #     start_index=None,
-    #     fees_array=fees_array,
-    #     arb_thresh_array=arb_thresh_array,
-    #     arb_fees_array=arb_fees_array,
-    #     trade_array=None,
-    #     lp_supply_array=lp_supply_array,
-    #     additional_oracle_input = None,
-    # )
 
     value_over_time = jnp.sum(jnp.multiply(reserves, local_prices), axis=-1)
     return_dict = {
@@ -1390,5 +1382,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         "reserves": reserves,
         "weights": weights,
         "raw_weight_outputs": raw_weight_outputs,
+        "data_dict": data_dict,
+        "unix_values": local_unix_values,
     }
     return return_dict

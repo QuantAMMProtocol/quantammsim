@@ -2,6 +2,7 @@ import jax.numpy as jnp
 from quantammsim.core_simulator.param_utils import (
     memory_days_to_logit_lamb,
 )
+from quantammsim.core_simulator.windowing_utils import filter_reserves_by_data_indices
 from quantammsim.runners.jax_runners import (
     do_run_on_historic_data_with_provided_coarse_weights,
 )
@@ -135,6 +136,9 @@ def load_scraped_pool_data(data_dir="./sonic_macro"):
     for file_path in csv_files:
         try:
             df = pd.read_csv(file_path)
+            # check that the unix column is in milliseconds
+            if df['timestamp'].max() < 1000000000000:
+                df['timestamp'] = df['timestamp'] * 1000
             dfs.append(df)
         except Exception as e:
             print(f"Warning: Could not load {file_path}: {e}")
@@ -147,7 +151,6 @@ def load_scraped_pool_data(data_dir="./sonic_macro"):
     combined_df = pd.concat(dfs, ignore_index=True)
     # Sort by timestamp to ensure chronological order
     combined_df = combined_df.sort_values('timestamp').reset_index(drop=True)
-
     # Extract token columns and sort alphabetically
     token_columns = [col for col in combined_df.columns if col.endswith('_balance')]
     tokens = [col.replace('_balance', '') for col in token_columns]
@@ -181,11 +184,13 @@ def load_scraped_pool_data(data_dir="./sonic_macro"):
     weights_first_four = parse_string_array(combined_df['weights_first_four'])
     # combined_df["weights_first_four"] = weights_first_four
     weights_second_four = parse_string_array(combined_df['weights_second_four'])
+    normalized_weights = parse_string_array(combined_df['normalized_weights'])
     # combined_df["weights_second_four"] = weights_second_four
     token_rates = parse_string_array(combined_df['token_rates'])
     # combined_df["token_rates"] = token_rates
     combined_df["weights_first_four"] = [arr.tolist() for arr in weights_first_four]
     combined_df["weights_second_four"] = [arr.tolist() for arr in weights_second_four]
+    combined_df["normalized_weights"] = [arr.tolist() for arr in normalized_weights]
     combined_df["balances"] = [arr.tolist() for arr in balances_array]
     combined_df["token_rates"] = [arr.tolist() for arr in token_rates]
     # Reorder balances and weights to match alphabetical token order
@@ -261,11 +266,7 @@ def load_scraped_pool_data(data_dir="./sonic_macro"):
             ordered_prices[:, i] = combined_df[f"{token}_price"].values
 
     # Combine weights (assuming first_four and second_four are concatenated)
-    weights_array = np.concatenate([[np.array(w) for w in combined_df['weights_first_four']], [np.array(w) for w in combined_df['weights_second_four']]], axis=1)
-
-    # only use the first 4 tokens
-    # TODO make this dynamic/configurable
-    weights_array = weights_array[:, :4]
+    weights_array = np.array([np.array(w) for w in combined_df["normalized_weights"]])
 
     # Create coarse weights (sample every chunk_period minutes)
     chunk_period = 1440  # Daily sampling
@@ -350,6 +351,33 @@ def name_to_latex_name(name):
 
     return name_to_latex_name_OG(name)
 
+def name_to_latex_name_OG(name):
+    """Convert run name to LaTeX formatted name.
+
+    Parameters
+    ----------
+    name : str
+        Name of the run (e.g. 'index_market_cap', 'momentum')
+
+    Returns
+    -------
+    str
+        LaTeX formatted name
+    """
+    # Special case for index_market_cap since we want to shorten it
+    if name == "index_market_cap":
+        return "\\mathrm{Index}"
+
+    # Split name into words
+    words = name.split("_")
+
+    # Capitalize first letter of each word
+    words = [word.capitalize() for word in words]
+
+    # Join with escaped spaces and wrap in \mathrm{}
+    latex_name = "\\ ".join(words)
+    return f"$\\mathrm{{{latex_name}}}$"
+
 COLOR = "#E6CE97"
 sns.set(
     rc={
@@ -393,33 +421,37 @@ def plot_weights(output_dict, run_fingerprint, plot_prefix="weights", plot_dir=N
 
     # Create date range for x-axis
     date_range = pd.date_range(start=start_date, end=end_date, periods=len(df["Time"].unique()))
-    df["Time"] = np.tile(date_range, weights.shape[1])
+    df["Date"] = np.tile(date_range, weights.shape[1])
+
+    # Determine time range for appropriate tick formatting
+    time_diff = end_date - start_date
+    is_monthly = time_diff.days > 7  # More than a week
 
     # fig, ax = plt.subplots(figsize=(10, 6))
     f = mpl.figure.Figure()
 
     # Create stacked area plot
     pl = (
-        so.Plot(df, "Time", "Weight", color="Token")
+        so.Plot(df, "Date", "Weight", color="Token")
         .add(so.Area(alpha=0.7), so.Stack())
         .limit(y=(0, 1))
         .scale(color=sns.color_palette())
-        .label(y="$\\mathrm{Weight}$", x="$\\mathrm{Date}$")
+        .label(y="$\\mathrm{Weight}$", x="$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
     )
 
     # Render the plot on our axis
     res = pl.on(f).plot()
     ax = f.axes[0]
-    # Select sparse dates for x-axis (4 evenly spaced dates)
-    unique_dates = df["Time"].unique()
-    date_indices = np.linspace(0, len(unique_dates)-1, 4, dtype=int)
-    selected_dates = unique_dates[date_indices]
-
-    # Format dates as LaTeX strings
-    date_labels = [f"$$\\mathrm{{{pd.Timestamp(date).strftime('%Y-%m-%d')}}}$$" for date in selected_dates]
-    # Set the ticks and labels
-    ax.set_xticks(date_indices,date_labels, rotation=45)
-    # plt.xticks(date_indices, date_labels, rotation=45)
+    
+    # Format x-axis based on time range
+    if is_monthly:
+        ax.xaxis.set_major_locator(mpl.dates.DayLocator(interval=max(1, time_diff.days // 8)))
+        ax.xaxis.set_major_formatter(mpl.dates.DateFormatter('%Y-%m-%d'))
+    else:
+        ax.xaxis.set_major_locator(mpl.dates.HourLocator(interval=max(1, int(time_diff.total_seconds() / 3600) // 6)))
+        ax.xaxis.set_major_formatter(mpl.dates.DateFormatter('%H:%M'))
+    
+    plt.xticks(rotation=45)
     # Adjust layout to prevent label cutoff
     plt.tight_layout()
     # Save plot
@@ -636,11 +668,16 @@ def plot_reserves(result, fingerprint, run_name, actual_reserves_np=None, actual
     # Convert types
     df["Reserves"] = df["Reserves"].astype(float)
     df["Token"] = df["Token"].astype("category")
+    
+    # Determine time range for appropriate tick formatting
+    time_diff = end_date - start_date
+    is_monthly = time_diff.days > 7  # More than a week
+    
     # Create plot
-    sns.lineplot(data=df, x="Time", y="Reserves", hue="Token", linewidth=0.5)
+    sns.lineplot(data=df, x="Date", y="Reserves", hue="Token", linewidth=0.5)
 
     plt.title("$\\mathrm{Reserves\\ Over\\ Time}$", pad=20)
-    plt.xlabel("$\\mathrm{Time}$")
+    plt.xlabel("$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
     plt.ylabel("$\\mathrm{Reserves}$")
 
     # Format axes
@@ -651,6 +688,16 @@ def plot_reserves(result, fingerprint, run_name, actual_reserves_np=None, actual
     ax.spines["bottom"].set_color(COLOR)
     ax.yaxis.set_ticks_position("left")
     ax.xaxis.set_ticks_position("bottom")
+    
+    # Format x-axis based on time range
+    if is_monthly:
+        ax.xaxis.set_major_locator(mpl.dates.DayLocator(interval=max(1, time_diff.days // 8)))
+        ax.xaxis.set_major_formatter(mpl.dates.DateFormatter('%Y-%m-%d'))
+    else:
+        ax.xaxis.set_major_locator(mpl.dates.HourLocator(interval=max(1, int(time_diff.total_seconds() / 3600) // 6)))
+        ax.xaxis.set_major_formatter(mpl.dates.DateFormatter('%H:%M'))
+    
+    plt.xticks(rotation=45)
 
     # Remove legend title
     ax.get_legend().set_title(None)
@@ -766,6 +813,7 @@ def create_config_from_scraped_data(data_dir="./sonic_macro"):
         "gas_cost_df": scraped_data['gas_cost_df'],
         "lp_supply_df": scraped_data['lp_supply_df'],
         "arb_fees_df": scraped_data['arb_fees_df'],
+        "actual_unix_values": scraped_data['full_data']['timestamp'].values,
     }
 
     return config
@@ -847,6 +895,7 @@ def create_config_with_actual_reserves(data_dir="./sonic_macro"):
         "arb_fees_df": scraped_data['arb_fees_df'],
         "actual_reserves": actual_reserves,
         "actual_prices": actual_prices,
+        "actual_unix_values": scraped_data['full_data']['timestamp'].values,
     }
     
     return config
@@ -890,6 +939,13 @@ if __name__ == "__main__":
         lamb_to_memory_days_clipped,
         calc_lamb,
     )
+    from quantammsim.core_simulator.windowing_utils import (
+        filter_coarse_weights_by_data_indices,
+        filter_reserves_by_given_timestamp,
+    )
+    from quantammsim.utils.data_processing.datetime_utils import (
+        datetime_to_unixtimestamp,
+    )
     from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives import (
         squareplus,
         inverse_squareplus,
@@ -904,129 +960,236 @@ if __name__ == "__main__":
     config = EXAMPLE_CONFIGS[name]
 
     print(f"\nRunning {name}...")
-    result = do_run_on_historic_data_with_provided_coarse_weights(
-        run_fingerprint=config["fingerprint"],
-        coarse_weights=config["coarse_weights"],
-        params=config["params"],
-        fees_df=config["fees_df"],
-        gas_cost_df=config["gas_cost_df"],
-        lp_supply_df=config["lp_supply_df"],
-        arb_fees_df=config["arb_fees_df"],
-    )
-    print("-" * 80)
-    print(f"Pool Type: {config['fingerprint']['rule']}")
-    print(f"Tokens: {', '.join(config['fingerprint']['tokens'])}")
-    print(f"Fees: {config['fingerprint'].get('fees', 0.0)}")
-    if "arb_quality" in config["fingerprint"]:
-        print(f"Arb Quality: {config['fingerprint']['arb_quality']}")
-    print(f"Initial Pool Value: ${result['value'][0]:.2f}")
-    print(f"Final Pool Value: ${result['final_value']:.2f}")
-    print(f"Return: {(result['final_value']/result['value'][0]-1)*100:.2f}%")
-    print(
-        f"Return over hodl: {(result['final_value']/(result['reserves'][0]*result['prices'][-1]).sum()-1)*100:.2f}%"
-    )
-    print("-" * 80)
-    print("final weights")
-    print(f"{jnp.array_str(result['weights'][-1], precision=16, suppress_small=False)}")
-    print("-" * 80)
-    print("final prices")
-    print(f"{jnp.array_str(result['prices'][-1], precision=16, suppress_small=False)}")
-    print("=" * 80)
-
-    tokens = config["fingerprint"]["tokens"]
-    rule = config["fingerprint"]["rule"]
-    pool_val = config["fingerprint"]["initial_pool_value"]
-    fee = config["fingerprint"]["fees"]
-    gas = config["fingerprint"]["gas_cost"]
-    noise_trader_ratio = config["fingerprint"]["noise_trader_ratio"]
-    bout_offset = config["fingerprint"]["bout_offset"]
-    chunk_period = config["fingerprint"]["chunk_period"]
     start_date = config["fingerprint"]["startDateString"]
-    end_date = config["fingerprint"]["endDateString"]
-    # Plot value over time
+    end_date = "2025-09-05 00:00:00"
+    list_of_date_variations = [{"startDateString": start_date, "endDateString": end_date}]
+    # Generate list of date variations for each day from start to end date
+    from datetime import datetime, timedelta
+    
+    def generate_daily_variations(start_date_str, end_date_str):
+        start = datetime.strptime(start_date_str, "%Y-%m-%d %H:%M:%S")
+        end = datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S")
+        
+        variations = []
+        current = start
+        while current < end:
+            next_day = current + timedelta(days=1)
+            variations.append({
+                "startDateString": current.strftime("%Y-%m-%d %H:%M:%S"),
+                "endDateString": next_day.strftime("%Y-%m-%d %H:%M:%S")
+            })
+            current = next_day
+            
+        return variations
 
-    # Convert timestamps to datetim
-    actual_value = (EXAMPLE_CONFIGS["scraped_pool_data_actual_reserves"][
-        "actual_reserves"
-    ][:-1]* result["prices"]).sum(-1)
-    plt.figure(figsize=(12, 6))
-    plt.plot(result["value"])
-    plt.title(f"Pool Value Over Time - {name}")
-    plt.xlabel("Date")
-    plt.ylabel("Value (USD)")
-    plt.grid(True)
-    plt.xticks(rotation=45)
-    # plt.tight_layout()
-    plt.savefig(f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value.png")
-    plt.close()
+    list_of_date_variations = list_of_date_variations + generate_daily_variations(start_date, end_date)
+    #    {"startDateString": "2025-08-26 00:00:00", "endDateString": "2025-08-27 00:00:00"},
+    #    {"startDateString": "2025-08-27 00:00:00", "endDateString": "2025-08-28 00:00:00"}]
+    for date_variation in list_of_date_variations:
+        config["fingerprint"]["startDateString"] = date_variation["startDateString"]
+        config["fingerprint"]["endDateString"] = date_variation["endDateString"]
+        config["params"]["initial_reserves"] = filter_reserves_by_given_timestamp(
+            EXAMPLE_CONFIGS["scraped_pool_data_actual_reserves"]["actual_reserves"],
+            EXAMPLE_CONFIGS["scraped_pool_data_actual_reserves"]["actual_unix_values"],
+            datetime_to_unixtimestamp(date_variation["startDateString"], str_format="%Y-%m-%d %H:%M:%S")*1000,
+        )
+        config["params"]["initial_weights"] = config["coarse_weights"]["weights"][0]
+        result = do_run_on_historic_data_with_provided_coarse_weights(
+            run_fingerprint=config["fingerprint"],
+            coarse_weights=config["coarse_weights"],
+            params=config["params"],
+            fees_df=config["fees_df"],
+            gas_cost_df=config["gas_cost_df"],
+            lp_supply_df=config["lp_supply_df"],
+            arb_fees_df=config["arb_fees_df"],
+        )
+        print("-" * 80)
+        print(f"Pool Type: {config['fingerprint']['rule']}")
+        print(f"Tokens: {', '.join(config['fingerprint']['tokens'])}")
+        print(f"Fees: {config['fingerprint'].get('fees', 0.0)}")
+        if "arb_quality" in config["fingerprint"]:
+            print(f"Arb Quality: {config['fingerprint']['arb_quality']}")
+        print(f"Initial Pool Value: ${result['value'][0]:.2f}")
+        print(f"Final Pool Value: ${result['final_value']:.2f}")
+        print(f"Return: {(result['final_value']/result['value'][0]-1)*100:.2f}%")
+        print(
+            f"Return over hodl: {(result['final_value']/(result['reserves'][0]*result['prices'][-1]).sum()-1)*100:.2f}%"
+        )
+        print("-" * 80)
+        print("final weights")
+        print(f"{jnp.array_str(result['weights'][-1], precision=16, suppress_small=False)}")
+        print("-" * 80)
+        print("final prices")
+        print(f"{jnp.array_str(result['prices'][-1], precision=16, suppress_small=False)}")
+        print("=" * 80)
 
-    plt.figure(figsize=(12, 6))
-    plt.plot(result["value"] - actual_value)
-    plt.title(f"Pool Value Over Time - {name} - Difference")
-    plt.xlabel("Date")
-    plt.ylabel("Value (USD)")
-    plt.grid(True)
-    plt.xticks(rotation=45)
-    # plt.tight_layout()
-    plt.savefig(f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value_difference.png")
-    plt.close()
+        tokens = config["fingerprint"]["tokens"]
+        rule = config["fingerprint"]["rule"]
+        pool_val = config["fingerprint"]["initial_pool_value"]
+        fee = config["fingerprint"]["fees"]
+        gas = config["fingerprint"]["gas_cost"]
+        noise_trader_ratio = config["fingerprint"]["noise_trader_ratio"]
+        bout_offset = config["fingerprint"]["bout_offset"]
+        chunk_period = config["fingerprint"]["chunk_period"]
+        start_date = config["fingerprint"]["startDateString"]
+        end_date = config["fingerprint"]["endDateString"]
+        # Plot value over time
 
-    plt.figure(figsize=(12, 6))
-    plt.plot(result["value"]/ actual_value)
-    plt.title(f"Pool Value Over Time - {name} - Ratio")
-    plt.xlabel("Date")
-    plt.ylabel("Value (USD)")
-    plt.grid(True)
-    plt.xticks(rotation=45)
-    # plt.tight_layout()
-    plt.savefig(f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value_ratio.png")
-    plt.close()
+        # Convert timestamps to datetime
+        local_reserves = filter_reserves_by_data_indices(
+            EXAMPLE_CONFIGS["scraped_pool_data_actual_reserves"]["actual_reserves"],
+            EXAMPLE_CONFIGS["scraped_pool_data_actual_reserves"][
+                "actual_unix_values"
+            ],
+            result["data_dict"],
+        )[:-1]
+        actual_value = (local_reserves * result["prices"]).sum(-1)
+        
+        # Create datetime array for x-axis
+        start_datetime = datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S")
+        end_datetime = datetime.strptime(end_date, "%Y-%m-%d %H:%M:%S")
+        datetime_array = pd.date_range(start=start_datetime, end=end_datetime, freq='1min')[:-1]
+        
+        # Determine time range for appropriate tick formatting
+        time_diff = end_datetime - start_datetime
+        is_monthly = time_diff.days > 7  # More than a week
+        
+        plt.figure(figsize=(12, 6))
+        plt.plot(datetime_array, result["value"])
+        if is_monthly:
+            plt.title("$\\mathrm{Pool\\ Value\\ Over\\ Time,\\ Simulated}$")
+        else:
+            # Extract date from start_date for daily plots
+            date_str = start_date.split(' ')[0]  # Get just the date part
+            plt.title(f"$\\mathrm{{Pool\\ Value\\ Over\\ Time,\\ Simulated\\ ({date_str})}}$")
+        plt.xlabel("$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
+        plt.ylabel("$\\mathrm{Value\\ (USD)}$")
+        plt.grid(True)
+        
+        # Format x-axis based on time range
+        ax = plt.gca()
+        if is_monthly:
+            # For monthly data, show dates every few days
+            ax.xaxis.set_major_locator(mpl.dates.DayLocator(interval=max(1, time_diff.days // 8)))
+            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter('%Y-%m-%d'))
+        else:
+            # For daily data, show hours
+            ax.xaxis.set_major_locator(mpl.dates.HourLocator(interval=max(1, int(time_diff.total_seconds() / 3600) // 6)))
+            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter('%H:%M'))
+        
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value.png", dpi=300)
+        plt.close()
 
-    plt.figure(figsize=(12, 6))
-    plt.plot(result["value"])
-    plt.plot(actual_value, color="red")
-    plt.title(f"Pool Value Over Time - {name} - Actual")
-    plt.xlabel("Date")
-    plt.ylabel("Value (USD)")
-    plt.grid(True)
-    plt.xticks(rotation=45)
-    # plt.tight_layout()
-    plt.savefig(
-        f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value_actual.png"
-    )
-    plt.close()
+        plt.figure(figsize=(12, 6))
+        plt.plot(datetime_array, actual_value - result["value"])
+        if is_monthly:
+            plt.title("$\\mathrm{Pool\\ Value\\ Over\\ Time,\\ Real\\ -\\ Simulated}$")
+        else:
+            # Extract date from start_date for daily plots
+            date_str = start_date.split(' ')[0]  # Get just the date part
+            plt.title(f"$\\mathrm{{Pool\\ Value\\ Over\\ Time,\\ Real\\ -\\ Simulated\\ ({date_str})}}$")
+        plt.xlabel("$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
+        plt.ylabel("$\\mathrm{Value\\ difference\\ (USD)}$")
+        plt.grid(True)
+        
+        # Format x-axis based on time range
+        ax = plt.gca()
+        if is_monthly:
+            ax.xaxis.set_major_locator(mpl.dates.DayLocator(interval=max(1, time_diff.days // 8)))
+            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter('%Y-%m-%d'))
+        else:
+            ax.xaxis.set_major_locator(mpl.dates.HourLocator(interval=max(1, int(time_diff.total_seconds() / 3600) // 6)))
+            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter('%H:%M'))
+        
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value_difference.png", dpi=300)
+        plt.close()
 
-    plot_reserves(
-        result,
-        config["fingerprint"],
-        run_name=f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}",
-    )
+        plt.figure(figsize=(12, 6))
+        plt.plot(datetime_array, actual_value/ result["value"])
+        if is_monthly:
+            plt.title("$\\mathrm{Pool\\ Value\\ Over\\ Time,\\ Real\\ /\\ Simulated}$")
+        else:
+            # Extract date from start_date for daily plots
+            date_str = start_date.split(' ')[0]  # Get just the date part
+            plt.title(f"$\\mathrm{{Pool\\ Value\\ Over\\ Time,\\ Real\\ /\\ Simulated\\ ({date_str})}}$")
+        plt.xlabel("$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
+        plt.ylabel("$\\mathrm{Value\\ ratio}$")
+        plt.grid(True)
+        
+        # Format x-axis based on time range
+        ax = plt.gca()
+        if is_monthly:
+            ax.xaxis.set_major_locator(mpl.dates.DayLocator(interval=max(1, time_diff.days // 8)))
+            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter('%Y-%m-%d'))
+        else:
+            ax.xaxis.set_major_locator(mpl.dates.HourLocator(interval=max(1, int(time_diff.total_seconds() / 3600) // 6)))
+            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter('%H:%M'))
+        
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value_ratio.png", dpi=300)
+        plt.close()
 
-    base_plot_prefix = name + "_" + f"{tokens}_{rule}_{pool_val}_{fee}_{gas}_{noise_trader_ratio}_bout_{bout_offset}_chunk_{chunk_period}_start_{start_date}_end_{end_date}"
-    plot_weights(
-        result,
-        config["fingerprint"],
-        plot_prefix=f"train_{base_plot_prefix}",
-        plot_dir="./results",
-    )
-    # load up reserves from network
-    simulated_unix_values = np.linspace(
-        config["coarse_weights"]["unix_values"][0],
-        config["coarse_weights"]["unix_values"][1],
-        result["reserves"].shape[0],
-    )
-    actual_reserves = EXAMPLE_CONFIGS["scraped_pool_data_actual_reserves"][
-        "actual_reserves"
-    ][::1440]
-    actual_reserves_np = actual_reserves
-    actual_unix_values = np.arange(len(actual_reserves))
+        plt.figure(figsize=(12, 6))
+        plt.plot(datetime_array, result["value"])
+        plt.plot(datetime_array, actual_value, color="red")
+        if is_monthly:
+            plt.title(f"$\\mathrm{{Pool\\ Value\\ Over\\ Time\\, \\ Real\\ vs\\ Simulated}}$")
+        else:
+            # Extract date from start_date for daily plots
+            date_str = start_date.split(' ')[0]  # Get just the date part
+            plt.title(f"$\\mathrm{{Pool\\ Value\\ Over\\ Time\\, \\ Real\\ vs\\ Simulated\\ ({date_str})}}$")
+        plt.legend(["Simulated", "Real"])
+        plt.xlabel("$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
+        plt.ylabel("$\\mathrm{Value\\ (USD)}$")
+        plt.grid(True)
+        
+        # Format x-axis based on time range
+        ax = plt.gca()
+        if is_monthly:
+            ax.xaxis.set_major_locator(mpl.dates.DayLocator(interval=max(1, time_diff.days // 8)))
+            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter('%Y-%m-%d'))
+        else:
+            ax.xaxis.set_major_locator(mpl.dates.HourLocator(interval=max(1, int(time_diff.total_seconds() / 3600) // 6)))
+            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter('%H:%M'))
+        
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(
+            f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value_actual.png", dpi=300
+        )
+        plt.close()
 
-    plot_reserves(
-        result,
-        config["fingerprint"],
-        run_name=f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_extra",
-        actual_reserves_np=actual_reserves_np,
-        actual_unix_values=actual_unix_values,
-    )
+        # plot_reserves(
+        #     result,
+        #     config["fingerprint"],
+        #     run_name=f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}",
+        # )
 
+        # base_plot_prefix = name + "_" + f"{tokens}_{rule}_{pool_val}_{fee}_{gas}_{noise_trader_ratio}_bout_{bout_offset}_chunk_{chunk_period}_start_{start_date}_end_{end_date}"
+        # plot_weights(
+        #     result,
+        #     config["fingerprint"],
+        #     plot_prefix=f"train_{base_plot_prefix}",
+        #     plot_dir="./results",
+        # )
+        # # load up reserves from network
+        # simulated_unix_values = np.linspace(
+        #     config["coarse_weights"]["unix_values"][0],
+        #     config["coarse_weights"]["unix_values"][1],
+        #     result["reserves"].shape[0],
+        # )
+        
 
+        # plot_reserves(
+        #     result,
+        #     config["fingerprint"],
+        #     run_name=f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_extra",
+        #     actual_reserves_np=local_reserves,
+        #     actual_unix_values=datetime_array,
+        # )
+        # raise Exception("Stop here")
