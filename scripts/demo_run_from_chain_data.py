@@ -19,6 +19,7 @@ from datetime import timezone
 import matplotlib.pyplot as plt
 import numpy as np
 from datetime import datetime, timedelta
+from matplotlib.ticker import FuncFormatter
 
 from quantammsim.core_simulator.windowing_utils import (
     filter_reserves_by_given_timestamp,
@@ -637,7 +638,7 @@ def plot_values(
 
         # Add vertical line and shading for train/test split
         plt.axvline(
-            x=pd.Timestamp(white_line_date), color="white", linestyle="--", alpha=0.5
+            x=pd.Timestamp(white_line_date), color=COLOR, linestyle="--", alpha=0.5
         )
 
         # Add "Train" and "Test" labels in LaTeX near the red line
@@ -648,7 +649,7 @@ def plot_values(
             horizontalalignment="right",
             verticalalignment="top",
             fontsize=10,
-            color="white",
+            color=COLOR,
             alpha=0.6,
         )
         plt.text(
@@ -658,7 +659,7 @@ def plot_values(
             horizontalalignment="left",
             verticalalignment="top",
             fontsize=10,
-            color="white",
+            color=COLOR,
             alpha=0.6,
         )
 
@@ -1030,6 +1031,7 @@ EXAMPLE_CONFIGS = {
 
 if __name__ == "__main__":
 
+    plot_minute_level = True
     # Use the scraped pool data configuration
     # You can choose between:
     # - "scraped_pool_data": Uses calculated weights from balances and prices
@@ -1186,175 +1188,240 @@ if __name__ == "__main__":
         time_diff = end_datetime - start_datetime
         is_monthly = time_diff.days > 7  # More than a week
 
-        plt.figure(figsize=(12, 6))
-        plt.plot(datetime_array, result_value)
-        if is_monthly:
-            plt.title("$\\mathrm{Pool\\ Value\\ Over\\ Time,\\ Simulated}$")
-        else:
-            # Extract date from start_date for daily plots
-            date_str = start_date.split(" ")[0]  # Get just the date part
-            plt.title(
-                f"$\\mathrm{{Pool\\ Value\\ Over\\ Time,\\ Simulated\\ ({date_str})}}$"
-            )
-        plt.xlabel("$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
-        plt.ylabel("$\\mathrm{Value\\ (USD)}$")
-        plt.grid(True)
-
-        # Format x-axis based on time range
-        ax = plt.gca()
-        ax.yaxis.get_major_formatter().set_scientific(False)
-        ax.yaxis.get_major_formatter().set_useOffset(False)
-        if is_monthly:
-            # For monthly data, show dates every few days
-            ax.xaxis.set_major_locator(
-                mpl.dates.DayLocator(interval=max(1, time_diff.days // 8))
-            )
-            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%Y-%m-%d"))
-        else:
-            # For daily data, show hours
-            ax.xaxis.set_major_locator(
-                mpl.dates.HourLocator(
-                    interval=max(1, int(time_diff.total_seconds() / 3600) // 6)
+        if plot_minute_level:
+            plt.figure(figsize=(12, 6))
+            plt.plot(datetime_array, result_value)
+            if is_monthly:
+                plt.title("$\\mathrm{Pool\\ Value\\ Over\\ Time,\\ Simulated}$")
+            else:
+                # Extract date from start_date for daily plots
+                date_str = start_date.split(" ")[0]  # Get just the date part
+                plt.title(
+                    f"$\\mathrm{{Pool\\ Value\\ Over\\ Time,\\ Simulated\\ ({date_str})}}$"
                 )
-            )
-            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+            plt.xlabel("$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
+            plt.ylabel("$\\mathrm{Value\\ (USD)}$")
+            plt.grid(True)
 
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.savefig(
-            f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value.png",
-            dpi=300,
-        )
-        plt.close()
-
-        plt.figure(figsize=(12, 6))
-        plt.plot(datetime_array, actual_value - result_value)
-        if is_monthly:
-            plt.title("$\\mathrm{Pool\\ Value\\ Over\\ Time,\\ Real\\ -\\ Simulated}$")
-        else:
-            # Extract date from start_date for daily plots
-            date_str = start_date.split(" ")[0]  # Get just the date part
-            plt.title(
-                f"$\\mathrm{{Pool\\ Value\\ Over\\ Time,\\ Real\\ -\\ Simulated\\ ({date_str})}}$"
-            )
-        plt.xlabel("$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
-        plt.ylabel("$\\mathrm{Value\\ difference\\ (USD)}$")
-        plt.grid(True)
-
-        # Format x-axis based on time range
-        ax = plt.gca()
-        ax.yaxis.get_major_formatter().set_scientific(False)
-        ax.yaxis.get_major_formatter().set_useOffset(False)
-        if is_monthly:
-            ax.xaxis.set_major_locator(
-                mpl.dates.DayLocator(interval=max(1, time_diff.days // 8))
-            )
-            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%Y-%m-%d"))
-        else:
-            ax.xaxis.set_major_locator(
-                mpl.dates.HourLocator(
-                    interval=max(1, int(time_diff.total_seconds() / 3600) // 6)
+            # Format x-axis based on time range
+            ax = plt.gca()
+            ax.yaxis.get_major_formatter().set_scientific(False)
+            ax.yaxis.get_major_formatter().set_useOffset(False)
+            if is_monthly:
+                # For monthly data, show dates every few days
+                ax.xaxis.set_major_locator(
+                    mpl.dates.DayLocator(interval=max(1, time_diff.days // 8))
                 )
+                ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%Y-%m-%d"))
+            else:
+                # For daily data, show hours
+                ax.xaxis.set_major_locator(
+                    mpl.dates.HourLocator(
+                        interval=max(1, int(time_diff.total_seconds() / 3600) // 6)
+                    )
+                )
+                ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            plt.savefig(
+                f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value.png",
+                dpi=300,
             )
-            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+            plt.close()
+            plt.figure(figsize=(12, 6))
+            plt.plot(datetime_array, ((actual_value - result_value) / result_value) * 100, color="#E6CE97", linewidth=1.6)
+            if is_monthly:
+                plt.title("$\\mathrm{Pool\\ Value\\ Over\\ Time,\\ Deviation\\ from\\ Simulation}$")
+            else:
+                # Extract date from start_date for daily plots
+                date_str = start_date.split(" ")[0]  # Get just the date part
+                plt.title(
+                    f"$\\mathrm{{Pool\\ Value\\ Over\\ Time,\\ Deviation\\ from\\ Simulation\\ ({date_str})}}$"
+                )
+            plt.xlabel("$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
+            plt.ylabel("$\\mathrm{Value\\ difference\\ (\\%)}$")
 
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.savefig(
-            f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value_difference.png",
-            dpi=300,
-        )
-        plt.close()
+            # Format x-axis based on time range
+            ax = plt.gca()
+            ax.yaxis.get_major_formatter().set_scientific(False)
+            ax.yaxis.get_major_formatter().set_useOffset(False)
 
-        plt.figure(figsize=(12, 6))
-        ratios = actual_value / result_value
+            # Format y-axis ticks as percentages (e.g., 1%)
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y:.2f}%"))
+
+            # Stylish shaded regions above/below 0 with labels
+            ymin, ymax = ax.get_ylim()
+            green_fill = "#2ECC71"   # mint green
+            green_box  = "#27AE60"   # darker green for label box
+            red_fill   = "#E74C3C"   # soft red
+            red_box    = "#C0392B"   # darker red for label box
+
+            # Ensure zero is visible to make shading meaningful
+            ax.set_ylim(min(ymin, 0), max(ymax, 0))
+            ymin, ymax = ax.get_ylim()
+
+            # Shade above 0
+            if ymax > 0:
+                ax.axhspan(0, ymax, facecolor=green_fill, alpha=0.18, zorder=0)
+            # Shade below 0
+            if ymin < 0:
+                ax.axhspan(ymin, 0, facecolor=red_fill, alpha=0.18, zorder=0)
+
+            # Place opaque labels inside shaded areas
+            x_start = pd.to_datetime(datetime_array[0])
+            x_end = pd.to_datetime(datetime_array[-1])
+            x_pos = x_start + (x_end - x_start) / 40  # ~2.5% from left
+
+            if ymax > 0:
+                ax.text(
+                    0.01, 0.98, "outperforming simulation",
+                    transform=ax.transAxes,
+                    color=green_box,
+                    fontsize=12,
+                    fontweight="bold",
+                    va="top",
+                    ha="left",
+                    zorder=3,
+                    bbox=dict(facecolor="#162536", edgecolor="#162536", boxstyle="round,pad=0.05", alpha=1.0),
+                )
+            if ymin < 0:
+                ax.text(
+                    0.01, 0.02, "underperforming simulation",
+                    transform=ax.transAxes,
+                    color=red_box,
+                    fontsize=12,
+                    fontweight="bold",
+                    va="bottom",
+                    ha="left",
+                    zorder=3,
+                    bbox=dict(facecolor="#162536", edgecolor="#162536", boxstyle="round,pad=0.05", alpha=1.0),
+                )
+
+            if is_monthly:
+                ax.xaxis.set_major_locator(
+                    mpl.dates.DayLocator(interval=max(1, time_diff.days // 8))
+                )
+                ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%Y-%m-%d"))
+            else:
+                ax.xaxis.set_major_locator(
+                    mpl.dates.HourLocator(
+                        interval=max(1, int(time_diff.total_seconds() / 3600) // 6)
+                    )
+                )
+                ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+
+            # Color positive y-ticks green and negative red
+            plt.gcf().canvas.draw()
+            yticks = ax.get_yticks()
+            for tick_label, y in zip(ax.get_yticklabels(), yticks):
+                if y > 0:
+                    tick_label.set_color("#2ECC71")
+                elif y < 0:
+                    tick_label.set_color("#E74C3C")
+
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            plt.savefig(
+                f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value_difference.png",
+                dpi=300,
+            )
+            plt.close()
+
+            plt.figure(figsize=(12, 6))
+        ratios = ((actual_value / result_value) - 1) * 100
 
         unified_ratios.append(ratios)
-        plt.plot(datetime_array, ratios)
-        if is_monthly:
-            plt.title("$\\mathrm{Pool\\ Value\\ Over\\ Time,\\ Real\\ /\\ Simulated}$")
-        else:
-            # Extract date from start_date for daily plots
-            date_str = start_date.split(" ")[0]  # Get just the date part
-            plt.title(
-                f"$\\mathrm{{Pool\\ Value\\ Over\\ Time,\\ Real\\ /\\ Simulated\\ ({date_str})}}$"
-            )
-        plt.xlabel("$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
-        plt.ylabel("$\\mathrm{Value\\ ratio}$")
-        plt.grid(True)
-
-        # Format x-axis based on time range
-        ax = plt.gca()
-        ax.yaxis.get_major_formatter().set_scientific(False)
-        ax.yaxis.get_major_formatter().set_useOffset(False)
-        if is_monthly:
-            ax.xaxis.set_major_locator(
-                mpl.dates.DayLocator(interval=max(1, time_diff.days // 8))
-            )
-            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%Y-%m-%d"))
-        else:
-            ax.xaxis.set_major_locator(
-                mpl.dates.HourLocator(
-                    interval=max(1, int(time_diff.total_seconds() / 3600) // 6)
+        if plot_minute_level:
+            plt.plot(datetime_array, ratios)
+            if is_monthly:
+                plt.title("$\\mathrm{Pool\\ Value\\ Over\\ Time,\\ Real\\ /\\ Simulated}$")
+            else:
+                # Extract date from start_date for daily plots
+                date_str = start_date.split(" ")[0]  # Get just the date part
+                plt.title(
+                    f"$\\mathrm{{Pool\\ Value\\ Over\\ Time,\\ Real\\ /\\ Simulated\\ ({date_str})}}$"
                 )
-            )
-            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+            plt.xlabel("$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
+            plt.ylabel("Strategy Execution Drift %")
+            plt.grid(True)
 
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.savefig(
-            f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value_ratio.png",
-            dpi=300,
-        )
-        plt.close()
-
-        plt.figure(figsize=(12, 6))
-        plt.plot(datetime_array, result_value)
-        plt.plot(datetime_array, actual_value, color="red")
-        if is_monthly:
-            plt.title(
-                f"$\\mathrm{{Pool\\ Value\\ Over\\ Time\\, \\ Real\\ vs\\ Simulated}}$"
-            )
-        else:
-            # Extract date from start_date for daily plots
-            date_str = start_date.split(" ")[0]  # Get just the date part
-            plt.title(
-                f"$\\mathrm{{Pool\\ Value\\ Over\\ Time\\, \\ Real\\ vs\\ Simulated\\ ({date_str})}}$"
-            )
-        plt.legend(["Simulated", "Real"])
-        plt.xlabel("$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
-        plt.ylabel("$\\mathrm{Value\\ (USD)}$")
-        plt.grid(True)
-
-        # Format x-axis based on time range
-        ax = plt.gca()
-        ax.yaxis.get_major_formatter().set_scientific(False)
-        ax.yaxis.get_major_formatter().set_useOffset(False)
-        if is_monthly:
-            ax.xaxis.set_major_locator(
-                mpl.dates.DayLocator(interval=max(1, time_diff.days // 8))
-            )
-            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%Y-%m-%d"))
-        else:
-            ax.xaxis.set_major_locator(
-                mpl.dates.HourLocator(
-                    interval=max(1, int(time_diff.total_seconds() / 3600) // 6)
+            # Format x-axis based on time range
+            ax = plt.gca()
+            ax.yaxis.get_major_formatter().set_scientific(False)
+            ax.yaxis.get_major_formatter().set_useOffset(False)
+            if is_monthly:
+                ax.xaxis.set_major_locator(
+                    mpl.dates.DayLocator(interval=max(1, time_diff.days // 8))
                 )
-            )
-            ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+                ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%Y-%m-%d"))
+            else:
+                ax.xaxis.set_major_locator(
+                    mpl.dates.HourLocator(
+                        interval=max(1, int(time_diff.total_seconds() / 3600) // 6)
+                    )
+                )
+                ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
 
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.savefig(
-            f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value_actual.png",
-            dpi=300,
-        )
-        plt.close()
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            plt.savefig(
+                f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value_ratio.png",
+                dpi=300,
+            )
+            plt.close()
+
+            plt.figure(figsize=(12, 6))
+            plt.plot(datetime_array, result_value)
+            plt.plot(datetime_array, actual_value, color="red")
+            if is_monthly:
+                plt.title(
+                    f"$\\mathrm{{Pool\\ Value\\ Over\\ Time\\, \\ Real\\ vs\\ Simulated}}$"
+                )
+            else:
+                # Extract date from start_date for daily plots
+                date_str = start_date.split(" ")[0]  # Get just the date part
+                plt.title(
+                    f"$\\mathrm{{Pool\\ Value\\ Over\\ Time\\, \\ Real\\ vs\\ Simulated\\ ({date_str})}}$"
+                )
+            plt.legend(["Simulated", "Real"])
+            plt.xlabel("$\\mathrm{Time}$" if not is_monthly else "$\\mathrm{Date}$")
+            plt.ylabel("$\\mathrm{Value\\ (USD)}$")
+            plt.grid(True)
+
+            # Format x-axis based on time range
+            ax = plt.gca()
+            ax.yaxis.get_major_formatter().set_scientific(False)
+            ax.yaxis.get_major_formatter().set_useOffset(False)
+            if is_monthly:
+                ax.xaxis.set_major_locator(
+                    mpl.dates.DayLocator(interval=max(1, time_diff.days // 8))
+                )
+                ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%Y-%m-%d"))
+            else:
+                ax.xaxis.set_major_locator(
+                    mpl.dates.HourLocator(
+                        interval=max(1, int(time_diff.total_seconds() / 3600) // 6)
+                    )
+                )
+                ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M"))
+
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            plt.savefig(
+                f"{name}_fees_{config['fingerprint']['fees']}_gas_{config['fingerprint']['gas_cost']}_start_{start_date}_end_{end_date}_value_actual.png",
+                dpi=300,
+            )
+            plt.close()
     # Create a box plot of unified_ratios once we've collected all days
     if date_variation == list_of_date_variations[-1]:
         # Build precomputed stats for matplotlib.bxp so we can set the "center" to the last value
         stats = []
         valid_day_indices = []
+        end_vals = []
+
+        #TODO identify way to filter out only initialisation of pool
+        unified_ratios = unified_ratios[1:]
         for day_idx, arr in enumerate(unified_ratios):
             day = np.asarray(arr, dtype=float)
             day = day[np.isfinite(day)]
@@ -1375,36 +1442,119 @@ if __name__ == "__main__":
                 }
             )
             valid_day_indices.append(day_idx)
+            end_vals.append(last_val)
 
         if stats:
             plt.figure(figsize=(14, 6))
             ax = plt.gca()
             ax.bxp(
                 stats,
-                showmeans=True,
-                meanline=True,
                 patch_artist=True,
                 widths=0.6,
+                showmeans=True,
+                meanline=True,
+                # styling
+                medianprops=dict(linewidth=0),                 # effectively hide median
+                meanprops=dict(color=COLOR, linestyle="-", linewidth=1.6),
+                whiskerprops=dict(color=COLOR, linewidth=1.2),
+                capprops=dict(color=COLOR, linewidth=1.2),
+                # optional: make outlier markers white too (keep if you want them visible)
+                flierprops=dict(marker="o", markerfacecolor=COLOR,
+                                markeredgecolor=COLOR, markersize=3, linestyle="none"),
             )
-            ax.yaxis.get_major_formatter().set_scientific(False)
-            ax.yaxis.get_major_formatter().set_useOffset(False)
-            ax.axhline(1.0, color="white", linestyle="--", alpha=0.3)
-            ax.set_xlabel("Day Index")
-            ax.set_ylabel("Ratio")
-            ax.set_title("$\\mathrm{Real\\ /\\ Simulated\\ Ratio\\ by\\ Day\\ (Box\\ Plot)}$")
-            # Ensure x ticks align with labels provided in stats
-            ax.set_xticks(range(1, len(stats) + 1))
-            ax.set_xticklabels([s["label"] for s in stats], rotation=0)
+
+
+            # Y-axis as percentages like "0.05%"
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y:.2f}%"))
+
+            # X-axis: show labels every 7 days based on the actual calendar day index
+            base_start_str = (
+                list_of_date_variations[1]["startDateString"]
+                if len(list_of_date_variations) > 1
+                else list_of_date_variations[0]["startDateString"]
+            )
+            base_start_dt = datetime.strptime(base_start_str, "%Y-%m-%d %H:%M:%S").date()
+
+            # Positions in bxp are 1-based; map only those whose day index is multiple of 7
+            tick_positions = [
+                pos for pos, day_idx in enumerate(valid_day_indices, start=1)
+                if (day_idx % 7) == 0
+            ]
+            tick_labels = [
+                (base_start_dt + timedelta(days=day_idx)).strftime("%Y-%m-%d")
+                for day_idx in valid_day_indices
+                if (day_idx % 7) == 0
+            ]
+
+            # Fallback to at least the first if none match the 7-day rule
+            if not tick_positions:
+                tick_positions = [1]
+                first_label = (base_start_dt + timedelta(days=valid_day_indices[0])).strftime("%Y-%m-%d")
+                tick_labels = [first_label]
+
+            ax.set_xlabel("Date")
+            ax.set_ylabel("Strategy Execution Drift %")
+            ax.set_title("$\\mathrm{Real\\ /\\ Simulated\\ Minute\\ Level\\ Reserve\\ Drift}$")
+
+            ax.set_xticks(tick_positions)
+            ax.set_xticklabels(tick_labels, rotation=45, ha="right")
+
+            # Color positive y-ticks green and negative red
+            plt.gcf().canvas.draw()
+            yticks = ax.get_yticks()
+            for tick_label, y in zip(ax.get_yticklabels(), yticks):
+                if y > 0:
+                    tick_label.set_color("#2ECC71")
+                elif y < 0:
+                    tick_label.set_color("#E74C3C")
+
             plt.tight_layout()
             plt.savefig(
                 os.path.join(
-                PLOT_DIR,
-                f"unified_ratios_boxplot_{len(stats)}days.png",
+                    PLOT_DIR,
+                    f"unified_ratios_boxplot_{len(stats)}days.png",
                 ),
                 dpi=300,
                 bbox_inches="tight",
             )
             plt.close()
+
+            # Additional unified line graph of end-of-day ratios with same axis formatting
+            if end_vals:
+                plt.figure(figsize=(14, 6))
+                ax2 = plt.gca()
+                x_positions = list(range(1, len(end_vals) + 1))
+                ax2.bar(x_positions, end_vals, color=COLOR, edgecolor=COLOR, linewidth=0.8)
+
+                # Same y-axis percentage formatting
+                ax2.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y:.2f}%"))
+
+                # Same x-axis ticks/labels
+                ax2.set_xlabel("Date")
+                ax2.set_ylabel("Strategy Execution Drift %")
+                ax2.set_title("$\\mathrm{Real\\ /\\ Simulated\\ End\\ Ratio}$")
+                ax2.set_xticks(tick_positions)
+                ax2.set_xticklabels(tick_labels, rotation=45, ha="right")
+
+                # Color positive y-ticks green and negative red
+                plt.gcf().canvas.draw()
+                yticks2 = ax2.get_yticks()
+                for tick_label, y in zip(ax2.get_yticklabels(), yticks2):
+                    if y > 0:
+                        tick_label.set_color("#2ECC71")
+                    elif y < 0:
+                        tick_label.set_color("#E74C3C")
+
+                plt.tight_layout()
+                plt.savefig(
+                    os.path.join(
+                        PLOT_DIR,
+                        f"unified_end_ratio_bar_{len(end_vals)}days.png",
+                    ),
+                    dpi=300,
+                    bbox_inches="tight",
+                )
+                plt.close()
 
         # plot_reserves(
         #     result,
