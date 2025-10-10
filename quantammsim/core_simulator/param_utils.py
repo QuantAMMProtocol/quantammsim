@@ -958,7 +958,13 @@ def load_result_array(run_location, key="objective", recalc_hess=False):
         return params[0], [p[key] for p in params[1:]]
 
 
-def load_manually(run_location, load_method="last", recalc_hess=False, min_test=0.0, return_as_iterables=False):
+def load_manually(
+    run_location,
+    load_method="last",
+    recalc_hess=False,
+    min_test=0.0,
+    return_as_iterables=False,
+):
     """Load and process parameter sets from a JSON results file with custom loading methods.
 
     Parameters
@@ -989,7 +995,7 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         - int: The index of the selected parameter set
     """
     if os.path.isfile(run_location):
-        with open(run_location, encoding='utf-8') as json_file:
+        with open(run_location, encoding="utf-8") as json_file:
             params = json.load(json_file)
             params = json.loads(params)
 
@@ -997,7 +1003,7 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         if len(params) > 1.5 * params[0]["optimisation_settings"]["n_iterations"]:
             # Find last index where step == 0
             last_step_zero_idx = -1
-            for i in range(len(params)-1, 0, -1):
+            for i in range(len(params) - 1, 0, -1):
                 if params[i].get("step", -1) == 0:
                     last_step_zero_idx = i
                     break
@@ -1014,7 +1020,7 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
 
                 dumped = json.dumps(params, cls=NumpyEncoder)
 
-                with open(run_location, "w", encoding='utf-8') as json_file:
+                with open(run_location, "w", encoding="utf-8") as json_file:
                     json.dump(dumped, json_file)
 
         if load_method == "last":
@@ -1023,11 +1029,11 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         elif load_method == "best_objective":
             objectives = [p["objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
-            context = np.argmax(np.nanmax(objectives, axis=0))
+            context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_train_objective":
             objectives = [p["train_objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
-            context = np.argmax(np.nanmax(objectives, axis=0))
+            context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_train_objective_for_each_parameter_set":
             objectives = [p["train_objective"] for p in params[1:]]
             index = (np.nanargmax(objectives, axis=0) + 1).tolist()
@@ -1035,19 +1041,19 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         elif load_method == "best_test_objective":
             objectives = [p["test_objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
-            context = np.argmax(np.nanmax(objectives, axis=0))
+            context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_objective_of_last":
             objectives = [params[-1]["objective"]]
             index = -1
-            context = np.argmax(np.nanmax(objectives))
+            context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_train_objective_of_last":
             objectives = [params[-1]["train_objective"]]
             index = -1
-            context = np.argmax(np.nanmax(objectives))
+            context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_test_objective_of_last":
             objectives = [params[-1]["test_objective"]]
             index = -1
-            context = np.argmax(np.nanmax(objectives))
+            context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_train_min_test_objective":
             objectives = []
             for p in params[1:]:
