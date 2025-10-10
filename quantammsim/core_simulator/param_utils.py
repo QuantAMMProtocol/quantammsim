@@ -374,6 +374,13 @@ def lamb_to_memory_days(lamb, chunk_period):
     memory_days = jnp.cbrt(6 * lamb / ((1 - lamb) ** 3.0)) * 2 * chunk_period / 1440
     return memory_days
 
+@jit
+def logistic_func(x):
+    """
+    Calculate the logistic function.
+    """
+    return jnp.exp(x) / (1 + jnp.exp(x))
+
 
 @jit
 def jax_logit_lamb_to_lamb(logit_lamb):
@@ -390,7 +397,7 @@ def jax_logit_lamb_to_lamb(logit_lamb):
     float
         The lambda value between 0 and 1.
     """
-    lamb = jnp.exp(logit_lamb) / (1 + jnp.exp(logit_lamb))
+    lamb = logistic_func(logit_lamb)
     return lamb
 
 
@@ -441,11 +448,39 @@ def calc_lamb(update_rule_parameter_dict):
     """
     if update_rule_parameter_dict.get("logit_lamb") is not None:
         logit_lamb = update_rule_parameter_dict["logit_lamb"]
-        lamb = jnp.exp(logit_lamb) / (1 + jnp.exp(logit_lamb))
+        lamb = logistic_func(logit_lamb)
     else:
         raise KeyError("logit_lamb key not found in update_rule_parameter_dict")
     return lamb
 
+def calc_lamb_from_index(update_rule_parameter_dict, logit_lamb_index):
+    """
+    Calculate the lambda value from the given update rule parameter dictionary and index.
+
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        A dictionary containing the update rule parameters.
+        Must include the key "logit_lamb".
+    logit_lamb_index : int
+        The index of the logit lambda value to calculate.
+
+    Returns
+    -------
+    float
+        The calculated lambda value.
+
+    Raises
+    ------
+    KeyError
+        If "logit_lamb" key is not found in update_rule_parameter_dict.
+    """
+    if update_rule_parameter_dict.get("logit_lamb") is not None:
+        logit_lamb = update_rule_parameter_dict["logit_lamb"][logit_lamb_index]
+        lamb = logistic_func(logit_lamb)
+    else:
+        raise KeyError("logit_lamb key not found in update_rule_parameter_dict")
+    return lamb
 
 def calc_alt_lamb(update_rule_parameter_dict):
     """
@@ -479,7 +514,7 @@ def calc_alt_lamb(update_rule_parameter_dict):
     else:
         raise KeyError("logit_delta_lamb key not found in update_rule_parameter_dict")
     logit_alt_lamb = logit_delta_lamb + logit_lamb
-    alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
+    alt_lamb = logistic_func(logit_alt_lamb)
     return alt_lamb
 
 
@@ -1023,11 +1058,11 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         elif load_method == "best_objective":
             objectives = [p["objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
-            context = np.argmax(np.nanmax(objectives, axis=0))
+            context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_train_objective":
             objectives = [p["train_objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
-            context = np.argmax(np.nanmax(objectives, axis=0))
+            context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_train_objective_for_each_parameter_set":
             objectives = [p["train_objective"] for p in params[1:]]
             index = (np.nanargmax(objectives, axis=0) + 1).tolist()
@@ -1035,19 +1070,19 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         elif load_method == "best_test_objective":
             objectives = [p["test_objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
-            context = np.argmax(np.nanmax(objectives, axis=0))
+            context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_objective_of_last":
             objectives = [params[-1]["objective"]]
             index = -1
-            context = np.argmax(np.nanmax(objectives))
+            context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_train_objective_of_last":
             objectives = [params[-1]["train_objective"]]
             index = -1
-            context = np.argmax(np.nanmax(objectives))
+            context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_test_objective_of_last":
             objectives = [params[-1]["test_objective"]]
             index = -1
-            context = np.argmax(np.nanmax(objectives))
+            context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_train_min_test_objective":
             objectives = []
             for p in params[1:]:
