@@ -217,6 +217,7 @@ class TFMMBasePool(AbstractPool):
         arb_thresh_array: jnp.ndarray,
         arb_fees_array: jnp.ndarray,
         trade_array: jnp.ndarray,
+        lp_supply_array: jnp.ndarray = None,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         bout_length = run_fingerprint["bout_length"]
@@ -240,8 +241,8 @@ class TFMMBasePool(AbstractPool):
         initial_value_per_token = arb_acted_upon_weights[0] * initial_pool_value
         initial_reserves = initial_value_per_token / arb_acted_upon_local_prices[0]
 
-        # any of fees_array, arb_thresh_array, arb_fees_array, trade_array
-        # can be singletons, in which case we repeat them for the length of the bout
+        # any of fees_array, arb_thresh_array, arb_fees_array, trade_array, and lp_supply_array
+        # can be singletons, in which case we repeat them for the length of the bout.
 
         # Determine the maximum leading dimension
         max_len = bout_length - 1
@@ -259,6 +260,13 @@ class TFMMBasePool(AbstractPool):
         arb_fees_array_broadcast = jnp.broadcast_to(
             arb_fees_array, (max_len,) + arb_fees_array.shape[1:]
         )
+        # if lp_supply_array is not provided, we set it to a constant of 1.0
+        if lp_supply_array is None:
+            lp_supply_array = jnp.array(1.0)
+        
+        lp_supply_array_broadcast = jnp.broadcast_to(
+            lp_supply_array, (max_len,) + lp_supply_array.shape[1:]
+        )
         # if we are doing trades, the trades array must be of the same length as the other arrays
         if run_fingerprint["do_trades"]:
             assert trade_array.shape[0] == max_len
@@ -274,6 +282,7 @@ class TFMMBasePool(AbstractPool):
             run_fingerprint["do_trades"],
             run_fingerprint["do_arb"],
             run_fingerprint["noise_trader_ratio"],
+            lp_supply_array_broadcast,
         )
         return reserves
 
