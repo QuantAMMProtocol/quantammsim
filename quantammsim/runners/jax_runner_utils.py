@@ -5,7 +5,7 @@ import json
 import hashlib
 
 # again, this only works on startup!
-from jax import config
+from jax import config, jit
 from jax.tree_util import tree_map, tree_reduce
 import jax.numpy as jnp
 
@@ -617,13 +617,14 @@ def nan_rollback(grads, params, old_params):
     return params
 
 
+@jit
 def has_nan_grads(grad_tree):
     """Check if any gradients contain NaN values."""
-
-    def check_nan(x):
-        return jnp.any(jnp.isnan(x))
-
-    return tree_reduce(lambda acc, x: acc or check_nan(x), grad_tree, initializer=False)
+    return tree_reduce(
+        lambda acc, x: jnp.logical_or(acc, jnp.any(jnp.isnan(x))),
+        grad_tree,
+        initializer=False,
+    )
 
 
 def nan_param_reinit(
