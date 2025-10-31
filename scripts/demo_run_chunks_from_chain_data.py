@@ -18,7 +18,7 @@ NEW: --debug-window-index gates diagnostics INSIDE the loop; global dumps unchan
 
 NOTE: All plots are plain Matplotlib (no LaTeX).
 """
-
+import debug
 import argparse
 import json
 import os
@@ -315,7 +315,7 @@ DEFAULT_FINGERPRINT = {
     "rule": "power_channel",
 }
 
-def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool, debug_window_index: int | None):
+def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool, debug_window_index: int | None = None):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 1) Load scraped data + coarse weights
