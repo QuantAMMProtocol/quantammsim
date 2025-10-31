@@ -28,6 +28,10 @@ Thumbs.db
 #ignore data files
 *.png
 *.parquet
+*.json
+*.txt
+*.msgpack
+*.html
 
 # ignore compiled files
 *.com
