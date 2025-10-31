@@ -374,6 +374,13 @@ def lamb_to_memory_days(lamb, chunk_period):
     memory_days = jnp.cbrt(6 * lamb / ((1 - lamb) ** 3.0)) * 2 * chunk_period / 1440
     return memory_days
 
+@jit
+def logistic_func(x):
+    """
+    Calculate the logistic function.
+    """
+    return jnp.exp(x) / (1 + jnp.exp(x))
+
 
 @jit
 def jax_logit_lamb_to_lamb(logit_lamb):
@@ -390,7 +397,7 @@ def jax_logit_lamb_to_lamb(logit_lamb):
     float
         The lambda value between 0 and 1.
     """
-    lamb = jnp.exp(logit_lamb) / (1 + jnp.exp(logit_lamb))
+    lamb = logistic_func(logit_lamb)
     return lamb
 
 
@@ -441,11 +448,39 @@ def calc_lamb(update_rule_parameter_dict):
     """
     if update_rule_parameter_dict.get("logit_lamb") is not None:
         logit_lamb = update_rule_parameter_dict["logit_lamb"]
-        lamb = jnp.exp(logit_lamb) / (1 + jnp.exp(logit_lamb))
+        lamb = logistic_func(logit_lamb)
     else:
         raise KeyError("logit_lamb key not found in update_rule_parameter_dict")
     return lamb
 
+def calc_lamb_from_index(update_rule_parameter_dict, logit_lamb_index):
+    """
+    Calculate the lambda value from the given update rule parameter dictionary and index.
+
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        A dictionary containing the update rule parameters.
+        Must include the key "logit_lamb".
+    logit_lamb_index : int
+        The index of the logit lambda value to calculate.
+
+    Returns
+    -------
+    float
+        The calculated lambda value.
+
+    Raises
+    ------
+    KeyError
+        If "logit_lamb" key is not found in update_rule_parameter_dict.
+    """
+    if update_rule_parameter_dict.get("logit_lamb") is not None:
+        logit_lamb = update_rule_parameter_dict["logit_lamb"][logit_lamb_index]
+        lamb = logistic_func(logit_lamb)
+    else:
+        raise KeyError("logit_lamb key not found in update_rule_parameter_dict")
+    return lamb
 
 def calc_alt_lamb(update_rule_parameter_dict):
     """
@@ -479,7 +514,7 @@ def calc_alt_lamb(update_rule_parameter_dict):
     else:
         raise KeyError("logit_delta_lamb key not found in update_rule_parameter_dict")
     logit_alt_lamb = logit_delta_lamb + logit_lamb
-    alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
+    alt_lamb = logistic_func(logit_alt_lamb)
     return alt_lamb
 
 
@@ -958,7 +993,13 @@ def load_result_array(run_location, key="objective", recalc_hess=False):
         return params[0], [p[key] for p in params[1:]]
 
 
-def load_manually(run_location, load_method="last", recalc_hess=False, min_test=0.0):
+def load_manually(
+    run_location,
+    load_method="last",
+    recalc_hess=False,
+    min_test=0.0,
+    return_as_iterables=False,
+):
     """Load and process parameter sets from a JSON results file with custom loading methods.
 
     Parameters
@@ -989,7 +1030,7 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         - int: The index of the selected parameter set
     """
     if os.path.isfile(run_location):
-        with open(run_location, encoding='utf-8') as json_file:
+        with open(run_location, encoding="utf-8") as json_file:
             params = json.load(json_file)
             params = json.loads(params)
 
@@ -997,11 +1038,11 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         if len(params) > 1.5 * params[0]["optimisation_settings"]["n_iterations"]:
             # Find last index where step == 0
             last_step_zero_idx = -1
-            for i in range(len(params)-1, 0, -1):
+            for i in range(len(params) - 1, 0, -1):
                 if params[i].get("step", -1) == 0:
                     last_step_zero_idx = i
                     break
-            
+
             # Keep only 0th row and rows from last step==0 onwards
             if last_step_zero_idx != -1:
                 params = [params[0]] + params[last_step_zero_idx:]
@@ -1014,7 +1055,7 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
 
                 dumped = json.dumps(params, cls=NumpyEncoder)
 
-                with open(run_location, "w", encoding='utf-8') as json_file:
+                with open(run_location, "w", encoding="utf-8") as json_file:
                     json.dump(dumped, json_file)
 
         if load_method == "last":
@@ -1023,27 +1064,31 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         elif load_method == "best_objective":
             objectives = [p["objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
-            context = np.argmax(np.nanmax(objectives, axis=0))
+            context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_train_objective":
             objectives = [p["train_objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
-            context = np.argmax(np.nanmax(objectives, axis=0))
+            context = np.nanargmax(np.nanmax(objectives, axis=0))
+        elif load_method == "best_train_objective_for_each_parameter_set":
+            objectives = [p["train_objective"] for p in params[1:]]
+            index = (np.nanargmax(objectives, axis=0) + 1).tolist()
+            context = np.arange(len(objectives[0])).tolist()
         elif load_method == "best_test_objective":
             objectives = [p["test_objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
-            context = np.argmax(np.nanmax(objectives, axis=0))
+            context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_objective_of_last":
             objectives = [params[-1]["objective"]]
             index = -1
-            context = np.argmax(np.nanmax(objectives))
+            context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_train_objective_of_last":
             objectives = [params[-1]["train_objective"]]
             index = -1
-            context = np.argmax(np.nanmax(objectives))
+            context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_test_objective_of_last":
             objectives = [params[-1]["test_objective"]]
             index = -1
-            context = np.argmax(np.nanmax(objectives))
+            context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_train_min_test_objective":
             objectives = []
             for p in params[1:]:
@@ -1066,7 +1111,10 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
                         best_objective = p
                         set_with_best_test_index = i
                         train_objective_max = p["train_objective"][i]
-            return best_objective, set_with_best_test_index
+            if return_as_iterables:
+                return [best_objective], [set_with_best_test_index]
+            else:
+                return best_objective, set_with_best_test_index
         elif load_method == "best_test_min_train_objective":
             objectives = []
             for p in params[1:]:
@@ -1086,25 +1134,40 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
                         best_objective = p
                         set_with_best_test_index = i
                         test_objective_max = p["test_objective"][i]
+            if return_as_iterables:
+                return [best_objective], [set_with_best_test_index]
+            else:
+                return best_objective, set_with_best_test_index
             return best_objective, set_with_best_test_index
         else:
             raise NotImplementedError
-        return params[index], context
+        if return_as_iterables:
+            if "for_each_parameter_set" not in load_method:
+                return [params[index]], [context]
+            else:
+                return [params[i] for i in index], context
+        else:
+            return params[index], context
 
 
-def retrieve_best(data_location, load_method, re_calc_hess, min_alt_obj = 0.0):
-    param, context = load_manually(data_location,load_method, re_calc_hess, min_alt_obj)
-    step = param["step"]
-    param.pop("step")
-    param.pop("hessian_trace")
-    param.pop("local_learning_rate")
-    param.pop("iterations_since_improvement")
-    
-    for key in param.keys():
-        if key != "subsidary_params":
-            param[key] = param[key][context]
-
-    return param, step
+def retrieve_best(data_location, load_method, re_calc_hess, min_alt_obj = 0.0, return_as_iterables=False):
+    params, contexts = load_manually(data_location,load_method, re_calc_hess, min_alt_obj, return_as_iterables=True)
+    steps = []
+    params_list = []
+    for param, context in zip(params, contexts):
+        steps.append(param["step"])
+        params_list.append(param.copy())
+        params_list[-1].pop("step")
+        params_list[-1].pop("hessian_trace")
+        params_list[-1].pop("local_learning_rate")
+        params_list[-1].pop("iterations_since_improvement")
+        for key in params_list[-1].keys():
+            if key != "subsidary_params":
+                params_list[-1][key] = params_list[-1][key][context]
+    if return_as_iterables:
+        return params_list, steps
+    else:
+        return params_list[0], steps[0]
 
 
 def load_or_init(
@@ -1160,6 +1223,7 @@ def load_or_init(
 
     run_location = results_dir + get_run_location(run_fingerprint) + ".json"
     if force_init:
+        print("force init")
         params = init_params(
             initial_values_dict,
             n_tokens,
@@ -1169,11 +1233,15 @@ def load_or_init(
         )
         loaded = False
     elif os.path.isfile(run_location):
+        print("Loading from: ", run_location)
+        print("found file")
         with open(run_location, encoding='utf-8') as json_file:
             params = json.load(json_file)
             # if params:
             #     calc()
             params = json.loads(params)
+            print("params")
+            print(params)
         if recalc_hess is True:
             if "hessian_trace" not in params[0].keys():
                 for i in range(len(params)):
@@ -1192,6 +1260,7 @@ def load_or_init(
                 dumped = json.dumps(params, cls=NumpyEncoder)
                 with open(run_location, "w", encoding='utf-8') as json_file:
                     json.dump(dumped, json_file, indent=4)
+        
         if isinstance(params, list):
             params = [
                 fill_in_missing_values_from_init(
@@ -1213,6 +1282,7 @@ def load_or_init(
                 chunk_period,
                 n_parameter_sets=n_parameter_sets,
             )
+
         if load_method == "last":
             index = -1
         elif load_method == "best_objective":
@@ -1724,3 +1794,31 @@ def generate_params_combinations(
         for i_v_d in initial_values_dict_combinations
     ]
     return filled_param_combinations, initial_values_dict_combinations
+
+
+def process_initial_values(
+    initial_values_dict, key, n_assets, n_parameter_sets, force_scalar=False
+):
+    if key in initial_values_dict:
+        initial_value = initial_values_dict[key]
+        if isinstance(initial_value, (np.ndarray, jnp.ndarray, list)):
+            initial_value = np.array(initial_value)
+            if force_scalar:
+                return np.array([initial_value] * n_parameter_sets)
+            elif initial_value.size == n_assets:
+                return np.array([initial_value] * n_parameter_sets)
+            elif initial_value.size == 1:
+                return np.array([[initial_value] * n_assets] * n_parameter_sets)
+            elif initial_value.shape == (n_parameter_sets, n_assets):
+                return initial_value
+            else:
+                raise ValueError(
+                    f"{key} must be a singleton or a vector of length n_assets or a matrix of shape (n_parameter_sets, n_assets)"
+                )
+        else:
+            if force_scalar:
+                return np.array([initial_value] * n_parameter_sets)
+            else:
+                return np.array([[initial_value] * n_assets] * n_parameter_sets)
+    else:
+        raise ValueError(f"initial_values_dict must contain {key}")

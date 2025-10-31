@@ -27,6 +27,23 @@ np.seterr(all="raise")
 np.seterr(under="print")
 
 
+def _daily_log_sharpe(values: jnp.ndarray) -> jnp.ndarray:
+    """
+    Daily Sharpe on log close-to-close returns.
+    Uses 1 day = 1440 minutes; annualizes with sqrt(365).
+    """
+    # Sample daily values using stride slice
+    daily_values = values[::1440]
+    
+    # Calculate daily log returns
+    log_rets = jnp.diff(jnp.log(daily_values + 1e-12))
+
+    mean = log_rets.mean()
+    std  = log_rets.std()
+
+    # Annualize daily stats (calendar days)
+    return jnp.sqrt(365.0) * (mean / (std + 1e-8))
+
 def _calculate_max_drawdown(value_over_time, duration=7 * 24 * 60):
     """Calculate maximum drawdown on a chosen basis."""
     n_complete_chunks = (len(value_over_time) // duration) * duration
@@ -254,7 +271,11 @@ def _calculate_return_value(
     pool_returns = None
     if return_val in ["sharpe", "returns", "returns_over_hodl"]:
         pool_returns = jnp.diff(value_over_time) / value_over_time[:-1]
-
+    if return_val == "daily_sharpe":
+        daily_returns = (
+            jnp.diff(value_over_time[::24 * 60])
+            / value_over_time[::24 * 60][:-1]
+        )
     return_metrics = {
         # "sharpe": lambda: jnp.sqrt(365 * 24 * 60)
         # * (
@@ -263,10 +284,18 @@ def _calculate_return_value(
         # ),
         "sharpe": lambda: jnp.sqrt(365 * 24 * 60)
         * ((pool_returns).mean() / pool_returns.std()),
+        "daily_sharpe": lambda: jnp.sqrt(365)
+        * (daily_returns.mean() / daily_returns.std()),
+        "daily_log_sharpe": lambda: _daily_log_sharpe(value_over_time),
         "returns": lambda: value_over_time[-1] / value_over_time[0] - 1.0,
         "returns_over_hodl": lambda: (
             value_over_time[-1]
             / (stop_gradient(initial_reserves) * local_prices[-1]).sum()
+            - 1.0
+        ),
+        "returns_over_uniform_hodl": lambda: (
+            value_over_time[-1]
+            / (stop_gradient((initial_reserves * local_prices[0]).sum()/(reserves.shape[1]*local_prices[0])) * local_prices[-1]).sum()
             - 1.0
         ),
         "greatest_draw_down": lambda: jnp.min(value_over_time - value_over_time[0])

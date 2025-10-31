@@ -6,8 +6,8 @@ run_fingerprint_defaults = {
     "tokens": ["BTC", "USDC", "ETH"],
     "rule": "mean_reversion_channel",
     "optimisation_settings": {
-        "base_lr": 0.01,
-        "optimiser": "sgd",
+        "base_lr": 0.1,
+        "optimiser": "adam",
         "decay_lr_ratio": 0.8,
         "decay_lr_plateau": 100,
         "batch_size": 8,
@@ -16,13 +16,18 @@ run_fingerprint_defaults = {
         "n_iterations": 1000,
         "n_cycles": 5,
         "sample_method": "uniform",
-        "n_parameter_sets": 3,
+        "n_parameter_sets": 4,
         "training_data_kind": "historic",
         "max_mc_version": 9,
         "include_flipped_training_data": False,
         "initial_random_key": 0,
         "method": "gradient_descent",
         "force_scalar": False,
+        "use_plateau_decay": False,
+        "use_gradient_clipping": False,
+        "clip_norm": 10.0,
+        "lr_schedule_type": "constant",
+        "warmup_steps": 100,
     },
     "initial_memory_length": 10.0,
     "initial_memory_length_delta": 0.0,
@@ -51,7 +56,9 @@ run_fingerprint_defaults = {
     "do_arb": True,
     "max_memory_days": 365,
     "noise_trader_ratio": 0.0,
-    "minimum_weight": None, # will be set to 0.1 / n_assets
+    "minimum_weight": None,  # will be set to 0.1 / n_assets
+    "ste_max_change": False,
+    "ste_min_max_weight": False,
 }
 
 

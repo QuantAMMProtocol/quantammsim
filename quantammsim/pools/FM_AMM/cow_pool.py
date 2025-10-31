@@ -110,6 +110,7 @@ class CowPool(AbstractPool):
                 fees=run_fingerprint["fees"],
                 arb_thresh=run_fingerprint["gas_cost"],
                 arb_fees=run_fingerprint["arb_fees"],
+                noise_trader_ratio=run_fingerprint["noise_trader_ratio"],
             )
             # now we need to calculate the reserves with imperfect arbs
             # we do this by taking the perfect arbs and then applying a small
@@ -121,6 +122,7 @@ class CowPool(AbstractPool):
                 fees=run_fingerprint["fees"],
                 arb_thresh=run_fingerprint["gas_cost"],
                 arb_fees=run_fingerprint["arb_fees"],
+                noise_trader_ratio=run_fingerprint["noise_trader_ratio"],
             )
             reserves = (
                 run_fingerprint["arb_quality"] * reserves_with_perfect_arbs
@@ -194,6 +196,7 @@ class CowPool(AbstractPool):
         arb_thresh_array: jnp.ndarray,
         arb_fees_array: jnp.ndarray,
         trade_array: jnp.ndarray,
+        lp_supply_array: jnp.ndarray = None,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         bout_length = run_fingerprint["bout_length"]
@@ -235,7 +238,7 @@ class CowPool(AbstractPool):
         # if we are doing trades, the trades array must be of the same length as the other arrays
         if run_fingerprint["do_trades"]:
             assert trade_array.shape[0] == max_len
-        
+
         reserves = _jax_calc_cowamm_reserves_with_dynamic_inputs(
             initial_reserves,
             arb_acted_upon_local_prices,
@@ -247,6 +250,7 @@ class CowPool(AbstractPool):
             trade_array,
             run_fingerprint["do_trades"],
             run_fingerprint["do_arb"],
+            noise_trader_ratio=run_fingerprint["noise_trader_ratio"],
         )
         return reserves
 

@@ -9,19 +9,13 @@ DEFAULT_FINGERPRINT = {
     "startDateString": "2021-01-01 00:00:00",
     "endDateString": "2024-06-01 00:00:00",
     "endTestDateString": "2024-11-30 00:00:00",
-    "chunk_period": 60,
-    "weight_interpolation_period": 60,
+    "chunk_period": 1440,
+    "weight_interpolation_period": 1440,
     "fees": 0.0,
     "gas_cost": 0.0,
     "use_alt_lamb": False,
     "optimisation_settings": {
-        "method": "optuna",
-        "optuna_settings": {
-            "n_jobs": 8,
-            "n_trials": 500,  # can be made higher, e.g. 5000 or more
-            "multi_objective": True,
-            "make_scalar": True,
-        },
+        "method": "gradient_descent",
     },
 }
 
