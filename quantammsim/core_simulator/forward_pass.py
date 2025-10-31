@@ -293,6 +293,11 @@ def _calculate_return_value(
             / (stop_gradient(initial_reserves) * local_prices[-1]).sum()
             - 1.0
         ),
+        "returns_over_uniform_hodl": lambda: (
+            value_over_time[-1]
+            / (stop_gradient((initial_reserves * local_prices[0]).sum()/(reserves.shape[1]*local_prices[0])) * local_prices[-1]).sum()
+            - 1.0
+        ),
         "greatest_draw_down": lambda: jnp.min(value_over_time - value_over_time[0])
         / value_over_time[0],
         "value": lambda: value_over_time,
