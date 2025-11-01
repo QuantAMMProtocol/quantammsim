@@ -25,6 +25,7 @@ from quantammsim.pools.G3M.quantamm.quantamm_reserves import (
     _jax_calc_quantAMM_reserves_with_fees_using_precalcs,
     _jax_calc_quantAMM_reserves_with_dynamic_inputs,
 )
+from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import _jax_calc_coarse_weights
 from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 from quantammsim.core_simulator.param_utils import memory_days_to_lamb
 import numpy as np
@@ -65,14 +66,17 @@ class TFMMBasePool(AbstractPool):
         """
         super().__init__()
 
-    @partial(jit, static_argnums=(2))
+    @partial(jit, static_argnums=(2, 6, 7, 8))
     def calculate_reserves_with_fees(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
         prices: jnp.ndarray,
-        start_index: jnp.ndarray,
+        start_index: Optional[jnp.ndarray] = None,
         additional_oracle_input: Optional[jnp.ndarray] = None,
+        weights: Optional[jnp.ndarray] = None,
+        local_prices: Optional[jnp.ndarray] = None,
+        initial_reserves: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         """
         Calculate reserves with fees and dynamic weights.
@@ -118,11 +122,17 @@ class TFMMBasePool(AbstractPool):
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
 
-        local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
+        if local_prices is None:
+            local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
+        else:
+            local_prices = local_prices.val
 
-        weights = self.calculate_weights(
-            params, run_fingerprint, prices, start_index, additional_oracle_input
-        )
+        if weights is None:
+            weights = self.calculate_weights(
+                params, run_fingerprint, prices, start_index, additional_oracle_input
+            )
+        else:
+            weights = weights.val
         if run_fingerprint["arb_frequency"] != 1:
             arb_acted_upon_weights = weights[:: run_fingerprint["arb_frequency"]]
             arb_acted_upon_local_prices = local_prices[
@@ -132,9 +142,13 @@ class TFMMBasePool(AbstractPool):
             arb_acted_upon_weights = weights
             arb_acted_upon_local_prices = local_prices
 
-        initial_pool_value = run_fingerprint["initial_pool_value"]
-        initial_value_per_token = arb_acted_upon_weights[0] * initial_pool_value
-        initial_reserves = initial_value_per_token / arb_acted_upon_local_prices[0]
+        if initial_reserves is None:
+            initial_pool_value = run_fingerprint["initial_pool_value"]
+            initial_value_per_token = arb_acted_upon_weights[0] * initial_pool_value
+            initial_reserves = initial_value_per_token / arb_acted_upon_local_prices[0]
+        else:
+            initial_reserves = initial_reserves.val
+
         if run_fingerprint["do_arb"]:
             reserves = _jax_calc_quantAMM_reserves_with_fees_using_precalcs(
                 initial_reserves,
@@ -318,6 +332,43 @@ class TFMMBasePool(AbstractPool):
         """
         pass
 
+    def calculate_readouts(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        start_index: jnp.ndarray,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+    ) -> jnp.ndarray:
+        """
+        Calculate readouts (internal estimator variables, other running variables) for the pool,
+        based on price history.
+
+        This method can potentially have some overlap with calculate_raw_weights_outputs, but
+        for most TFMM pools it will simply correspond to the readout values for the
+        gradient estimator (the ewma of prices and running a), sliced in the same way that
+        the raw weight outputs are sliced.
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters for weight calculation
+        run_fingerprint : Dict[str, Any]
+            Simulation settings
+        prices : jnp.ndarray
+            Historical price data
+        start_index : jnp.ndarray
+            Start index for slicing
+        additional_oracle_input : Optional[jnp.ndarray]
+            Extra data for weight calculation
+
+        Returns
+        -------
+        dict
+            Dict containing readout values for the pool
+        """
+        pass
+
     @abstractmethod
     def fine_weight_output(
         self,
@@ -367,12 +418,16 @@ class TFMMBasePool(AbstractPool):
         This method should be implemented by subclasses to define how weights are calculated
         based on current prices, pool parameters, and optional additional oracle input.
 
-        Args:
-            prices (jnp.ndarray): Current prices of the assets.
+        Parameters
+        ----------
             params (Dict[str, Any]): Pool parameters.
+            run_fingerprint (Dict[str, Any]): Simulation settings.
+            prices (jnp.ndarray): Current prices of the assets.
+            start_index (jnp.ndarray): Start index for slicing
             additional_oracle_input (Optional[jnp.ndarray], optional): Additional input from an oracle. Defaults to None.
 
-        Returns:
+        Returns
+        -------
             jnp.ndarray: Calculated weights for each asset in the pool.
         """
         chunk_period = run_fingerprint["chunk_period"]
@@ -397,11 +452,13 @@ class TFMMBasePool(AbstractPool):
             raw_weight_additional_offset = 1
         else:
             raw_weight_additional_offset = 0
-
         raw_weight_outputs = dynamic_slice(
             raw_weight_outputs,
             start_index_coarse,
-            (int((bout_length) / chunk_period) + raw_weight_additional_offset, n_assets),
+            (
+                int((bout_length) / chunk_period) + raw_weight_additional_offset,
+                n_assets,
+            ),
         )
         raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
         initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
@@ -412,9 +469,9 @@ class TFMMBasePool(AbstractPool):
             run_fingerprint,
             params,
         )
-
-        weights = dynamic_slice(weights, (0, 0), (bout_length - 1, n_assets))
-
+        weights = dynamic_slice(
+            weights, (0, 0), (bout_length - 1, n_assets)
+        )
         return weights
 
     def calculate_all_signature_variations(self, params: Dict[str, Any]) -> jnp.ndarray:
@@ -643,3 +700,67 @@ class TFMMBasePool(AbstractPool):
             None if no specific parameters needed
         """
         return None
+
+    @partial(jit, static_argnums=(2, 5))
+    def calculate_weights_direct(
+        self,
+        params: Dict[str, Any],
+        prices: jnp.ndarray,
+        maximum_change: float = 3e-4,
+        minimum_weight: float = 0.03,
+        initial_weights: Optional[jnp.ndarray] = None,
+        initial_running_a: Optional[jnp.ndarray] = None,
+        initial_ewma: Optional[jnp.ndarray] = None,
+        *args,
+        **kwargs,
+    ) -> jnp.ndarray:
+        """
+        Calculate the weights of assets in the pool, directly from the prices.
+        This is used to quickly calculate the weights from any given price array, without
+        doing any chunking or fine-weighting.
+
+
+        Parameters
+        ----------
+            params (Dict[str, Any]): Pool parameters.
+            prices (jnp.ndarray): Current prices of the assets
+            initial_weights (jnp.ndarray, optional): Initial weights of the assets
+            initial_running_a (jnp.ndarray, optional): Initial running_a value of the gradient estimator
+            initial_ewma (jnp.ndarray, optional): Initial ewma value of the gradient estimator
+
+        Returns
+        -------
+            jnp.ndarray: Calculated weights for each asset in the pool.
+        """
+        n_assets = prices.shape[1]
+        local_fingerprint = {
+            "chunk_period": 1,
+            "weight_interpolation_period": 1,
+            "max_memory_days": 365.0,
+            "use_alt_lamb": False,
+        }
+
+        raw_weight_outputs = self.calculate_raw_weights_outputs(
+            params, local_fingerprint, prices, None
+        )
+        # we dont't want to change the initial weights during any training
+        # so wrap them in a stop_grad
+        if initial_weights is None:
+            initial_weights = self.calculate_initial_weights(params)
+
+        raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
+        initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
+
+        actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
+            raw_weight_outputs,
+            initial_weights,
+            minimum_weight,
+            params,
+            local_fingerprint["max_memory_days"],
+            local_fingerprint["chunk_period"],
+            local_fingerprint["weight_interpolation_period"],
+            maximum_change,
+            False,
+        )
+
+        return weights

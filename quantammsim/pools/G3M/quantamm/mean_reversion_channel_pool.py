@@ -19,6 +19,7 @@ from jax import jit, vmap
 from jax import devices, device_put
 from jax import tree_util
 from jax.lax import stop_gradient, dynamic_slice
+from jax.nn import sigmoid, softplus
 
 from quantammsim.pools.G3M.quantamm.momentum_pool import (
     MomentumPool,
@@ -188,6 +189,21 @@ class MeanReversionChannelPool(MomentumPool):
         The raw weight outputs are not the final weights, but rather the changes
         to be applied to the previous weights. These will be refined in subsequent steps.
         """
+
+        # for key, value in params.items():
+        #     if key not in [
+        #         "log_k",
+        #         "log_amplitude",
+        #         "logit_lamb",
+        #         "raw_pre_exp_scaling",
+        #         "raw_width",
+        #     ]:
+        #         print(f"Stopping gradient for {key}")
+        #         params[key] = stop_gradient(value)
+        #     else:
+        #         print(f"Not stopping gradient for {key}")
+        # params["raw_exponents"] = stop_gradient(params["raw_exponents"])
+
         use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
         if use_pre_exp_scaling and params.get("logit_pre_exp_scaling") is not None:
             logit_pre_exp_scaling = params.get("logit_pre_exp_scaling")
@@ -198,6 +214,7 @@ class MeanReversionChannelPool(MomentumPool):
             pre_exp_scaling = 2 ** params.get("raw_pre_exp_scaling")
         else:
             pre_exp_scaling = 0.5
+
         memory_days = lamb_to_memory_days_clipped(
             calc_lamb(params),
             run_fingerprint["chunk_period"],
@@ -213,7 +230,8 @@ class MeanReversionChannelPool(MomentumPool):
             run_fingerprint["use_alt_lamb"],
             cap_lamb=True,
         )
-
+        gradients = gradients / chunkwise_price_values[1:]
+        # exponents = softplus(params.get("raw_exponents"))
         exponents = squareplus(params.get("raw_exponents"))
         amplitude = (2 ** params.get("log_amplitude")) * memory_days
         width = 2 ** params.get("raw_width")
@@ -306,7 +324,6 @@ class MeanReversionChannelPool(MomentumPool):
                         return np.array([[initial_value] * n_assets] * n_parameter_sets)
             else:
                 raise ValueError(f"initial_values_dict must contain {key}")
-
 
         initial_weights_logits = process_initial_values(
             initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets, force_scalar=False
