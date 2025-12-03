@@ -27,6 +27,9 @@ import quantammsim.simulator_analysis_tools.finance.financial_analysis_charting 
 from quantammsim.core_simulator.param_utils import (
     dict_of_np_to_jnp,
     memory_days_to_lamb,
+    convert_parameter_values,
+    _to_bd18_string_list,
+    _to_float64_list,
 )
 from quantammsim.utils.data_processing.datetime_utils import (
     unixtimestamp_to_precise_datetime,
@@ -127,7 +130,7 @@ def run_pool_simulation(simulationRunDto):
         for constituent in simulationRunDto.pool.poolConstituents
     ]
 
-    total_initial_value = jnp.sum(initial_value_per_token)
+    total_initial_value = sum(initial_value_per_token)
 
     initial_value_ratio = [val / total_initial_value for val in initial_value_per_token]
 
@@ -144,7 +147,6 @@ def run_pool_simulation(simulationRunDto):
             chunk_period = urp.value
         if urp.name == "weight_interpolation_period":
             weight_interpolation_period = urp.value
-
 
     run_fingerprint = {
         "startDateString": simulationRunDto.startDateString,
@@ -234,7 +236,7 @@ def run_pool_simulation(simulationRunDto):
     if (static_fee := get_static_value(fee_steps_df, "fees")) is not None:
         run_fingerprint["fees"] = static_fee
         fee_steps_df = None
-    
+
     print("run fingerprint-------------------", run_fingerprint)
     print("update rule parameter dict converted-------------------", update_rule_parameter_dict_converted)
     outputDict = do_run_on_historic_data(
@@ -248,7 +250,7 @@ def run_pool_simulation(simulationRunDto):
         gas_cost_df=gas_cost_df,
         fees_df=fee_steps_df
     )
-
+    print("outputDict: ", outputDict.keys())
     resultTimeSteps = optimized_output_conversion(simulationRunDto, outputDict, tokens)
 
     analysis = retrieve_simulation_run_analysis_results(
@@ -257,6 +259,35 @@ def run_pool_simulation(simulationRunDto):
         outputDict,
         price_data_local,
     )
+
+    # add parameters to analysis
+    analysis["jax_parameters"] = dict_of_np_to_jnp(update_rule_parameter_dict_converted)
+    analysis["smart_contract_parameters"] = convert_parameter_values(
+        update_rule_parameter_dict_converted, run_fingerprint
+    )
+
+    # add readouts to analysis
+    if "readouts" in outputDict:
+        readouts = outputDict["readouts"]
+        analysis["readouts"] = {"values": {}, "strings": {}}
+        for readout in readouts:
+            analysis["readouts"]["values"][readout] = _to_float64_list(readouts[readout][-1])
+            analysis["readouts"]["strings"][readout] = _to_bd18_string_list(readouts[readout][-1])
+    else:
+        analysis["readouts"] = None
+
+    # stub final weights
+    n_tokens = len(tokens)
+    final_weights = jnp.ones(n_tokens) / n_tokens
+    outputDict["final_weights"] = final_weights
+
+    if "final_weights" in outputDict:
+        analysis["final_weights"] = _to_float64_list(outputDict["final_weights"])
+        analysis["final_weights_strings"] = _to_bd18_string_list(outputDict["final_weights"])
+    else:
+        analysis["final_weights"] = None
+        analysis["final_weights_strings"] = None
+
     return {"resultTimeSteps": resultTimeSteps, "analysis": analysis}
 
 
