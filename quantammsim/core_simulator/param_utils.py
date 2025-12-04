@@ -1841,9 +1841,30 @@ def _to_float64_list(value):
         return [float(value)]
 
 
-def _to_bd18_string_list(values, format_str="{:.18f}"):
-    """Convert list of floats to list of 18dp fixed point strings."""
-    return [format_str.format(int(x*1e18)) for x in values]
+def _to_bd18_string_list(values):
+    """Convert list of floats to list of 18 fixed point integer strings.
+    
+    Uses string manipulation to avoid overflow from multiplication by 1e18.
+    Formats each value with 18 decimal places, then removes the decimal point
+    and strips leading zeros.
+    """
+    result = []
+    for x in values:
+        # Format with 18 decimal places, then remove decimal point
+        formatted = f"{x:.18f}"
+        # Split on decimal point
+        if '.' in formatted:
+            int_part, frac_part = formatted.split('.')
+            # Pad fractional part to exactly 18 digits if needed
+            frac_part = frac_part.ljust(18, '0')[:18]
+            combined = int_part + frac_part
+        else:
+            # No decimal point, just append 18 zeros
+            combined = formatted + '0' * 18
+        # Strip leading zeros, but keep at least one digit (handle zero case)
+        stripped = combined.lstrip('0')
+        result.append(stripped if stripped else '0')
+    return result
 
 
 def convert_parameter_values(params, run_fingerprint, max_memory_days=None):
@@ -1893,6 +1914,11 @@ def convert_parameter_values(params, run_fingerprint, max_memory_days=None):
             k_list = _to_float64_list(k)
             result["values"]["k"] = k_list
             result["strings"]["k"] = _to_bd18_string_list(k_list)
+        elif "k" in params:
+            k = params["k"] * memory_days
+            k_list = _to_float64_list(k)
+            result["values"]["k"] = k_list
+            result["strings"]["k"] = _to_bd18_string_list(k_list)
 
     if "raw_exponents" in params:
         exponents = squareplus(params["raw_exponents"])
@@ -1935,20 +1961,20 @@ def convert_parameter_values(params, run_fingerprint, max_memory_days=None):
 
     return result
 
-        # print("-" * 80)
-        # print("final readouts")
-        # for readout in result["readouts"]:
-        #     print(
-        #         f"{readout}: { jnp.array_str(result['readouts'][readout][-1], precision=16, suppress_small=False)}"
-        #     )
-        # print("-" * 80)
-        # print("final weights")
-        # print(
-        #     f"{jnp.array_str(result['weights'][-1], precision=16, suppress_small=False)}"
-        # )
-        # print("-" * 80)
-        # print("final prices")
-        # print(
-        #     f"{jnp.array_str(result['prices'][-1], precision=16, suppress_small=False)}"
-        # )
-        # print("=" * 80)
+    # print("-" * 80)
+    # print("final readouts")
+    # for readout in result["readouts"]:
+    #     print(
+    #         f"{readout}: { jnp.array_str(result['readouts'][readout][-1], precision=16, suppress_small=False)}"
+    #     )
+    # print("-" * 80)
+    # print("final weights")
+    # print(
+    #     f"{jnp.array_str(result['weights'][-1], precision=16, suppress_small=False)}"
+    # )
+    # print("-" * 80)
+    # print("final prices")
+    # print(
+    #     f"{jnp.array_str(result['prices'][-1], precision=16, suppress_small=False)}"
+    # )
+    # print("=" * 80)
