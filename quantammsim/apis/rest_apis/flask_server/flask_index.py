@@ -63,6 +63,8 @@ def runSimulation():
     dto = SimulationRunDto(request_data)
     result = run_pool_simulation(dto)
 
+    print(result["analysis"])
+    
     resultJSON = jsonpickle.encode(SimulationResult(result), unpicklable=False)
     jsonString = json.dumps(resultJSON, indent=4)
 

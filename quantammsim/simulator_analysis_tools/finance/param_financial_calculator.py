@@ -263,30 +263,30 @@ def run_pool_simulation(simulationRunDto):
         price_data_local,
     )
 
-
     # add readouts to analysis
     if "readouts" in outputDict:
         readouts = outputDict["readouts"]
         analysis["readouts"] = {"values": {}, "strings": {}}
         for readout in readouts:
-            analysis["readouts"]["values"][readout] = _to_float64_list(readouts[readout][-1])
-            analysis["readouts"]["strings"][readout] = _to_bd18_string_list(readouts[readout][-1])
+            # take the last sample of each readout and normalise
+            last_value = readouts[readout][-1]
+            analysis["readouts"]["values"][readout] = _to_float64_list(last_value)
+            analysis["readouts"]["strings"][readout] = _to_bd18_string_list(last_value)
     else:
         analysis["readouts"] = None
 
-    # Get final unix timestamp from price_data_local
+    # Get final unix timestamp from price_data_local and normalise to a plain int
     final_unix_timestamp = price_data_local.index[-1]
-    
-    analysis["final_unix_timestamp"] = final_unix_timestamp
-    print("final unix timestamp: ", final_unix_timestamp)
+    # Assuming index is in ms already; if it's a pandas Timestamp, you may want // 1e6 etc.
+    analysis["final_unix_timestamp"] = int(final_unix_timestamp)
+
     # Convert final unix timestamp to most recent midnight and get final weights
-    # Get the most recent midnight before the final_unix_timestamp
     midnight_end_date_str = unixtimestamp_to_midnight_datetime(final_unix_timestamp)
-    
+
     # Create a new run_fingerprint for the final weights run
     final_weights_fingerprint = copy.deepcopy(run_fingerprint)
     final_weights_fingerprint["endDateString"] = midnight_end_date_str
-    
+
     # Run simulation to get final weights at midnight
     final_weights_output = do_run_on_historic_data(
         final_weights_fingerprint,
@@ -299,6 +299,7 @@ def run_pool_simulation(simulationRunDto):
         gas_cost_df=gas_cost_df,
         fees_df=fee_steps_df,
     )
+
     # Extract final weights from the result
     if "weights" in final_weights_output and len(final_weights_output["weights"]) > 0:
         final_weights = final_weights_output["weights"][-1]
@@ -306,23 +307,48 @@ def run_pool_simulation(simulationRunDto):
         # Fallback to equal weights if weights not available
         n_tokens = len(tokens)
         final_weights = jnp.ones(n_tokens) / n_tokens
-    
-    # Store final weights in analysis
+
+    # Store final weights in analysis (both numeric and BD18 string form)
     analysis["final_weights"] = _to_float64_list(final_weights)
     analysis["final_weights_strings"] = _to_bd18_string_list(final_weights)
 
+    # These are internal and should not be surfaced as jax_parameters / smart_contract_parameters
     update_rule_parameter_dict_converted.pop("initial_weights_logits", None)
     update_rule_parameter_dict_converted.pop("initial_pool_value", None)
 
-    # add parameters to analysis
-    analysis["jax_parameters"] = dict_of_np_to_jnp(update_rule_parameter_dict_converted)
-    analysis["smart_contract_parameters"] = convert_parameter_values(
+    # ---------- NEW: JSON-friendly parameters ----------
+
+    # 1) jax_parameters: Record[str, List[float]]
+    jax_parameters_json = {}
+    for name, value in update_rule_parameter_dict_converted.items():
+        jax_parameters_json[name] = _to_float64_list(value)
+    analysis["jax_parameters"] = jax_parameters_json
+
+    # 2) smart_contract_parameters: values + strings, both JSON-friendly
+    sc_params = convert_parameter_values(
         update_rule_parameter_dict_converted, run_fingerprint
     )
-    print("analysis: ", analysis)
-    
-    return {"resultTimeSteps": resultTimeSteps, "analysis": analysis}
 
+    values_json = {}
+    for name, val in sc_params.get("values", {}).items():
+        values_json[name] = _to_float64_list(val)
+
+    strings_json = {}
+    for name, val in sc_params.get("strings", {}).items():
+        # DO NOT send these through _to_bd18_string_list again – they are already BD18 strings.
+        if isinstance(val, (list, tuple, np.ndarray, jnp.ndarray)):
+            strings_json[name] = [str(x) for x in val]
+        else:
+            strings_json[name] = [str(val)]
+
+    analysis["smart_contract_parameters"] = {
+        "values": values_json,
+        "strings": strings_json,
+    }
+
+    print("analysis: ", analysis)
+
+    return {"resultTimeSteps": resultTimeSteps, "analysis": analysis}
 
 def retrieve_simulation_run_analysis_results(
     run_fingerprint, params, portfolio_result, price_data=None, btc_price_data=None
