@@ -263,12 +263,6 @@ def run_pool_simulation(simulationRunDto):
         price_data_local,
     )
 
-    # add parameters to analysis
-    analysis["jax_parameters"] = dict_of_np_to_jnp(update_rule_parameter_dict_converted)
-    analysis["smart_contract_parameters"] = convert_parameter_values(
-        update_rule_parameter_dict_converted, run_fingerprint
-    )
-    
 
     # add readouts to analysis
     if "readouts" in outputDict:
@@ -317,6 +311,17 @@ def run_pool_simulation(simulationRunDto):
     analysis["final_weights"] = _to_float64_list(final_weights)
     analysis["final_weights_strings"] = _to_bd18_string_list(final_weights)
 
+    update_rule_parameter_dict_converted.pop("initial_weights_logits", None)
+    update_rule_parameter_dict_converted.pop("initial_pool_value", None)
+    update_rule_parameter_dict_converted.pop("chunk_period", None)
+    update_rule_parameter_dict_converted.pop("weight_interpolation_period", None)
+
+    # add parameters to analysis
+    analysis["jax_parameters"] = dict_of_np_to_jnp(update_rule_parameter_dict_converted)
+    analysis["smart_contract_parameters"] = convert_parameter_values(
+        update_rule_parameter_dict_converted, run_fingerprint
+    )
+    
     return {"resultTimeSteps": resultTimeSteps, "analysis": analysis}
 
 
