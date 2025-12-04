@@ -313,14 +313,13 @@ def run_pool_simulation(simulationRunDto):
 
     update_rule_parameter_dict_converted.pop("initial_weights_logits", None)
     update_rule_parameter_dict_converted.pop("initial_pool_value", None)
-    update_rule_parameter_dict_converted.pop("chunk_period", None)
-    update_rule_parameter_dict_converted.pop("weight_interpolation_period", None)
 
     # add parameters to analysis
     analysis["jax_parameters"] = dict_of_np_to_jnp(update_rule_parameter_dict_converted)
     analysis["smart_contract_parameters"] = convert_parameter_values(
         update_rule_parameter_dict_converted, run_fingerprint
     )
+    print("analysis: ", analysis)
     
     return {"resultTimeSteps": resultTimeSteps, "analysis": analysis}
 
