@@ -33,6 +33,8 @@ from quantammsim.core_simulator.param_utils import (
 )
 from quantammsim.utils.data_processing.datetime_utils import (
     unixtimestamp_to_precise_datetime,
+    unixtimestamp_to_midnight_datetime,
+    datetime_to_unixtimestamp,
 )
 from quantammsim.utils.data_processing.dtb3_data_utils import filter_dtb3_values
 from quantammsim.utils.data_processing.historic_data_utils import (
@@ -226,6 +228,7 @@ def run_pool_simulation(simulationRunDto):
         })
 
     price_data_local = get_historic_parquet_data(tokens)
+    print("price data local: ", price_data_local)
 
     # Check for static values, if found, set in run_fingerprint and remove df
     # this is to enable faster subroutines
@@ -265,6 +268,7 @@ def run_pool_simulation(simulationRunDto):
     analysis["smart_contract_parameters"] = convert_parameter_values(
         update_rule_parameter_dict_converted, run_fingerprint
     )
+    
 
     # add readouts to analysis
     if "readouts" in outputDict:
@@ -276,17 +280,42 @@ def run_pool_simulation(simulationRunDto):
     else:
         analysis["readouts"] = None
 
-    # stub final weights
-    n_tokens = len(tokens)
-    final_weights = jnp.ones(n_tokens) / n_tokens
-    outputDict["final_weights"] = final_weights
-
-    if "final_weights" in outputDict:
-        analysis["final_weights"] = _to_float64_list(outputDict["final_weights"])
-        analysis["final_weights_strings"] = _to_bd18_string_list(outputDict["final_weights"])
+    # Get final unix timestamp from price_data_local
+    final_unix_timestamp = price_data_local.index[-1]
+    
+    analysis["final_unix_timestamp"] = final_unix_timestamp
+    print("final unix timestamp: ", final_unix_timestamp)
+    # Convert final unix timestamp to most recent midnight and get final weights
+    # Get the most recent midnight before the final_unix_timestamp
+    midnight_end_date_str = unixtimestamp_to_midnight_datetime(final_unix_timestamp)
+    
+    # Create a new run_fingerprint for the final weights run
+    final_weights_fingerprint = copy.deepcopy(run_fingerprint)
+    final_weights_fingerprint["endDateString"] = midnight_end_date_str
+    
+    # Run simulation to get final weights at midnight
+    final_weights_output = do_run_on_historic_data(
+        final_weights_fingerprint,
+        update_rule_parameter_dict_converted,
+        root=None,
+        price_data=price_data_local,
+        verbose=False,
+        do_test_period=False,
+        raw_trades=raw_trades,
+        gas_cost_df=gas_cost_df,
+        fees_df=fee_steps_df,
+    )
+    # Extract final weights from the result
+    if "weights" in final_weights_output and len(final_weights_output["weights"]) > 0:
+        final_weights = final_weights_output["weights"][-1]
     else:
-        analysis["final_weights"] = None
-        analysis["final_weights_strings"] = None
+        # Fallback to equal weights if weights not available
+        n_tokens = len(tokens)
+        final_weights = jnp.ones(n_tokens) / n_tokens
+    
+    # Store final weights in analysis
+    analysis["final_weights"] = _to_float64_list(final_weights)
+    analysis["final_weights_strings"] = _to_bd18_string_list(final_weights)
 
     return {"resultTimeSteps": resultTimeSteps, "analysis": analysis}
 
