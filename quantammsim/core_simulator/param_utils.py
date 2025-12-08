@@ -1900,9 +1900,6 @@ def convert_parameter_values(params, run_fingerprint, max_memory_days=None):
             chunk_period=run_fingerprint["chunk_period"],
             max_memory_days=max_memory_days,
         )
-        memory_days_list = _to_float64_list(memory_days)
-        result["values"]["memory_days"] = memory_days_list
-        result["strings"]["memory_days"] = _to_bd18_string_list(memory_days_list)
 
         lamb = calc_lamb(params)
         lamb_list = _to_float64_list(lamb)
