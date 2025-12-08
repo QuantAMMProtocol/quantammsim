@@ -258,51 +258,6 @@ class MomentumPool(TFMMBasePool):
             (int((bout_length) / chunk_period) + additional_offset, n_assets),
         )
         return {"gradients": gradients, "running_a": running_a, "ewma": ewma}
-
-    def calculate_one_step_weights(
-        self,
-        previous_weights: jnp.ndarray,
-        params: Dict[str, Any],
-        gradient: jnp.ndarray,
-        maximum_change_per_minute: float = 3e-4,
-        raw_k: Optional[jnp.ndarray] = None,
-        run_fingerprint: Optional[Dict[str, Any]] = None,
-    ) -> jnp.ndarray:
-        if raw_k is None:
-            if run_fingerprint is None:
-                raise ValueError("run_fingerprint must be provided if raw_k is not provided")
-            memory_days = lamb_to_memory_days_clipped(
-                calc_lamb(params),
-                run_fingerprint["chunk_period"],
-                run_fingerprint["max_memory_days"],
-            )
-            k = calc_k(params, memory_days)
-        else:
-            k = raw_k
-        raw_weight_outputs = _jax_momentum_weight_update(gradient, k)
-
-        # we are not trying to calculate the fine weights here, we are just trying to
-        # calculate the weights for the next step.
-        weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
-        chunk_period = run_fingerprint["chunk_period"]
-        maximum_change = maximum_change_per_minute * chunk_period
-        weight_interpolation_method = run_fingerprint["weight_interpolation_method"]
-        minimum_weight = run_fingerprint.get("minimum_weight")
-        n_assets = run_fingerprint["n_assets"]
-        if minimum_weight == None:
-            minimum_weight = 0.1 / n_assets
-
-        actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
-            raw_weight_outputs,
-            initial_weights,
-            minimum_weight,
-            params,
-            run_fingerprint["max_memory_days"],
-            chunk_period,
-            weight_interpolation_period,
-            maximum_change,
-            raw_weight_outputs_are_themselves_weights,
-        )
             
 
     @partial(jit, static_argnums=(3))
