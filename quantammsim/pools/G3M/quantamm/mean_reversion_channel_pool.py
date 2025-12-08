@@ -189,20 +189,6 @@ class MeanReversionChannelPool(MomentumPool):
         to be applied to the previous weights. These will be refined in subsequent steps.
         """
 
-        # for key, value in params.items():
-        #     if key not in [
-        #         "log_k",
-        #         "log_amplitude",
-        #         "logit_lamb",
-        #         "raw_pre_exp_scaling",
-        #         "raw_width",
-        #     ]:
-        #         print(f"Stopping gradient for {key}")
-        #         params[key] = stop_gradient(value)
-        #     else:
-        #         print(f"Not stopping gradient for {key}")
-        # params["raw_exponents"] = stop_gradient(params["raw_exponents"])
-
         use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
         if use_pre_exp_scaling and params.get("logit_pre_exp_scaling") is not None:
             logit_pre_exp_scaling = params.get("logit_pre_exp_scaling")

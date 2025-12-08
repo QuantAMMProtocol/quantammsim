@@ -17,14 +17,13 @@ def _jax_calc_linear_interpolation_block(
     Returns:
         ndarray: The calculated linear interpolation weights.
     """
-    # scaled_diff = jnp.round(scaled_diff, decimals=7)
     linear_interpolation = interpol_arange * scaled_diff + actual_start
 
     end_weights = linear_interpolation[-1]
 
     fine_weights = end_weights * fine_ones
+
     fine_weights = fine_weights.at[0 : interpol_num - 1].set(
         linear_interpolation[0 : interpol_num - 1]
     )
-    # fine_weights = interpol_num * 60.0 * jnp.round(fine_weights / (interpol_num * 60.0), decimals=9)
     return fine_weights

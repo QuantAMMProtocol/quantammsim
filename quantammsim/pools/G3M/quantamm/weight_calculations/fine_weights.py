@@ -230,21 +230,6 @@ def calc_fine_weight_output(
         ste_min_max_weight,
     )
 
-    # actual_starts_cpu_nothresh, scaled_diffs_cpu_nothresh, target_weights_cpu_nothresh = _jax_calc_coarse_weights(
-    #     raw_weight_outputs,
-    #     initial_weights,
-    #     -1000.0,
-    #     params,
-    #     run_fingerprint["max_memory_days"],
-    #     chunk_period,
-    #     weight_interpolation_period,
-    #     maximum_change,
-    #     raw_weight_outputs_are_themselves_weights,
-    # )
-
-    # actual_starts_cpu = actual_starts_cpu_nothresh + actual_starts_cpu_nothresh - stop_gradient(actual_starts_cpu_nothresh)
-    # scaled_diffs_cpu = scaled_diffs_cpu_nothresh + scaled_diffs_cpu_nothresh - stop_gradient(scaled_diffs_cpu_nothresh)
-
     scaled_diffs_gpu = device_put(scaled_diffs_cpu, GPU_DEVICE)
     actual_starts_gpu = device_put(actual_starts_cpu, GPU_DEVICE)
 
@@ -339,7 +324,7 @@ def _jax_fine_weights_from_actual_starts_and_diffs(
     jit_jax_calc_interpolation_blocks = jit(partial_jax_calc_interpolation_blocks)
 
     fine_weights_array = jit_jax_calc_interpolation_blocks(actual_starts, scaled_diffs)
-    
+
     return fine_weights_array.reshape(-1, n_assets)
 
 
