@@ -28,6 +28,7 @@ from quantammsim.core_simulator.param_utils import (
 )
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
     calc_gradients,
+    calc_gradients_with_readout,
     calc_k,
 )
 
@@ -175,6 +176,89 @@ class MomentumPool(TFMMBasePool):
         )
         raw_weight_outputs = _jax_momentum_weight_update(gradients, k)
         return raw_weight_outputs
+
+    def calculate_readouts(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        start_index: jnp.ndarray,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+    ) -> jnp.ndarray:
+        """
+        Calculate readouts (internal gradient estimator variables) for the pool,
+        based on price history.
+
+        This method gives the readout values for the gradient estimator (the ewma of
+        prices and  the running a), sliced in the same way that the raw weight outputs
+        are sliced.
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters for weight calculation
+        run_fingerprint : Dict[str, Any]
+            Simulation settings
+        prices : jnp.ndarray
+            Historical price data
+        additional_oracle_input : Optional[jnp.ndarray]
+            Extra data for weight calculation
+
+        Returns
+        -------
+        dict
+            Dict containing readout value from the gradient estimator
+        """
+        chunk_period = run_fingerprint["chunk_period"]
+        bout_length = run_fingerprint["bout_length"]
+        n_assets = run_fingerprint["n_assets"]
+        memory_days = lamb_to_memory_days_clipped(
+            calc_lamb(params),
+            run_fingerprint["chunk_period"],
+            run_fingerprint["max_memory_days"],
+        )
+        chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
+        gradients_dict = calc_gradients_with_readout(
+            params,
+            chunkwise_price_values,
+            run_fingerprint["chunk_period"],
+            run_fingerprint["max_memory_days"],
+            run_fingerprint["use_alt_lamb"],
+            cap_lamb=True,
+        )
+        # we have a sequence now of readout values and gradients, but if we are doing
+        # a burnin operation, we need to cut off the changes associated
+        # with the burnin period, ie everything before the start of the sequence
+
+        start_index_coarse = ((start_index[0] / chunk_period).astype("int64"), 0)
+
+        # if the chunk period is not a divisor of bout_length, we need to pad the readout values.
+        # this can require more data to be available, potentially beyond the end of the bout.
+        if bout_length % chunk_period != 0:
+            additional_offset = 1
+        else:
+            additional_offset = 0
+
+        # slice gradients
+        gradients = dynamic_slice(
+            gradients_dict["gradients"],
+            start_index_coarse,
+            (int((bout_length) / chunk_period) + additional_offset, n_assets),
+        )
+        # slice running a
+        running_a = dynamic_slice(
+            gradients_dict["running_a"],
+            start_index_coarse,
+            (int((bout_length) / chunk_period) + additional_offset, n_assets),
+        )
+        # slice ewma
+        ewma = dynamic_slice(
+            gradients_dict["ewma"],
+            start_index_coarse,
+            (int((bout_length) / chunk_period) + additional_offset, n_assets),
+        )
+        return {"gradients": gradients, "running_a": running_a, "ewma": ewma}
+            
 
     @partial(jit, static_argnums=(3))
     def fine_weight_output(

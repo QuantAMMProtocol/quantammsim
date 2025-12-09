@@ -11,6 +11,13 @@ from jax import config
 
 from quantammsim.training.hessian_trace import hessian_trace
 
+
+def squareplus(x):
+    # algebraic (so non-trancendental) replacement for softplus
+    # see https://arxiv.org/abs/2112.11687 for detail
+    return lax.mul(0.5, lax.add(x, lax.sqrt(lax.add(lax.square(x), 4.0))))
+
+
 # again, this only works on startup!
 config.update("jax_enable_x64", True)
 
@@ -374,6 +381,13 @@ def lamb_to_memory_days(lamb, chunk_period):
     memory_days = jnp.cbrt(6 * lamb / ((1 - lamb) ** 3.0)) * 2 * chunk_period / 1440
     return memory_days
 
+@jit
+def logistic_func(x):
+    """
+    Calculate the logistic function.
+    """
+    return jnp.exp(x) / (1 + jnp.exp(x))
+
 
 @jit
 def jax_logit_lamb_to_lamb(logit_lamb):
@@ -390,7 +404,7 @@ def jax_logit_lamb_to_lamb(logit_lamb):
     float
         The lambda value between 0 and 1.
     """
-    lamb = jnp.exp(logit_lamb) / (1 + jnp.exp(logit_lamb))
+    lamb = logistic_func(logit_lamb)
     return lamb
 
 
@@ -441,11 +455,39 @@ def calc_lamb(update_rule_parameter_dict):
     """
     if update_rule_parameter_dict.get("logit_lamb") is not None:
         logit_lamb = update_rule_parameter_dict["logit_lamb"]
-        lamb = jnp.exp(logit_lamb) / (1 + jnp.exp(logit_lamb))
+        lamb = logistic_func(logit_lamb)
     else:
         raise KeyError("logit_lamb key not found in update_rule_parameter_dict")
     return lamb
 
+def calc_lamb_from_index(update_rule_parameter_dict, logit_lamb_index):
+    """
+    Calculate the lambda value from the given update rule parameter dictionary and index.
+
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        A dictionary containing the update rule parameters.
+        Must include the key "logit_lamb".
+    logit_lamb_index : int
+        The index of the logit lambda value to calculate.
+
+    Returns
+    -------
+    float
+        The calculated lambda value.
+
+    Raises
+    ------
+    KeyError
+        If "logit_lamb" key is not found in update_rule_parameter_dict.
+    """
+    if update_rule_parameter_dict.get("logit_lamb") is not None:
+        logit_lamb = update_rule_parameter_dict["logit_lamb"][logit_lamb_index]
+        lamb = logistic_func(logit_lamb)
+    else:
+        raise KeyError("logit_lamb key not found in update_rule_parameter_dict")
+    return lamb
 
 def calc_alt_lamb(update_rule_parameter_dict):
     """
@@ -479,7 +521,7 @@ def calc_alt_lamb(update_rule_parameter_dict):
     else:
         raise KeyError("logit_delta_lamb key not found in update_rule_parameter_dict")
     logit_alt_lamb = logit_delta_lamb + logit_lamb
-    alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
+    alt_lamb = logistic_func(logit_alt_lamb)
     return alt_lamb
 
 
@@ -958,7 +1000,13 @@ def load_result_array(run_location, key="objective", recalc_hess=False):
         return params[0], [p[key] for p in params[1:]]
 
 
-def load_manually(run_location, load_method="last", recalc_hess=False, min_test=0.0, return_as_iterables=False):
+def load_manually(
+    run_location,
+    load_method="last",
+    recalc_hess=False,
+    min_test=0.0,
+    return_as_iterables=False,
+):
     """Load and process parameter sets from a JSON results file with custom loading methods.
 
     Parameters
@@ -989,7 +1037,7 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         - int: The index of the selected parameter set
     """
     if os.path.isfile(run_location):
-        with open(run_location, encoding='utf-8') as json_file:
+        with open(run_location, encoding="utf-8") as json_file:
             params = json.load(json_file)
             params = json.loads(params)
 
@@ -997,7 +1045,7 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         if len(params) > 1.5 * params[0]["optimisation_settings"]["n_iterations"]:
             # Find last index where step == 0
             last_step_zero_idx = -1
-            for i in range(len(params)-1, 0, -1):
+            for i in range(len(params) - 1, 0, -1):
                 if params[i].get("step", -1) == 0:
                     last_step_zero_idx = i
                     break
@@ -1014,7 +1062,7 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
 
                 dumped = json.dumps(params, cls=NumpyEncoder)
 
-                with open(run_location, "w", encoding='utf-8') as json_file:
+                with open(run_location, "w", encoding="utf-8") as json_file:
                     json.dump(dumped, json_file)
 
         if load_method == "last":
@@ -1023,11 +1071,11 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         elif load_method == "best_objective":
             objectives = [p["objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
-            context = np.argmax(np.nanmax(objectives, axis=0))
+            context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_train_objective":
             objectives = [p["train_objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
-            context = np.argmax(np.nanmax(objectives, axis=0))
+            context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_train_objective_for_each_parameter_set":
             objectives = [p["train_objective"] for p in params[1:]]
             index = (np.nanargmax(objectives, axis=0) + 1).tolist()
@@ -1035,19 +1083,19 @@ def load_manually(run_location, load_method="last", recalc_hess=False, min_test=
         elif load_method == "best_test_objective":
             objectives = [p["test_objective"] for p in params[1:]]
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
-            context = np.argmax(np.nanmax(objectives, axis=0))
+            context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_objective_of_last":
             objectives = [params[-1]["objective"]]
             index = -1
-            context = np.argmax(np.nanmax(objectives))
+            context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_train_objective_of_last":
             objectives = [params[-1]["train_objective"]]
             index = -1
-            context = np.argmax(np.nanmax(objectives))
+            context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_test_objective_of_last":
             objectives = [params[-1]["test_objective"]]
             index = -1
-            context = np.argmax(np.nanmax(objectives))
+            context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_train_min_test_objective":
             objectives = []
             for p in params[1:]:
@@ -1781,3 +1829,149 @@ def process_initial_values(
                 return np.array([[initial_value] * n_assets] * n_parameter_sets)
     else:
         raise ValueError(f"initial_values_dict must contain {key}")
+
+
+def _to_float64_list(value):
+    """Convert JAX/numpy array to list of float64."""
+    if isinstance(value, (jnp.ndarray, np.ndarray)):
+        return [float(x) for x in np.array(value).flatten()]
+    elif isinstance(value, (list, tuple)):
+        return [float(x) for x in value]
+    else:
+        return [float(value)]
+
+
+def _to_bd18_string_list(values):
+    """Convert list of floats to list of 18 fixed point integer strings.
+    
+    Uses string manipulation to avoid overflow from multiplication by 1e18.
+    Formats each value with 18 decimal places, then removes the decimal point
+    and strips leading zeros.
+    """
+    result = []
+    for x in values:
+        # Format with 18 decimal places, then remove decimal point
+        formatted = f"{x:.18f}"
+        # Split on decimal point
+        if '.' in formatted:
+            int_part, frac_part = formatted.split('.')
+            # Pad fractional part to exactly 18 digits if needed
+            frac_part = frac_part.ljust(18, '0')[:18]
+            combined = int_part + frac_part
+        else:
+            # No decimal point, just append 18 zeros
+            combined = formatted + '0' * 18
+        # Strip leading zeros, but keep at least one digit (handle zero case)
+        stripped = combined.lstrip('0')
+        result.append(stripped if stripped else '0')
+    return result
+
+
+def convert_parameter_values(params, run_fingerprint, max_memory_days=None):
+    """
+    Compute parameter values from raw parameters and return as both float64 lists
+    and 18 decimal place fixed point strings.
+
+    Parameters
+    ----------
+    params : dict
+        Dictionary containing raw parameter values (e.g., "logit_lamb", "log_k", etc.)
+    run_fingerprint : dict
+        Dictionary containing run_fingerprint information, must include "chunk_period"
+    max_memory_days : float, optional
+        Maximum memory days for clipping. Default is None.
+
+    Returns
+    -------
+    dict
+        Dictionary with top-level keys "values" and "strings", each containing
+        a dictionary mapping parameter names to their respective lists:
+        - "values": dict mapping parameter names to lists of float64 values
+        - "strings": dict mapping parameter names to lists of 18 decimal place fixed point strings
+    """
+    result = {"values": {}, "strings": {}}
+    memory_days = None  # Keep track of computed memory_days for reuse
+    if max_memory_days is None:
+        max_memory_days = run_fingerprint.get("max_memory_days", 365)
+
+    if "logit_lamb" in params:
+        memory_days = lamb_to_memory_days_clipped(
+            calc_lamb(params),
+            chunk_period=run_fingerprint["chunk_period"],
+            max_memory_days=max_memory_days,
+        )
+
+        lamb = calc_lamb(params)
+        lamb_list = _to_float64_list(lamb)
+        result["values"]["lamb"] = lamb_list
+        result["strings"]["lamb"] = _to_bd18_string_list(lamb_list)
+
+        if "log_k" in params:
+            k = 2 ** params["log_k"] * memory_days
+            k_list = _to_float64_list(k)
+            result["values"]["k"] = k_list
+            result["strings"]["k"] = _to_bd18_string_list(k_list)
+        elif "k" in params:
+            k = params["k"] * memory_days
+            k_list = _to_float64_list(k)
+            result["values"]["k"] = k_list
+            result["strings"]["k"] = _to_bd18_string_list(k_list)
+
+    if "raw_exponents" in params:
+        exponents = squareplus(params["raw_exponents"])
+        exponents_list = _to_float64_list(exponents)
+        result["values"]["exponents"] = exponents_list
+        result["strings"]["exponents"] = _to_bd18_string_list(exponents_list)
+
+    if "raw_width" in params:
+        width = 2 ** params["raw_width"]
+        width_list = _to_float64_list(width)
+        result["values"]["width"] = width_list
+        result["strings"]["width"] = _to_bd18_string_list(width_list)
+
+    if "log_amplitude" in params:
+        # Recompute memory_days if not already computed
+        if memory_days is None:
+            memory_days = lamb_to_memory_days_clipped(
+                calc_lamb(params),
+                chunk_period=run_fingerprint["chunk_period"],
+                max_memory_days=max_memory_days,
+            )
+        amplitude = (2 ** params["log_amplitude"]) * memory_days
+        amplitude_list = _to_float64_list(amplitude)
+        result["values"]["amplitude"] = amplitude_list
+        result["strings"]["amplitude"] = _to_bd18_string_list(amplitude_list)
+
+    if "logit_pre_exp_scaling" in params:
+        pre_exp_scaling = jnp.exp(params["logit_pre_exp_scaling"]) / (
+            1 + jnp.exp(params["logit_pre_exp_scaling"])
+        )
+        pes_list = _to_float64_list(pre_exp_scaling)
+        result["values"]["pre_exp_scaling"] = pes_list
+        result["strings"]["pre_exp_scaling"] = _to_bd18_string_list(pes_list)
+
+    if "raw_pre_exp_scaling" in params:
+        pre_exp_scaling = 2 ** params["raw_pre_exp_scaling"]
+        pes_list = _to_float64_list(pre_exp_scaling)
+        result["values"]["pre_exp_scaling"] = pes_list
+        result["strings"]["pre_exp_scaling"] = _to_bd18_string_list(pes_list)
+
+    return result
+
+    # print("-" * 80)
+    # print("final readouts")
+    # for readout in result["readouts"]:
+    #     print(
+    #         f"{readout}: { jnp.array_str(result['readouts'][readout][-1], precision=16, suppress_small=False)}"
+    #     )
+    # print("-" * 80)
+    # print("final weights")
+    # print(
+    #     f"{jnp.array_str(result['weights'][-1], precision=16, suppress_small=False)}"
+    # )
+    # print("-" * 80)
+    # print("final prices")
+    # print(
+    #     f"{jnp.array_str(result['prices'][-1], precision=16, suppress_small=False)}"
+    # )
+    # print("=" * 80)

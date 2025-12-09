@@ -319,6 +319,7 @@ class GyroscopePool(AbstractPool):
         arb_thresh_array: jnp.ndarray,
         arb_fees_array: jnp.ndarray,
         trade_array: jnp.ndarray,
+        lp_supply_array: jnp.ndarray = None,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         # Gyroscope ECLP pools are only defined for 2 assets

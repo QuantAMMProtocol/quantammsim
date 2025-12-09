@@ -10,6 +10,7 @@ from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
 from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import (
     MeanReversionChannelPool,
 )
+from quantammsim.pools.G3M.quantamm.triple_threat_mean_reversion_channel_pool import TripleThreatMeanReversionChannelPool
 from quantammsim.pools.G3M.quantamm.difference_momentum_pool import DifferenceMomentumPool
 from quantammsim.pools.G3M.quantamm.index_market_cap_pool import IndexMarketCapPool
 from quantammsim.pools.G3M.quantamm.hodling_index_pool import HodlingIndexPool
@@ -138,6 +139,8 @@ def create_pool(rule):
         base_pool = PowerChannelPool()
     elif base_rule == "mean_reversion_channel":
         base_pool = MeanReversionChannelPool()
+    elif base_rule == "triple_threat_mean_reversion_channel":
+        base_pool = TripleThreatMeanReversionChannelPool()
     elif base_rule == "difference_momentum":
         base_pool = DifferenceMomentumPool()
     elif base_rule == "index_market_cap":
