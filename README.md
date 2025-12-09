@@ -76,15 +76,28 @@
 
 It is recommended to install quantammsim in a virtual environment:
 
+**Using venv:**
+
 ```bash
 # Create and activate virtual environment
 python -m venv venv
+
 # On Windows:
 .\venv\Scripts\activate
 # On macOS/Linux:
 source venv/bin/activate
+```
 
-# Install package
+**Alternatively, using Conda:**
+
+```bash
+conda create -n qsim python=3.10
+conda activate qsim
+```
+
+**Install package:**
+
+```bash
 git clone https://github.com/QuantAMMProtocol/quantammsim.git
 cd quantammsim
 pip install -e .
