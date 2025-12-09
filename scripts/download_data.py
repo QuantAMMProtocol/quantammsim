@@ -1,6 +1,5 @@
 import os
 import hashlib
-import gdown
 import zipfile
 import argparse
 from pathlib import Path
