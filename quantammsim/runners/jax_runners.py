@@ -452,8 +452,8 @@ def train_on_historic_data(
             if step % iterations_per_print == 0:
                 if verbose:
                     print(step, "Objective: ", objective_value)
-                    print(step, "train_objective", train_objective)
-                    print(step, "test_objective", test_objective)
+                    print(step, "train (returns over hodl)", train_objective)
+                    print(step, "test (returns over hodl)", test_objective)
                     print(step, "local_learning_rate", local_learning_rate)
                 save_multi_params(
                     deepcopy(run_fingerprint),
