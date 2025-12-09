@@ -115,12 +115,12 @@ For gradient-based optimization:
 
     run_fingerprint["optimisation_settings"].update({
         "method": "gradient_descent",
-        "optimiser": "sgd",
+        "optimiser": "adam",       # Optimizer type 
         "base_lr": 0.01,           # Learning rate
-        "batch_size": 16,         # Training batch size
+        "batch_size": 16,          # Training batch size
         "n_parameter_sets": 4,     # Number of parameter sets to train in parallel
         "n_iterations": 10000,     # Total iterations
-        "decay_lr_plateau": 200,    # Iterations of no improvement before decay
+        "decay_lr_plateau": 200,   # Iterations of no improvement before decay
         "decay_lr_ratio": 0.8,     # Learning rate decay on plateau
     })
 
@@ -130,7 +130,7 @@ For gradient-based optimization:
 
     result = train_on_historic_data(
         run_fingerprint,
-        iterations_per_print=100,   # Progress update frequency
+        iterations_per_print=100,  # Progress update frequency
         verbose=True               # Detailed logging
     )
 
@@ -195,10 +195,10 @@ The simulator provides extensive parameter configuration options through the run
 
 .. code-block:: python
 
-        "bout_offset": 24 * 60 * 7,       # Training window offset (in minutes)
-        "maximum_change": 3e-4,           # Max weight change per update
-        "chunk_period": 60,               # Update frequency in minutes
-        "weight_interpolation_period": 60  # Weight update frequency
+        "bout_offset": 24 * 60 * 7,         # Training window offset (in minutes)
+        "maximum_change": 3e-4,             # Max weight change per update
+        "chunk_period": 1440,               # Strategy update frequency in minutes (1 day)
+        "weight_interpolation_period": 1440 # Weight update frequency (1 day)
     })
 
 Advanced parameters include:
