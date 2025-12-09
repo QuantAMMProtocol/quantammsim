@@ -67,20 +67,27 @@ Or if you are using Conda:
 Data Files
 ----------
 
-The package includes optional but recommended data files for simulation and testing.
+The package can download data files for simulation and testing.
 To download these files, navigate to the scripts directory first:
 
 .. code-block:: bash
 
    cd scripts
-   python download_data.py
+   python download_data.py <tickers>
+
+
+For example:
+
+.. code-block:: bash
+
+   cd scripts
+   python download_data.py BTC ETH USDC
+
 
 .. note::
-   The data download is approximately 1.6GB. The script will automatically:
+   The script will automatically:
    
    * Download required files
    * Verify file integrity
    * Extract contents to the appropriate location
    * Show download and extraction progress
-
-If the files are already present and valid, the script will skip the download.

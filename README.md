@@ -105,11 +105,18 @@ pip install -e .
 
 ### Optional Data Files
 
-To download recommended data files for simulation and testing (~1.6GB):
+To download data files for simulation and testing:
 
 ```bash
-python scripts/download_data.py
+python scripts/download_data.py <tickers>
 ```
+
+For example:
+
+```bash
+python scripts/download_data.py BTC ETH USDC
+```
+
 
 For detailed installation instructions, see our [documentation](https://quantammsim.readthedocs.io).
 
