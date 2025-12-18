@@ -126,12 +126,12 @@ def run_pool_simulation(simulationRunDto):
         constituent.marketValue
         for constituent in simulationRunDto.pool.poolConstituents
     ]
+    # Use NumPy instead of JAX for initial value computations
+    total_initial_value = float(np.sum(np.array(initial_value_per_token, dtype=float)))
 
-    total_initial_value = jnp.sum(initial_value_per_token)
+    initial_value_ratio = [float(val) / total_initial_value for val in initial_value_per_token]
 
-    initial_value_ratio = [val / total_initial_value for val in initial_value_per_token]
-
-    initial_value_log_ratio = jnp.array([np.log(val) for val in initial_value_ratio])
+    initial_value_log_ratio = np.array([np.log(val) for val in initial_value_ratio], dtype=float)
 
     update_rule = simulationRunDto.pool.updateRule.name
     update_rule_parameters = simulationRunDto.pool.updateRule.updateRuleFactors
