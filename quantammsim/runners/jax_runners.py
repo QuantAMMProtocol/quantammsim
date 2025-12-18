@@ -207,7 +207,7 @@ def train_on_historic_data(
 
     if not loaded:
         params = pool.init_parameters(
-            initial_params, run_fingerprint, n_tokens, n_parameter_sets, prices=data_dict["prices"], noise="spectral"
+            initial_params, run_fingerprint, n_tokens, n_parameter_sets, prices=data_dict["prices"], noise=run_fingerprint["optimisation_settings"]["initialisation_type"]
         )
         offset = 0
     else:

@@ -28,6 +28,7 @@ run_fingerprint_defaults = {
         "clip_norm": 10.0,
         "lr_schedule_type": "constant",
         "warmup_steps": 100,
+        "initialisation_type": "gaussian",
     },
     "initial_memory_length": 10.0,
     "initial_memory_length_delta": 0.0,
