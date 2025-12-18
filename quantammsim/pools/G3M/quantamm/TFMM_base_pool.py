@@ -460,12 +460,12 @@ class TFMMBasePool(AbstractPool):
                 n_assets,
             ),
         )
-        raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
-        initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
+        # raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
+        # initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
 
         weights = self.fine_weight_output(
-            raw_weight_outputs_cpu,
-            initial_weights_cpu,
+            raw_weight_outputs,
+            initial_weights,
             run_fingerprint,
             params,
         )
@@ -748,10 +748,10 @@ class TFMMBasePool(AbstractPool):
         if initial_weights is None:
             initial_weights = self.calculate_initial_weights(params)
 
-        raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
-        initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
+        # raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
+        # initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
 
-        actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
+        actual_starts, scaled_diffs, target_weights = _jax_calc_coarse_weights(
             raw_weight_outputs,
             initial_weights,
             minimum_weight,
@@ -763,4 +763,4 @@ class TFMMBasePool(AbstractPool):
             False,
         )
 
-        return weights
+        return target_weights

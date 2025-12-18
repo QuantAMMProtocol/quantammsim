@@ -261,7 +261,7 @@ def calc_fine_weight_output(
     if minimum_weight == None:
         minimum_weight = 0.1 / n_assets
 
-    actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
+    actual_starts, scaled_diffs, target_weights = _jax_calc_coarse_weights(
         raw_weight_outputs,
         initial_weights,
         minimum_weight,
@@ -275,12 +275,12 @@ def calc_fine_weight_output(
         ste_min_max_weight,
     )
 
-    scaled_diffs_gpu = device_put(scaled_diffs_cpu, GPU_DEVICE)
-    actual_starts_gpu = device_put(actual_starts_cpu, GPU_DEVICE)
+    # scaled_diffs_gpu = device_put(scaled_diffs_cpu, GPU_DEVICE)
+    # actual_starts_gpu = device_put(actual_starts_cpu, GPU_DEVICE)
 
     weights = _jax_fine_weights_from_actual_starts_and_diffs(
-        actual_starts_gpu,
-        scaled_diffs_gpu,
+        actual_starts,
+        scaled_diffs,
         initial_weights,
         interpol_num=weight_interpolation_period + 1,
         num=chunk_period + 1,
