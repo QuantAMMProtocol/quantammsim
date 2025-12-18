@@ -235,6 +235,7 @@ class MeanReversionChannelPool(MomentumPool):
         n_assets: int,
         n_parameter_sets: int = 1,
         noise: str = "gaussian",
+        prices: Optional[jnp.ndarray] = None,
     ) -> Dict[str, Any]:
         """
         Initialize parameters for a power channel pool.
@@ -311,28 +312,175 @@ class MeanReversionChannelPool(MomentumPool):
         initial_weights_logits = process_initial_values(
             initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets, force_scalar=False
         )
-        log_k = np.log2(
-            process_initial_values(
-                initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets, force_scalar=run_fingerprint["optimisation_settings"]["force_scalar"]
+
+        # If using spectral initialization, we spread memory and scale k differently
+        if noise == "spectral" and n_parameter_sets > 1:
+            # 0. Calculate Volatility if prices are available
+            volatility = 1.0 # Default fallback
+            if prices is not None:
+                # Subsample prices to match the chunk period (timeframe of the strategy)
+                chunk_period = run_fingerprint["chunk_period"]
+                chunked_prices = prices[::chunk_period]
+                
+                # Calculate log returns on chunked data
+                log_prices = jnp.log(chunked_prices + 1e-12)
+                returns = jnp.diff(log_prices, axis=0)
+                # Volatility per asset
+                volatility = jnp.std(returns, axis=0)
+                # Ensure volatility is at least something small to avoid log(0)
+                volatility = jnp.maximum(volatility, 1e-6)
+                
+            # 1. Spread Memory Logarithmically (Filter Bank)
+            min_mem = run_fingerprint["chunk_period"] / 1440.0  # Min memory is 1 chunk
+            max_mem = run_fingerprint["max_memory_days"]
+            # Generate log-spaced memory days for each parameter set (head)
+            memory_spread = np.geomspace(min_mem, max_mem, n_parameter_sets)
+            
+            # Broadcast to assets (shape: [n_sets, n_assets])
+            initial_memory_days = np.tile(memory_spread[:, None], (1, n_assets))
+            
+            # Convert to lambda
+            initial_lamb = memory_days_to_lamb(
+                initial_memory_days,
+                run_fingerprint["chunk_period"],
             )
-        )
+            
+            # scaling factor for volatility-dependent parameters (1/sqrt(T))
+            # We assume the provided initial values are calibrated for T=1 (Daily)
+            # or simply that they need to shrink as T grows to match the smoother signal.
+            vol_scaling = 1.0 / np.sqrt(initial_memory_days)
 
-        initial_lamb = memory_days_to_lamb(
-            initial_values_dict["initial_memory_length"],
-            run_fingerprint["chunk_period"],
-        )
+            # 2. Scale Speed (k)
+            target_k = initial_values_dict["initial_k_per_day"]
+            # We scale k by 1/sqrt(T) to match signal strength decay over time.
+            k_param = target_k * vol_scaling
+            log_k = np.log2(k_param)
+            
+            # 3. Scale Width
+            # Width is compared to signal. Signal ~ 1/sqrt(T).
+            # So Width should scale as 1/sqrt(T).
+            # AND Width should scale with Volatility.
+            
+            base_width_raw = initial_values_dict["initial_raw_width"]
 
-        logit_lamb_np = np.log(initial_lamb / (1.0 - initial_lamb))
-        if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            logit_lamb = np.array([[logit_lamb_np]] * n_parameter_sets)
+            # If prices are provided, we use volatility as the base width
+            if prices is not None:
+                 # Increase safety factor to 4.0 sigma to ensure stability (1/N weights) initially
+                 safety_factor = 4.0
+                 log_vol = np.log2(volatility * safety_factor)
+                 # Broadcast log_vol to (n_sets, n_assets)
+                 log_vol_broadcast = np.tile(log_vol, (n_parameter_sets, 1))
+                 
+                 raw_width = log_vol_broadcast + base_width_raw + np.log2(vol_scaling)
+            else:
+                 # Fallback: assume base_width_raw is the full width
+                 raw_width = base_width_raw + np.log2(vol_scaling)
+                 if np.ndim(raw_width) == 0:
+                      raw_width = np.tile(raw_width, (n_parameter_sets, n_assets))
+                 elif np.ndim(raw_width) == 1:
+                      raw_width = np.tile(raw_width, (n_parameter_sets, 1))
+
+            # 4. Scale Pre-Exp Scaling
+            # Same logic as Width. Normalizes the signal.
+            base_scaling_val = initial_values_dict.get("initial_pre_exp_scaling", 0.5)
+            
+            if prices is not None:
+                # Target Scaling = Volatility * base_scaling_val
+                target_scaling = volatility * base_scaling_val
+                # Apply 1/sqrt(T) scaling
+                target_scaling = target_scaling * vol_scaling
+                # Broadcast
+                # volatility is (n_assets,), vol_scaling is (n_sets, n_assets)
+                # We need (n_sets, n_assets)
+                target_scaling = np.tile(volatility, (n_parameter_sets, 1)) * base_scaling_val * vol_scaling
+                raw_pre_exp_scaling = np.log2(target_scaling)
+            else:
+                scaled_scaling_val = base_scaling_val * vol_scaling
+                raw_pre_exp_scaling = np.log2(scaled_scaling_val)
+
+            # 5. Scale Amplitude
+            base_amp_log = initial_values_dict["initial_log_amplitude"]
+            
+            # To achieve a "Do Nothing" baseline structurally, we suppress the mean-reversion component.
+            # We subtract a constant (e.g. 3.0 -> factor of 8) to make the channel reaction weak by default.
+            # This relies on the "Trend" component (outside channel) to drive major moves,
+            # which is gated by the wide channel width.
+            amplitude_suppression = 3.0
+            log_amplitude = base_amp_log + np.log2(vol_scaling) - amplitude_suppression
+            
+            if np.ndim(log_amplitude) == 0:
+                 log_amplitude = np.tile(log_amplitude, (n_parameter_sets, n_assets))
+            
+            # 6. Exponents (Constant)
+            base_exp = initial_values_dict["initial_raw_exponents"]
+            raw_exponents = np.tile(base_exp, (n_parameter_sets, n_assets))
+            
         else:
-            logit_lamb = np.array([[logit_lamb_np] * n_assets] * n_parameter_sets)
+            # Standard initialization
+            log_k = np.log2(
+                process_initial_values(
+                    initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets, force_scalar=run_fingerprint["optimisation_settings"]["force_scalar"]
+                )
+            )
+
+            initial_lamb = memory_days_to_lamb(
+                initial_values_dict["initial_memory_length"],
+                run_fingerprint["chunk_period"],
+            )
+            # Broadcast standard lamb
+            if run_fingerprint["optimisation_settings"]["force_scalar"]:
+                initial_lamb = np.array([[initial_lamb]] * n_parameter_sets)
+            else:
+                initial_lamb = np.array([[initial_lamb] * n_assets] * n_parameter_sets)
+            
+            # Standard params processing
+            raw_pre_exp_scaling_np = np.log2(
+                initial_values_dict["initial_pre_exp_scaling"]
+            )
+            if run_fingerprint["optimisation_settings"]["force_scalar"]:
+                raw_pre_exp_scaling = np.array([[raw_pre_exp_scaling_np]] * n_parameter_sets)
+            else:
+                raw_pre_exp_scaling = np.array(
+                    [[raw_pre_exp_scaling_np] * n_assets] * n_parameter_sets
+                )
+
+            if run_fingerprint["optimisation_settings"]["force_scalar"]:
+                log_amplitude = np.array([[initial_values_dict["initial_log_amplitude"]]] * n_parameter_sets)
+            else:
+                log_amplitude = np.array(
+                    [[initial_values_dict["initial_log_amplitude"]] * n_assets]
+                    * n_parameter_sets
+                )
+
+            if run_fingerprint["optimisation_settings"]["force_scalar"]:
+                raw_width = np.array([[initial_values_dict["initial_raw_width"]]] * n_parameter_sets)
+            else:
+                raw_width = np.array(
+                    [[initial_values_dict["initial_raw_width"]] * n_assets] * n_parameter_sets
+                )
+
+            if run_fingerprint["optimisation_settings"]["force_scalar"]:
+                raw_exponents = np.array([[initial_values_dict["initial_raw_exponents"]]] * n_parameter_sets)
+            else:
+                raw_exponents = np.array(
+                    [[initial_values_dict["initial_raw_exponents"]] * n_assets]
+                    * n_parameter_sets
+                )
+
+        logit_lamb = np.log(initial_lamb / (1.0 - initial_lamb))
 
         # lamb delta is the difference in lamb needed for
         # lamb + delta lamb to give a final memory length
         # of  initial_memory_length + initial_memory_length_delta
+        # Note: For spectral init, we keep delta_lamb at 0 or scaled? 
+        # Standard approach: keep it based on the input delta, but relative to the new spread lamb?
+        # Simpler to just zero it or use the standard logic which might shift the spread uniformly.
+        # Let's stick to standard logic but using the potentially spread initial_lamb.
+        
+        # Calculate target 'plus delta' memory
+        # If spectral, this delta shift applies to the whole bank.
         initial_lamb_plus_delta_lamb = memory_days_to_lamb(
-            initial_values_dict["initial_memory_length"]
+            lamb_to_memory_days_clipped(initial_lamb, run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"])
             + initial_values_dict["initial_memory_length_delta"],
             run_fingerprint["chunk_period"],
         )
@@ -340,46 +488,13 @@ class MeanReversionChannelPool(MomentumPool):
         logit_lamb_plus_delta_lamb_np = np.log(
             initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
         )
-        logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np
-        if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            logit_delta_lamb = np.array([[logit_delta_lamb_np]] * n_parameter_sets)
-        else:
-            logit_delta_lamb = np.array(
-                [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
-            )
+        logit_delta_lamb = logit_lamb_plus_delta_lamb_np - logit_lamb # broadcasting works
+        
+        # Force scalar if needed (though spectral init implies non-scalar across parameter sets)
+        if run_fingerprint["optimisation_settings"]["force_scalar"] and noise != "spectral":
+             logit_lamb = logit_lamb[:, 0:1] # Keep shape (n_sets, 1)
+             logit_delta_lamb = logit_delta_lamb[:, 0:1]
 
-        raw_pre_exp_scaling_np = np.log2(
-            initial_values_dict["initial_pre_exp_scaling"]
-        )
-        if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            raw_pre_exp_scaling = np.array([[raw_pre_exp_scaling_np]] * n_parameter_sets)
-        else:
-            raw_pre_exp_scaling = np.array(
-                [[raw_pre_exp_scaling_np] * n_assets] * n_parameter_sets
-            )
-
-        if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            log_amplitude = np.array([[initial_values_dict["initial_log_amplitude"]]] * n_parameter_sets)
-        else:
-            log_amplitude = np.array(
-                [[initial_values_dict["initial_log_amplitude"]] * n_assets]
-                * n_parameter_sets
-            )
-
-        if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            raw_width = np.array([[initial_values_dict["initial_raw_width"]]] * n_parameter_sets)
-        else:
-            raw_width = np.array(
-                [[initial_values_dict["initial_raw_width"]] * n_assets] * n_parameter_sets
-            )
-
-        if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            raw_exponents = np.array([[initial_values_dict["initial_raw_exponents"]]] * n_parameter_sets)
-        else:
-            raw_exponents = np.array(
-                [[initial_values_dict["initial_raw_exponents"]] * n_assets]
-                * n_parameter_sets
-            )
         params = {
             "log_k": log_k,
             "logit_lamb": logit_lamb,
@@ -392,7 +507,12 @@ class MeanReversionChannelPool(MomentumPool):
             "subsidary_params": [],
         }
 
-        params = self.add_noise(params, noise, n_parameter_sets)
+        # Apply noise (jitter) on top of the structured initialization
+        # Note: If noise="spectral", we still want the random jitter from "gaussian" logic?
+        # The add_noise method likely handles "gaussian" string. 
+        # We can pass "gaussian" to add_noise if noise=="spectral" to get the jitter.
+        noise_type = "gaussian" if noise == "spectral" else noise
+        params = self.add_noise(params, noise_type, n_parameter_sets)
         return params
 
     @classmethod

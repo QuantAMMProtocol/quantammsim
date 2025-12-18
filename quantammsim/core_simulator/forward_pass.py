@@ -584,12 +584,12 @@ def forward_pass(
             "value": value_over_time,
             "prices": local_prices,
             "reserves": reserves,
-            # "weights": pool.calculate_weights(
-            #     params, static_dict, prices, start_index, additional_oracle_input=None
-            # ),
-            # "raw_weight_outputs": pool.calculate_raw_weights_outputs(
-            #     params, static_dict, prices, additional_oracle_input=None
-            # ),
+            "weights": pool.calculate_weights(
+                params, static_dict, prices, start_index, additional_oracle_input=None
+            ) if hasattr(pool, "calculate_weights") else None,
+            "raw_weight_outputs": pool.calculate_raw_weights_outputs(
+                params, static_dict, prices, additional_oracle_input=None
+            ) if hasattr(pool, "calculate_raw_weights_outputs") else None,
         }
     return _calculate_return_value(
         return_val,

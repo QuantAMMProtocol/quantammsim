@@ -167,6 +167,33 @@ def batched_objective_with_hessian_factory(
     return batched_objective_with_hessian
 
 
+def batched_objective_with_regularisation_factory(
+    batched_partial_training_step, regularisation_step
+):
+    """Creates an objective function that combines batched outputs with a custom regularization term.
+
+    Parameters
+    ----------
+    batched_partial_training_step : callable
+        A vectorized function that can process batches of inputs in parallel.
+    regularisation_step : callable
+        A function that takes params and start_indexes and returns a scalar regularization term.
+
+    Returns
+    -------
+    callable
+        A JIT-compiled objective function.
+    """
+
+    @partial(jit, static_argnums=(2,))
+    def batched_objective_with_regularisation(params, start_indexes, weighting=1e-4):
+        output = batched_partial_training_step(params, start_indexes)
+        reg_term = regularisation_step(params, start_indexes)
+        return jnp.mean(output) + weighting * reg_term
+
+    return batched_objective_with_regularisation
+
+
 def update_factory(batched_objective):
     """Creates an update function for gradient-based optimization.
 
@@ -277,12 +304,14 @@ def update_from_partial_training_step_factory(
     partial_training_step,
     train_on_hessian_trace=False,
     partial_fixed_training_step=None,
+    regularisation_step=None,
+    regularisation_weight=1e-4,
 ):
     """Creates a complete update function from a partial training step.
 
     This is a high-level factory function that combines the other factories to create
-    a complete update function. It handles both regular training and training with
-    Hessian trace regularization.
+    a complete update function. It handles regular training, training with
+    Hessian trace regularization, or custom regularization.
 
     Parameters
     ----------
@@ -293,12 +322,15 @@ def update_from_partial_training_step_factory(
     partial_fixed_training_step : callable, optional
         The function used to compute Hessian trace when train_on_hessian_trace is True.
         Required if train_on_hessian_trace is True.
+    regularisation_step : callable, optional
+        A function to compute a custom regularization term.
+    regularisation_weight : float, optional
+        Weighting for the regularization term, default 1e-4.
 
     Returns
     -------
     callable
-        A JIT-compiled update function that implements the complete training step,
-        either with or without Hessian regularization.
+        A JIT-compiled update function.
     """
     batched_partial_training_step = batched_partial_training_step_factory(
         partial_training_step
@@ -309,6 +341,15 @@ def update_from_partial_training_step_factory(
             batched_partial_training_step, partial_fixed_training_step
         )
         update = update_with_hessian_factory(batched_objective_with_hessian)
+    elif regularisation_step is not None:
+        batched_objective_with_reg = batched_objective_with_regularisation_factory(
+            batched_partial_training_step, regularisation_step
+        )
+        # Fix the weighting
+        batched_objective_fixed = partial(
+            batched_objective_with_reg, weighting=regularisation_weight
+        )
+        update = update_factory(batched_objective_fixed)
     else:
         batched_objective = batched_objective_factory(batched_partial_training_step)
         update = update_factory(batched_objective)
@@ -471,6 +512,8 @@ def update_from_partial_training_step_factory_with_optax(
     optimizer,
     train_on_hessian_trace=False,
     partial_fixed_training_step=None,
+    regularisation_step=None,
+    regularisation_weight=1e-4,
 ):
     """Creates a complete update function from a partial training step using optax optimizer.
 
@@ -488,6 +531,10 @@ def update_from_partial_training_step_factory_with_optax(
     partial_fixed_training_step : callable, optional
         The function used to compute Hessian trace when train_on_hessian_trace is True.
         Required if train_on_hessian_trace is True.
+    regularisation_step : callable, optional
+        A function to compute a custom regularization term.
+    regularisation_weight : float, optional
+        Weighting for the regularization term, default 1e-4.
 
     Returns
     -------
@@ -504,6 +551,14 @@ def update_from_partial_training_step_factory_with_optax(
             batched_partial_training_step, partial_fixed_training_step
         )
         update = update_with_hessian_factory_with_optax(batched_objective_with_hessian, optimizer)
+    elif regularisation_step is not None:
+        batched_objective_with_reg = batched_objective_with_regularisation_factory(
+            batched_partial_training_step, regularisation_step
+        )
+        batched_objective_fixed = partial(
+            batched_objective_with_reg, weighting=regularisation_weight
+        )
+        update = update_factory_with_optax(batched_objective_fixed, optimizer)
     else:
         batched_objective = batched_objective_factory(batched_partial_training_step)
         update = update_factory_with_optax(batched_objective, optimizer)
@@ -533,11 +588,15 @@ def create_opt_state_in_axes_dict(opt_state):
     return tree_map(_create_axes_for_leaf, opt_state)
 
 
-def _create_base_optimizer(optimizer_type, learning_rate):
+def _create_base_optimizer(settings, learning_rate):
     """Create a base optimizer with the given learning rate."""
+    optimizer_type = settings["optimiser"]
     # note that learning_rate can be a float or a schedule
     if optimizer_type == "adam":
         return optax.adam(learning_rate=learning_rate)
+    elif optimizer_type == "adamw":
+        weight_decay = settings.get("weight_decay", 1e-4)
+        return optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
     elif optimizer_type == "sgd":
         return optax.sgd(learning_rate=learning_rate)
     else:
@@ -592,7 +651,7 @@ def create_optimizer_chain(run_fingerprint):
     base_lr = settings["base_lr"]
 
     # Create base optimizer with lr=base_lr (will be scaled by schedule)
-    base_optimizer = _create_base_optimizer(settings["optimiser"], base_lr)
+    base_optimizer = _create_base_optimizer(settings, base_lr)
 
     # Create vanilla LR schedule
     lr_schedule = _create_lr_schedule(settings)

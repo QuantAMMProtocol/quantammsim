@@ -108,11 +108,12 @@ class AbstractPool(ABC):
         n_assets: int,
         n_parameter_sets: int = 1,
         noise: str = "gaussian",
+        prices: Optional[jnp.ndarray] = None,
     ) -> Dict[str, Any]:
         """Initialize pool parameters and apply any extensions from mixins."""
         # Get base parameters
         params = self.init_base_parameters(
-            initial_values_dict, run_fingerprint, n_assets, n_parameter_sets, noise
+            initial_values_dict, run_fingerprint, n_assets, n_parameter_sets, noise, prices=prices
         )
 
         # Apply any parameter extensions from mixins

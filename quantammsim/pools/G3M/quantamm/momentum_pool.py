@@ -224,6 +224,7 @@ class MomentumPool(TFMMBasePool):
         n_assets: int,
         n_parameter_sets: int = 1,
         noise: str = "gaussian",
+        prices: Optional[jnp.ndarray] = None,
     ) -> Dict[str, Any]:
         """
         Initialize parameters for the momentum pool.
@@ -297,28 +298,86 @@ class MomentumPool(TFMMBasePool):
         initial_weights_logits = process_initial_values(
             initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets, force_scalar=False
         )
-        log_k = np.log2(
-            process_initial_values(
-                initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets, force_scalar=run_fingerprint["optimisation_settings"]["force_scalar"]
-            )
-        )
 
-        initial_lamb = memory_days_to_lamb(
-            initial_values_dict["initial_memory_length"],
-            run_fingerprint["chunk_period"],
-        )
+        if noise == "spectral" and n_parameter_sets > 1:
+            # 0. Calculate Volatility if prices are available
+            volatility = 1.0 
+            if prices is not None:
+                # Subsample prices to match the chunk period
+                chunk_period = run_fingerprint["chunk_period"]
+                chunked_prices = prices[::chunk_period]
+                
+                log_prices = jnp.log(chunked_prices + 1e-12)
+                returns = jnp.diff(log_prices, axis=0)
+                volatility = jnp.std(returns, axis=0)
+                volatility = jnp.maximum(volatility, 1e-6)
+
+            # 1. Spread Memory Logarithmically (Filter Bank)
+            min_mem = run_fingerprint["chunk_period"] / 1440.0
+            max_mem = run_fingerprint["max_memory_days"]
+            memory_spread = np.geomspace(min_mem, max_mem, n_parameter_sets)
+            
+            # Broadcast to assets
+            initial_memory_days = np.tile(memory_spread[:, None], (1, n_assets))
+            
+            initial_lamb = memory_days_to_lamb(
+                initial_memory_days,
+                run_fingerprint["chunk_period"],
+            )
+            
+            # 2. Scale Speed (k) by 1/sqrt(T)
+            # We REMOVE the 1/Volatility scaling here because it makes the strategy too aggressive 
+            # on low-vol assets (amplifying noise).
+            # We keep 1/sqrt(T) to normalize for time-horizon signal strength.
+            target_k = initial_values_dict["initial_k_per_day"]
+            
+            # Base scaling from memory: 1/sqrt(T)
+            k_param = target_k / np.sqrt(initial_memory_days)
+            
+            # Note: Previously we scaled by 1/vol, but this leads to "crazy" bang-bang behavior.
+            # By removing it, we allow low-volatility assets to have smaller weight updates,
+            # contributing to the "1/N stability" the user prefers.
+                
+            log_k = np.log2(k_param)
+            
+        else:
+            log_k = np.log2(
+                process_initial_values(
+                    initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets, force_scalar=run_fingerprint["optimisation_settings"]["force_scalar"]
+                )
+            )
+
+            initial_lamb = memory_days_to_lamb(
+                initial_values_dict["initial_memory_length"],
+                run_fingerprint["chunk_period"],
+            )
+            if run_fingerprint["optimisation_settings"]["force_scalar"]:
+                initial_lamb = np.array([[initial_lamb]] * n_parameter_sets)
+            else:
+                initial_lamb = np.array([[initial_lamb] * n_assets] * n_parameter_sets)
 
         logit_lamb_np = np.log(initial_lamb / (1.0 - initial_lamb))
-        if run_fingerprint["optimisation_settings"]["force_scalar"]:
+        if run_fingerprint["optimisation_settings"]["force_scalar"] and noise != "spectral":
             logit_lamb = np.array([[logit_lamb_np]] * n_parameter_sets)
-        else:
-            logit_lamb = np.array([[logit_lamb_np] * n_assets] * n_parameter_sets)
+        # else:
+        #     logit_lamb = np.array([[logit_lamb_np] * n_assets] * n_parameter_sets)
+        # The else block above logic was:
+        # if force_scalar: ...
+        # else: array([[logit_lamb_np] * n_assets]...)
+        # But initial_lamb is ALREADY broadcasted in the else block of "if noise=='spectral'".
+        # In spectral block, it is (n_sets, n_assets).
+        # So we just need logit_lamb = log(initial_lamb/...).
+        logit_lamb = np.log(initial_lamb / (1.0 - initial_lamb))
+        
+        # Force scalar only if NOT spectral (spectral requires diversity)
+        if run_fingerprint["optimisation_settings"]["force_scalar"] and noise != "spectral":
+             logit_lamb = logit_lamb[:, 0:1]
 
         # lamb delta is the difference in lamb needed for
         # lamb + delta lamb to give a final memory length
         # of  initial_memory_length + initial_memory_length_delta
         initial_lamb_plus_delta_lamb = memory_days_to_lamb(
-            initial_values_dict["initial_memory_length"]
+            lamb_to_memory_days_clipped(initial_lamb, run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"])
             + initial_values_dict["initial_memory_length_delta"],
             run_fingerprint["chunk_period"],
         )
@@ -327,13 +386,11 @@ class MomentumPool(TFMMBasePool):
             initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
         )
         logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np
-        logit_delta_lamb = np.array(
-            [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
-        )
-        if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            logit_delta_lamb = np.array(
-                [[logit_delta_lamb_np]] * n_parameter_sets
-            )
+        logit_delta_lamb = logit_delta_lamb_np # Already correct shape due to broadcasting
+        
+        if run_fingerprint["optimisation_settings"]["force_scalar"] and noise != "spectral":
+             logit_delta_lamb = logit_delta_lamb[:, 0:1]
+
         params = {
             "log_k": log_k,
             "logit_lamb": logit_lamb,

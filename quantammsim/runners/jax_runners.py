@@ -202,7 +202,7 @@ def train_on_historic_data(
 
     if not loaded:
         params = pool.init_parameters(
-            initial_params, run_fingerprint, n_tokens, n_parameter_sets
+            initial_params, run_fingerprint, n_tokens, n_parameter_sets, prices=data_dict["prices"], noise="spectral"
         )
         offset = 0
     else:
@@ -318,6 +318,41 @@ def train_on_historic_data(
         partial_training_step, start_index=(data_dict["start_idx"], 0)
     )
 
+    # Setup regularization if requested
+    regularisation_step = None
+    regularisation_weight = run_fingerprint["optimisation_settings"].get("regularisation_weight", 1e-4)
+    regularisation_type = run_fingerprint["optimisation_settings"].get("regularisation_type", None)
+
+    if regularisation_type == "entropy":
+        entropy_static_dict = base_static_dict.copy()
+        entropy_static_dict["return_val"] = "reserves_and_values"
+        
+        # Helper to calculate negative entropy for a single sample
+        def calculate_neg_entropy_single(params, start_index):
+            # We bind dynamic inputs as None implicitly by not passing them
+            output = forward_pass(
+                params, 
+                start_index, 
+                prices=data_dict["prices"],
+                pool=pool, 
+                static_dict=Hashabledict(entropy_static_dict)
+            )
+            weights = output["weights"]
+            # Clip for numerical stability
+            w = jnp.clip(weights, 1e-10, 1.0)
+            entropy = -jnp.sum(w * jnp.log(w), axis=-1)
+            # Return negative entropy (since we minimize objective)
+            return -jnp.mean(entropy)
+
+        # Vectorize over batch (params shared, start_indexes batched)
+        batched_neg_entropy_step = jit(vmap(calculate_neg_entropy_single, in_axes=(None, 0)))
+
+        # Define the final step function that averages over batch
+        def entropy_regularisation_step_fn(params, start_indexes):
+            neg_entropies = batched_neg_entropy_step(params, start_indexes)
+            return jnp.mean(neg_entropies)
+            
+        regularisation_step = entropy_regularisation_step_fn
 
     best_train_objective = -100.0
     local_learning_rate = run_fingerprint["optimisation_settings"]["base_lr"]
@@ -330,7 +365,7 @@ def train_on_historic_data(
     min_lr = run_fingerprint["optimisation_settings"]["min_lr"]
 
     if run_fingerprint["optimisation_settings"]["method"] == "gradient_descent":
-        if run_fingerprint["optimisation_settings"]["optimiser"] == "adam":
+        if run_fingerprint["optimisation_settings"]["optimiser"] in ["adam", "adamw"]:
             import optax
 
             # Create Adam optimizer with the specified learning rate
@@ -353,6 +388,8 @@ def train_on_historic_data(
                 optimizer,
                 run_fingerprint["optimisation_settings"]["train_on_hessian_trace"],
                 partial_fixed_training_step,
+                regularisation_step=regularisation_step,
+                regularisation_weight=regularisation_weight,
             )
             update = jit(
                 vmap(
@@ -367,6 +404,8 @@ def train_on_historic_data(
                 partial_training_step,
                 run_fingerprint["optimisation_settings"]["train_on_hessian_trace"],
                 partial_fixed_training_step,
+                regularisation_step=regularisation_step,
+                regularisation_weight=regularisation_weight,
             )
 
             update = jit(
@@ -395,7 +434,7 @@ def train_on_historic_data(
                 key=random_key,
                 optimisation_settings=run_fingerprint["optimisation_settings"],
             )
-            if run_fingerprint["optimisation_settings"]["optimiser"] == "adam":
+            if run_fingerprint["optimisation_settings"]["optimiser"] in ["adam", "adamw"]:
                 # Adam update with state maintenance
                 params, objective_value, old_params, grads, opt_state = update(
                     params, start_indexes, local_learning_rate, opt_state

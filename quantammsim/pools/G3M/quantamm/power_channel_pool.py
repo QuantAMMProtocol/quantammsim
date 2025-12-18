@@ -200,6 +200,7 @@ class PowerChannelPool(MomentumPool):
         n_assets: int,
         n_parameter_sets: int = 1,
         noise: str = "gaussian",
+        prices: Optional[jnp.ndarray] = None,
     ) -> Dict[str, Any]:
         """
         Initialize parameters for a power channel pool.
@@ -275,50 +276,136 @@ class PowerChannelPool(MomentumPool):
         initial_weights_logits = process_initial_values(
             initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets, force_scalar=False
         )
-        log_k = np.log2(
-            process_initial_values(
-                initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets, force_scalar=run_fingerprint["optimisation_settings"]["force_scalar"]
+
+        if noise == "spectral" and n_parameter_sets > 1:
+            # 0. Calculate Volatility
+            volatility = 1.0 
+            if prices is not None:
+                # Subsample prices to match the chunk period
+                chunk_period = run_fingerprint["chunk_period"]
+                chunked_prices = prices[::chunk_period]
+                
+                log_prices = jnp.log(chunked_prices + 1e-12)
+                returns = jnp.diff(log_prices, axis=0)
+                volatility = jnp.std(returns, axis=0)
+                volatility = jnp.maximum(volatility, 1e-6)
+
+            # 1. Spread Memory Logarithmically (Filter Bank)
+            min_mem = run_fingerprint["chunk_period"] / 1440.0
+            max_mem = run_fingerprint["max_memory_days"]
+            memory_spread = np.geomspace(min_mem, max_mem, n_parameter_sets)
+            
+            # Broadcast to assets
+            initial_memory_days = np.tile(memory_spread[:, None], (1, n_assets))
+            
+            initial_lamb = memory_days_to_lamb(
+                initial_memory_days,
+                run_fingerprint["chunk_period"],
             )
-        )
+            
+            # 2. Scale Speed (k) by 1/sqrt(T)
+            target_k = initial_values_dict["initial_k_per_day"]
+            k_param = target_k / np.sqrt(initial_memory_days)
+            
+            # PowerChannel uses pre_exp_scaling to normalize inputs, so k doesn't need 1/vol scaling
+            # if we handle pre_exp_scaling correctly.
+            log_k = np.log2(k_param)
+            
+            # 3. Exponents (Neutral/Linear)
+            base_exp = initial_values_dict.get("initial_raw_exponents", 0.0)
+            raw_exponents = np.tile(base_exp, (n_parameter_sets, n_assets))
+            
+            # 4. Pre-Exp Scaling (Normalize Inputs)
+            # If we don't set this, inputs to power law are unnormalized (volatile).
+            # We want input / scaling ~ O(1).
+            # So scaling should be ~ Volatility.
+            # PowerChannel parameters dict key: "logit_pre_exp_scaling" (if use_pre_exp_scaling is True)
+            # We'll calculate it and add it to params if prices are available.
+            # Even if use_pre_exp_scaling is False in fingerprint, adding it to params does no harm
+            # (it just won't be used by calculate_raw_weights_outputs).
+            # But for spectral init to work well, user SHOULD enable use_pre_exp_scaling.
+            
+            if prices is not None:
+                 # Target Scaling = Volatility * base_scaling_val
+                 # We use a safety factor of 4.0 to ensure inputs are small (< 1.0) and weights stable
+                 safety_factor = 4.0
+                 base_scaling_val = initial_values_dict.get("initial_pre_exp_scaling", 0.5)
+                 
+                 vol_scaling = 1.0 / np.sqrt(initial_memory_days)
+                 # target_scaling = volatility * base_scaling_val * safety_factor * vol_scaling
+                 # We need to broadcast volatility
+                 target_scaling = np.tile(volatility, (n_parameter_sets, 1)) * base_scaling_val * safety_factor * vol_scaling
+                 
+                 # Inverse sigmoid: logit = log(y / (1-y))
+                 # Ensure target_scaling is in (0, 1)
+                 target_scaling = jnp.clip(target_scaling, 1e-6, 1.0 - 1e-6)
+                 logit_pre_exp_scaling = jnp.log(target_scaling / (1.0 - target_scaling))
+                 
+            else:
+                 # Default 0.5 -> logit 0
+                 logit_pre_exp_scaling = np.zeros((n_parameter_sets, n_assets))
 
-        initial_lamb = memory_days_to_lamb(
-            initial_values_dict["initial_memory_length"],
-            run_fingerprint["chunk_period"],
-        )
-
-        logit_lamb_np = np.log(initial_lamb / (1.0 - initial_lamb))
-        if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            logit_lamb = np.array([[logit_lamb_np]] * n_parameter_sets)
+            
+            # logit_lamb needs to be computed for spectral case
+            logit_lamb = np.log(initial_lamb / (1.0 - initial_lamb))
+            
+            # delta lamb for spectral
+            initial_lamb_plus_delta_lamb = memory_days_to_lamb(
+                lamb_to_memory_days_clipped(initial_lamb, run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"])
+                + initial_values_dict["initial_memory_length_delta"],
+                run_fingerprint["chunk_period"],
+            )
+            logit_lamb_plus_delta_lamb = np.log(
+                initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
+            )
+            logit_delta_lamb = logit_lamb_plus_delta_lamb - logit_lamb
+            
         else:
-            logit_lamb = np.array([[logit_lamb_np] * n_assets] * n_parameter_sets)
-
-        # lamb delta is the difference in lamb needed for
-        # lamb + delta lamb to give a final memory length
-        # of  initial_memory_length + initial_memory_length_delta
-        initial_lamb_plus_delta_lamb = memory_days_to_lamb(
-            initial_values_dict["initial_memory_length"]
-            + initial_values_dict["initial_memory_length_delta"],
-            run_fingerprint["chunk_period"],
-        )
-
-        logit_lamb_plus_delta_lamb_np = np.log(
-            initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
-        )
-        logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np
-        if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            logit_delta_lamb = np.array([[logit_delta_lamb_np]] * n_parameter_sets)
-        else:
-            logit_delta_lamb = np.array(
-                [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
+            log_k = np.log2(
+                process_initial_values(
+                    initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets, force_scalar=run_fingerprint["optimisation_settings"]["force_scalar"]
+                )
             )
 
-        if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            raw_exponents = np.array([[initial_values_dict["initial_raw_exponents"]]] * n_parameter_sets)
-        else:
-            raw_exponents = np.array(
-                [[initial_values_dict["initial_raw_exponents"]] * n_assets]
-                * n_parameter_sets
+            initial_lamb = memory_days_to_lamb(
+                initial_values_dict["initial_memory_length"],
+                run_fingerprint["chunk_period"],
             )
+
+            logit_lamb_np = np.log(initial_lamb / (1.0 - initial_lamb))
+            if run_fingerprint["optimisation_settings"]["force_scalar"]:
+                logit_lamb = np.array([[logit_lamb_np]] * n_parameter_sets)
+            else:
+                logit_lamb = np.array([[logit_lamb_np] * n_assets] * n_parameter_sets)
+
+            # lamb delta is the difference in lamb needed for
+            # lamb + delta lamb to give a final memory length
+            # of  initial_memory_length + initial_memory_length_delta
+            initial_lamb_plus_delta_lamb = memory_days_to_lamb(
+                initial_values_dict["initial_memory_length"]
+                + initial_values_dict["initial_memory_length_delta"],
+                run_fingerprint["chunk_period"],
+            )
+
+            logit_lamb_plus_delta_lamb_np = np.log(
+                initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
+            )
+            logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np
+            
+            if run_fingerprint["optimisation_settings"]["force_scalar"]:
+                logit_delta_lamb = np.array([[logit_delta_lamb_np]] * n_parameter_sets)
+            else:
+                logit_delta_lamb = np.array(
+                    [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
+                )
+
+            if run_fingerprint["optimisation_settings"]["force_scalar"]:
+                raw_exponents = np.array([[initial_values_dict["initial_raw_exponents"]]] * n_parameter_sets)
+            else:
+                raw_exponents = np.array(
+                    [[initial_values_dict["initial_raw_exponents"]] * n_assets]
+                    * n_parameter_sets
+                )
 
         params = {
             "log_k": log_k,
