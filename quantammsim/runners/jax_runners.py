@@ -6,6 +6,7 @@ from tqdm import tqdm
 import math
 import gc
 import os
+import hashlib, json
 from jax.tree_util import Partial
 from jax import jit, vmap, random
 from jax import clear_caches
@@ -156,7 +157,11 @@ def train_on_historic_data(
     all_sig_variations = all_sig_variations[(all_sig_variations == -1).sum(-1) == 1]
     all_sig_variations = tuple(map(tuple, all_sig_variations))
 
-    np.random.seed(0)
+    np.random.seed(int(hashlib.sha256(
+            json.dumps(run_fingerprint, sort_keys=True).encode("utf-8"),
+            usedforsecurity=False,
+        ).hexdigest(), 16) % (2**32)
+    )
 
     max_memory_days = 365.0
 
