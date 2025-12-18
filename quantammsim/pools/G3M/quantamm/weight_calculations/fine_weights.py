@@ -593,6 +593,26 @@ def _jax_calc_coarse_weight_scan_function(
 
     target_weights = target_weights + stop_gradient(corrected_weights - target_weights)
 
+    # # Straight-through estimator: exact target weights in forward pass, original normed weights for gradients
+    # # Forward pass: exact target weights as before
+    # clipped_target_weights = target_weights
+
+    # # Backward pass: use original normed weights for gradients
+    # # This allows gradient flow even when target weights are constrained
+    # target_weights = (
+    #     stop_gradient(clipped_target_weights - og_normed_update) + og_normed_update
+    # )
+
+    # # Straight-through estimator: exact target weights in forward pass, original normed weights for gradients
+    # # Forward pass: exact target weights as before
+    # clipped_target_weights = target_weights
+
+    # # Backward pass: use original normed weights for gradients
+    # # This allows gradient flow even when target weights are constrained
+    # target_weights = (
+    #     stop_gradient(clipped_target_weights - og_normed_update) + og_normed_update
+    # )
+
     diff = 1 / (interpol_num - 1) * (target_weights - prev_actual_position)
 
     # STE max-change: forward caps; backward passes gradients as if unscaled

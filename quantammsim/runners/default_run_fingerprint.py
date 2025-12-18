@@ -16,7 +16,7 @@ run_fingerprint_defaults = {
         "n_iterations": 1000,
         "n_cycles": 5,
         "sample_method": "uniform",
-        "n_parameter_sets": 3,
+        "n_parameter_sets": 4,
         "training_data_kind": "historic",
         "max_mc_version": 9,
         "include_flipped_training_data": False,

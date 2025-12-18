@@ -20,7 +20,7 @@ from quantammsim.core_simulator.forward_pass import (
     forward_pass_nograd,
     _calculate_return_value,
 )
-from quantammsim.core_simulator.windowing_utils import get_indices
+from quantammsim.core_simulator.windowing_utils import get_indices, filter_coarse_weights_by_data_indices
 
 from quantammsim.training.backpropagation import (
     update_from_partial_training_step_factory,
@@ -791,6 +791,7 @@ def do_run_on_historic_data(
     fees_df=None,
     gas_cost_df=None,
     arb_fees_df=None,
+    lp_supply_df=None,
     do_test_period=False,
     low_data_mode=False,
 ):
@@ -897,6 +898,7 @@ def do_run_on_historic_data(
         fees_df,
         gas_cost_df,
         arb_fees_df,
+        lp_supply_df,
         do_test_period=do_test_period,
     )
 
@@ -1081,6 +1083,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     fees_df=None,
     gas_cost_df=None,
     arb_fees_df=None,
+    lp_supply_df=None,
     do_test_period=False,
     low_data_mode=False,
 ):
@@ -1121,6 +1124,9 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     arb_fees_df : pd.DataFrame, optional
         Arbitrage fees to apply over time.
         Each row should contain the unix timestamp and arb fee to be charged.
+    lp_supply_df : pd.DataFrame, optional
+        LP supply over time.
+        Each row should contain the unix timestamp and LP supply.
     do_test_period : bool, optional
         Whether to run the test period (default is False).
     low_data_mode : bool, optional
@@ -1149,6 +1155,9 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
         _jax_calc_coarse_weights,
         _jax_fine_weights_from_actual_starts_and_diffs,
+    )
+    from quantammsim.pools.G3M.quantamm.quantamm_reserves import (
+        _jax_calc_quantAMM_reserves_with_dynamic_inputs,
     )
 
     # Set default values for run_fingerprint and its optimisation_settings
@@ -1191,6 +1200,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         fees_df,
         gas_cost_df,
         arb_fees_df,
+        lp_supply_df,
         do_test_period=do_test_period,
     )
 
@@ -1271,6 +1281,8 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     return_val = static_dict["return_val"]
     bout_length = static_dict["bout_length"]
 
+    # filter coarse weights using the start and end indices
+    coarse_weights = filter_coarse_weights_by_data_indices(coarse_weights, data_dict)
     # take coarse weights and convert to array of fine weights
     initial_weights = coarse_weights["weights"][0]
     # Repeat the last row of coarse weights
@@ -1305,6 +1317,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     # Check that weights[::chunk_period] matches coarse_weights["weights"]
     # Get weights at coarse timesteps
     coarse_timestep_weights = weights[::chunk_period]
+    weights = weights[:-1]
 
     # Compare with original coarse weights
     weights_match = jnp.allclose(
@@ -1312,20 +1325,93 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     )
 
     start_index = data_dict["start_idx"]
-    end_index = data_dict["end_idx"]
+    end_index = data_dict["end_idx"] - 1
 
     local_prices = data_dict["prices"][start_index:end_index]
     local_unix_values = data_dict["unix_values"][start_index:end_index]
 
-    reserves = pool.calculate_reserves_with_fees(
-        params,
-        NestedHashabledict(static_dict),
-        data_dict["prices"],
-        start_index=None,
-        local_prices=HashableArrayWrapper(local_prices),
-        weights=HashableArrayWrapper(weights),
-        initial_reserves=HashableArrayWrapper(params["initial_reserves"]),
+    # reserves = pool.calculate_reserves_with_fees(
+    #     params,
+    #     NestedHashabledict(static_dict),
+    #     data_dict["prices"],
+    #     start_index=None,
+    #     local_prices=HashableArrayWrapper(local_prices),
+    #     weights=HashableArrayWrapper(weights),
+    #     initial_reserves=HashableArrayWrapper(params["initial_reserves"]),
+    # )
+    fees_array = dynamic_inputs_dict.get("fees_array")
+    arb_thresh_array = dynamic_inputs_dict.get("gas_cost_array")
+    arb_fees_array = dynamic_inputs_dict.get("arb_fees_array")
+    trade_array = dynamic_inputs_dict.get("trades")
+    lp_supply_array = dynamic_inputs_dict.get("lp_supply_array")
+
+    if fees_array is None:
+        fees_array = jnp.array([static_dict["fees"]])
+    if arb_thresh_array is None:
+        arb_thresh_array = jnp.array([static_dict["gas_cost"]])
+    if arb_fees_array is None:
+        arb_fees_array = jnp.array([static_dict["arb_fees"]])
+
+        # initial_pool_value = run_fingerprint["initial_pool_value"]
+        # initial_value_per_token = arb_acted_upon_weights[0] * initial_pool_value
+        # initial_reserves = initial_value_per_token / arb_acted_upon_local_prices[0]
+
+    initial_reserves = params["initial_reserves"]
+
+    # any of fees_array, arb_thresh_array, arb_fees_array, trade_array, and lp_supply_array
+    # can be singletons, in which case we repeat them for the length of the bout.
+
+    # Determine the maximum leading dimension
+    max_len = bout_length - 1
+
+    if run_fingerprint["arb_frequency"] != 1:
+        max_len = max_len // run_fingerprint["arb_frequency"]
+
+    fees_array = fees_array[:max_len]
+    arb_thresh_array = arb_thresh_array[:max_len]
+    arb_thresh_array = arb_thresh_array * 0.0
+    arb_fees_array = arb_fees_array[:max_len]
+    if lp_supply_array is not None:
+        lp_supply_array = lp_supply_array[:max_len]
+    if trade_array is not None:
+        trade_array = trade_array[:max_len]
+    # Broadcast input arrays to match the maximum leading dimension.
+    # If they are singletons, this will just repeat them for the length of the bout.
+    # If they are arrays of length bout_length, this will cause no change.
+    fees_array_broadcast = jnp.broadcast_to(
+        fees_array, (max_len,) + fees_array.shape[1:]
     )
+    arb_thresh_array_broadcast = jnp.broadcast_to(
+        arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:]
+    )
+    arb_fees_array_broadcast = jnp.broadcast_to(
+        arb_fees_array, (max_len,) + arb_fees_array.shape[1:]
+    )
+    # if lp_supply_array is not provided, we set it to a constant of 1.0
+    if lp_supply_array is None:
+        lp_supply_array = jnp.array(1.0)
+
+    lp_supply_array_broadcast = jnp.broadcast_to(
+        lp_supply_array, (max_len,) + lp_supply_array.shape[1:]
+    )
+    # if we are doing trades, the trades array must be of the same length as the other arrays
+    if run_fingerprint["do_trades"]:
+        assert trade_array.shape[0] == max_len
+    reserves = _jax_calc_quantAMM_reserves_with_dynamic_inputs(
+        initial_reserves,
+        weights,
+        local_prices,
+        fees_array_broadcast,
+        arb_thresh_array_broadcast,
+        arb_fees_array_broadcast,
+        jnp.array(static_dict["all_sig_variations"]),
+        None,
+        run_fingerprint["do_trades"],
+        run_fingerprint["do_arb"],
+        run_fingerprint["noise_trader_ratio"],
+        lp_supply_array_broadcast,
+    )
+
     value_over_time = jnp.sum(jnp.multiply(reserves, local_prices), axis=-1)
     return_dict = {
         "final_reserves": reserves[-1],
@@ -1335,5 +1421,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         "reserves": reserves,
         "weights": weights,
         "raw_weight_outputs": raw_weight_outputs,
+        "data_dict": data_dict,
+        "unix_values": local_unix_values,
     }
     return return_dict

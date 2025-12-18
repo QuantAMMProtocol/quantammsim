@@ -365,6 +365,20 @@ def _jax_gradient_scan_function(carry_list, arr_in, G_inf, lamb, saturated_b):
 
 
 @jit
+def _jax_gradient_scan_function_with_readout(carry_list, arr_in, G_inf, lamb, saturated_b):
+    # ewma is carry[0]
+    # running_a is carry[1]
+    # arr_in is the array value
+    ewma = carry_list[0]
+    running_a = carry_list[1]
+    ewma = ewma + (arr_in - ewma) / G_inf
+    running_a = lamb * running_a + G_inf * (arr_in - ewma)
+    running_a = jnp.where(jnp.abs(running_a) < 1e-10, 0.0, running_a)
+    gradient = running_a / (saturated_b * ewma)
+    return [ewma, running_a], [gradient, ewma, running_a]
+
+
+@jit
 def _jax_gradient_scan_function_with_alt_ewma(
     carry_list, arr_in, G_inf, alt_G_inf, lamb, saturated_b
 ):
@@ -383,16 +397,19 @@ def _jax_gradient_scan_function_with_alt_ewma(
     return [ewma, alt_ewma, running_a], gradient
 
 
-@jit
-def _jax_gradients_at_infinity_via_scan(arr_in, lamb):
+@partial(jit, static_argnums=(2,))
+def _jax_gradients_at_infinity_via_scan(arr_in, lamb, carry_list_init=None):
     r"""Exponentialy weighted moving average of PROPORTIONAL gradients
     at infinity. ie for input p, returns (on-line estimate of) 1/p dp/dt
+    
     Parameters
     ----------
     arr_in : np.ndarray, float64
         A two-dimenisional numpy array
     lamb : np.ndarray, float64
         The decay constants
+    carry_list_init : list, optional
+        The initial carry list for the scan. If not provided, the initial carry list will be [arr_in[0], jnp.ones((n_grads,), dtype=jnp.float64)]
 
     Returns
     -------
@@ -409,13 +426,58 @@ def _jax_gradients_at_infinity_via_scan(arr_in, lamb):
     scan_fn = Partial(
         _jax_gradient_scan_function, G_inf=G_inf, lamb=lamb, saturated_b=saturated_b
     )
-
-    carry_list_init = [arr_in[0], jnp.ones((n_grads,), dtype=jnp.float64)]
+    if carry_list_init is None:
+        carry_list_init = [arr_in[0], jnp.ones((n_grads,), dtype=jnp.float64)]
     carry_list_end, gradients = scan(scan_fn, carry_list_init, arr_in[1:])
-
     gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=jnp.float64), gradients])
 
     return gradients
+
+
+@jit
+def _jax_gradients_at_infinity_via_scan_with_readout(arr_in, lamb):
+    r"""Exponentialy weighted moving average of PROPORTIONAL gradients
+    at infinity. ie for input p, returns (on-line estimate of) 1/p dp/dt.
+    Returns the gradients as well as the complete series of ewma and running a values.
+    
+    Parameters
+    ----------
+    arr_in : np.ndarray, float64
+        A two-dimenisional numpy array
+    lamb : np.ndarray, float64
+        The decay constants
+
+    Returns
+    -------
+    dict
+        A dictionary containing the gradients, ewma, and running a values, each
+        of which is a vector, same length / shape as ``arr_in``
+
+    """
+    n = arr_in.shape[0]
+    n_grads = arr_in.shape[1]
+
+    G_inf = 1.0 / (1.0 - lamb)
+    saturated_b = lamb / ((1 - lamb) ** 3)
+    # scan_fn = Partial(_jax_gradient_scan_function, {'G_inf': G_inf, 'lamb': lamb})
+    scan_fn = Partial(
+        _jax_gradient_scan_function_with_readout,
+        G_inf=G_inf,
+        lamb=lamb,
+        saturated_b=saturated_b,
+    )
+
+    carry_list_init = [arr_in[0], jnp.ones((n_grads,), dtype=jnp.float64)]
+    carry_list_end, output_list = scan(scan_fn, carry_list_init, arr_in[1:])
+
+    gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=jnp.float64), output_list[0]])
+    ewma = output_list[1]
+    running_a = output_list[2]
+    return {
+        "gradients": gradients,
+        "ewma": ewma,
+        "running_a": running_a,
+    }
 
 
 @jit
