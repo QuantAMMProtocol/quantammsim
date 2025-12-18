@@ -561,6 +561,7 @@ def _jax_calc_coarse_weight_scan_function(
     n_less_than_min = jnp.sum(idx)
     idy = normed_weight_update > maximum_weight
 
+    og_normed_update = normed_weight_update
     if ste_min_max_weight:
         normed_weight_update = ste_clip(normed_weight_update, minimum_weight, maximum_weight)
     else:
@@ -595,7 +596,7 @@ def _jax_calc_coarse_weight_scan_function(
 
     # # Straight-through estimator: exact target weights in forward pass, original normed weights for gradients
     # # Forward pass: exact target weights as before
-    # clipped_target_weights = target_weights
+    clipped_target_weights = target_weights
 
     # # Backward pass: use original normed weights for gradients
     # # This allows gradient flow even when target weights are constrained
@@ -609,9 +610,9 @@ def _jax_calc_coarse_weight_scan_function(
 
     # # Backward pass: use original normed weights for gradients
     # # This allows gradient flow even when target weights are constrained
-    # target_weights = (
-    #     stop_gradient(clipped_target_weights - og_normed_update) + og_normed_update
-    # )
+    target_weights = (
+        stop_gradient(clipped_target_weights - og_normed_update) + og_normed_update
+    )
 
     diff = 1 / (interpol_num - 1) * (target_weights - prev_actual_position)
 
