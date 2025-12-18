@@ -18,7 +18,7 @@ else:
 
 
 import jax.numpy as jnp
-from jax import jit, vmap
+from jax import jit, vmap, custom_jvp
 from jax import devices, device_put
 from jax.tree_util import Partial
 from jax.lax import scan, stop_gradient
@@ -60,6 +60,51 @@ def scale_diff(diff, maximum_change):
     needs_scale = max_val > maximum_change
     scaled = jnp.where(needs_scale, diff * scale, diff)
     return scaled
+
+@custom_jvp
+def damped_scale_diff(diff, maximum_change):
+    """
+    Damped scale difference for STE.
+    
+    Forward pass: Identical to scale_diff (hard clip).
+    Backward pass: Gradient is scaled by (1 - tanh(diff/maximum_change)^2)
+                   mimicking a soft tanh saturation.
+    """
+    return scale_diff(diff, maximum_change)
+
+@damped_scale_diff.defjvp
+def damped_scale_diff_jvp(primals, tangents):
+    diff, maximum_change = primals
+    diff_dot, _ = tangents # Assuming maximum_change is constant/not trained
+    
+    # Forward pass uses the hard clip logic
+    ans = damped_scale_diff(diff, maximum_change)
+    
+    # Backward pass uses the "soft" gradient logic to prevent drift
+    # Calculate ratio of diff to max_change
+    # We use max(abs(diff)) as the scaling factor logic in scale_diff is global
+    max_val = jnp.max(jnp.abs(diff))
+    ratio = max_val / (maximum_change + 1e-10)
+    
+    # Damping factor: 1.0 when small, decays to 0 when large
+    # Using derivative of tanh(x) = 1 - tanh^2(x)
+    damp_factor = 1.0 - jnp.tanh(ratio)**2
+    
+    # Apply damping to the gradient
+    ans_dot = diff_dot * damp_factor
+    
+    # If we are actually clipped in the forward pass, we should respect that scaling logic 
+    # for the gradient direction, but dampen the magnitude.
+    # The original scale_diff logic scales the whole vector.
+    # If clipped: out = in * (limit / max_val)
+    # The gradient of this w.r.t 'in' is roughly (limit/max_val).
+    # But we want to suppress it further.
+    
+    # Let's simplify:
+    # We just want to pass the gradient through, but kill it if it's too big.
+    # So we take the incoming tangent (diff_dot) and multiply by our damping factor.
+    
+    return ans, ans_dot
 
 @partial(
     jit,
@@ -554,7 +599,11 @@ def _jax_calc_coarse_weight_scan_function(
     scaled_diff = scale_diff(diff, maximum_change)
 
     if ste_max_change:
-        scaled_diff = ste(diff, scaled_diff)
+        # Use Damped STE instead of Hard STE
+        # This preserves the hard clip forward pass but damps gradients if they push too far
+        scaled_diff = damped_scale_diff(diff, maximum_change)
+        # Old Hard STE:
+        # scaled_diff = ste(diff, scaled_diff)
 
     # Calculate actual position reached after applying both constraints
     actual_position = prev_actual_position + scaled_diff * (interpol_num - 1)
