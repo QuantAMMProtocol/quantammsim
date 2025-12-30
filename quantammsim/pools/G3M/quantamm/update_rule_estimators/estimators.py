@@ -43,12 +43,14 @@ from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives 
     squareplus,
     _jax_gradients_at_infinity_via_scan,
     _jax_gradients_at_infinity_via_scan_with_alt_ewma,
+    _jax_gradients_at_infinity_via_scan_with_readout,
 )
 from quantammsim.core_simulator.param_utils import (
     memory_days_to_lamb,
     jax_memory_days_to_lamb,
     lamb_to_memory_days_clipped,
     calc_lamb,
+    calc_lamb_from_index,
 )
 
 
@@ -192,6 +194,315 @@ def calc_gradients(
             )[1:]
     return gradients
 
+
+def calc_triple_threat_gradients(
+    update_rule_parameter_dict,
+    logit_lamb_index,
+    chunkwise_price_values,
+    chunk_period,
+    max_memory_days,
+    cap_lamb=True,
+):
+    """Calculate time-weighted price gradients for TFMM strategy implementation.
+
+    Computes gradients of price movements using exponentially weighted moving averages (EWMA),
+    with support for both CPU and GPU acceleration via JAX. Implements the gradient calculation
+    described in the TFMM litepaper, with additional features for alternative memory lengths.
+
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        Dictionary containing strategy parameters including:
+        - 'logit_lamb': Controls the base memory length
+        - 'logit_delta_lamb': Optional, controls alternative memory length if use_alt_lamb=True
+    chunkwise_price_values : ndarray
+        Array of shape (time_steps, n_assets) containing price values for each asset
+        over time
+    chunk_period : float
+        Time period between chunks in minutes
+    max_memory_days : float
+        Maximum allowed memory length in days, used to cap lambda parameters
+    cap_lamb : bool, optional
+        Whether to apply maximum memory day restriction to lambda parameters.
+        Defaults to True
+
+    Returns
+    -------
+    ndarray
+        Array of shape (time_steps-1, n_assets) containing calculated gradients.
+        For each asset, represents the time-weighted rate of change of prices.
+
+    Notes
+    -----
+    The function implements two calculation paths:
+    
+    1. GPU path: Uses convolution operations for efficient parallel computation
+       - Pads input data to handle initialization
+       - Creates specialized kernels for EWMA calculation
+       - Leverages GPU parallelism for efficient computation
+    
+    2. CPU path: Uses scan operations for sequential computation
+       - More memory efficient
+       - Uses a scan operation, so is fundamentally sequential
+
+    The gradient calculation follows the methodology described in the TFMM litepaper,
+    using exponential weighting to estimate price trends while avoiding look-ahead bias.
+
+    """
+
+    lamb = calc_lamb_from_index(update_rule_parameter_dict, logit_lamb_index)
+    max_lamb = jax_memory_days_to_lamb(max_memory_days, chunk_period)
+    # Apply max_memory_days restriction to lamb and alt_lamb
+    if cap_lamb:
+        capped_lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+        lamb = capped_lamb
+    safety_margin_max_memory_days = max_memory_days * 5.0
+    # we can use alt lamb / alt memory days to allow different parts of
+    # update rules to act over different memory lengths
+    if update_rule_parameter_dict.get("logit_lamb_for_ewma") is not None:
+        logit_alt_lamb = update_rule_parameter_dict.get("logit_lamb_for_ewma")
+        alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
+        if cap_lamb:
+            capped_alt_lamb = jnp.clip(alt_lamb, a_min=0.0, a_max=max_lamb)
+            alt_lamb = capped_alt_lamb
+    else:
+        raise Exception
+
+    alt_memory_days = (
+        jnp.cbrt(6 * alt_lamb / ((1 - alt_lamb) ** 3)) * 2 * chunk_period / 1440
+    )
+    alt_memory_days = jnp.clip(alt_memory_days, a_min=0.0, a_max=max_memory_days)
+
+    if DEFAULT_BACKEND != "cpu":
+        lamb = jnp.broadcast_to(
+            lamb, update_rule_parameter_dict["initial_weights_logits"].shape
+        )
+        ewma_kernel = make_ewma_kernel(
+            lamb, safety_margin_max_memory_days, chunk_period
+        )
+        a_kernel = make_a_kernel(lamb, safety_margin_max_memory_days, chunk_period)
+        padded_chunkwise_price_values = jnp.vstack(
+            [
+                jnp.ones(
+                    (
+                        int(safety_margin_max_memory_days * 1440 / chunk_period),
+                        chunkwise_price_values.shape[1],
+                    )
+                )
+                * chunkwise_price_values[0],
+                chunkwise_price_values,
+            ]
+        )
+        ewma_padded = _jax_ewma_at_infinity_via_conv_padded(
+            padded_chunkwise_price_values, ewma_kernel
+        )
+        saturated_b = lamb / ((1 - lamb) ** 3)
+
+        alt_ewma_kernel = make_ewma_kernel(
+            alt_lamb, safety_margin_max_memory_days, chunk_period
+        )
+        alt_ewma_padded = _jax_ewma_at_infinity_via_conv_padded(
+            padded_chunkwise_price_values, alt_ewma_kernel
+        )
+        gradients = _jax_gradients_at_infinity_via_conv_padded_with_alt_ewma(
+            padded_chunkwise_price_values,
+            ewma_padded,
+            alt_ewma_padded,
+            a_kernel,
+            saturated_b,
+        )
+    else:
+        gradients = _jax_gradients_at_infinity_via_scan_with_alt_ewma(
+            chunkwise_price_values, lamb, alt_lamb
+        )[1:]
+    return gradients
+
+
+def calc_triple_threat_gradients(
+    update_rule_parameter_dict,
+    logit_lamb_index,
+    chunkwise_price_values,
+    chunk_period,
+    max_memory_days,
+    cap_lamb=True,
+):
+    """Calculate time-weighted price gradients for TFMM strategy implementation.
+
+    Computes gradients of price movements using exponentially weighted moving averages (EWMA),
+    with support for both CPU and GPU acceleration via JAX. Implements the gradient calculation
+    described in the TFMM litepaper, with additional features for alternative memory lengths.
+
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        Dictionary containing strategy parameters including:
+        - 'logit_lamb': Controls the base memory length
+        - 'logit_delta_lamb': Optional, controls alternative memory length if use_alt_lamb=True
+    chunkwise_price_values : ndarray
+        Array of shape (time_steps, n_assets) containing price values for each asset
+        over time
+    chunk_period : float
+        Time period between chunks in minutes
+    max_memory_days : float
+        Maximum allowed memory length in days, used to cap lambda parameters
+    cap_lamb : bool, optional
+        Whether to apply maximum memory day restriction to lambda parameters.
+        Defaults to True
+
+    Returns
+    -------
+    ndarray
+        Array of shape (time_steps-1, n_assets) containing calculated gradients.
+        For each asset, represents the time-weighted rate of change of prices.
+
+    Notes
+    -----
+    The function implements two calculation paths:
+    
+    1. GPU path: Uses convolution operations for efficient parallel computation
+       - Pads input data to handle initialization
+       - Creates specialized kernels for EWMA calculation
+       - Leverages GPU parallelism for efficient computation
+    
+    2. CPU path: Uses scan operations for sequential computation
+       - More memory efficient
+       - Uses a scan operation, so is fundamentally sequential
+
+    The gradient calculation follows the methodology described in the TFMM litepaper,
+    using exponential weighting to estimate price trends while avoiding look-ahead bias.
+
+    """
+
+    lamb = calc_lamb_from_index(update_rule_parameter_dict, logit_lamb_index)
+    max_lamb = jax_memory_days_to_lamb(max_memory_days, chunk_period)
+    # Apply max_memory_days restriction to lamb and alt_lamb
+    if cap_lamb:
+        capped_lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+        lamb = capped_lamb
+    safety_margin_max_memory_days = max_memory_days * 5.0
+    # we can use alt lamb / alt memory days to allow different parts of
+    # update rules to act over different memory lengths
+    if update_rule_parameter_dict.get("logit_lamb_for_ewma") is not None:
+        logit_alt_lamb = update_rule_parameter_dict.get("logit_lamb_for_ewma")
+        alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
+        if cap_lamb:
+            capped_alt_lamb = jnp.clip(alt_lamb, a_min=0.0, a_max=max_lamb)
+            alt_lamb = capped_alt_lamb
+    else:
+        raise Exception
+
+    alt_memory_days = (
+        jnp.cbrt(6 * alt_lamb / ((1 - alt_lamb) ** 3)) * 2 * chunk_period / 1440
+    )
+    alt_memory_days = jnp.clip(alt_memory_days, a_min=0.0, a_max=max_memory_days)
+
+    if DEFAULT_BACKEND != "cpu":
+        lamb = jnp.broadcast_to(
+            lamb, update_rule_parameter_dict["initial_weights_logits"].shape
+        )
+        ewma_kernel = make_ewma_kernel(
+            lamb, safety_margin_max_memory_days, chunk_period
+        )
+        a_kernel = make_a_kernel(lamb, safety_margin_max_memory_days, chunk_period)
+        padded_chunkwise_price_values = jnp.vstack(
+            [
+                jnp.ones(
+                    (
+                        int(safety_margin_max_memory_days * 1440 / chunk_period),
+                        chunkwise_price_values.shape[1],
+                    )
+                )
+                * chunkwise_price_values[0],
+                chunkwise_price_values,
+            ]
+        )
+        ewma_padded = _jax_ewma_at_infinity_via_conv_padded(
+            padded_chunkwise_price_values, ewma_kernel
+        )
+        saturated_b = lamb / ((1 - lamb) ** 3)
+
+        alt_ewma_kernel = make_ewma_kernel(
+            alt_lamb, safety_margin_max_memory_days, chunk_period
+        )
+        alt_ewma_padded = _jax_ewma_at_infinity_via_conv_padded(
+            padded_chunkwise_price_values, alt_ewma_kernel
+        )
+        gradients = _jax_gradients_at_infinity_via_conv_padded_with_alt_ewma(
+            padded_chunkwise_price_values,
+            ewma_padded,
+            alt_ewma_padded,
+            a_kernel,
+            saturated_b,
+        )
+    else:
+        gradients = _jax_gradients_at_infinity_via_scan_with_alt_ewma(
+            chunkwise_price_values, lamb, alt_lamb
+        )[1:]
+    return gradients
+
+
+def calc_gradients_with_readout(
+    update_rule_parameter_dict,
+    chunkwise_price_values,
+    chunk_period,
+    max_memory_days,
+    use_alt_lamb,
+    cap_lamb=True,
+):
+    """Calculate time-weighted price gradients for TFMM strategy implementation giving intermediate values.
+
+    Computes gradients of price movements using exponentially weighted moving averages (EWMA), outputting 
+    intermediate values. It implements the gradient calculation
+    described in the TFMM litepaper, with additional features for alternative memory lengths.
+
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        Dictionary containing strategy parameters including:
+        - 'logit_lamb': Controls the base memory length
+        - 'logit_delta_lamb': Optional, controls alternative memory length if use_alt_lamb=True
+    chunkwise_price_values : ndarray
+        Array of shape (time_steps, n_assets) containing price values for each asset
+        over time
+    chunk_period : float
+        Time period between chunks in minutes
+    max_memory_days : float
+        Maximum allowed memory length in days, used to cap lambda parameters
+    use_alt_lamb : bool
+        Whether to use an alternative lambda parameter for part of the calculation.
+        Enables different parts of update rules to act over different memory lengths
+    cap_lamb : bool, optional
+        Whether to apply maximum memory day restriction to lambda parameters.
+        Defaults to True
+
+    Returns
+    -------
+    dict
+        gradients and intermediate values, each an array of shape (time_steps-1, n_assets)
+        containing calculated values.
+
+    Notes
+    -----
+
+    The gradient calculation follows the methodology described in the TFMM litepaper,
+    using exponential weighting to estimate price trends while avoiding look-ahead bias.
+
+    """
+
+    lamb = calc_lamb(update_rule_parameter_dict)
+    max_lamb = jax_memory_days_to_lamb(max_memory_days, chunk_period)
+    # Apply max_memory_days restriction to lamb and alt_lamb
+    if cap_lamb:
+        capped_lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+        lamb = capped_lamb
+    safety_margin_max_memory_days = max_memory_days * 5.0
+    gradients_dict = _jax_gradients_at_infinity_via_scan_with_readout(
+        chunkwise_price_values, lamb
+    )
+    # do not include the first element of the gradients, to match the output of the conv path
+    gradients_dict["gradients"] = gradients_dict["gradients"][1:]
+    # gradients dict here also contains ewma and running a values
+    return gradients_dict
 
 def calc_ewma_padded(
     update_rule_parameter_dict,
@@ -557,6 +868,8 @@ def calc_k(update_rule_parameter_dict, memory_days):
     if update_rule_parameter_dict.get("log_k") is not None:
         log_k = update_rule_parameter_dict.get("log_k")
         k = (2**log_k) * memory_days
+    elif update_rule_parameter_dict.get("absolute_k") is not None:
+        k = update_rule_parameter_dict.get("absolute_k")
     else:
         k = update_rule_parameter_dict.get("k") * memory_days
     return k

@@ -31,9 +31,10 @@ from quantammsim.core_simulator.param_utils import (
     inverse_squareplus_np,
     get_raw_value,
     get_log_amplitude,
+    logistic_func,
 )
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
-    calc_gradients,
+    calc_triple_threat_gradients,
     calc_k,
     squareplus,
 )
@@ -50,8 +51,10 @@ from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
 
 
 @jit
-def _jax_mean_reversion_channel_weight_update(
-    price_gradient,
+def _jax_triple_threat_mean_reversion_channel_weight_update(
+    price_gradient_channel,
+    price_gradient_trend,
+    price_gradient_envelope,
     k,
     width,
     amplitude,
@@ -90,8 +93,8 @@ def _jax_mean_reversion_channel_weight_update(
     1. Channel portion uses a Gaussian envelope and cubic function
     2. Trend portion uses power law scaling outside the channel
     """
-    envelope = jnp.exp(-(price_gradient**2) / (2 * width**2))
-    scaled_price_gradient = jnp.pi * price_gradient / (3 * width)
+    envelope = jnp.exp(-(price_gradient_envelope**2) / (2 * width**2))
+    scaled_price_gradient = jnp.pi * price_gradient_channel / (3 * width)
 
     channel_portion = (
         -amplitude
@@ -102,8 +105,8 @@ def _jax_mean_reversion_channel_weight_update(
 
     trend_portion = (
         (1 - envelope)
-        * jnp.sign(price_gradient)
-        * jnp.power(jnp.abs(price_gradient / (2.0 * pre_exp_scaling)), exponents)
+        * jnp.sign(price_gradient_trend)
+        * jnp.power(jnp.abs(price_gradient_trend / (2.0 * pre_exp_scaling)), exponents)
     )
     signal = channel_portion + trend_portion
 
@@ -112,7 +115,7 @@ def _jax_mean_reversion_channel_weight_update(
     return weight_updates
 
 
-class MeanReversionChannelPool(MomentumPool):
+class TripleThreatMeanReversionChannelPool(MomentumPool):
     """
     A class for mean reversion channel strategies run as TFMM liquidity pools.
 
@@ -188,39 +191,52 @@ class MeanReversionChannelPool(MomentumPool):
         The raw weight outputs are not the final weights, but rather the changes
         to be applied to the previous weights. These will be refined in subsequent steps.
         """
-
         use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
         if use_pre_exp_scaling and params.get("logit_pre_exp_scaling") is not None:
             logit_pre_exp_scaling = params.get("logit_pre_exp_scaling")
-            pre_exp_scaling = jnp.exp(logit_pre_exp_scaling) / (
-                1 + jnp.exp(logit_pre_exp_scaling)
-            )
+            pre_exp_scaling = logistic_func(logit_pre_exp_scaling)
         elif use_pre_exp_scaling and params.get("raw_pre_exp_scaling") is not None:
             pre_exp_scaling = 2 ** params.get("raw_pre_exp_scaling")
         else:
             pre_exp_scaling = 0.5
-
         memory_days = lamb_to_memory_days_clipped(
-            calc_lamb(params),
+            logistic_func(params["logit_lamb_for_ewma"]),
             run_fingerprint["chunk_period"],
             run_fingerprint["max_memory_days"],
         )
         k = calc_k(params, memory_days)
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
-        gradients = calc_gradients(
+        gradients_channel = calc_triple_threat_gradients(
             params,
+            0,
             chunkwise_price_values,
             run_fingerprint["chunk_period"],
             run_fingerprint["max_memory_days"],
-            run_fingerprint["use_alt_lamb"],
             cap_lamb=True,
         )
-
+        gradients_trend = calc_triple_threat_gradients(
+            params,
+            1,
+            chunkwise_price_values,
+            run_fingerprint["chunk_period"],
+            run_fingerprint["max_memory_days"],
+            cap_lamb=True,
+        )
+        gradients_envelope = calc_triple_threat_gradients(
+            params,
+            2,
+            chunkwise_price_values,
+            run_fingerprint["chunk_period"],
+            run_fingerprint["max_memory_days"],
+            cap_lamb=True,
+        )
         exponents = squareplus(params.get("raw_exponents"))
         amplitude = (2 ** params.get("log_amplitude")) * memory_days
         width = 2 ** params.get("raw_width")
-        raw_weight_outputs = _jax_mean_reversion_channel_weight_update(
-            gradients,
+        raw_weight_outputs = _jax_triple_threat_mean_reversion_channel_weight_update(
+            gradients_channel,
+            gradients_trend,
+            gradients_envelope,
             k,
             width,
             amplitude,
@@ -326,28 +342,26 @@ class MeanReversionChannelPool(MomentumPool):
 
         logit_lamb_np = np.log(initial_lamb / (1.0 - initial_lamb))
         if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            logit_lamb = np.array([[logit_lamb_np]] * n_parameter_sets)
+            logit_lamb = np.array([[[logit_lamb_np]] * 3] * n_parameter_sets)
         else:
-            logit_lamb = np.array([[logit_lamb_np] * n_assets] * n_parameter_sets)
+            logit_lamb = np.array([[[logit_lamb_np] * n_assets] * 3] * n_parameter_sets)
 
         # lamb delta is the difference in lamb needed for
         # lamb + delta lamb to give a final memory length
         # of  initial_memory_length + initial_memory_length_delta
-        initial_lamb_plus_delta_lamb = memory_days_to_lamb(
-            initial_values_dict["initial_memory_length"]
-            + initial_values_dict["initial_memory_length_delta"],
+        initial_lamb_for_ewma = memory_days_to_lamb(
+            initial_values_dict["initial_memory_length"],
             run_fingerprint["chunk_period"],
         )
 
-        logit_lamb_plus_delta_lamb_np = np.log(
-            initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
+        logit_lamb_for_ewma_np = np.log(
+            initial_lamb_for_ewma / (1.0 - initial_lamb_for_ewma)
         )
-        logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np
         if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            logit_delta_lamb = np.array([[logit_delta_lamb_np]] * n_parameter_sets)
+            logit_lamb_for_ewma = np.array([[logit_lamb_for_ewma_np]] * n_parameter_sets)
         else:
-            logit_delta_lamb = np.array(
-                [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
+            logit_lamb_for_ewma = np.array(
+                [[logit_lamb_for_ewma_np] * n_assets] * n_parameter_sets
             )
 
         raw_pre_exp_scaling_np = np.log2(
@@ -385,7 +399,7 @@ class MeanReversionChannelPool(MomentumPool):
         params = {
             "log_k": log_k,
             "logit_lamb": logit_lamb,
-            "logit_delta_lamb": logit_delta_lamb,
+            "logit_lamb_for_ewma": logit_lamb_for_ewma,
             "initial_weights_logits": initial_weights_logits,
             "log_amplitude": log_amplitude,
             "raw_width": raw_width,
@@ -445,7 +459,7 @@ class MeanReversionChannelPool(MomentumPool):
         return result
 
 tree_util.register_pytree_node(
-    MeanReversionChannelPool,
-    MeanReversionChannelPool._tree_flatten,
-    MeanReversionChannelPool._tree_unflatten,
+    TripleThreatMeanReversionChannelPool,
+    TripleThreatMeanReversionChannelPool._tree_flatten,
+    TripleThreatMeanReversionChannelPool._tree_unflatten,
 )

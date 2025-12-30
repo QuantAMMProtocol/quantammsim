@@ -76,15 +76,28 @@
 
 It is recommended to install quantammsim in a virtual environment:
 
+**Using venv:**
+
 ```bash
 # Create and activate virtual environment
 python -m venv venv
+
 # On Windows:
 .\venv\Scripts\activate
 # On macOS/Linux:
 source venv/bin/activate
+```
 
-# Install package
+**Alternatively, using Conda:**
+
+```bash
+conda create -n qsim python=3.10
+conda activate qsim
+```
+
+**Install package:**
+
+```bash
 git clone https://github.com/QuantAMMProtocol/quantammsim.git
 cd quantammsim
 pip install -e .
@@ -92,11 +105,18 @@ pip install -e .
 
 ### Optional Data Files
 
-To download recommended data files for simulation and testing (~1.6GB):
+To download data files for simulation and testing:
 
 ```bash
-python scripts/download_data.py
+python scripts/download_data.py <tickers>
 ```
+
+For example:
+
+```bash
+python scripts/download_data.py BTC ETH USDC
+```
+
 
 For detailed installation instructions, see our [documentation](https://quantammsim.readthedocs.io).
 

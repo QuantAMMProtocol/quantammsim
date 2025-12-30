@@ -505,6 +505,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     # prev_all_other_assets_ratios = carry_list[5]
 
     counter = carry_list[3]
+    prev_lp_supply = carry_list[4]
 
     # input_list contains weights, prices, precalcs and fee/arb amounts
     weights = input_list[0]
@@ -520,7 +521,20 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     arb_fees = input_list[10]
     trade = input_list[11]
     do_arb = input_list[12]
+    lp_supply = input_list[13]
     fees_are_being_charged = gamma != 1.0
+
+    # if there has been a change in lp supply, we need to update the reserves
+    # by the ratio of the new lp supply to the old lp supply
+    # this assumes that all deposits and withdrawals are done 'proportionally'
+    # meaning that the ratio of the new lp supply to the old lp supply is the
+    # same as the ratio of the new reserves to the old reserves. This is a
+    # conservative assumption, as the pool actually benefits from unbalanced
+    # deposits and withdrawals.
+
+    lp_supply_change = lp_supply != prev_lp_supply
+    prev_reserves = jnp.where(lp_supply_change, prev_reserves * lp_supply / prev_lp_supply, prev_reserves)
+    prev_lp_supply = lp_supply
 
     current_value = (prev_reserves * prices).sum()
     quoted_prices = current_value * prev_weights / prev_reserves
@@ -673,6 +687,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
         prices,
         reserves,
         counter,
+        lp_supply,
     ], reserves
 
 
@@ -689,6 +704,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
     do_trades=False,
     do_arb=True,
     noise_trader_ratio=0.0,
+    lp_supply_array=None,
 ):
     """
     Calculate AMM reserves considering fees and arbitrage opportunities using signature variations,
@@ -727,6 +743,8 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
         Whether or not to apply arbitrage, by default True
     noise_trader_ratio : float, optional
         Ratio of noise traders to signal traders, by default 0.0
+    lp_supply_array : jnp.ndarray, optional
+        Array of LP token supply over time, by default None
 
     Returns
     -------
@@ -760,6 +778,12 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
 
     arb_fees = jnp.where(
         arb_fees.size == 1, jnp.full(weights.shape[0], arb_fees), arb_fees
+    )
+
+    if lp_supply_array is None:
+        lp_supply_array = jnp.array(1.0)
+    lp_supply_array = jnp.where(
+        lp_supply_array.size == 1, jnp.full(weights.shape[0], lp_supply_array), lp_supply_array
     )
 
     do_arb = jnp.where(
@@ -812,7 +836,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
         do_trades=do_trades,
-        do_arb=do_arb,
+        # do_arb=do_arb,
         noise_trader_ratio=noise_trader_ratio,
     )
 
@@ -824,6 +848,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
         # per_asset_ratios[0],
         # all_other_assets_ratios[0],
         0,
+        lp_supply_array[0]
     ]
     # carry_list_init = [initial_weights, initial_i]
     # nojit_scan = jax.disable_jit()(jax.lax.scan)
@@ -844,6 +869,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
             arb_fees,
             trades,
             do_arb,
+            lp_supply_array,
         ],
     )
 

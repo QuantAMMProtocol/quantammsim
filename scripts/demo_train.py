@@ -29,7 +29,7 @@ DEFAULT_FINGERPRINT = {
 }
 
 EXAMPLE_CONFIGS = {
-    "momentum_btc_usdc": {
+    "momentum_aave_pendle": {
         "fingerprint": {
             **DEFAULT_FINGERPRINT,
             "tokens": ["BTC", "PAXG", "USDC"],
