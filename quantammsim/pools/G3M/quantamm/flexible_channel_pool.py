@@ -53,21 +53,22 @@ from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
 @jit
 def _jax_flexible_channel_weight_update(
     price_gradient: jnp.ndarray,  # shape (S, N)
-    k: jnp.ndarray,  # shape (S, N)
-    width_env: jnp.ndarray,  # σ_env
-    amplitude: jnp.ndarray,
-    alpha: jnp.ndarray,
-    exponents_up: jnp.ndarray,
-    exponents_down: jnp.ndarray,
-    risk_off: jnp.ndarray,  # ρ_off  (S, N)
-    risk_on: jnp.ndarray,  # ρ_on   (S, N)
-    profit_pos: jnp.ndarray,  # Π⁺     (S, 1)
-    drawdown_neg: jnp.ndarray,  # Π⁻     (S, 1)
+    k: jnp.ndarray,               # shape (S, N)
+    width_env: jnp.ndarray,       # σ_env
+    amplitude: jnp.ndarray,       # (S, N) or (N,)
+    alpha: jnp.ndarray,           # (S, N) or (N,)
+    exponents_up: jnp.ndarray,    # (S, N) or (N,)
+    exponents_down: jnp.ndarray,  # (S, N) or (N,)
+    risk_off: jnp.ndarray,        # ρ_off  (S, N) or (N,)
+    risk_on: jnp.ndarray,         # ρ_on   (S, N) or (N,)
+    profit_pos: jnp.ndarray,      # Π⁺     (S, 1)
+    drawdown_neg: jnp.ndarray,    # Π⁻     (S, 1)
     inverse_scaling: float = 0.5415,
-    pre_exp_scaling: float = 0.5,
+    pre_exp_scaling: jnp.ndarray = 0.5,  # (S, N) or (N,)
 ) -> jnp.ndarray:
     """
     Mean-reversion + trend-following + profit-harvest + risk-on amplifier.
+    S is typically 1 in this kernel usage.
     """
     # 1) Envelope ------------------------------------------------------
     envelope = jnp.exp(-(price_gradient**2) / (2.0 * width_env**2))
@@ -98,40 +99,19 @@ def _jax_flexible_channel_weight_update(
 
 class FlexibleChannelPool(MomentumPool):
     """
-    A class for mean reversion channel strategies run as TFMM liquidity pools.
+    A mean-reversion channel strategy with causal, time-varying risk scaling and
+    portfolio-aware gating.
 
-    This class implements a "mean reversion channel" strategy for asset allocation within a TFMM framework.
-    It uses price data to generate mean reversion channel signals, which are then translated into weight adjustments.
-
-    Parameters
-    ----------
-    None
-
-    Methods
-    -------
-    calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
-        Calculate the raw weight outputs based on mean reversion channel signals.
-
-    Notes
-    -----
-    The FlexibleChannelPool implements a mean-reversion-based channel following strategy for asset allocation within a TFMM framework.
-    It uses price data to generate mean-reversion signals, which are then translated into weight adjustments.
-    The class provides methods to calculate raw weight outputs based on these signals and refine them
-    into final asset weights, taking into account various parameters and constraints defined in the pool setup.
+    Optional run_fingerprint keys:
+      - "pi_mode": one of {"weights", "risk", "kelly_proxy", "equal"}; default "weights".
+      - "use_entropy_shrink": bool; default True.
     """
 
     def __init__(self):
-        """
-        Initialize a new FlexibleChannelPool instance.
-
-        Parameters
-        ----------
-        None
-        """
         super().__init__()
 
     # ─────────────────────────────────────────────────────────────────────────────
-    #  calculate_raw_weights_outputs  (history-aware version)
+    #  calculate_raw_weights_outputs  (history-aware & causal)
     # ─────────────────────────────────────────────────────────────────────────────
     @partial(jit, static_argnums=(2,))
     def calculate_raw_weights_outputs(
@@ -142,90 +122,86 @@ class FlexibleChannelPool(MomentumPool):
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         fp, chunk = run_fingerprint, run_fingerprint["chunk_period"]
+        pi_mode = fp.get("pi_mode", "weights")
+        use_entropy_shrink = fp.get("use_entropy_shrink", True)
 
         # ── prices → (T , N) ----------------------------------------------------
         prices = prices[:, None] if prices.ndim == 1 else prices
         T, N = prices.shape
 
-        # ── single parameter-set (S == 1) --------------------------------------
-        log_k = jnp.squeeze(jnp.asarray(params["log_k"]))  # (N,)
-        S = 1
-
         # helper ─ 2**x with overflow guard
         ln2 = jnp.log(2.0)
         pow2 = lambda x: jnp.exp(jnp.clip(squareplus(x) * ln2, -60.0, 60.0))
+        eps = 1e-12
+
+        # ── single parameter-set (S == 1) --------------------------------------
+        log_k = jnp.squeeze(jnp.asarray(params["log_k"]))  # (N,)
 
         # ╭──────────────────────────────────────────────────────────────────╮
-        # │ 1. realised σ̂ᵢ(t)  from entire history (EWMA, trainable λσᵢ)   │
+        # │ 1. realised σ̂ᵢ(t)  as *causal* EWMA time series                │
+        # │    (no look-ahead; used for width_envₜ and kₜ)                  │
         # ╰──────────────────────────────────────────────────────────────────╯
-        chunk_p = prices[::chunk]  # (Tʹ , N)
+        chunk_p = prices[::chunk]                  # (Tʹ , N)
         ret_sq = jnp.square(jnp.log(chunk_p[1:] / chunk_p[:-1]))  # (Tʹ-1 , N)
 
-        λσ = jnn.sigmoid(params["logit_lamb_vol"]).reshape(
-            N,
-        )  # (N,)
+        λσ = jnn.sigmoid(params["logit_lamb_vol"]).reshape(N)  # (N,)
 
-        def ewma(series, lam):
+        def ewma_ts(series_1d, lam):
+            # series_1d: (T'-1,)
             def step(c, x):
-                return c * lam + x * (1.0 - lam), None
+                c_new = c * lam + x * (1.0 - lam)
+                return c_new, c_new
+            init = series_1d[0]
+            _, out = lax.scan(step, init, series_1d[1:])
+            out_full = jnp.concatenate([jnp.asarray([init]), out], axis=0)  # (T'-1,)
+            return jnp.sqrt(out_full + 1e-12)
 
-            last, _ = lax.scan(step, series[0], series[1:])
-            return jnp.sqrt(last + 1e-12)
-
-        σ̂ = vmap(ewma)(ret_sq.T, λσ)  # (N,)
+        # vmap across assets → (N, T'-1) → transpose to (T'-1, N)
+        sigma_ts = vmap(ewma_ts)(ret_sq.T, λσ).T
 
         # ╭──────────────────────────────────────────────────────────────────╮
-        # │ 2. per-token memory_daysᵢ   &   kᵢ (Kelly scaled)               │
+        # │ 2. per-token memory_daysᵢ & time-varying kₜ (Kelly scaled)      │
         # ╰──────────────────────────────────────────────────────────────────╯
         mem_days = jnp.squeeze(
             lamb_to_memory_days_clipped(calc_lamb(params), chunk, fp["max_memory_days"])
         )  # (N,)
 
         k_plain = (2.0**log_k) / jnp.clip(mem_days, 1e-3, None)  # (N,)
-        κ = pow2(params["raw_kelly_kappa"]).reshape(
-            N,
-        )
-        k_vec = k_plain * κ / jnp.clip(σ̂, 1e-9, None)  # (N,)
+        κ = pow2(params["raw_kelly_kappa"]).reshape(N)           # (N,)
+        # time-varying Kelly due to σ̂ₜ
+        k_ts = (k_plain * κ)[None, :] / jnp.clip(sigma_ts, 1e-9, None)  # (T'-1, N)
 
         # ╭──────────────────────────────────────────────────────────────────╮
         # │ 3. deterministic per-token knobs                                │
+        # │    width_envₜ depends on σ̂ₜ; others remain per-asset constants │
         # ╰──────────────────────────────────────────────────────────────────╯
-        width_env = (
-            pow2(params["raw_width"]).reshape(
-                N,
-            )
-            * σ̂
-        )
-        alpha = pow2(params["raw_alpha"]).reshape(
-            N,
-        )
-        exp_up = squareplus(params["raw_exponents_up"]).reshape(
-            N,
-        )
-        exp_dn = squareplus(params["raw_exponents_down"]).reshape(
-            N,
-        )
+        width_env_ts = pow2(params["raw_width"]).reshape(1, N) * sigma_ts  # (T'-1, N)
+        alpha = pow2(params["raw_alpha"]).reshape(N)                        # (N,)
+        exp_up = squareplus(params["raw_exponents_up"]).reshape(N)          # (N,)
+        exp_dn = squareplus(params["raw_exponents_down"]).reshape(N)        # (N,)
 
         amp_raw = pow2(params["log_amplitude"]).reshape(-1)
         amp_raw = jnp.full((N,), amp_raw.item()) if amp_raw.size == 1 else amp_raw
         amplitude = amp_raw * mem_days  # (N,)
 
+        # pre-exp scaling, broadcast to time
         β = (
             jnn.sigmoid(params["logit_pre_exp_scaling"])
-            if fp["use_pre_exp_scaling"]
+            if fp.get("use_pre_exp_scaling", False)
             and params.get("logit_pre_exp_scaling") is not None
             else (
                 pow2(params["raw_pre_exp_scaling"])
-                if fp["use_pre_exp_scaling"]
+                if fp.get("use_pre_exp_scaling", False)
                 and params.get("raw_pre_exp_scaling") is not None
                 else 0.5
             )
         )
-        β = jnp.broadcast_to(β, (N,))
+        β = jnp.broadcast_to(jnp.asarray(β).reshape(1, -1 if jnp.ndim(β) > 0 else 1), (1, N))
+        β_ts = jnp.broadcast_to(β, width_env_ts.shape)  # (T'-1, N)
 
+        
         ρ_off = jnn.sigmoid(stop_gradient(params["logit_risk_off"])).reshape(N,)
         ρ_on  = jnn.sigmoid(stop_gradient(params["logit_risk_on"])).reshape(N,)
-
 
         # ╭──────────────────────────────────────────────────────────────────╮
         # │ 4. full *time-series* EWMA-gradients (one per chunk)            │
@@ -239,72 +215,74 @@ class FlexibleChannelPool(MomentumPool):
             cap_lamb=True,
         )  # (Tʹ-1 , N)
 
-        # Portfolio-level EWMA for profit-skim & draw-down
-        port_p = prices.mean(1, keepdims=True)  # (T ,1)
-        port_c = port_p[::chunk]  # (Tʹ ,1)
-        port_rep = jnp.repeat(port_c, N, axis=1)
+        # ╭──────────────────────────────────────────────────────────────────╮
+        # │ 5. Portfolio gating Π from portfolio-weighted gradient          │
+        # │    Modes: "weights" | "risk" | "kelly_proxy" | "equal"          │
+        # ╰──────────────────────────────────────────────────────────────────╯
+        w_prev = fp.get("prev_weights", jnp.full((N,), 1.0 / N, dtype=grad_ts.dtype))
+        w_prev = w_prev / jnp.clip(jnp.sum(w_prev), eps, None)
 
-        port_grad = calc_gradients(
-            params,
-            port_rep,
-            chunk,
-            fp["max_memory_days"],
-            fp["use_alt_lamb"],
-            cap_lamb=True,
-        )  # (Tʹ-1 , N)
-        Π_pos_ts = jnp.maximum(0.0, port_grad.mean(1, keepdims=True))  # (Tʹ-1 ,1)
+        if pi_mode == "equal":
+            w_for_pi_ts = jnp.broadcast_to(jnp.full((1, N), 1.0 / N, dtype=grad_ts.dtype), grad_ts.shape)
+            port_grad_ts = jnp.sum(grad_ts * w_for_pi_ts, axis=1)
+        elif pi_mode == "risk":
+            # risk-weighted by contemporaneous σ̂ₜ, using lagged weights for exposure
+            w_risk_ts = w_prev[None, :] * sigma_ts
+            w_risk_ts = w_risk_ts / jnp.clip(jnp.sum(w_risk_ts, axis=1, keepdims=True), eps, None)
+            port_grad_ts = jnp.sum(grad_ts * w_risk_ts, axis=1)
+        elif pi_mode == "kelly_proxy":
+            # contemporaneous Kelly vector proxy (causal)
+            k_norm_ts = k_ts / jnp.clip(jnp.sum(k_ts, axis=1, keepdims=True), eps, None)
+            port_grad_ts = jnp.sum(grad_ts * k_norm_ts, axis=1)
+        else:  # "weights" (default)
+            port_grad_ts = grad_ts @ w_prev
 
-        params_dd = dict(params, logit_lamb=params["logit_lamb_drawdown"])
-        dd_grad = calc_gradients(
-            params_dd,
-            port_rep,
-            chunk,
-            fp["max_memory_days"],
-            fp["use_alt_lamb"],
-            cap_lamb=True,
-        )
-        Π_dd_ts = jnp.maximum(0.0, -dd_grad.mean(1, keepdims=True))  # (Tʹ-1 ,1)
+        Π_pos_ts = jnp.maximum(0.0, port_grad_ts)[:, None]  # (T'-1, 1)
+        Π_dd_ts  = jnp.maximum(0.0, -port_grad_ts)[:, None] # (T'-1, 1)
 
         # ╭──────────────────────────────────────────────────────────────────╮
-        # │ 5. kernel over the *whole* history                              │
+        # │ 6. kernel over the *whole* history with time-varying inputs     │
         # ╰──────────────────────────────────────────────────────────────────╯
-        def kernel(pg, Πp, Πd):
+        def kernel_t(pg_t, k_t, width_t, Πp_t, Πd_t, β_t):
             return _jax_flexible_channel_weight_update(
-                pg[None, :],
-                k_vec[None, :],
-                width_env[None, :],
+                pg_t[None, :],
+                k_t[None, :],
+                width_t[None, :],
                 amplitude[None, :],
                 alpha[None, :],
                 exp_up[None, :],
                 exp_dn[None, :],
                 ρ_off[None, :],
                 ρ_on[None, :],
-                Πp[None, :],
-                Πd[None, :],
-                pre_exp_scaling=β[None, :],
+                Πp_t[None, :],
+                Πd_t[None, :],
+                pre_exp_scaling=β_t[None, :],
             )[0]
 
-        raw_ts = vmap(kernel)(grad_ts, Π_pos_ts, Π_dd_ts)  # (Tʹ-1 , N)
+        raw_ts = vmap(kernel_t)(grad_ts, k_ts, width_env_ts, Π_pos_ts, Π_dd_ts, β_ts)  # (Tʹ-1 , N)
 
         # ╭──────────────────────────────────────────────────────────────────╮
-        # │ 6. entropy guard-rail                                           │
+        # │ 7. entropy guard-rail (causal): shrink when ent < H_min         │
         # ╰──────────────────────────────────────────────────────────────────╯
-        H_min = jnn.softplus(params["raw_entropy_floor"]).mean()  # scalar
-
+        H_min = jnn.softplus(params["raw_entropy_floor"]).mean()  # scalar > 0
         prev0 = fp.get("prev_weights", jnp.full((N,), 1.0 / N, dtype=raw_ts.dtype))
 
         def shrink(prev, dw):
             w = jnp.clip(prev + dw, 1e-12)
-            w /= w.sum()
-            ent = -jnp.sum(w * jnp.log(w))
-            γ = jnp.minimum(jnp.sqrt(jnp.clip( ent / H_min, 0.0)), 1.0)
-            return w, dw * γ
+            w = w / jnp.sum(w)
+            ent = -jnp.sum(w * jnp.log(w + eps))
+            if use_entropy_shrink:
+                gamma = jnp.minimum(jnp.sqrt(jnp.clip(ent / (H_min + eps), 0.0)), 1.0)
+                dw_shrunk = dw * gamma
+            else:
+                dw_shrunk = dw
+            return w, dw_shrunk
 
         _, shrunk = lax.scan(shrink, prev0, raw_ts)  # (Tʹ-1 , N)
         return shrunk
 
     # ─────────────────────────────────────────────────────────────────
-    #  init_base_parameters   (fully fixed)
+    #  init_base_parameters   (fully fixed; unchanged)
     # ─────────────────────────────────────────────────────────────────
     def init_base_parameters(
         self,
@@ -430,7 +408,7 @@ class FlexibleChannelPool(MomentumPool):
         return params
 
     # ─────────────────────────────────────────────────────────────────
-    #  _process_specific_parameters  (entropy-floor shape fixed)
+    #  _process_specific_parameters  (entropy-floor shape fixed; unchanged)
     # ─────────────────────────────────────────────────────────────────
     @classmethod
     def _process_specific_parameters(
