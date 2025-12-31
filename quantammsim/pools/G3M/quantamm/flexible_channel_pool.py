@@ -297,7 +297,7 @@ class FlexibleChannelPool(MomentumPool):
             w = jnp.clip(prev + dw, 1e-12)
             w /= w.sum()
             ent = -jnp.sum(w * jnp.log(w))
-            γ = jnp.minimum(jnp.sqrt(jnp.clip(H_min / ent, 0.0)), 1.0)
+            γ = jnp.minimum(jnp.sqrt(jnp.clip( ent / H_min, 0.0)), 1.0)
             return w, dw * γ
 
         _, shrunk = lax.scan(shrink, prev0, raw_ts)  # (Tʹ-1 , N)
