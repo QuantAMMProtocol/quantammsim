@@ -28,6 +28,10 @@ Thumbs.db
 #ignore data files
 *.png
 *.parquet
+*.json
+*.txt
+*.msgpack
+*.html
 
 # ignore compiled files
 *.com
@@ -139,6 +143,8 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+*.html
+*.doctree
 
 # PyBuilder
 .pybuilder/

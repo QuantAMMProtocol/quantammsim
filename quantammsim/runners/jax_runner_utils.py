@@ -5,7 +5,7 @@ import json
 import hashlib
 
 # again, this only works on startup!
-from jax import config
+from jax import config, jit
 from jax.tree_util import tree_map, tree_reduce
 import jax.numpy as jnp
 
@@ -617,13 +617,14 @@ def nan_rollback(grads, params, old_params):
     return params
 
 
+@jit
 def has_nan_grads(grad_tree):
     """Check if any gradients contain NaN values."""
-
-    def check_nan(x):
-        return jnp.any(jnp.isnan(x))
-
-    return tree_reduce(lambda acc, x: acc or check_nan(x), grad_tree, initializer=False)
+    return tree_reduce(
+        lambda acc, x: jnp.logical_or(acc, jnp.any(jnp.isnan(x))),
+        grad_tree,
+        initializer=False,
+    )
 
 
 def nan_param_reinit(
@@ -839,7 +840,7 @@ def unpermute_list_of_params(list_of_params):
 
 
 def get_trades_and_fees(
-    run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_fees_df, do_test_period=False
+    run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_fees_df, lp_supply_df, do_test_period=False
 ):
     """
     Process trade and fee data for a simulation run.
@@ -859,6 +860,8 @@ def get_trades_and_fees(
         DataFrame containing gas cost data
     arb_fees_df : pd.DataFrame, optional
         DataFrame containing arbitrage fee data
+    lp_supply_df : pd.DataFrame, optional
+        DataFrame containing LP supply data
     do_test_period : bool, optional
         Whether to process data for a test period after training period (default False)
 
@@ -958,16 +961,40 @@ def get_trades_and_fees(
             if arb_fees_df is not None
             else None
         )
+    lp_supply_array = (
+        raw_fee_like_amounts_to_fee_like_array(
+            lp_supply_df,
+            run_fingerprint["startDateString"],
+            run_fingerprint["endDateString"],
+            names=["lp_supply"],
+            fill_method="ffill",
+        )
+        if lp_supply_df is not None
+        else None
+    )
     if do_test_period:
+        test_lp_supply_array = (
+            raw_fee_like_amounts_to_fee_like_array(
+                lp_supply_df,
+                run_fingerprint["endDateString"],
+                run_fingerprint["endTestDateString"],
+                names=["lp_supply"],
+                fill_method="ffill",
+            )
+            if lp_supply_df is not None
+            else None
+        )
         return {
             "train_period_trades": train_period_trades,
             "test_period_trades": test_period_trades,
             "fees_array": fees_array,
             "gas_cost_array": gas_cost_array,
             "arb_fees_array": arb_fees_array,
+            "lp_supply_array": lp_supply_array,
             "test_fees_array": test_fees_array,
             "test_gas_cost_array": test_gas_cost_array,
             "test_arb_fees_array": test_arb_fees_array,
+            "test_lp_supply_array": test_lp_supply_array,
         }
     else:
         return {
@@ -975,6 +1002,7 @@ def get_trades_and_fees(
             "fees_array": fees_array,
             "gas_cost_array": gas_cost_array,
             "arb_fees_array": arb_fees_array,
+            "lp_supply_array": lp_supply_array,
         }
 
 

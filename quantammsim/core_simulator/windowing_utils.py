@@ -279,3 +279,63 @@ def raw_fee_like_amounts_to_fee_like_array(
         return np.array(full_index_df, dtype=np.float64)[:,0]
     else:
         return np.array(full_index_df, dtype=np.float64)
+
+def filter_coarse_weights_by_data_indices(coarse_weights, data_dict):
+        """
+        Filter coarse weights to match the start and end indices from data_dict.
+
+        Parameters
+        ----------
+        coarse_weights : dict
+            Dictionary containing 'unix_values' and 'weights' arrays
+        data_dict : dict
+            Dictionary containing 'unix_values', 'start_idx' and 'end_idx'
+
+        Returns
+        -------
+        dict
+            Copy of coarse_weights with filtered weights array
+        """
+        weights_start_index = np.where(
+            coarse_weights["unix_values"]
+            == data_dict["unix_values"][data_dict["start_idx"]]
+        )[0][0]
+        weights_end_index = np.where(
+            coarse_weights["unix_values"]
+            == data_dict["unix_values"][data_dict["end_idx"] - 1]
+        )[0][0]
+
+        filtered_weights = coarse_weights.copy()
+        filtered_weights["weights"] = filtered_weights["weights"][
+            weights_start_index : (weights_end_index + 1)
+        ]
+        return filtered_weights
+
+def filter_reserves_by_data_indices(reserves, unix_values, data_dict):
+    """
+    Filter reserves to match the start and end indices from data_dict.
+    """
+    reserves_start_index = np.where(
+        unix_values
+        == data_dict["unix_values"][data_dict["start_idx"]]
+    )[0][0]
+    reserves_end_index = np.where(
+        unix_values
+        == data_dict["unix_values"][data_dict["end_idx"] - 1]
+    )[0][0]
+
+    filtered_reserves = reserves.copy()
+    filtered_reserves = filtered_reserves[
+        reserves_start_index : (reserves_end_index + 1)
+    ]
+    return filtered_reserves
+
+def filter_reserves_by_given_timestamp(reserves, unix_values, timestamp):
+    """
+    Filter reserves to match the start and end indices from data_dict.
+    """
+    reserves_index = np.where(
+        unix_values
+        == timestamp
+    )[0][0]
+    return reserves[reserves_index].copy()

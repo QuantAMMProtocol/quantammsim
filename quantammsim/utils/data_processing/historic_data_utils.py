@@ -6,9 +6,6 @@ import pyarrow as pa
 import matplotlib.pyplot as plt
 import dask.dataframe as dd
 
-# from numba import jit
-# from numba import float64
-# from numba import int64
 from Historic_Crypto import Cryptocurrencies, HistoricalData
 from datetime import datetime, timezone
 from importlib import resources as impresources
@@ -29,6 +26,9 @@ from quantammsim.utils.data_processing.amalgamated_data_utils import (
 )
 from quantammsim.utils.data_processing.cmc_data_utils import (
     fill_missing_rows_with_cmc_historical_data,
+)
+from quantammsim.utils.data_processing.st0x_data_utils import (
+    fill_missing_rows_with_st0x_historical_data,
 )
 from quantammsim.utils.data_processing.aerodrome_data_utils import (
     fill_missing_rows_with_aerodrome_data,
@@ -534,36 +534,6 @@ def update_historic_data_old(token, root):
     plt.savefig(final_plot_filename)
     csvData = csvData.sort_values(by="unix", ascending=True)
 
-    # usdtData = pd.read_csv(
-    #     root + "USDT_USD.csv",
-    #     dtype={
-    #         "unix": float,
-    #         "date": "string",
-    #         "symbol": "string",
-    #         "open": float,
-    #         "high": float,
-    #         "low": float,
-    #         "close": float,
-    #         "Volume USD": float,
-    #         "Volume " + token: float,
-    #         "tradecount": float,
-    #     },
-    # )
-
-    # usdtData = usdtData.set_index("unix")
-    # usdtToken = token + "/USDT"
-    # for index, row in csvData.iterrows():
-    #    try:
-    #        if(usdtToken == row["symbol"]):
-    #            usdtRow = usdtData.iloc[usdtData.index.get_loc(row["unix"])]
-    #            csvData.at[index, "close"] = row["close"] * usdtRow["close"]
-    #            csvData.at[index, "open"] = row["open"] * usdtRow["open"]
-    #            csvData.at[index, "low"] = row["low"] * usdtRow["low"]
-    #            csvData.at[index, "high"] = row["high"] * usdtRow["high"]
-    #            csvData.at[index, "symbol"] = token + "/USD"
-    #    except  Exception as e:
-    #        print(e)
-
     csvData["unix"] = csvData["unix"].astype(int)
     cols = csvData.columns.tolist()
     cols.remove("unix")
@@ -759,10 +729,7 @@ def get_binance_vision_data(token, numeraire, root):
     result_df = result_df.sort_values("unix").reset_index(drop=True)
     
     return result_df
-    
-    # except Exception as e:
-    #     print(f"Failed to get Binance vision data for {token}: {str(e)}")
-    #     return None
+
 
 def update_historic_data(token, root):
     """Update historic data for a given token, handling reruns gracefully.
@@ -903,8 +870,15 @@ def update_historic_data(token, root):
         )
         if filled_cmc_unix_values:
             filled_timestamps["CMC_Historical"] = filled_cmc_unix_values
+    if token in ["TSLA", "JNJ"]:
+        print("Filling remaining gaps with st0x historical data")
+        concated_df, filled_st0x_unix_values = fill_missing_rows_with_st0x_historical_data(
+            concated_df.copy(), root + "st0x_data/", token
+        )
+        if filled_st0x_unix_values:
+            filled_timestamps["ST0X_Historical"] = filled_st0x_unix_values
     # if ticker is in a harcoded dict, load from parquet
-
+        
     assets = [
         {"pair_id": 3010484, "token": "PEPE"},
         {"pair_id": 1497, "token": "BAL"},
@@ -951,23 +925,12 @@ def update_historic_data(token, root):
         raise Exception(
             f"Invalid unix timestamp difference found at index {first_invalid} ({invalid_time}). All differences should be 60000ms (1 minute)."
         )
-    # concated_df.to_csv(minutePath, index=False)
     # Create visualization of the data sources
     print(f"Creating visualizations for {token}")
     plot_exchange_data(concated_df.set_index("unix"), token, minutePath[:-4] + ".png")
 
     plt.figure(figsize=(14, 7))
 
-    # Plot original Binance data
-    # plt.plot(
-    #     pd.to_datetime(concated_df["unix"], unit="ms"),
-    #     concated_df["close"],
-    #     label="Binance Minute Data",
-    #     linestyle="None",
-    #     marker="o",
-    #     markersize=0.5,
-    #     color="yellow",
-    # )
 
     # Plot filled data from each source
     colors = {
@@ -1114,7 +1077,6 @@ def get_historic_parquet_data(
     list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
 ):
     firstTicker = list_of_tickers[0]
-    # print('cwd: ', os.getcwd())
     filename = firstTicker + "_USD.parquet"
     renamedCols = [col + "_" + firstTicker for col in cols]
     baseCols = [col for col in cols]
@@ -1133,7 +1095,6 @@ def get_historic_parquet_data(
         for ticker in list_of_tickers[1:]:
             renamedCols = [col + "_" + ticker for col in cols]
             baseCols = [col for col in cols]
-            # path = root + ticker + "_USD.csv"
             filename = ticker + "_USD.parquet"
             if root is not None:
                 inp_file = Path(root) / filename
@@ -1166,7 +1127,6 @@ def get_historic_csv_data(
     else:
         inp_file = impresources.files(data) / filename
     with inp_file.open("rt") as f:
-        # path = root + firstTicker + "_USD.csv"
         csvData = pd.read_csv(
             f,
             dtype={
@@ -1370,22 +1330,7 @@ def get_data_dict(
             items=["close_" + ticker for ticker in list_of_tickers]
         ).to_numpy()
         
-        # if return_slippage:
-        #     spread = np.array(
-        #         [
-        #             edge(
-        #                 open=price_data["open_" + ticker],
-        #                 high=price_data["high_" + ticker],
-        #                 low=price_data["low_" + ticker],
-        #                 close=price_data["close_" + ticker],
-        #                 sign=False,
-        #             )
-        #             for ticker in list_of_tickers
-        #         ]
-        #     ).clip(min=0.0)
-        #     # set spread of USD asset to 0
-        #     idx = list_of_tickers.index("DAI")
-        #     spread[idx] = 0.0
+
     elif data_kind == "mc":
         if price_data is None:
             mc_tokens = [
@@ -1517,11 +1462,7 @@ def get_data_dict(
                     price_data_filtered.copy(), ticker
                 )
             )
-            # per_ticker_daily_volume = calculate_daily_volume_from_minute_data(
-            #     price_data_filtered, ticker
-            # )
             annualised_daily_volatility.append(per_ticker_annualised_daily_volatility)
-            # daily_volume.append(per_ticker_daily_volume)
             daily_OHLC_data = resample_minute_level_OHLC_data_to_daily(
                 price_data_filtered.copy(), ticker
             )
@@ -1531,11 +1472,6 @@ def get_data_dict(
         annualised_daily_volatility = np.repeat(
             np.array(annualised_daily_volatility).T, 1440, axis=0
         )
-        # set spread of USD asset to 0
-        # idx = list_of_tickers.index("DAI")
-        # spread[idx, :] = 0.0
-    # if return_slippage:
-    # spread_rebased = spread[remainder_idx:]
     if return_supply:
         print("Loading market cap data for supply calculation")
         supply_data = []
@@ -1570,18 +1506,12 @@ def get_data_dict(
 
             supply_data.append(aligned_supply["circulating_supply"].values)
 
-    # prices_rebased = prices_rebased[: round(n_chunks * chunk_period)]
-    # unix_values_rebased = unix_values_rebased[: round(n_chunks * chunk_period)]
-
-    # if return_slippage:
-    #     spread_rebased = spread[: int(n_chunks) * chunk_period]
     if return_gas_prices:
         if root is not None:
             inp_file = Path(root) / "export-AvgGasPrice.csv"
         else:
             inp_file = impresources.files(data) / "export-AvgGasPrice.csv"
         with inp_file.open("rt") as f:
-            # path = root + firstTicker + "_USD.csv"
             gas_prices = (
                 pd.read_csv(f)
                 .filter(items=["UnixTimeStamp", "Value (Wei)"])
