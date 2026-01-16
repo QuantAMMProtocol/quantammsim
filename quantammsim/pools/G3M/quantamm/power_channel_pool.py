@@ -162,11 +162,16 @@ class PowerChannelPool(MomentumPool):
         to be applied to the previous weights. These will be refined in subsequent steps.
         """
         use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-        if use_pre_exp_scaling and params.get("logit_pre_exp_scaling") is not None:
+        # pre_exp_scaling: prefer sp_ (squareplus), fall back to logit_ (sigmoid), then raw_ (2^x)
+        if use_pre_exp_scaling and params.get("sp_pre_exp_scaling") is not None:
+            pre_exp_scaling = squareplus(params.get("sp_pre_exp_scaling"))
+        elif use_pre_exp_scaling and params.get("logit_pre_exp_scaling") is not None:
             logit_pre_exp_scaling = params.get("logit_pre_exp_scaling")
             pre_exp_scaling = jnp.exp(logit_pre_exp_scaling) / (
                 1 + jnp.exp(logit_pre_exp_scaling)
             )
+        elif use_pre_exp_scaling and params.get("raw_pre_exp_scaling") is not None:
+            pre_exp_scaling = 2 ** params.get("raw_pre_exp_scaling")
         else:
             pre_exp_scaling = 0.5
         memory_days = lamb_to_memory_days_clipped(
@@ -174,7 +179,11 @@ class PowerChannelPool(MomentumPool):
             run_fingerprint["chunk_period"],
             run_fingerprint["max_memory_days"],
         )
-        k = calc_k(params, memory_days)
+        # k: prefer sp_k (squareplus), fall back to log_k (2^x)
+        if params.get("sp_k") is not None:
+            k = squareplus(params.get("sp_k")) * memory_days
+        else:
+            k = calc_k(params, memory_days)
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
         gradients = calc_gradients(
             params,
@@ -185,7 +194,11 @@ class PowerChannelPool(MomentumPool):
             cap_lamb=True,
         )
 
-        exponents = jnp.clip(squareplus(params.get("raw_exponents")), a_min=1.0, a_max=None)
+        # exponents: prefer sp_exponents, fall back to raw_exponents (both use squareplus)
+        if params.get("sp_exponents") is not None:
+            exponents = jnp.clip(squareplus(params.get("sp_exponents")), a_min=1.0, a_max=None)
+        else:
+            exponents = jnp.clip(squareplus(params.get("raw_exponents")), a_min=1.0, a_max=None)
 
         raw_weight_outputs = _jax_power_channel_weight_update(
             gradients, k, exponents, pre_exp_scaling=pre_exp_scaling
@@ -275,7 +288,8 @@ class PowerChannelPool(MomentumPool):
         initial_weights_logits = process_initial_values(
             initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets, force_scalar=False
         )
-        log_k = np.log2(
+        # sp_k: use inverse_squareplus to get param that squareplus maps to initial_k_per_day
+        sp_k = inverse_squareplus_np(
             process_initial_values(
                 initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets, force_scalar=run_fingerprint["optimisation_settings"]["force_scalar"]
             )
@@ -312,20 +326,33 @@ class PowerChannelPool(MomentumPool):
                 [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
             )
 
+        # sp_pre_exp_scaling: use inverse_squareplus to get param that squareplus maps to initial_pre_exp_scaling
+        sp_pre_exp_scaling_np = inverse_squareplus_np(
+            initial_values_dict["initial_pre_exp_scaling"]
+        )
         if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            raw_exponents = np.array([[initial_values_dict["initial_raw_exponents"]]] * n_parameter_sets)
+            sp_pre_exp_scaling = np.array([[sp_pre_exp_scaling_np]] * n_parameter_sets)
         else:
-            raw_exponents = np.array(
+            sp_pre_exp_scaling = np.array(
+                [[sp_pre_exp_scaling_np] * n_assets] * n_parameter_sets
+            )
+
+        # sp_exponents: the initial_raw_exponents value is already in the right form for squareplus
+        if run_fingerprint["optimisation_settings"]["force_scalar"]:
+            sp_exponents = np.array([[initial_values_dict["initial_raw_exponents"]]] * n_parameter_sets)
+        else:
+            sp_exponents = np.array(
                 [[initial_values_dict["initial_raw_exponents"]] * n_assets]
                 * n_parameter_sets
             )
 
         params = {
-            "log_k": log_k,
+            "sp_k": sp_k,
             "logit_lamb": logit_lamb,
             "logit_delta_lamb": logit_delta_lamb,
             "initial_weights_logits": initial_weights_logits,
-            "raw_exponents": raw_exponents,
+            "sp_exponents": sp_exponents,
+            "sp_pre_exp_scaling": sp_pre_exp_scaling,
             "subsidary_params": [],
         }
 
@@ -334,21 +361,23 @@ class PowerChannelPool(MomentumPool):
 
     @classmethod
     def _process_specific_parameters(cls, update_rule_parameters, run_fingerprint):
-        """Process mean reversion channel specific parameters."""
+        """Process power channel specific parameters."""
         result = {}
 
         # Process specific parameters
         for urp in update_rule_parameters:
             if urp.name == "exponent":
-                raw_exponents = [float(inverse_squareplus_np(val)) for val in urp.value]
-                if len(raw_exponents) != len(run_fingerprint["tokens"]):
-                    raw_exponents = [raw_exponents[0]] * len(run_fingerprint["tokens"])
-                result["raw_exponents"] = np.array(raw_exponents)
+                # Use inverse_squareplus to get sp_exponents param
+                sp_exponents = [float(inverse_squareplus_np(val)) for val in urp.value]
+                if len(sp_exponents) != len(run_fingerprint["tokens"]):
+                    sp_exponents = [sp_exponents[0]] * len(run_fingerprint["tokens"])
+                result["sp_exponents"] = np.array(sp_exponents)
             elif urp.name == "pre_exp_scaling":
-                raw_pre_exp_scaling = [float(get_raw_value(val)) for val in urp.value]
-                if len(raw_pre_exp_scaling) != len(run_fingerprint["tokens"]):
-                    raw_pre_exp_scaling = [raw_pre_exp_scaling[0]] * len(run_fingerprint["tokens"])
-                result["raw_pre_exp_scaling"] = np.array(raw_pre_exp_scaling)
+                # Use inverse_squareplus to get sp_pre_exp_scaling param
+                sp_pre_exp_scaling = [float(inverse_squareplus_np(val)) for val in urp.value]
+                if len(sp_pre_exp_scaling) != len(run_fingerprint["tokens"]):
+                    sp_pre_exp_scaling = [sp_pre_exp_scaling[0]] * len(run_fingerprint["tokens"])
+                result["sp_pre_exp_scaling"] = np.array(sp_pre_exp_scaling)
 
         return result
 
