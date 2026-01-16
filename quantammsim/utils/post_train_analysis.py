@@ -44,6 +44,26 @@ def calculate_period_metrics(results_dict, prices=None):
         results_dict["value"],
         initial_reserves=results_dict["reserves"][0],
     )
+    annualised_returns = _calculate_return_value(
+        "annualised_returns",
+        results_dict["reserves"],
+        price_data,
+        results_dict["value"],
+    )
+    annualised_returns_over_hodl = _calculate_return_value(
+        "annualised_returns_over_hodl",
+        results_dict["reserves"],
+        price_data,
+        results_dict["value"],
+        initial_reserves=results_dict["reserves"][0],
+    )
+    annualised_returns_over_uniform_hodl = _calculate_return_value(
+        "annualised_returns_over_uniform_hodl",
+        results_dict["reserves"],
+        price_data,
+        results_dict["value"],
+        initial_reserves=results_dict["reserves"][0],
+    )
     daily_returns = (
         jnp.diff(results_dict["value"][::24 * 60])
         / results_dict["value"][::24 * 60][:-1]
@@ -77,6 +97,9 @@ def calculate_period_metrics(results_dict, prices=None):
         "return": float(returns),
         "returns_over_hodl": float(returns_over_hodl),
         "returns_over_uniform_hodl": float(returns_over_uniform_hodl),
+        "annualised_returns": float(annualised_returns),
+        "annualised_returns_over_hodl": float(annualised_returns_over_hodl),
+        "annualised_returns_over_uniform_hodl": float(annualised_returns_over_uniform_hodl),
         "ulcer": float(ulcer_index),
         "calmar": float(calmar_ratio),
         "sterling": float(sterling_ratio),
