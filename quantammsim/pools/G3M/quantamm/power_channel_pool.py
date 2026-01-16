@@ -251,7 +251,7 @@ class PowerChannelPool(MomentumPool):
         any necessary transformations (e.g., logit transformations for lambda).
         """
 
-        np.random.seed(0)
+        # np.random.seed(0)
 
         # We need to initialise the weights for each parameter set
         # If a vector is provided in the inital values dict, we use
