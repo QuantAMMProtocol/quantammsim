@@ -533,11 +533,24 @@ def create_opt_state_in_axes_dict(opt_state):
     return tree_map(_create_axes_for_leaf, opt_state)
 
 
-def _create_base_optimizer(optimizer_type, learning_rate):
-    """Create a base optimizer with the given learning rate."""
-    # note that learning_rate can be a float or a schedule
+def _create_base_optimizer(optimizer_type, learning_rate, weight_decay=0.0):
+    """Create a base optimizer with the given learning rate.
+
+    Parameters
+    ----------
+    optimizer_type : str
+        One of "adam", "adamw", or "sgd"
+    learning_rate : float or optax schedule
+        Learning rate or schedule
+    weight_decay : float
+        Weight decay coefficient for adamw (default 0.0)
+    """
     if optimizer_type == "adam":
         return optax.adam(learning_rate=learning_rate)
+    elif optimizer_type == "adamw":
+        # AdamW applies weight decay directly to weights, not through gradients
+        # This is more principled than L2 reg with Adam
+        return optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
     elif optimizer_type == "sgd":
         return optax.sgd(learning_rate=learning_rate)
     else:
@@ -590,9 +603,10 @@ def _create_lr_schedule(settings):
 def create_optimizer_chain(run_fingerprint):
     settings = run_fingerprint["optimisation_settings"]
     base_lr = settings["base_lr"]
+    weight_decay = settings.get("weight_decay", 0.0)  # Default to no weight decay
 
     # Create base optimizer with lr=base_lr (will be scaled by schedule)
-    base_optimizer = _create_base_optimizer(settings["optimiser"], base_lr)
+    base_optimizer = _create_base_optimizer(settings["optimiser"], base_lr, weight_decay)
 
     # Create vanilla LR schedule
     lr_schedule = _create_lr_schedule(settings)
@@ -602,9 +616,14 @@ def create_optimizer_chain(run_fingerprint):
 
     # Add plateau reduction if enabled
     if settings["use_plateau_decay"]:
+        # Use atol (absolute tolerance) instead of default rtol (relative tolerance)
+        # because we pass -objective_value (negative values) for maximization.
+        # rtol compares value < best * (1 - rtol) which misbehaves for negative values.
         plateau_reduction = optax.contrib.reduce_on_plateau(
             factor=settings["decay_lr_ratio"],
             patience=settings["decay_lr_plateau"],
+            rtol=0.0,
+            atol=1e-4,
         )
         optimizer_chain = optax.chain(optimizer_chain, plateau_reduction)
 
