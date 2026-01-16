@@ -602,11 +602,10 @@ def _create_lr_schedule(settings):
 
 def create_optimizer_chain(run_fingerprint):
     settings = run_fingerprint["optimisation_settings"]
-    base_lr = settings["base_lr"]
     weight_decay = settings.get("weight_decay", 0.0)  # Default to no weight decay
 
-    # Create base optimizer with lr=base_lr (will be scaled by schedule)
-    base_optimizer = _create_base_optimizer(settings["optimiser"], base_lr, weight_decay)
+    # Create base optimizer with lr=1.0 - the schedule will control the actual LR
+    base_optimizer = _create_base_optimizer(settings["optimiser"], 1.0, weight_decay)
 
     # Create vanilla LR schedule
     lr_schedule = _create_lr_schedule(settings)
