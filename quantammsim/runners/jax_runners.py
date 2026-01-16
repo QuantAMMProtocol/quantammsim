@@ -428,10 +428,6 @@ def train_on_historic_data(
                 params, objective_value, old_params, grads = update(
                     params, start_indexes, local_learning_rate
                 )
-            print("params")
-            print({k: params[k] for k in sorted(params)})
-            # print("old_params")
-            # print({k: old_params[k] for k in sorted(old_params)})
             params = nan_param_reinit(
                 params,
                 grads,
