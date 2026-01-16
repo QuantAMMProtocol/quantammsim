@@ -57,6 +57,10 @@ from quantammsim.runners.jax_runner_utils import (
 from quantammsim.pools.creator import create_pool
 
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
+from quantammsim.utils.post_train_analysis import (
+    calculate_period_metrics,
+    calculate_continuous_test_metrics,
+)
 import jax.numpy as jnp
 
 
@@ -282,7 +286,7 @@ def train_on_historic_data(
     )
 
     returns_train_static_dict = base_static_dict.copy()
-    returns_train_static_dict["return_val"] = "returns_over_hodl"
+    returns_train_static_dict["return_val"] = "returns"
     returns_train_static_dict["bout_length"] = data_dict["bout_length"]
     partial_forward_pass_nograd_batch_returns_train = Partial(
         forward_pass_nograd,
@@ -291,11 +295,21 @@ def train_on_historic_data(
     )
 
     returns_test_static_dict = base_static_dict.copy()
-    returns_test_static_dict["return_val"] = "returns_over_hodl"
+    returns_test_static_dict["return_val"] = "returns"
     returns_test_static_dict["bout_length"] = data_dict["bout_length_test"]
     partial_forward_pass_nograd_batch_returns_test = Partial(
         forward_pass_nograd,
         static_dict=Hashabledict(returns_test_static_dict),
+        pool=pool,
+    )
+
+    # Create continuous forward pass that covers train + test period
+    continuous_static_dict = base_static_dict.copy()
+    continuous_static_dict["return_val"] = "reserves_and_values"
+    continuous_static_dict["bout_length"] = data_dict["bout_length"] + data_dict["bout_length_test"]
+    partial_forward_pass_nograd_batch_continuous = Partial(
+        forward_pass_nograd,
+        static_dict=Hashabledict(continuous_static_dict),
         pool=pool,
     )
 
@@ -313,11 +327,16 @@ def train_on_historic_data(
             in_axes=nograd_in_axes,
         )
     )
+    partial_forward_pass_nograd_continuous = jit(
+        vmap(
+            partial_forward_pass_nograd_batch_continuous,
+            in_axes=nograd_in_axes,
+        )
+    )
 
     partial_fixed_training_step = Partial(
         partial_training_step, start_index=(data_dict["start_idx"], 0)
     )
-
 
     best_train_objective = -100.0
     local_learning_rate = run_fingerprint["optimisation_settings"]["base_lr"]
@@ -330,7 +349,7 @@ def train_on_historic_data(
     min_lr = run_fingerprint["optimisation_settings"]["min_lr"]
 
     if run_fingerprint["optimisation_settings"]["method"] == "gradient_descent":
-        if run_fingerprint["optimisation_settings"]["optimiser"] == "adam":
+        if run_fingerprint["optimisation_settings"]["optimiser"] in ["adam", "adamw"]:
             import optax
 
             # Create Adam optimizer with the specified learning rate
@@ -382,6 +401,7 @@ def train_on_historic_data(
         paramSteps = []
         trainingSteps = []
         testSteps = []
+        continuousTestSteps = []
         objectiveSteps = []
         learningRateSteps = []
         interationsSinceImprovementSteps = []
@@ -395,7 +415,10 @@ def train_on_historic_data(
                 key=random_key,
                 optimisation_settings=run_fingerprint["optimisation_settings"],
             )
-            if run_fingerprint["optimisation_settings"]["optimiser"] == "adam":
+            if run_fingerprint["optimisation_settings"]["optimiser"] in [
+                "adam",
+                "adamw",
+            ]:
                 # Adam update with state maintenance
                 params, objective_value, old_params, grads, opt_state = update(
                     params, start_indexes, local_learning_rate, opt_state
@@ -405,7 +428,10 @@ def train_on_historic_data(
                 params, objective_value, old_params, grads = update(
                     params, start_indexes, local_learning_rate
                 )
-
+            print("params")
+            print({k: params[k] for k in sorted(params)})
+            # print("old_params")
+            # print({k: old_params[k] for k in sorted(old_params)})
             params = nan_param_reinit(
                 params,
                 grads,
@@ -416,23 +442,67 @@ def train_on_historic_data(
                 n_parameter_sets,
             )
 
-
-            train_objective = partial_forward_pass_nograd_returns_train(
+            # Run continuous forward pass covering train + test period
+            # This is vmapped over parameter sets, so outputs have shape:
+            # - value: (n_parameter_sets, time_steps)
+            # - reserves: (n_parameter_sets, time_steps, n_assets)
+            continuous_outputs = partial_forward_pass_nograd_continuous(
                 params,
                 (data_dict["start_idx"], 0),
                 data_dict["prices"],
             )
 
-            test_objective = partial_forward_pass_nograd_returns_test(
-                params,
-                (data_dict["start_idx_test"], 0),
-                data_dict["prices_test"],
-            )
+            # Process each parameter set individually
+            # (metric functions expect single parameter set, not batched)
+            train_metrics_list = []
+            test_metrics_list = []
+            continuous_test_metrics_list = []
 
+            for param_idx in range(n_parameter_sets):
+                # Extract outputs for this parameter set
+                # After indexing: value (time_steps,), reserves (time_steps, n_assets)
+                param_value = continuous_outputs["value"][param_idx]
+                param_reserves = continuous_outputs["reserves"][param_idx]
+
+                # Slice train period
+                train_dict = {
+                    "value": param_value[:data_dict["bout_length"]],
+                    "reserves": param_reserves[:data_dict["bout_length"]],
+                }
+                train_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"]]
+
+                # Slice test period
+                test_dict = {
+                    "value": param_value[data_dict["bout_length"]:],
+                    "reserves": param_reserves[data_dict["bout_length"]:],
+                }
+                test_prices = data_dict["prices"][data_dict["start_idx"] + data_dict["bout_length"]:data_dict["start_idx"] + data_dict["bout_length"] + data_dict["bout_length_test"]]
+
+                # Create continuous dict for test metrics
+                param_continuous_dict = {
+                    "value": param_value,
+                    "reserves": param_reserves,
+                }
+                continuous_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"] + data_dict["bout_length_test"]]
+
+                # Calculate comprehensive metrics
+                train_metrics = calculate_period_metrics(train_dict, train_prices)
+                test_metrics = calculate_period_metrics(test_dict, test_prices)
+                continuous_test_metrics = calculate_continuous_test_metrics(
+                    param_continuous_dict,
+                    data_dict["bout_length"],
+                    data_dict["bout_length_test"],
+                    continuous_prices
+                )
+
+                train_metrics_list.append(train_metrics)
+                test_metrics_list.append(test_metrics)
+                continuous_test_metrics_list.append(continuous_test_metrics)
 
             paramSteps.append(deepcopy(params))
-            trainingSteps.append(np.array(train_objective.copy()))
-            testSteps.append(np.array(test_objective.copy()))
+            trainingSteps.append(train_metrics_list)
+            testSteps.append(test_metrics_list)
+            continuousTestSteps.append(continuous_test_metrics_list)
             objectiveSteps.append(np.array(objective_value.copy()))
             learningRateSteps.append(deepcopy(local_learning_rate))
             interationsSinceImprovementSteps.append(iterations_since_improvement)
@@ -452,9 +522,31 @@ def train_on_historic_data(
             if step % iterations_per_print == 0:
                 if verbose:
                     print(step, "Objective: ", objective_value)
-                    print(step, "train (returns over hodl)", train_objective)
-                    print(step, "test (returns over hodl)", test_objective)
-                    print(step, "local_learning_rate", local_learning_rate)
+                    print(
+                        step,
+                        "train_metrics",
+                        (
+                            [
+                                (
+                                    t["returns_over_uniform_hodl"],
+                                    t["sharpe"],
+                                )
+                                for t in train_metrics_list
+                            ]
+                            if train_metrics_list
+                            else None
+                        ),
+                    )
+                    print(step, "test_metrics", (
+                            [
+                                (t["returns_over_uniform_hodl"], t["sharpe"])
+                                for t in test_metrics_list
+                            ]
+                            if test_metrics_list
+                            else None
+                        ),
+                    )
+                    # print(step, "local_learning_rate", local_learning_rate)
                 save_multi_params(
                     deepcopy(run_fingerprint),
                     paramSteps,
@@ -464,12 +556,14 @@ def train_on_historic_data(
                     learningRateSteps,
                     interationsSinceImprovementSteps,
                     stepSteps,
+                    continuousTestSteps,
                     sorted_tokens=True,
                 )
 
                 paramSteps = []
                 trainingSteps = []
                 testSteps = []
+                continuousTestSteps = []
                 objectiveSteps = []
                 learningRateSteps = []
                 interationsSinceImprovementSteps = []
