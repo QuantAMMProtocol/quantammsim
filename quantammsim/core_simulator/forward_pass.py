@@ -288,14 +288,35 @@ def _calculate_return_value(
         * (daily_returns.mean() / daily_returns.std()),
         "daily_log_sharpe": lambda: _daily_log_sharpe(value_over_time),
         "returns": lambda: value_over_time[-1] / value_over_time[0] - 1.0,
+        "annualised_returns": lambda: (
+            (value_over_time[-1] / value_over_time[0])
+            ** (365 * 24 * 60 / (value_over_time.shape[0] - 1))
+            - 1.0
+        ),
         "returns_over_hodl": lambda: (
             value_over_time[-1]
             / (stop_gradient(initial_reserves) * local_prices[-1]).sum()
             - 1.0
         ),
+        "annualised_returns_over_hodl": lambda: (
+            (
+                value_over_time[-1]
+                / (stop_gradient(initial_reserves) * local_prices[-1]).sum()
+            )
+            ** (365 * 24 * 60 / (value_over_time.shape[0] - 1))
+            - 1.0
+        ),
         "returns_over_uniform_hodl": lambda: (
             value_over_time[-1]
             / (stop_gradient((initial_reserves * local_prices[0]).sum()/(reserves.shape[1]*local_prices[0])) * local_prices[-1]).sum()
+            - 1.0
+        ),
+        "annualised_returns_over_uniform_hodl": lambda: (
+            (
+                value_over_time[-1]
+                / (stop_gradient((initial_reserves * local_prices[0]).sum()/(reserves.shape[1]*local_prices[0])) * local_prices[-1]).sum()
+            )
+            ** (365 * 24 * 60 / (value_over_time.shape[0] - 1))
             - 1.0
         ),
         "greatest_draw_down": lambda: jnp.min(value_over_time - value_over_time[0])
@@ -602,6 +623,18 @@ def forward_pass(
                     params, static_dict, prices, start_index, additional_oracle_input=None
                 )
             })
+        # if static_dict.get("calculate_final_weights", True):
+        #     return_dict.update(
+        #         {
+        #             "final_weights": pool.calculate_final_weights(
+        #                 params,
+        #                 static_dict,
+        #                 prices,
+        #                 start_index,
+        #                 additional_oracle_input=None,
+        #             )
+        #         }
+        #     )
         return return_dict
     return _calculate_return_value(
         return_val,
