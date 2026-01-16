@@ -110,6 +110,7 @@ def save_multi_params(
     local_learning_rate,
     iterations_since_improvement,
     steps,
+    continuous_test_metrics=None,
     sorted_tokens=True,
 ):
     """
@@ -122,9 +123,9 @@ def save_multi_params(
     params : list
         List of parameter dictionaries to save
     test_objective : list
-        List of objective values on test set for each parameter set
+        List of objective values/metrics on test set for each parameter set
     train_objective : list
-        List of objective values on training set for each parameter set
+        List of objective values/metrics on training set for each parameter set
     objective : list
         List of overall objective values for each parameter set
     local_learning_rate : list
@@ -133,6 +134,8 @@ def save_multi_params(
         List tracking iterations without improvement for each parameter set
     steps : list
         List of step counts for each parameter set
+    continuous_test_metrics : list, optional
+        List of continuous test metrics for each parameter set
     sorted_tokens : bool, optional
         Whether tokens are sorted alphabetically, by default True
 
@@ -156,6 +159,8 @@ def save_multi_params(
         param["hessian_trace"] = 0
         param["local_learning_rate"] = local_learning_rate[i]
         param["iterations_since_improvement"] = iterations_since_improvement[i]
+        if continuous_test_metrics is not None:
+            param["continuous_test_metrics"] = continuous_test_metrics[i]
         params[i] = dict_of_jnp_to_np(param)
     if sorted_tokens:
         run_fingerprint["alphabetic"] = True
