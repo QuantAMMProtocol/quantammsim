@@ -141,7 +141,7 @@ def train_on_historic_data(
         "initial_log_amplitude": run_fingerprint["initial_log_amplitude"],
         "initial_raw_width": run_fingerprint["initial_raw_width"],
         "initial_raw_exponents": run_fingerprint["initial_raw_exponents"],
-        "initial_pre_exp_scaling": run_fingerprint["maximum_change"],
+        "initial_pre_exp_scaling": run_fingerprint["initial_pre_exp_scaling"],
     }
 
     unique_tokens = get_unique_tokens(run_fingerprint)
