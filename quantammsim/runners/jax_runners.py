@@ -162,7 +162,7 @@ def train_on_historic_data(
 
     np.random.seed(0)
 
-    max_memory_days = 365.0
+    max_memory_days = run_fingerprint["max_memory_days"]
 
     if price_data is None:
         if verbose:
@@ -845,6 +845,7 @@ def do_run_on_historic_data(
     lp_supply_df=None,
     do_test_period=False,
     low_data_mode=False,
+    preslice_burnin=True,
 ):
     """
     Execute a simulation run on historic data using specified parameters and settings.
@@ -887,6 +888,10 @@ def do_run_on_historic_data(
         Whether to run the test period (default is False).
     low_data_mode : bool, optional
         Whether to delete the prices from the output dictionary (default is False).
+    preslice_burnin : bool, optional
+        Whether to pre-slice the data to only include max_memory_days of burn-in
+        plus the training period (default is True). Set to False to load all
+        available history (useful for testing/debugging).
 
     Returns:
     --------
@@ -970,6 +975,7 @@ def do_run_on_historic_data(
         max_mc_version=run_fingerprint["optimisation_settings"]["max_mc_version"],
         price_data=price_data,
         do_test_period=do_test_period,
+        preslice_burnin=preslice_burnin,
     )
     max_memory_days = data_dict["max_memory_days"]
     if verbose:
@@ -995,7 +1001,7 @@ def do_run_on_historic_data(
         "arb_fees": arb_fees if arb_fees is not None else run_fingerprint["arb_fees"],
         "gas_cost": gas_cost if gas_cost is not None else run_fingerprint["gas_cost"],
         "run_type": "normal",
-        "max_memory_days": 365.0,
+        "max_memory_days": run_fingerprint["max_memory_days"],
         "training_data_kind": run_fingerprint["optimisation_settings"][
             "training_data_kind"
         ],
@@ -1298,7 +1304,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         "arb_fees": arb_fees if arb_fees is not None else run_fingerprint["arb_fees"],
         "gas_cost": gas_cost if gas_cost is not None else run_fingerprint["gas_cost"],
         "run_type": "normal",
-        "max_memory_days": 365.0,
+        "max_memory_days": run_fingerprint["max_memory_days"],
         "training_data_kind": run_fingerprint["optimisation_settings"][
             "training_data_kind"
         ],

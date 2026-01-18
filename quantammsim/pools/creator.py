@@ -24,6 +24,7 @@ from quantammsim.hooks.versus_rebalancing import (
     CalculateLossVersusRebalancing,
     CalculateRebalancingVersusRebalancing,
 )
+from quantammsim.hooks.bounded_weights_hook import BoundedWeightsHook
 
 # Create a type variable bound to AbstractPool
 P = TypeVar("P", bound=AbstractPool)
@@ -168,6 +169,10 @@ def create_pool(rule):
     elif hook_type == "rvr":
         return create_hooked_pool_instance(
             base_pool.__class__, CalculateRebalancingVersusRebalancing
+        )
+    elif hook_type == "bounded":
+        return create_hooked_pool_instance(
+            base_pool.__class__, BoundedWeightsHook
         )
     elif hook_type is not None:
         raise NotImplementedError(f"Unknown hook type: {hook_type}")

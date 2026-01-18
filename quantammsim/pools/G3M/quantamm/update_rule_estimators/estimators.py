@@ -61,6 +61,7 @@ def calc_gradients(
     max_memory_days,
     use_alt_lamb,
     cap_lamb=True,
+    safety_margin_multiplier=5.0,
 ):
     """Calculate time-weighted price gradients for TFMM strategy implementation.
 
@@ -87,6 +88,10 @@ def calc_gradients(
     cap_lamb : bool, optional
         Whether to apply maximum memory day restriction to lambda parameters.
         Defaults to True
+    safety_margin_multiplier : float, optional
+        Multiplier for padding length in GPU/conv path. Higher values ensure EWMA
+        convergence but use more memory. Theoretical minimum is ~1.9x for 99.9%
+        convergence. Defaults to 5.0
 
     Returns
     -------
@@ -97,12 +102,12 @@ def calc_gradients(
     Notes
     -----
     The function implements two calculation paths:
-    
+
     1. GPU path: Uses convolution operations for efficient parallel computation
        - Pads input data to handle initialization
        - Creates specialized kernels for EWMA calculation
        - Leverages GPU parallelism for efficient computation
-    
+
     2. CPU path: Uses scan operations for sequential computation
        - More memory efficient
        - Uses a scan operation, so is fundamentally sequential
@@ -118,7 +123,7 @@ def calc_gradients(
     if cap_lamb:
         capped_lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
         lamb = capped_lamb
-    safety_margin_max_memory_days = max_memory_days * 5.0
+    safety_margin_max_memory_days = max_memory_days * safety_margin_multiplier
     # we can use alt lamb / alt memory days to allow different parts of
     # update rules to act over different memory lengths
     if use_alt_lamb:
