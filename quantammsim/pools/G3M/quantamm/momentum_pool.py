@@ -31,6 +31,10 @@ from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
     calc_gradients_with_readout,
     calc_k,
 )
+from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives import (
+    _jax_gradient_scan_function,
+)
+from quantammsim.core_simulator.param_utils import jax_memory_days_to_lamb
 
 from typing import Dict, Any, Optional
 from functools import partial
@@ -258,7 +262,124 @@ class MomentumPool(TFMMBasePool):
             (int((bout_length) / chunk_period) + additional_offset, n_assets),
         )
         return {"gradients": gradients, "running_a": running_a, "ewma": ewma}
-            
+
+    def _get_estimator_constants(self, lamb: jnp.ndarray) -> tuple:
+        """
+        Compute G_inf and saturated_b from lambda.
+
+        These are the standard constants needed for the gradient estimator:
+        - G_inf = 1 / (1 - lamb)
+        - saturated_b = lamb / ((1 - lamb) ** 3)
+
+        Parameters
+        ----------
+        lamb : jnp.ndarray
+            Lambda (decay) parameter
+
+        Returns
+        -------
+        tuple
+            (G_inf, saturated_b)
+        """
+        G_inf = 1.0 / (1.0 - lamb)
+        saturated_b = lamb / ((1 - lamb) ** 3)
+        return G_inf, saturated_b
+
+    def get_initial_carry(
+        self,
+        initial_price: jnp.ndarray,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+    ) -> Dict[str, jnp.ndarray]:
+        """
+        Initialize the carry state for scanning.
+
+        For MomentumPool, the carry consists of:
+        - ewma: initialized to the first price
+        - running_a: initialized to zeros (steady-state for constant input)
+
+        Parameters
+        ----------
+        initial_price : jnp.ndarray
+            First price observation (shape: n_assets,)
+        params : Dict[str, Any]
+            Pool parameters
+        run_fingerprint : Dict[str, Any]
+            Simulation settings
+
+        Returns
+        -------
+        Dict[str, jnp.ndarray]
+            Initial carry state with 'ewma' and 'running_a' keys.
+        """
+        n_assets = initial_price.shape[0]
+        return {
+            "ewma": initial_price,
+            "running_a": jnp.zeros((n_assets,), dtype=jnp.float64),
+        }
+
+    def calculate_single_step_weight_update(
+        self,
+        carry: Dict[str, jnp.ndarray],
+        price: jnp.ndarray,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+    ) -> tuple:
+        """
+        Calculate a single step of momentum weight update.
+
+        This mirrors the production implementation where we:
+        1. Update the gradient estimator state (ewma, running_a)
+        2. Compute the gradient from the updated state
+        3. Apply the momentum weight update formula
+
+        Parameters
+        ----------
+        carry : Dict[str, jnp.ndarray]
+            Current state with 'ewma' and 'running_a'
+        price : jnp.ndarray
+            Current price observation (shape: n_assets,)
+        params : Dict[str, Any]
+            Pool parameters (logit_lamb, log_k, etc.)
+        run_fingerprint : Dict[str, Any]
+            Simulation settings (chunk_period, max_memory_days, etc.)
+
+        Returns
+        -------
+        tuple
+            (new_carry, raw_weight_output)
+        """
+        # Compute lambda with max_memory_days capping
+        lamb = calc_lamb(params)
+        max_lamb = jax_memory_days_to_lamb(
+            run_fingerprint["max_memory_days"], run_fingerprint["chunk_period"]
+        )
+        lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+
+        # Get estimator constants
+        G_inf, saturated_b = self._get_estimator_constants(lamb)
+
+        # Use the estimator primitive for gradient calculation
+        carry_list = [carry["ewma"], carry["running_a"]]
+        new_carry_list, gradient = _jax_gradient_scan_function(
+            carry_list, price, G_inf, lamb, saturated_b
+        )
+
+        # Compute memory days and k for weight update
+        memory_days = lamb_to_memory_days_clipped(
+            lamb, run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"]
+        )
+        k = calc_k(params, memory_days)
+
+        # Apply momentum weight update
+        raw_weight_output = _jax_momentum_weight_update(gradient, k)
+
+        new_carry = {
+            "ewma": new_carry_list[0],
+            "running_a": new_carry_list[1],
+        }
+
+        return new_carry, raw_weight_output
 
     @partial(jit, static_argnums=(3))
     def fine_weight_output(

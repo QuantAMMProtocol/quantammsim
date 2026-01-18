@@ -30,11 +30,15 @@ from quantammsim.core_simulator.param_utils import (
     calc_lamb,
     inverse_squareplus_np,
     get_raw_value,
+    jax_memory_days_to_lamb,
 )
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
     calc_gradients,
     calc_k,
     squareplus,
+)
+from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives import (
+    _jax_gradient_scan_function,
 )
 
 from typing import Dict, Any, Optional
@@ -205,6 +209,96 @@ class PowerChannelPool(MomentumPool):
         )
 
         return raw_weight_outputs
+
+    def calculate_single_step_weight_update(
+        self,
+        carry: Dict[str, jnp.ndarray],
+        price: jnp.ndarray,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+    ) -> tuple:
+        """
+        Calculate a single step of power channel weight update.
+
+        This mirrors the production implementation where we:
+        1. Update the gradient estimator state (ewma, running_a)
+        2. Compute the gradient from the updated state
+        3. Apply the power channel weight update formula
+
+        Parameters
+        ----------
+        carry : Dict[str, jnp.ndarray]
+            Current state with 'ewma' and 'running_a'
+        price : jnp.ndarray
+            Current price observation (shape: n_assets,)
+        params : Dict[str, Any]
+            Pool parameters (logit_lamb, sp_k, sp_exponents, etc.)
+        run_fingerprint : Dict[str, Any]
+            Simulation settings (chunk_period, max_memory_days, use_pre_exp_scaling, etc.)
+
+        Returns
+        -------
+        tuple
+            (new_carry, raw_weight_output)
+        """
+        # Compute lambda with max_memory_days capping
+        lamb = calc_lamb(params)
+        max_lamb = jax_memory_days_to_lamb(
+            run_fingerprint["max_memory_days"], run_fingerprint["chunk_period"]
+        )
+        lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+
+        # Get estimator constants (inherited from MomentumPool)
+        G_inf, saturated_b = self._get_estimator_constants(lamb)
+
+        # Use the estimator primitive for gradient calculation
+        carry_list = [carry["ewma"], carry["running_a"]]
+        new_carry_list, gradient = _jax_gradient_scan_function(
+            carry_list, price, G_inf, lamb, saturated_b
+        )
+
+        # Compute memory days and k for weight update
+        memory_days = lamb_to_memory_days_clipped(
+            lamb, run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"]
+        )
+
+        # k: prefer sp_k (squareplus), fall back to log_k (2^x)
+        if params.get("sp_k") is not None:
+            k = squareplus(params.get("sp_k")) * memory_days
+        else:
+            k = calc_k(params, memory_days)
+
+        # pre_exp_scaling: prefer sp_ (squareplus), fall back to logit_ (sigmoid), then raw_ (2^x)
+        use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
+        if use_pre_exp_scaling and params.get("sp_pre_exp_scaling") is not None:
+            pre_exp_scaling = squareplus(params.get("sp_pre_exp_scaling"))
+        elif use_pre_exp_scaling and params.get("logit_pre_exp_scaling") is not None:
+            logit_pre_exp_scaling = params.get("logit_pre_exp_scaling")
+            pre_exp_scaling = jnp.exp(logit_pre_exp_scaling) / (
+                1 + jnp.exp(logit_pre_exp_scaling)
+            )
+        elif use_pre_exp_scaling and params.get("raw_pre_exp_scaling") is not None:
+            pre_exp_scaling = 2 ** params.get("raw_pre_exp_scaling")
+        else:
+            pre_exp_scaling = 0.5
+
+        # exponents: prefer sp_exponents, fall back to raw_exponents (both use squareplus)
+        if params.get("sp_exponents") is not None:
+            exponents = jnp.clip(squareplus(params.get("sp_exponents")), a_min=1.0, a_max=None)
+        else:
+            exponents = jnp.clip(squareplus(params.get("raw_exponents")), a_min=1.0, a_max=None)
+
+        # Apply power channel weight update
+        raw_weight_output = _jax_power_channel_weight_update(
+            gradient, k, exponents, pre_exp_scaling=pre_exp_scaling
+        )
+
+        new_carry = {
+            "ewma": new_carry_list[0],
+            "running_a": new_carry_list[1],
+        }
+
+        return new_carry, raw_weight_output
 
     def init_base_parameters(
         self,
