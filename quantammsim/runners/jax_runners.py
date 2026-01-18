@@ -6,6 +6,7 @@ from tqdm import tqdm
 import math
 import gc
 import os
+import optuna
 from jax.tree_util import Partial
 from jax import jit, vmap, random
 from jax import clear_caches
@@ -39,6 +40,7 @@ from quantammsim.core_simulator.param_utils import (
 
 from quantammsim.core_simulator.result_exporter import (
     save_multi_params,
+    save_optuna_results_sgd_format,
 )
 
 from quantammsim.runners.jax_runner_utils import (
@@ -637,6 +639,11 @@ def train_on_historic_data(
             "log_scale": False,
         }
 
+        # Get optuna-specific settings
+        optuna_settings = run_fingerprint["optimisation_settings"]["optuna_settings"]
+        expand_around = optuna_settings.get("expand_around", True)
+        overfitting_penalty = optuna_settings.get("overfitting_penalty", 0.0)
+
         # Create objective with parameter configuration and validation
         def objective(trial):
             try:
@@ -651,10 +658,8 @@ def train_on_historic_data(
                     for param_key in param_config:
                         param_config[param_key]["scalar"] = True
 
-                # param_config["log_k"]["scalar"] = False
-                # param_config["k_per_day"]["scalar"] = False
                 trial_params = create_trial_params(
-                    trial, {}, params, run_fingerprint, n_assets, expand_around=True
+                    trial, {}, params, run_fingerprint, n_assets, expand_around=expand_around
                 )
                 # Training evaluation
                 train_outputs = partial_forward_pass_nograd_batch_reserves_values_train(
@@ -679,7 +684,7 @@ def train_on_historic_data(
                     )
                     train_objectives.append(train_value)
 
-                mean_train_value = jnp.sum(train_objectives) / len(train_objectives)
+                mean_train_value = jnp.sum(jnp.array(train_objectives)) / len(train_objectives)
                 train_value = _calculate_return_value(
                     run_fingerprint["return_val"],
                     train_outputs["reserves"],
@@ -797,7 +802,16 @@ def train_on_historic_data(
                         -np.std(train_objectives),  # stability
                     )
                 else:
-                    return mean_train_value  # Still optimize on training value
+                    # Apply overfitting penalty if configured
+                    # Penalty is proportional to (train - validation) gap when train > validation
+                    if overfitting_penalty > 0:
+                        train_val_gap = float(mean_train_value) - float(validation_value)
+                        if train_val_gap > 0:  # Only penalize if training better than validation
+                            penalty = overfitting_penalty * train_val_gap
+                            penalized_value = float(mean_train_value) - penalty
+                            trial.set_user_attr("overfitting_penalty_applied", float(penalty))
+                            return penalized_value
+                    return mean_train_value  # Optimize on training value
 
             except Exception as e:
                 optuna_manager.logger.error(f"Trial {trial.number} failed: {str(e)}")
@@ -805,8 +819,29 @@ def train_on_historic_data(
 
         # Run optimization
         optuna_manager.optimize(objective)
+
+        # Check if any trials completed successfully
+        completed_trials = [
+            t for t in optuna_manager.study.trials
+            if t.state == optuna.trial.TrialState.COMPLETE
+        ]
+
+        # Save results in SGD-compatible format for unified downstream analysis
+        if completed_trials:
+            sgd_format_path = save_optuna_results_sgd_format(
+                run_fingerprint=run_fingerprint,
+                study=optuna_manager.study,
+                n_assets=n_assets,
+                sorted_tokens=True,
+            )
+            if verbose:
+                print(f"Saved SGD-compatible results to: {sgd_format_path}")
+
         if verbose:
-            if run_fingerprint["optimisation_settings"]["optuna_settings"][
+            if not completed_trials:
+                print("WARNING: No trials completed successfully!")
+                print(f"  Total trials attempted: {len(optuna_manager.study.trials)}")
+            elif run_fingerprint["optimisation_settings"]["optuna_settings"][
                 "multi_objective"
             ]:
                 print("Best trials:")
@@ -824,7 +859,11 @@ def train_on_historic_data(
                     f"  Validation Value: {optuna_manager.study.best_trial.user_attrs['validation_value']}"
                 )
                 print(f"  Params: {optuna_manager.study.best_params}")
-        return optuna_manager.study.best_trials
+
+        if completed_trials:
+            return optuna_manager.study.best_trials
+        else:
+            return None
     else:
         raise NotImplementedError
 

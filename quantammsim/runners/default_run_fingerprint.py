@@ -80,6 +80,14 @@ optuna_settings = {
     },
     "multi_objective": False,
     "make_scalar": False,
+    # expand_around: If True, search within a window around initial param values.
+    # If False, search the full range specified in parameter_config.
+    # For financial strategies, False often gives better exploration.
+    "expand_around": True,
+    # overfitting_penalty: Penalize solutions where train performance >> validation.
+    # Value of 0.5 means: if train=1.0 and val=0.5, penalty = 0.5 * (1.0 - 0.5) = 0.25
+    # Set to 0.0 to disable. Range [0.0, 1.0] recommended.
+    "overfitting_penalty": 0.0,
     "parameter_config": {
         "memory_length": {
             "low": 1,

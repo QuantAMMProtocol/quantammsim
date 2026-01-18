@@ -151,15 +151,44 @@ def create_trial_params(
 def generate_evaluation_points(
     start_idx, end_idx, bout_length, n_points, min_spacing, random_key=0
 ):
+    """Generate evaluation start points for optuna-style hyperparameter search.
+
+    If the training period is exactly equal to bout_length (no room for multiple
+    windows), returns just the start_idx as a single evaluation point.
+
+    Parameters
+    ----------
+    start_idx : int
+        Start index of the training period
+    end_idx : int
+        End index of the training period
+    bout_length : int
+        Length of each evaluation window
+    n_points : int
+        Desired number of evaluation points
+    min_spacing : int
+        Minimum spacing between evaluation points (currently unused)
+    random_key : int
+        Random seed for reproducibility
+
+    Returns
+    -------
+    list
+        List of evaluation start indices
+    """
     np.random.seed(random_key)
     available_range = end_idx - start_idx - bout_length
+
+    # Handle edge case where training period equals bout_length
+    if available_range <= 0:
+        # Only one evaluation point possible: the start of the training period
+        return [start_idx]
 
     # Generate random points
     points = np.random.randint(0, available_range, n_points)
     points = np.sort(points)  # Sort for better coverage
 
     # Generate equally spaced points
-    spacing = available_range // (n_points - 1)
     equal_points = np.linspace(0, available_range, n_points, dtype=int)
 
     # Combine with random points and sort
@@ -337,31 +366,61 @@ class OptunaManager:
         study_dir = self.output_dir / f"study_{timestamp}"
         study_dir.mkdir(parents=True, exist_ok=True)
 
+        # Check if any trials completed
+        completed_trials = [
+            t for t in self.study.trials if t.state == optuna.trial.TrialState.COMPLETE
+        ]
+        has_completed_trials = len(completed_trials) > 0
+
         # Save study statistics
         if self.multi_objective:
-            pareto_front_trials = self.study.best_trials  # Returns list of all non-dominated trials
-            best_balanced_params, best_balanced_values, best_balanced_idx = get_best_balanced_solution(self.study)
-            stats = {
-                "best_params": [trial.params for trial in pareto_front_trials],
-                "best_values": [trial.values for trial in pareto_front_trials],
-                "n_trials": len(self.study.trials),
-                "datetime": timestamp,
-                "run_fingerprint": self.run_fingerprint,
-                "best_balanced_params": best_balanced_params,
-                "best_balanced_values": best_balanced_values,
-                "best_balanced_idx": int(best_balanced_idx),
-            }
+            if has_completed_trials:
+                pareto_front_trials = self.study.best_trials  # Returns list of all non-dominated trials
+                best_balanced_params, best_balanced_values, best_balanced_idx = get_best_balanced_solution(self.study)
+                stats = {
+                    "best_params": [trial.params for trial in pareto_front_trials],
+                    "best_values": [trial.values for trial in pareto_front_trials],
+                    "n_trials": len(self.study.trials),
+                    "n_completed_trials": len(completed_trials),
+                    "datetime": timestamp,
+                    "run_fingerprint": self.run_fingerprint,
+                    "best_balanced_params": best_balanced_params,
+                    "best_balanced_values": best_balanced_values,
+                    "best_balanced_idx": int(best_balanced_idx),
+                }
+            else:
+                stats = {
+                    "best_params": None,
+                    "best_values": None,
+                    "n_trials": len(self.study.trials),
+                    "n_completed_trials": 0,
+                    "datetime": timestamp,
+                    "run_fingerprint": self.run_fingerprint,
+                    "error": "No trials completed successfully",
+                }
         else:
-            stats = {
-                "best_value": float(self.study.best_value),  # Convert to Python float
-                "best_params": {
-                    k: float(v)
-                    for k, v in self.study.best_params.items()  # Convert to Python float
-                },
-                "n_trials": len(self.study.trials),
-                "datetime": timestamp,
-                "run_fingerprint": self.run_fingerprint,
-            }
+            if has_completed_trials:
+                stats = {
+                    "best_value": float(self.study.best_value),  # Convert to Python float
+                    "best_params": {
+                        k: float(v)
+                        for k, v in self.study.best_params.items()  # Convert to Python float
+                    },
+                    "n_trials": len(self.study.trials),
+                    "n_completed_trials": len(completed_trials),
+                    "datetime": timestamp,
+                    "run_fingerprint": self.run_fingerprint,
+                }
+            else:
+                stats = {
+                    "best_value": None,
+                    "best_params": None,
+                    "n_trials": len(self.study.trials),
+                    "n_completed_trials": 0,
+                    "datetime": timestamp,
+                    "run_fingerprint": self.run_fingerprint,
+                    "error": "No trials completed successfully",
+                }
 
         with open(study_dir / "study_results.json", "w") as f:
             json.dump(stats, f, indent=2)
