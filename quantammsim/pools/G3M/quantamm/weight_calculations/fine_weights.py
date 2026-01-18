@@ -219,13 +219,13 @@ def _jax_calc_coarse_weights(
         asset_arange=asset_arange,
         n_assets=n_assets,
         alt_lamb=alt_lamb,
-        min_weights_per_asset=min_weights_per_asset,
-        max_weights_per_asset=max_weights_per_asset,
         interpol_num=weight_interpolation_period + 1,
         maximum_change=maximum_change,
         raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
         ste_max_change=ste_max_change,
         ste_min_max_weight=ste_min_max_weight,
+        max_weights_per_asset=max_weights_per_asset,
+        min_weights_per_asset=min_weights_per_asset,
         use_per_asset_bounds=use_per_asset_bounds,
     )
 
@@ -243,13 +243,13 @@ def _jax_calc_coarse_weights(
             asset_arange=asset_arange,
             n_assets=n_assets,
             alt_lamb=alt_lamb,
-            min_weights_per_asset=min_weights_per_asset,
-            max_weights_per_asset=max_weights_per_asset,
             interpol_num=2,  # interpol_num = 2 for immediate weight change
             maximum_change=maximum_change,
             raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
             ste_max_change=ste_max_change,
             ste_min_max_weight=ste_min_max_weight,
+            max_weights_per_asset=max_weights_per_asset,
+            min_weights_per_asset=min_weights_per_asset,
             use_per_asset_bounds=use_per_asset_bounds,
         )
         carry_list_init = [target_weights_init]
@@ -583,7 +583,7 @@ def _jax_calc_fine_weight_ends_only_scan_function(
 
 @partial(
     jit,
-    static_argnums=(8, 9, 10, 11, 12, 13),
+    static_argnums=(6, 7, 8, 9, 10, 13),
 )
 def _jax_calc_coarse_weight_scan_function(
     carry_list,
@@ -592,13 +592,13 @@ def _jax_calc_coarse_weight_scan_function(
     asset_arange,
     n_assets,
     alt_lamb,
-    min_weights_per_asset,
-    max_weights_per_asset,
     interpol_num,
     maximum_change,
-    raw_weight_outputs_are_themselves_weights,
-    ste_max_change,
-    ste_min_max_weight,
+    raw_weight_outputs_are_themselves_weights=False,
+    ste_max_change=False,
+    ste_min_max_weight=False,
+    max_weights_per_asset=None,
+    min_weights_per_asset=None,
     use_per_asset_bounds=False,
 ):
     """
@@ -611,14 +611,14 @@ def _jax_calc_coarse_weight_scan_function(
         asset_arange (ndarray): Array of asset indices.
         n_assets (int): Number of assets.
         alt_lamb (float): Alternative lambda value.
-        min_weights_per_asset (ndarray): Per-asset minimum weights (applied before uniform guardrails).
-        max_weights_per_asset (ndarray): Per-asset maximum weights (applied before uniform guardrails).
         interpol_num (int): Number of interpolation steps.
         maximum_change (float): Maximum allowed weight change.
-        raw_weight_outputs_are_themselves_weights (bool): Whether raw weight outputs represent target weights (True) or weight changes (False).
-        ste_max_change (bool): Use straight-through estimator for max change.
-        ste_min_max_weight (bool): Use straight-through estimator for min/max weight.
-        use_per_asset_bounds (bool): Whether to apply per-asset bounds (static flag).
+        raw_weight_outputs_are_themselves_weights (bool, optional): Whether raw weight outputs represent target weights (True) or weight changes (False). Defaults to False.
+        ste_max_change (bool, optional): Use straight-through estimator for max change. Defaults to False.
+        ste_min_max_weight (bool, optional): Use straight-through estimator for min/max weight. Defaults to False.
+        max_weights_per_asset (ndarray, optional): Per-asset maximum weights (applied before uniform guardrails). Defaults to None.
+        min_weights_per_asset (ndarray, optional): Per-asset minimum weights (applied before uniform guardrails). Defaults to None.
+        use_per_asset_bounds (bool, optional): Whether to apply per-asset bounds (static flag). Defaults to False.
 
     Returns:
         list: List containing the final weights.

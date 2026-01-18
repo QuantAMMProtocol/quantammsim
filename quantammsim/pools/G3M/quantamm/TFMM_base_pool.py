@@ -17,7 +17,8 @@ else:
 import jax.numpy as jnp
 from jax import jit, vmap
 from jax import devices, device_put
-from jax.lax import stop_gradient, dynamic_slice
+from jax.lax import stop_gradient, dynamic_slice, scan
+from jax.tree_util import Partial
 
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.pools.G3M.quantamm.quantamm_reserves import (
@@ -25,7 +26,18 @@ from quantammsim.pools.G3M.quantamm.quantamm_reserves import (
     _jax_calc_quantAMM_reserves_with_fees_using_precalcs,
     _jax_calc_quantAMM_reserves_with_dynamic_inputs,
 )
-from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import _jax_calc_coarse_weights
+from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
+    _jax_calc_coarse_weights,
+    _jax_calc_coarse_weight_scan_function,
+    scale_diff,
+    ste,
+)
+from quantammsim.pools.G3M.quantamm.weight_calculations.linear_interpolation import (
+    _jax_calc_linear_interpolation_block,
+)
+from quantammsim.pools.G3M.quantamm.weight_calculations.non_linear_interpolation import (
+    _jax_calc_approx_optimal_interpolation_block,
+)
 from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 from quantammsim.core_simulator.param_utils import memory_days_to_lamb
 import numpy as np
@@ -277,7 +289,7 @@ class TFMMBasePool(AbstractPool):
         # if lp_supply_array is not provided, we set it to a constant of 1.0
         if lp_supply_array is None:
             lp_supply_array = jnp.array(1.0)
-        
+
         lp_supply_array_broadcast = jnp.broadcast_to(
             lp_supply_array, (max_len,) + lp_supply_array.shape[1:]
         )
@@ -331,6 +343,495 @@ class TFMMBasePool(AbstractPool):
             Raw weight adjustment values
         """
         pass
+
+    @abstractmethod
+    def calculate_single_step_weight_update(
+        self,
+        carry: Dict[str, jnp.ndarray],
+        price: jnp.ndarray,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+    ) -> tuple:
+        """
+        Calculate a single step of weight update, mirroring production implementation.
+
+        This method represents how the strategy would run in production, where we are
+        given current state, receive a new price observation, and output new state
+        along with the weight update for this timestep.
+
+        This is the core primitive that enables causality-preserving simulation.
+        The state (carry) contains all information needed to compute the next step
+        without any look-ahead bias.
+
+        Parameters
+        ----------
+        carry : Dict[str, jnp.ndarray]
+            Current state containing estimator variables. Typical keys include:
+            - 'ewma': Exponentially weighted moving average of prices (shape: n_assets,)
+            - 'running_a': Running accumulator for gradient estimation (shape: n_assets,)
+            Additional keys may be present depending on the pool implementation.
+        price : jnp.ndarray
+            Current price observation (shape: n_assets,)
+        params : Dict[str, Any]
+            Pool parameters (k, lamb, etc.)
+        run_fingerprint : Dict[str, Any]
+            Simulation settings (chunk_period, max_memory_days, etc.)
+
+        Returns
+        -------
+        tuple
+            (new_carry, raw_weight_output) where:
+            - new_carry: Updated state dict with same structure as input carry
+            - raw_weight_output: Weight update/output for this timestep (shape: n_assets,)
+        """
+        pass
+
+    @abstractmethod
+    def get_initial_carry(
+        self,
+        initial_price: jnp.ndarray,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+    ) -> Dict[str, jnp.ndarray]:
+        """
+        Initialize the carry state for scanning.
+
+        This creates the initial state needed to begin the scan-based
+        weight calculation. The initial state is typically derived from
+        the first price observation.
+
+        Parameters
+        ----------
+        initial_price : jnp.ndarray
+            First price observation (shape: n_assets,)
+        params : Dict[str, Any]
+            Pool parameters
+        run_fingerprint : Dict[str, Any]
+            Simulation settings
+
+        Returns
+        -------
+        Dict[str, jnp.ndarray]
+            Initial carry state with keys appropriate for this pool type.
+        """
+        pass
+
+    def calculate_raw_weights_outputs_via_scan(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+    ) -> jnp.ndarray:
+        """
+        Calculate raw weight outputs using jax.lax.scan over single-step updates.
+
+        This method produces the same outputs as calculate_raw_weights_outputs,
+        but uses an explicit scan loop over the single-step update method.
+        This mirrors how the strategy would be executed in production, where
+        we process one price at a time.
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters
+        run_fingerprint : Dict[str, Any]
+            Simulation settings
+        prices : jnp.ndarray
+            Historical price data (shape: time_steps, n_assets)
+        additional_oracle_input : Optional[jnp.ndarray]
+            Extra data for weight calculation (not used in scan-based approach)
+
+        Returns
+        -------
+        jnp.ndarray
+            Raw weight outputs with same shape and values as calculate_raw_weights_outputs
+        """
+        chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
+        n_assets = chunkwise_price_values.shape[1]
+
+        # Initialize carry from first price
+        initial_carry = self.get_initial_carry(
+            chunkwise_price_values[0], params, run_fingerprint
+        )
+
+        # Create scan function with params/fingerprint bound
+        scan_fn = Partial(
+            self.calculate_single_step_weight_update,
+            params=params,
+            run_fingerprint=run_fingerprint,
+        )
+
+        # Run scan over remaining prices (starting from index 1)
+        final_carry, raw_weight_outputs = scan(
+            scan_fn, initial_carry, chunkwise_price_values[1:]
+        )
+
+        # Note: The scan produces outputs for prices[1:], which gives (n-1) outputs.
+        # This matches calc_gradients which returns gradients[1:] (dropping first zero row).
+        return raw_weight_outputs
+
+    def get_initial_weight_carry(
+        self,
+        initial_weights: jnp.ndarray,
+    ) -> Dict[str, jnp.ndarray]:
+        """
+        Initialize the weight carry state for scanning with guardrails.
+
+        Parameters
+        ----------
+        initial_weights : jnp.ndarray
+            Initial portfolio weights (shape: n_assets,)
+
+        Returns
+        -------
+        Dict[str, jnp.ndarray]
+            Initial weight carry state with 'prev_actual_weight'
+        """
+        return {"prev_actual_weight": initial_weights}
+
+    def calculate_single_step_guardrailed_weight(
+        self,
+        estimator_carry: Dict[str, jnp.ndarray],
+        weight_carry: Dict[str, jnp.ndarray],
+        price: jnp.ndarray,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+    ) -> tuple:
+        """
+        Compute raw weight update and apply guardrails for a single step.
+
+        This method calls calculate_single_step_weight_update to get the raw
+        weight output, then applies guardrails (normalization, min/max constraints,
+        max change limits).
+
+        Parameters
+        ----------
+        estimator_carry : Dict[str, jnp.ndarray]
+            Current estimator state (ewma, running_a, etc.)
+        weight_carry : Dict[str, jnp.ndarray]
+            Current weight state with 'prev_actual_weight'
+        price : jnp.ndarray
+            Current price observation (shape: n_assets,)
+        params : Dict[str, Any]
+            Pool parameters
+        run_fingerprint : Dict[str, Any]
+            Simulation settings
+
+        Returns
+        -------
+        tuple
+            (new_estimator_carry, new_weight_carry, step_output) where:
+            - new_estimator_carry: Updated estimator state
+            - new_weight_carry: Updated weight state with 'prev_actual_weight'
+            - step_output: Dict with 'actual_start', 'scaled_diff', 'target_weight'
+        """
+        # Step 1: Get raw weight output from the pool-specific calculation
+        new_estimator_carry, raw_weight_output = self.calculate_single_step_weight_update(
+            estimator_carry, price, params, run_fingerprint
+        )
+
+        # Step 2: Apply guardrails using the existing low-level function
+        n_assets = run_fingerprint["n_assets"]
+        minimum_weight = run_fingerprint.get("minimum_weight")
+        if minimum_weight is None:
+            minimum_weight = 0.1 / n_assets
+        maximum_change = run_fingerprint["maximum_change"]
+        weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
+        interpol_num = weight_interpolation_period + 1
+        ste_max_change = run_fingerprint.get("ste_max_change", False)
+        ste_min_max_weight = run_fingerprint.get("ste_min_max_weight", False)
+
+        asset_arange = jnp.arange(n_assets)
+
+        carry_list = [weight_carry["prev_actual_weight"]]
+        new_carry_list, (actual_start, scaled_diff, target_weight) = _jax_calc_coarse_weight_scan_function(
+            carry_list,
+            raw_weight_output,
+            minimum_weight=minimum_weight,
+            asset_arange=asset_arange,
+            n_assets=n_assets,
+            alt_lamb=None,
+            interpol_num=interpol_num,
+            maximum_change=maximum_change,
+            raw_weight_outputs_are_themselves_weights=False,
+            ste_max_change=ste_max_change,
+            ste_min_max_weight=ste_min_max_weight,
+            max_weights_per_asset=None,
+            min_weights_per_asset=None,
+            use_per_asset_bounds=False,
+        )
+
+        new_weight_carry = {"prev_actual_weight": new_carry_list[0]}
+        step_output = {
+            "actual_start": actual_start,
+            "scaled_diff": scaled_diff,
+            "target_weight": target_weight,
+        }
+
+        return new_estimator_carry, new_weight_carry, step_output
+
+    def calculate_single_step_interpolation_block(
+        self,
+        estimator_carry: Dict[str, jnp.ndarray],
+        weight_carry: Dict[str, jnp.ndarray],
+        price: jnp.ndarray,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+    ) -> tuple:
+        """
+        Compute a single interpolation block of fine weights for one price step.
+
+        This method calls calculate_single_step_guardrailed_weight to get the
+        guardrailed weight outputs, then generates the full interpolation block.
+
+        Parameters
+        ----------
+        estimator_carry : Dict[str, jnp.ndarray]
+            Current estimator state
+        weight_carry : Dict[str, jnp.ndarray]
+            Current weight state with 'prev_actual_weight'
+        price : jnp.ndarray
+            Current price observation
+        params : Dict[str, Any]
+            Pool parameters
+        run_fingerprint : Dict[str, Any]
+            Simulation settings
+
+        Returns
+        -------
+        tuple
+            (new_estimator_carry, new_weight_carry, interpolation_block) where:
+            - new_estimator_carry: Updated estimator state
+            - new_weight_carry: Updated weight state
+            - interpolation_block: Array of shape (chunk_period, n_assets)
+        """
+        # Get guardrailed weight outputs
+        new_estimator_carry, new_weight_carry, step_output = self.calculate_single_step_guardrailed_weight(
+            estimator_carry, weight_carry, price, params, run_fingerprint
+        )
+
+        actual_start = step_output["actual_start"]
+        scaled_diff = step_output["scaled_diff"]
+
+        n_assets = run_fingerprint["n_assets"]
+        weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
+        chunk_period = run_fingerprint["chunk_period"]
+        weight_interpolation_method = run_fingerprint.get("weight_interpolation_method", "linear")
+
+        interpol_num = weight_interpolation_period + 1
+        num = chunk_period + 1
+
+        # Create interpolation arrays
+        interpol_arange = jnp.expand_dims(jnp.arange(start=0, stop=interpol_num), 1)
+        fine_ones = jnp.ones((num - 1, n_assets))
+
+        # Generate interpolation block
+        if weight_interpolation_method == "linear":
+            interpolation_block = _jax_calc_linear_interpolation_block(
+                actual_start, scaled_diff, interpol_arange, fine_ones, interpol_num
+            )
+        elif weight_interpolation_method == "approx_optimal":
+            interpolation_block = _jax_calc_approx_optimal_interpolation_block(
+                actual_start, scaled_diff, interpol_arange, fine_ones, interpol_num
+            )
+        else:
+            raise ValueError(f"Invalid interpolation method: {weight_interpolation_method}")
+
+        return new_estimator_carry, new_weight_carry, interpolation_block
+
+    def calculate_fine_weights_via_scan(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        start_index: jnp.ndarray,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+    ) -> jnp.ndarray:
+        """
+        Calculate fine weights using sequential single-step interpolation blocks.
+
+        This method produces the same outputs as calculate_weights, but uses
+        a truly sequential approach:
+        1. Warm up the estimator over the burn-in period (single-step updates)
+        2. Reset weight state to initial_weights at bout start
+        3. Scan over bout prices using calculate_single_step_interpolation_block
+        4. Concatenate interpolation blocks
+
+        This mirrors how weights would be computed in a production system
+        processing prices one step at a time.
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters
+        run_fingerprint : Dict[str, Any]
+            Simulation settings including chunk_period, bout_length, n_assets
+        prices : jnp.ndarray
+            Full price history including burn-in period
+        start_index : jnp.ndarray
+            Start index for the bout period (after burn-in)
+        additional_oracle_input : Optional[jnp.ndarray]
+            Extra data for weight calculation
+
+        Returns
+        -------
+        jnp.ndarray
+            Fine weights matching calculate_weights output
+        """
+        chunk_period = run_fingerprint["chunk_period"]
+        bout_length = run_fingerprint["bout_length"]
+        n_assets = run_fingerprint["n_assets"]
+
+        # Get initial weights
+        initial_weights = self.calculate_initial_weights(params)
+
+        # Chunk prices at chunk_period intervals
+        chunkwise_price_values = prices[::chunk_period]
+
+        # Calculate start chunk index (coarse level)
+        start_chunk_idx = (start_index[0] / chunk_period).astype("int64")
+
+        # Handle bout_length not divisible by chunk_period
+        if bout_length % chunk_period != 0:
+            n_bout_chunks = int(bout_length / chunk_period) + 1
+        else:
+            n_bout_chunks = int(bout_length / chunk_period)
+
+        # Phase 1: Warm up estimator over burn-in period
+        # Initialize estimator from first price
+        estimator_carry = self.get_initial_carry(
+            chunkwise_price_values[0], params, run_fingerprint
+        )
+
+        # Warm-up scan: process burn-in prices, only update estimator state
+        def warm_up_scan_fn(est_carry, price):
+            new_est_carry, _ = self.calculate_single_step_weight_update(
+                est_carry, price, params, run_fingerprint
+            )
+            return new_est_carry, None
+
+        # Process burn-in chunks (1 through start_chunk_idx inclusive)
+        burn_in_prices = chunkwise_price_values[1:start_chunk_idx + 1]
+        warmed_estimator_carry, _ = scan(
+            warm_up_scan_fn, estimator_carry, burn_in_prices
+        )
+
+        # Phase 2: Compute fine weights for bout period
+        # Reset weight carry to initial_weights (fresh start for bout)
+        weight_carry = self.get_initial_weight_carry(initial_weights)
+
+        # Bout scan: process bout prices, output interpolation blocks
+        def bout_scan_fn(carry, price):
+            est_carry, wt_carry = carry
+            new_est_carry, new_wt_carry, interpolation_block = self.calculate_single_step_interpolation_block(
+                est_carry, wt_carry, price, params, run_fingerprint
+            )
+            return (new_est_carry, new_wt_carry), interpolation_block
+
+        # Get bout prices (from chunk start_chunk_idx+1 onwards)
+        bout_prices = dynamic_slice(
+            chunkwise_price_values,
+            (start_chunk_idx + 1, 0),
+            (n_bout_chunks, n_assets),
+        )
+
+        initial_bout_carry = (warmed_estimator_carry, weight_carry)
+        _, interpolation_blocks = scan(
+            bout_scan_fn, initial_bout_carry, bout_prices
+        )
+
+        # Reshape blocks: (n_bout_chunks, chunk_period, n_assets) -> flat
+        fine_weights = interpolation_blocks.reshape(-1, n_assets)
+
+        # Prepend initial weights for first chunk (matching fine_weight_output)
+        fine_weights = jnp.vstack([
+            jnp.ones((chunk_period, n_assets), dtype=jnp.float64) * initial_weights,
+            fine_weights,
+        ])
+
+        # Final slice to exact bout_length - 1
+        weights = dynamic_slice(fine_weights, (0, 0), (bout_length - 1, n_assets))
+
+        return weights
+
+    def calculate_weights_via_scan(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        start_index: jnp.ndarray,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+        *args,
+        **kwargs,
+    ) -> jnp.ndarray:
+        """
+        Calculate the weights of assets in the pool using scan-based raw weight calculation.
+
+        This method produces the same outputs as calculate_weights, but uses
+        calculate_raw_weights_outputs_via_scan instead of calculate_raw_weights_outputs.
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Pool parameters.
+        run_fingerprint : Dict[str, Any]
+            Simulation settings.
+        prices : jnp.ndarray
+            Current prices of the assets.
+        start_index : jnp.ndarray
+            Start index for slicing
+        additional_oracle_input : Optional[jnp.ndarray], optional
+            Additional input from an oracle. Defaults to None.
+
+        Returns
+        -------
+        jnp.ndarray
+            Calculated weights for each asset in the pool.
+        """
+        chunk_period = run_fingerprint["chunk_period"]
+        bout_length = run_fingerprint["bout_length"]
+        n_assets = run_fingerprint["n_assets"]
+        raw_weight_outputs = self.calculate_raw_weights_outputs_via_scan(
+            params, run_fingerprint, prices, additional_oracle_input
+        )
+        # we don't want to change the initial weights during any training
+        # so wrap them in a stop_grad
+        initial_weights = self.calculate_initial_weights(params)
+
+        # we have a sequence now of weight changes, but if we are doing
+        # a burnin operation, we need to cut off the changes associated
+        # with the burnin period, ie everything before the start of the sequence
+
+        start_index_coarse = ((start_index[0] / chunk_period).astype("int64"), 0)
+
+        # if the chunk period is not a divisor of bout_length, we need to pad the raw_weight_outputs.
+        # this can require more data to be available, potentially beyond the end of the bout.
+        if bout_length % chunk_period != 0:
+            raw_weight_additional_offset = 1
+        else:
+            raw_weight_additional_offset = 0
+        raw_weight_outputs = dynamic_slice(
+            raw_weight_outputs,
+            start_index_coarse,
+            (
+                int((bout_length) / chunk_period) + raw_weight_additional_offset,
+                n_assets,
+            ),
+        )
+        raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
+        initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
+
+        weights = self.fine_weight_output(
+            raw_weight_outputs_cpu,
+            initial_weights_cpu,
+            run_fingerprint,
+            params,
+        )
+        weights = dynamic_slice(
+            weights, (0, 0), (bout_length - 1, n_assets)
+        )
+        return weights
 
     def calculate_readouts(
         self,
@@ -469,9 +970,81 @@ class TFMMBasePool(AbstractPool):
             run_fingerprint,
             params,
         )
+        # raise Exception("Not implemented")
         weights = dynamic_slice(
             weights, (0, 0), (bout_length - 1, n_assets)
         )
+        return weights
+
+    @partial(jit, static_argnums=(2, 3, 5))
+    def calculate_final_weights(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        start_index: jnp.ndarray,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+        *args,
+        **kwargs,
+    ) -> jnp.ndarray:
+        """
+        Calculate the weights of assets in the pool.
+
+        This method should be implemented by subclasses to define how weights are calculated
+        based on current prices, pool parameters, and optional additional oracle input.
+
+        Parameters
+        ----------
+            params (Dict[str, Any]): Pool parameters.
+            run_fingerprint (Dict[str, Any]): Simulation settings.
+            prices (jnp.ndarray): Current prices of the assets.
+            start_index (jnp.ndarray): Start index for slicing
+            additional_oracle_input (Optional[jnp.ndarray], optional): Additional input from an oracle. Defaults to None.
+
+        Returns
+        -------
+            jnp.ndarray: Calculated weights for each asset in the pool.
+        """
+        chunk_period = run_fingerprint["chunk_period"]
+        bout_length = len(prices) - start_index[0]
+        n_assets = run_fingerprint["n_assets"]
+        raw_weight_outputs = self.calculate_raw_weights_outputs(
+            params, run_fingerprint, prices, additional_oracle_input
+        )
+        # we dont't want to change the initial weights during any training
+        # so wrap them in a stop_grad
+        initial_weights = self.calculate_initial_weights(params)
+
+        # we have a sequence now of weight changes, but if we are doing
+        # a burnin operation, we need to cut off the changes associated
+        # with the burnin period, ie everything before the start of the sequence
+
+        start_index_coarse = ((start_index[0] / chunk_period).astype("int64"), 0)
+
+        # if the chunk period is not a divisor of bout_length, we need to pad the raw_weight_outputs.
+        # this can require more data to be available, potentially beyond the end of the bout.
+        raw_weight_additional_offset = jnp.where(bout_length % chunk_period != 0, 1, 0).astype("int64")
+        from jax.lax import slice as jax_slice
+        alt_slice = jax_slice(raw_weight_outputs, start_index_coarse, int((len(prices)/chunk_period), n_assets))
+
+        raw_weight_outputs = dynamic_slice(
+            raw_weight_outputs,
+            start_index_coarse,
+            (
+                int((bout_length) / chunk_period) + raw_weight_additional_offset,
+                n_assets,
+            ),
+        )
+        raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
+        initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
+
+        weights = self.fine_weight_output(
+            raw_weight_outputs_cpu,
+            initial_weights_cpu,
+            run_fingerprint,
+            params,
+        )
+        raise Exception("Not implemented")
         return weights
 
     def calculate_all_signature_variations(self, params: Dict[str, Any]) -> jnp.ndarray:
