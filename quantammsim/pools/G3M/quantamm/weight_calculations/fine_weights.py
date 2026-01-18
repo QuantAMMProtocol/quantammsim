@@ -45,14 +45,84 @@ from quantammsim.core_simulator.param_utils import (
     jax_memory_days_to_lamb,
 )
 
+
 def ste(x, y):
     # forward: y; backward: identity wrt x
     return x + stop_gradient(y - x)
+
 
 def ste_clip(x, lo, hi):
     y = jnp.clip(x, lo, hi)
     # forward: y; backward: identity wrt x
     return ste(x, y)
+
+
+@partial(jit, static_argnums=(3,))
+def _apply_per_asset_bounds(
+    weights: jnp.ndarray,
+    min_weights: jnp.ndarray,
+    max_weights: jnp.ndarray,
+    use_ste: bool = False,
+) -> jnp.ndarray:
+    """
+    Apply per-asset min/max bounds and redistribute to ensure sum equals 1.
+
+    This is a pre-processing step applied BEFORE the standard guardrails.
+    The result will still go through the uniform minimum_weight guardrails.
+
+    The algorithm:
+    1. Clip weights to per-asset [min, max] bounds
+    2. If total < 1: distribute deficit proportionally to assets with slack (can grow)
+    3. If total > 1: remove surplus proportionally from assets with slack (can shrink)
+    4. Final clip and normalise for numerical safety
+
+    Args:
+        weights: Input weights, shape (n_assets,).
+        min_weights: Minimum weight per asset, shape (n_assets,).
+        max_weights: Maximum weight per asset, shape (n_assets,).
+        use_ste: Use straight-through estimator for clipping.
+
+    Returns:
+        Adjusted weights satisfying bounds and summing to 1.
+    """
+    # Initial clip to bounds
+    if use_ste:
+        clipped = ste_clip(weights, min_weights, max_weights)
+    else:
+        clipped = jnp.clip(weights, min_weights, max_weights)
+
+    total = jnp.sum(clipped)
+
+    # Calculate slack in each direction
+    slack_up = max_weights - clipped  # how much each asset can grow
+    slack_down = clipped - min_weights  # how much each asset can shrink
+
+    total_slack_up = jnp.sum(slack_up)
+    total_slack_down = jnp.sum(slack_down)
+
+    deficit = 1.0 - total  # positive if we need to add weight
+    surplus = total - 1.0  # positive if we need to remove weight
+
+    # Redistribute: add to those with room to grow, or remove from those with room to shrink
+    adjustment = jnp.where(
+        total < 1.0,
+        deficit * slack_up / (total_slack_up + 1e-10),
+        jnp.where(total > 1.0, -surplus * slack_down / (total_slack_down + 1e-10), 0.0),
+    )
+
+    weights_adjusted = clipped + adjustment
+
+    # Final clip for numerical safety
+    if use_ste:
+        weights_final = ste_clip(weights_adjusted, min_weights, max_weights)
+    else:
+        weights_final = jnp.clip(weights_adjusted, min_weights, max_weights)
+
+    # Final normalisation (should be very close to 1 already)
+    weights_final = weights_final / jnp.sum(weights_final)
+
+    return weights_final
+
 
 def scale_diff(diff, maximum_change):
     max_val = jnp.max(jnp.abs(diff))
@@ -61,15 +131,18 @@ def scale_diff(diff, maximum_change):
     scaled = jnp.where(needs_scale, diff * scale, diff)
     return scaled
 
+
 @partial(
     jit,
-    static_argnums=(4,5,6,7,8,9,10),
+    static_argnums=(6, 7, 8, 9, 10, 11, 12, 13),
 )
 def _jax_calc_coarse_weights(
     raw_weight_outputs,
     initial_weights,
     minimum_weight,
     update_rule_parameter_dict,
+    min_weights_per_asset,
+    max_weights_per_asset,
     max_memory_days,
     chunk_period,
     weight_interpolation_period,
@@ -77,6 +150,7 @@ def _jax_calc_coarse_weights(
     raw_weight_outputs_are_themselves_weights=False,
     ste_max_change=False,
     ste_min_max_weight=False,
+    use_per_asset_bounds=False,
 ):
     r"""calc weights from raw weight outputs, and make sure they fall inside
     guard-rails --- sum to 1, are larger than minimum value
@@ -89,6 +163,10 @@ def _jax_calc_coarse_weights(
         The minimum value (between 0 and 1/n_cols)
     update_rule_parameter_dict : dict
         The update rule parameters
+    min_weights_per_asset : np.ndarray or None
+        Per-asset minimum weights (applied before uniform guardrails)
+    max_weights_per_asset : np.ndarray or None
+        Per-asset maximum weights (applied before uniform guardrails)
     max_memory_days : float64
         The maximum memory days
     chunk_period : float64
@@ -103,6 +181,8 @@ def _jax_calc_coarse_weights(
         Whether to use ste max change
     ste_min_max_weight : bool
         Whether to use ste min max weight
+    use_per_asset_bounds : bool
+        Whether to apply per-asset bounds (static flag)
 
     Returns
     -------
@@ -139,46 +219,57 @@ def _jax_calc_coarse_weights(
         asset_arange=asset_arange,
         n_assets=n_assets,
         alt_lamb=alt_lamb,
+        min_weights_per_asset=min_weights_per_asset,
+        max_weights_per_asset=max_weights_per_asset,
         interpol_num=weight_interpolation_period + 1,
         maximum_change=maximum_change,
         raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
         ste_max_change=ste_max_change,
         ste_min_max_weight=ste_min_max_weight,
+        use_per_asset_bounds=use_per_asset_bounds,
     )
 
     if raw_weight_outputs_are_themselves_weights:
         # Apply guardrails to initial weights
         initial_carry = [raw_weight_outputs[0]]
-        guardrailed_init, (actual_starts_init, scaled_diffs_init, target_weights_init) = (
-            _jax_calc_coarse_weight_scan_function(
-                initial_carry,
-                raw_weight_outputs[0],
-                minimum_weight=minimum_weight,
-                asset_arange=asset_arange,
-                n_assets=n_assets,
-                alt_lamb=alt_lamb,
-                interpol_num=2,  # interpol_num = 2 for immediate weight change
-                maximum_change=maximum_change,
-                raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
-                ste_max_change=ste_max_change,
-                ste_min_max_weight=ste_min_max_weight,
-            )
+        guardrailed_init, (
+            actual_starts_init,
+            scaled_diffs_init,
+            target_weights_init,
+        ) = _jax_calc_coarse_weight_scan_function(
+            initial_carry,
+            raw_weight_outputs[0],
+            minimum_weight=minimum_weight,
+            asset_arange=asset_arange,
+            n_assets=n_assets,
+            alt_lamb=alt_lamb,
+            min_weights_per_asset=min_weights_per_asset,
+            max_weights_per_asset=max_weights_per_asset,
+            interpol_num=2,  # interpol_num = 2 for immediate weight change
+            maximum_change=maximum_change,
+            raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
+            ste_max_change=ste_max_change,
+            ste_min_max_weight=ste_min_max_weight,
+            use_per_asset_bounds=use_per_asset_bounds,
         )
         carry_list_init = [target_weights_init]
     else:
         carry_list_init = [initial_weights]
 
-    _, (actual_starts, scaled_diffs, target_weights) = scan(scan_fn, carry_list_init, raw_weight_outputs)
+    _, (actual_starts, scaled_diffs, target_weights) = scan(
+        scan_fn, carry_list_init, raw_weight_outputs
+    )
     return actual_starts, scaled_diffs, target_weights
 
 
-@partial(jit, static_argnums=(2, 4))
+@partial(jit, static_argnums=(2, 4, 5))
 def calc_fine_weight_output(
     raw_weight_outputs,
     initial_weights,
     run_fingerprint,
     params,
     raw_weight_outputs_are_themselves_weights,
+    use_per_asset_bounds=False,
 ):
     """
     Calculate fine weight outputs based on raw weight outputs and various parameters.
@@ -196,6 +287,7 @@ def calc_fine_weight_output(
         run_fingerprint (dict): The settings for this run.
         params (dict): Dictionary containing parameters for the update rule.
         raw_weight_outputs_are_themselves_weights (bool): Whether the raw weight outputs are weights or weight changes.
+        use_per_asset_bounds (bool): Whether to apply per-asset bounds from params.
 
     Returns:
         jnp.ndarray: Fine weights calculated based on the input parameters and chosen method.
@@ -216,11 +308,22 @@ def calc_fine_weight_output(
     if minimum_weight == None:
         minimum_weight = 0.1 / n_assets
 
+    # Get per-asset bounds from params (only used if use_per_asset_bounds=True)
+    if use_per_asset_bounds:
+        min_weights_per_asset = params["min_weights_per_asset"]
+        max_weights_per_asset = params["max_weights_per_asset"]
+    else:
+        # Dummy values - won't be used since use_per_asset_bounds=False
+        min_weights_per_asset = jnp.zeros(n_assets)
+        max_weights_per_asset = jnp.ones(n_assets)
+
     actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
         raw_weight_outputs,
         initial_weights,
         minimum_weight,
         params,
+        min_weights_per_asset,
+        max_weights_per_asset,
         run_fingerprint["max_memory_days"],
         chunk_period,
         weight_interpolation_period,
@@ -228,6 +331,7 @@ def calc_fine_weight_output(
         raw_weight_outputs_are_themselves_weights,
         ste_max_change,
         ste_min_max_weight,
+        use_per_asset_bounds,
     )
 
     scaled_diffs_gpu = device_put(scaled_diffs_cpu, GPU_DEVICE)
@@ -254,11 +358,37 @@ def calc_fine_weight_output(
 
 
 calc_fine_weight_output_from_weight_changes = jit(
-    Partial(calc_fine_weight_output, raw_weight_outputs_are_themselves_weights=False),
+    Partial(
+        calc_fine_weight_output,
+        raw_weight_outputs_are_themselves_weights=False,
+        use_per_asset_bounds=False,
+    ),
     static_argnums=(2,),
 )
 calc_fine_weight_output_from_weights = jit(
-    Partial(calc_fine_weight_output, raw_weight_outputs_are_themselves_weights=True),
+    Partial(
+        calc_fine_weight_output,
+        raw_weight_outputs_are_themselves_weights=True,
+        use_per_asset_bounds=False,
+    ),
+    static_argnums=(2,),
+)
+
+# Bounded versions with per-asset bounds enabled
+calc_fine_weight_output_bounded_from_weight_changes = jit(
+    Partial(
+        calc_fine_weight_output,
+        raw_weight_outputs_are_themselves_weights=False,
+        use_per_asset_bounds=True,
+    ),
+    static_argnums=(2,),
+)
+calc_fine_weight_output_bounded_from_weights = jit(
+    Partial(
+        calc_fine_weight_output,
+        raw_weight_outputs_are_themselves_weights=True,
+        use_per_asset_bounds=True,
+    ),
     static_argnums=(2,),
 )
 
@@ -389,7 +519,7 @@ def _jax_fine_weights_end_from_coarse_weights(
 
 @partial(
     jit,
-    static_argnums=(2,3,5,6,7,8,9),
+    static_argnums=(2, 3, 5, 6, 7, 8, 9),
 )
 def _jax_calc_fine_weight_ends_only_scan_function(
     carry_list,
@@ -453,7 +583,7 @@ def _jax_calc_fine_weight_ends_only_scan_function(
 
 @partial(
     jit,
-    static_argnums=(6,7,8,9,10),
+    static_argnums=(8, 9, 10, 11, 12, 13),
 )
 def _jax_calc_coarse_weight_scan_function(
     carry_list,
@@ -462,11 +592,14 @@ def _jax_calc_coarse_weight_scan_function(
     asset_arange,
     n_assets,
     alt_lamb,
+    min_weights_per_asset,
+    max_weights_per_asset,
     interpol_num,
     maximum_change,
     raw_weight_outputs_are_themselves_weights,
     ste_max_change,
     ste_min_max_weight,
+    use_per_asset_bounds=False,
 ):
     """
     Calculate the coarse weights for the AMM simulator.
@@ -478,7 +611,14 @@ def _jax_calc_coarse_weight_scan_function(
         asset_arange (ndarray): Array of asset indices.
         n_assets (int): Number of assets.
         alt_lamb (float): Alternative lambda value.
+        min_weights_per_asset (ndarray): Per-asset minimum weights (applied before uniform guardrails).
+        max_weights_per_asset (ndarray): Per-asset maximum weights (applied before uniform guardrails).
+        interpol_num (int): Number of interpolation steps.
+        maximum_change (float): Maximum allowed weight change.
         raw_weight_outputs_are_themselves_weights (bool): Whether raw weight outputs represent target weights (True) or weight changes (False).
+        ste_max_change (bool): Use straight-through estimator for max change.
+        ste_min_max_weight (bool): Use straight-through estimator for min/max weight.
+        use_per_asset_bounds (bool): Whether to apply per-asset bounds (static flag).
 
     Returns:
         list: List containing the final weights.
@@ -501,7 +641,9 @@ def _jax_calc_coarse_weight_scan_function(
     ## weights we WISH to have at the ith moment, using
     ## all information available at the (i-1)th moment
     if raw_weight_outputs_are_themselves_weights:
-        raw_weights = alt_lamb * prev_actual_position + (1 - alt_lamb) * raw_weight_outputs
+        raw_weights = (
+            alt_lamb * prev_actual_position + (1 - alt_lamb) * raw_weight_outputs
+        )
     else:
         raw_weights = prev_actual_position + raw_weight_outputs
     ## calc normed weights
@@ -509,6 +651,16 @@ def _jax_calc_coarse_weight_scan_function(
     #     print(i, 'raw w', raw_weights)
     normed_weight_update = raw_weights / jnp.sum(raw_weights)
 
+    # Apply per-asset bounds if enabled (BEFORE uniform guardrails)
+    if use_per_asset_bounds:
+        normed_weight_update = _apply_per_asset_bounds(
+            normed_weight_update,
+            min_weights_per_asset,
+            max_weights_per_asset,
+            ste_min_max_weight,
+        )
+
+    # Uniform guardrails (applied AFTER per-asset bounds)
     maximum_weight = 1.0 - (n_assets - 1) * minimum_weight
     ## check values are all above minimum weight
     ## if any values are too small
@@ -517,9 +669,13 @@ def _jax_calc_coarse_weight_scan_function(
     idy = normed_weight_update > maximum_weight
 
     if ste_min_max_weight:
-        normed_weight_update = ste_clip(normed_weight_update, minimum_weight, maximum_weight)
+        normed_weight_update = ste_clip(
+            normed_weight_update, minimum_weight, maximum_weight
+        )
     else:
-        normed_weight_update = jnp.clip(normed_weight_update, minimum_weight, maximum_weight)
+        normed_weight_update = jnp.clip(
+            normed_weight_update, minimum_weight, maximum_weight
+        )
 
     # calculate 'left over' weight, 1 - n * epsilon
     remaining_weight = 1 - n_less_than_min * minimum_weight
