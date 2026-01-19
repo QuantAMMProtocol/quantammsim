@@ -17,7 +17,7 @@ else:
 import jax.numpy as jnp
 from jax import jit, vmap
 from jax import devices, device_put
-from jax.lax import stop_gradient, dynamic_slice, scan
+from jax.lax import stop_gradient, dynamic_slice, scan, fori_loop
 from jax.tree_util import Partial
 
 from quantammsim.pools.base_pool import AbstractPool
@@ -425,6 +425,34 @@ class TFMMBasePool(AbstractPool):
             f"{type(self).__name__} must implement get_initial_rule_state() for scan-based calculation"
         )
 
+    def supports_vectorized_path(self) -> bool:
+        """
+        Check if pool implements vectorized weight calculation.
+
+        Returns True if this pool class overrides calculate_rule_outputs,
+        indicating it supports the vectorized (convolution-based) path.
+
+        Returns
+        -------
+        bool
+            True if vectorized path is supported.
+        """
+        return type(self).calculate_rule_outputs is not TFMMBasePool.calculate_rule_outputs
+
+    def supports_scan_path(self) -> bool:
+        """
+        Check if pool implements scan-based weight calculation.
+
+        Returns True if this pool class overrides calculate_rule_output_step,
+        indicating it supports the scan-based path.
+
+        Returns
+        -------
+        bool
+            True if scan path is supported.
+        """
+        return type(self).calculate_rule_output_step is not TFMMBasePool.calculate_rule_output_step
+
     def calculate_rule_outputs_scan(
         self,
         params: Dict[str, Any],
@@ -713,17 +741,38 @@ class TFMMBasePool(AbstractPool):
             chunkwise_price_values[0], params, run_fingerprint
         )
 
-        # Warm-up scan: process burn-in prices, only update estimator state
-        def warm_up_scan_fn(est_carry, price):
+        # Warm-up using fori_loop: supports traced (dynamic) bounds unlike scan.
+        # Process burn-in chunks (index 1 through start_chunk_idx inclusive).
+        #
+        # PERFORMANCE NOTE: An alternative approach would use a fixed-size scan
+        # which XLA can optimize better (unrolling, vectorization). The maximum
+        # burn-in size is bounded by (max_memory_days * 1440 + bout_offset) / chunk_period
+        # (maybe with some off by one indexing too) because:
+        #   - Pre-slicing loads data starting at original_start - max_memory_days
+        #   - start_idx can vary within bout_offset range during training
+        #   - So max start_chunk_idx = (max_memory_days * 1440 + bout_offset) / chunk_period
+        #
+        # A fixed-size scan would:
+        #   1. Compute max_burn_in_chunks from max_memory_days and bout_offset
+        #   2. Always scan over max_burn_in_chunks prices (wasting iterations when
+        #      actual burn-in is shorter)
+        #   3. Benefit from better XLA optimization of scan vs fori_loop
+        #
+        # We use fori_loop here for clarity - it runs exactly the needed iterations.
+        # If profiling shows this is a bottleneck, consider switching to fixed-size scan.
+        def warm_up_body(i, est_carry):
+            price = chunkwise_price_values[i]
             new_est_carry, _ = self.calculate_rule_output_step(
                 est_carry, price, params, run_fingerprint
             )
-            return new_est_carry, None
+            return new_est_carry
 
-        # Process burn-in chunks (1 through start_chunk_idx inclusive)
-        burn_in_prices = chunkwise_price_values[1:start_chunk_idx + 1]
-        warmed_estimator_carry, _ = scan(
-            warm_up_scan_fn, estimator_carry, burn_in_prices
+        # fori_loop upper bound is exclusive, so use start_chunk_idx + 1
+        warmed_estimator_carry = fori_loop(
+            1,  # start from index 1 (index 0 used for initialization)
+            start_chunk_idx + 1,  # end exclusive (process up to start_chunk_idx)
+            warm_up_body,
+            estimator_carry,
         )
 
         # Phase 2: Compute fine weights for bout period
@@ -911,7 +960,6 @@ class TFMMBasePool(AbstractPool):
         """
         pass
 
-    @partial(jit, static_argnums=(2, 5))
     def calculate_weights(
         self,
         params: Dict[str, Any],
@@ -925,8 +973,73 @@ class TFMMBasePool(AbstractPool):
         """
         Calculate the weights of assets in the pool.
 
-        This method should be implemented by subclasses to define how weights are calculated
-        based on current prices, pool parameters, and optional additional oracle input.
+        Routes to either vectorized or scan-based weight calculation
+        based on the `weight_calculation_method` in run_fingerprint:
+        - "auto" (default): Use vectorized if available, else scan
+        - "vectorized": Force vectorized path (errors if not supported)
+        - "scan": Force scan path (errors if not supported)
+
+        Parameters
+        ----------
+            params (Dict[str, Any]): Pool parameters.
+            run_fingerprint (Dict[str, Any]): Simulation settings.
+            prices (jnp.ndarray): Current prices of the assets.
+            start_index (jnp.ndarray): Start index for slicing
+            additional_oracle_input (Optional[jnp.ndarray], optional): Additional input from an oracle. Defaults to None.
+
+        Returns
+        -------
+            jnp.ndarray: Calculated weights for each asset in the pool.
+        """
+        method = run_fingerprint.get("weight_calculation_method", "auto")
+
+        if method == "scan":
+            if not self.supports_scan_path():
+                raise NotImplementedError(
+                    f"{type(self).__name__} does not support scan-based weight calculation"
+                )
+            return self.calculate_weights_scan(
+                params, run_fingerprint, prices, start_index, additional_oracle_input
+            )
+
+        if method == "vectorized":
+            if not self.supports_vectorized_path():
+                raise NotImplementedError(
+                    f"{type(self).__name__} does not support vectorized weight calculation"
+                )
+            return self.calculate_weights_vectorized(
+                params, run_fingerprint, prices, start_index, additional_oracle_input
+            )
+
+        if method == "auto":
+            if self.supports_vectorized_path():
+                return self.calculate_weights_vectorized(
+                    params, run_fingerprint, prices, start_index, additional_oracle_input
+                )
+            if self.supports_scan_path():
+                return self.calculate_weights_scan(
+                    params, run_fingerprint, prices, start_index, additional_oracle_input
+                )
+            raise NotImplementedError(
+                f"{type(self).__name__} must implement either calculate_rule_outputs() "
+                "or calculate_rule_output_step()"
+            )
+
+        raise ValueError(f"Unknown weight_calculation_method: {method}")
+
+    @partial(jit, static_argnums=(2, 5))
+    def calculate_weights_vectorized(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        start_index: jnp.ndarray,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+        *args,
+        **kwargs,
+    ) -> jnp.ndarray:
+        """
+        Calculate weights using the vectorized path (calculate_rule_outputs).
 
         Parameters
         ----------
@@ -946,7 +1059,7 @@ class TFMMBasePool(AbstractPool):
         rule_outputs = self.calculate_rule_outputs(
             params, run_fingerprint, prices, additional_oracle_input
         )
-        # we dont't want to change the initial weights during any training
+        # we don't want to change the initial weights during any training
         # so wrap them in a stop_grad
         initial_weights = self.calculate_initial_weights(params)
 
@@ -979,7 +1092,6 @@ class TFMMBasePool(AbstractPool):
             run_fingerprint,
             params,
         )
-        # raise Exception("Not implemented")
         weights = dynamic_slice(
             weights, (0, 0), (bout_length - 1, n_assets)
         )
