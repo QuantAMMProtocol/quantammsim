@@ -60,6 +60,7 @@ run_fingerprint_defaults = {
     "minimum_weight": None,  # will be set to 0.1 / n_assets
     "ste_max_change": False,
     "ste_min_max_weight": False,
+    "weight_calculation_method": "auto",  # "auto", "vectorized", or "scan"
 }
 
 

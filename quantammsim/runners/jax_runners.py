@@ -219,7 +219,7 @@ def train_on_historic_data(
             print("loaded params ", params)
             print("starting at step ", offset)
         best_train_objective = np.array(params["objective"])
-        for key in ["step", "test_objective", "train_objective", "hessian_trace", "local_learning_rate", "iterations_since_improvement", "objective"]:
+        for key in ["step", "test_objective", "train_objective", "hessian_trace", "local_learning_rate", "iterations_since_improvement", "objective", "continuous_test_metrics"]:
             if key in params:
                 params.pop(key)
         if run_fingerprint["optimisation_settings"]["method"] == "optuna":
@@ -263,6 +263,7 @@ def train_on_historic_data(
         "minimum_weight": run_fingerprint["minimum_weight"],
         "ste_max_change": run_fingerprint["ste_max_change"],
         "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
+        "weight_calculation_method": run_fingerprint.get("weight_calculation_method", "auto"),
     }
 
     partial_training_step = Partial(
@@ -1061,6 +1062,7 @@ def do_run_on_historic_data(
         "minimum_weight": run_fingerprint["minimum_weight"],
         "ste_max_change": run_fingerprint["ste_max_change"],
         "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
+        "weight_calculation_method": run_fingerprint.get("weight_calculation_method", "auto"),
     }
 
     # Create static dictionaries for training and testing
@@ -1364,6 +1366,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         "minimum_weight": run_fingerprint["minimum_weight"],
         "ste_max_change": run_fingerprint["ste_max_change"],
         "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
+        "weight_calculation_method": run_fingerprint.get("weight_calculation_method", "auto"),
     }
 
     # Create static dictionaries for training and testing
