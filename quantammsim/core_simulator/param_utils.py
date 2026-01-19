@@ -1000,12 +1000,137 @@ def load_result_array(run_location, key="objective", recalc_hess=False):
         return params[0], [p[key] for p in params[1:]]
 
 
+def _extract_objective_values(objectives, metric_key="returns_over_uniform_hodl"):
+    """Extract numeric values from objectives that may be dicts or numbers.
+
+    Handles both old format (list of numbers) and new format (list of metric dicts).
+
+    Parameters
+    ----------
+    objectives : list
+        List of objectives, where each objective is either:
+        - A list of numbers (old format)
+        - A list of dicts with metric keys (new format)
+    metric_key : str
+        The key to extract from dict objectives. Defaults to "return".
+        For continuous_test_metrics, use keys like "continuous_test_return".
+
+    Returns
+    -------
+    np.ndarray
+        2D array of numeric objective values
+    """
+    if not objectives:
+        return np.array([[float("-inf")]])
+
+    result = []
+    for obj_list in objectives:
+        if isinstance(obj_list, (list, tuple)) and len(obj_list) > 0:
+            if isinstance(obj_list[0], dict):
+                # New format: list of metric dicts
+                result.append([d.get(metric_key, float("-inf")) for d in obj_list])
+            else:
+                # Old format: list of numbers
+                result.append(list(obj_list))
+        else:
+            # Single value or empty
+            if isinstance(obj_list, dict):
+                result.append([obj_list.get(metric_key, float("-inf"))])
+            elif obj_list is not None:
+                try:
+                    result.append([float(obj_list)])
+                except (TypeError, ValueError):
+                    result.append([float("-inf")])
+            else:
+                result.append([float("-inf")])
+    return np.array(result)
+
+
+def _is_new_format(params):
+    """Check if params use the new format with metric dicts.
+
+    Returns True if train_objective contains dicts, False if it contains numbers.
+    """
+    if len(params) < 2:
+        return False
+    train_obj = params[1].get("train_objective")
+    if isinstance(train_obj, (list, tuple)) and len(train_obj) > 0:
+        return isinstance(train_obj[0], dict)
+    return isinstance(train_obj, dict)
+
+
+def get_objective_scalar(obj, metric_key="returns_over_uniform_hodl"):
+    """Extract a scalar value from an objective that may be a dict or number.
+
+    Use this when you have a single objective value (after retrieve_best has
+    indexed into the parameter sets) and need a float.
+
+    Parameters
+    ----------
+    obj : float, int, or dict
+        The objective value - either a scalar (old format) or a dict of metrics (new format)
+    metric_key : str
+        The key to extract from dict objectives. Defaults to "returns_over_uniform_hodl".
+
+    Returns
+    -------
+    float
+        The scalar objective value
+
+    Examples
+    --------
+    >>> get_objective_scalar(0.1)  # old format
+    0.1
+    >>> get_objective_scalar({"return": 0.1, "sharpe": 0.5})  # new format
+    0.1
+    """
+    if isinstance(obj, dict):
+        return float(obj.get(metric_key, float("-inf")))
+    try:
+        return float(obj)
+    except (TypeError, ValueError):
+        return float("-inf")
+
+
+def _get_test_objectives(params, use_continuous=True, metric_key="returns_over_uniform_hodl"):
+    """Get test objectives, preferring continuous_test_metrics if available.
+
+    Parameters
+    ----------
+    params : list
+        List of parameter dicts (including fingerprint at index 0)
+    use_continuous : bool
+        If True and continuous_test_metrics exists, use it instead of test_objective
+    metric_key : str
+        The metric key to extract (e.g., "return", "sharpe")
+
+    Returns
+    -------
+    list
+        Raw objectives list from params
+    str
+        The actual metric key to use (may be prefixed with "continuous_test_")
+    """
+    # Check if continuous_test_metrics is available
+    if use_continuous and len(params) > 1:
+        first_param = params[1]
+        if "continuous_test_metrics" in first_param and first_param["continuous_test_metrics"]:
+            # Use continuous test metrics - keys are prefixed with "continuous_test_"
+            continuous_key = f"continuous_test_{metric_key}"
+            return [p.get("continuous_test_metrics", []) for p in params[1:]], continuous_key
+
+    # Fall back to test_objective
+    return [p["test_objective"] for p in params[1:]], metric_key
+
+
 def load_manually(
     run_location,
     load_method="last",
     recalc_hess=False,
     min_test=0.0,
     return_as_iterables=False,
+    metric_key="returns_over_uniform_hodl",
+    use_continuous_test=True,
 ):
     """Load and process parameter sets from a JSON results file with custom loading methods.
 
@@ -1022,12 +1147,20 @@ def load_manually(
         'best_train_min_test_objective' - Returns set with highest training objective
         that meets minimum test threshold.
         Defaults to 'last'.
-
     recalc_hess : bool, optional
         Whether to recalculate Hessian trace values. Defaults to False.
     min_test : float, optional
         Minimum test objective threshold for 'best_train_min_test_objective' method.
         Defaults to 0.0.
+    metric_key : str, optional
+        For new format files with metric dicts, specifies which metric to use.
+        Options include: "return", "sharpe", "jax_sharpe", "returns_over_hodl",
+        "returns_over_uniform_hodl", "annualised_returns", "calmar", "sterling", "ulcer".
+        Ignored for old format files with simple numeric objectives.
+        Defaults to "returns_over_uniform_hodl".
+    use_continuous_test : bool, optional
+        If True and continuous_test_metrics is available, use it instead of
+        test_objective for test-related load methods. Defaults to True.
 
     Returns
     -------
@@ -1065,6 +1198,15 @@ def load_manually(
                 with open(run_location, "w", encoding="utf-8") as json_file:
                     json.dump(dumped, json_file)
 
+        # Helper to extract a single numeric value from an objective (handles old/new format)
+        def _get_objective_value(obj, key=metric_key):
+            if isinstance(obj, dict):
+                return obj.get(key, float("-inf"))
+            try:
+                return float(obj)
+            except (TypeError, ValueError):
+                return float("-inf")
+
         if load_method == "last":
             index = -1
             context = None
@@ -1073,15 +1215,18 @@ def load_manually(
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
             context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_train_objective":
-            objectives = [p["train_objective"] for p in params[1:]]
+            raw_objectives = [p["train_objective"] for p in params[1:]]
+            objectives = _extract_objective_values(raw_objectives, metric_key)
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
             context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_train_objective_for_each_parameter_set":
-            objectives = [p["train_objective"] for p in params[1:]]
+            raw_objectives = [p["train_objective"] for p in params[1:]]
+            objectives = _extract_objective_values(raw_objectives, metric_key)
             index = (np.nanargmax(objectives, axis=0) + 1).tolist()
             context = np.arange(len(objectives[0])).tolist()
         elif load_method == "best_test_objective":
-            objectives = [p["test_objective"] for p in params[1:]]
+            raw_objectives, actual_key = _get_test_objectives(params, use_continuous_test, metric_key)
+            objectives = _extract_objective_values(raw_objectives, actual_key)
             index = np.argmax(np.nanmax(objectives, axis=1)) + 1
             context = np.nanargmax(np.nanmax(objectives, axis=0))
         elif load_method == "best_objective_of_last":
@@ -1089,58 +1234,89 @@ def load_manually(
             index = -1
             context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_train_objective_of_last":
-            objectives = [params[-1]["train_objective"]]
+            raw_objectives = [params[-1]["train_objective"]]
+            objectives = _extract_objective_values(raw_objectives, metric_key)
             index = -1
             context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_test_objective_of_last":
-            objectives = [params[-1]["test_objective"]]
+            raw_objectives, actual_key = _get_test_objectives(
+                [params[0], params[-1]], use_continuous_test, metric_key
+            )
+            objectives = _extract_objective_values(raw_objectives, actual_key)
             index = -1
             context = np.nanargmax(np.nanmax(objectives))
         elif load_method == "best_train_min_test_objective":
+            # Get test objectives (prefer continuous if available)
+            raw_test_objs, test_key = _get_test_objectives(params, use_continuous_test, metric_key)
+
+            # Filter params where best test objective meets threshold
             objectives = []
-            for p in params[1:]:
-                if p["test_objective"][np.argmax(p["test_objective"])] >= min_test:
+            for idx, p in enumerate(params[1:]):
+                test_vals = _extract_objective_values([raw_test_objs[idx]], test_key)[0]
+                if np.nanmax(test_vals) >= min_test:
                     objectives.append(p)
-            train_objective_max = 0.0
+
+            train_objective_max = float("-inf")
             if len(objectives) == 0:
                 objectives = params[1:]
 
             best_objective = objectives[0]
             set_with_best_test_index = 0
-            num_param_sets = len(params[1]["train_objective"])
+            num_param_sets = len(_extract_objective_values(
+                [params[1]["train_objective"]], metric_key
+            )[0])
 
             for p in objectives:
+                train_vals = _extract_objective_values([p["train_objective"]], metric_key)[0]
+                p_idx = params[1:].index(p) if p in params[1:] else 0
+                test_vals = _extract_objective_values([raw_test_objs[p_idx]], test_key)[0]
+
                 for i in range(num_param_sets):
-                    if (
-                        p["test_objective"][i] >= min_test
-                        and p["train_objective"][i] >= train_objective_max
-                    ):
+                    test_val = test_vals[i] if i < len(test_vals) else float("-inf")
+                    train_val = train_vals[i] if i < len(train_vals) else float("-inf")
+                    if test_val >= min_test and train_val >= train_objective_max:
                         best_objective = p
                         set_with_best_test_index = i
-                        train_objective_max = p["train_objective"][i]
+                        train_objective_max = train_val
+
             if return_as_iterables:
                 return [best_objective], [set_with_best_test_index]
             else:
                 return best_objective, set_with_best_test_index
         elif load_method == "best_test_min_train_objective":
+            # Get test objectives (prefer continuous if available)
+            raw_test_objs, test_key = _get_test_objectives(params, use_continuous_test, metric_key)
+
+            # Filter params where best train objective meets threshold
             objectives = []
             for p in params[1:]:
-                if p["train_objective"][np.argmax(p["train_objective"])] >= min_test:
+                train_vals = _extract_objective_values([p["train_objective"]], metric_key)[0]
+                if np.nanmax(train_vals) >= min_test:
                     objectives.append(p)
-            test_objective_max = 0.0
+
+            test_objective_max = float("-inf")
+            if len(objectives) == 0:
+                objectives = params[1:]
+
             best_objective = objectives[0]
             set_with_best_test_index = 0
-            num_param_sets = len(params[1]["test_objective"])
+            num_param_sets = len(_extract_objective_values(
+                [params[1]["test_objective"]], metric_key
+            )[0])
 
             for p in objectives:
+                train_vals = _extract_objective_values([p["train_objective"]], metric_key)[0]
+                p_idx = params[1:].index(p) if p in params[1:] else 0
+                test_vals = _extract_objective_values([raw_test_objs[p_idx]], test_key)[0]
+
                 for i in range(num_param_sets):
-                    if (
-                        p["train_objective"][i] >= min_test
-                        and p["test_objective"][i] >= test_objective_max
-                    ):
+                    train_val = train_vals[i] if i < len(train_vals) else float("-inf")
+                    test_val = test_vals[i] if i < len(test_vals) else float("-inf")
+                    if train_val >= min_test and test_val >= test_objective_max:
                         best_objective = p
                         set_with_best_test_index = i
-                        test_objective_max = p["test_objective"][i]
+                        test_objective_max = test_val
+
             if return_as_iterables:
                 return [best_objective], [set_with_best_test_index]
             else:
