@@ -684,7 +684,7 @@ class TestEndToEndPreSlicing:
 
         # Calculate weights with pre-sliced data
         prices_presliced = jnp.array(data_dict_presliced["prices"])
-        weights_presliced = pool.calculate_raw_weights_outputs(
+        weights_presliced = pool.calculate_rule_outputs(
             params, fp_hashable, prices_presliced
         )
 
@@ -695,7 +695,7 @@ class TestEndToEndPreSlicing:
         fp_full["bout_length"] = data_dict_full["bout_length"]
         fp_full["n_assets"] = 2
         fp_full["all_sig_variations"] = ((1, -1), (-1, 1))
-        weights_full = pool.calculate_raw_weights_outputs(
+        weights_full = pool.calculate_rule_outputs(
             params, fp_full, prices_full
         )
 

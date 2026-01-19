@@ -137,7 +137,7 @@ def scale_diff(diff, maximum_change):
     static_argnums=(6, 7, 8, 9, 10, 11, 12, 13),
 )
 def _jax_calc_coarse_weights(
-    raw_weight_outputs,
+    rule_outputs,
     initial_weights,
     minimum_weight,
     update_rule_parameter_dict,
@@ -147,7 +147,7 @@ def _jax_calc_coarse_weights(
     chunk_period,
     weight_interpolation_period,
     maximum_change,
-    raw_weight_outputs_are_themselves_weights=False,
+    rule_outputs_are_weights=False,
     ste_max_change=False,
     ste_min_max_weight=False,
     use_per_asset_bounds=False,
@@ -155,7 +155,7 @@ def _jax_calc_coarse_weights(
     r"""calc weights from raw weight outputs, and make sure they fall inside
     guard-rails --- sum to 1, are larger than minimum value
     ----------
-    raw_weight_outputs : np.ndarray, float64
+    rule_outputs : np.ndarray, float64
         A 2-dimenisional numpy array
     initial_weights: np.ndarray, float64
         A 1-dimenisional numpy array
@@ -175,7 +175,7 @@ def _jax_calc_coarse_weights(
         The weight interpolation period
     maximum_change : float64
         The maximum change
-    raw_weight_outputs_are_themselves_weights : bool
+    rule_outputs_are_weights : bool
         Whether the raw weight outputs are themselves weights
     ste_max_change : bool
         Whether to use ste max change
@@ -187,15 +187,15 @@ def _jax_calc_coarse_weights(
     Returns
     -------
     np.ndarray
-        The weight array, same length / shape as ``raw_weight_outputs``
+        The weight array, same length / shape as ``rule_outputs``
 
     """
-    n = raw_weight_outputs.shape[0] + 1
-    n_assets = raw_weight_outputs.shape[1]
+    n = rule_outputs.shape[0] + 1
+    n_assets = rule_outputs.shape[1]
     asset_arange = jnp.arange(n_assets)
 
     cap_lamb = True
-    if raw_weight_outputs_are_themselves_weights:
+    if rule_outputs_are_weights:
         # Determine which parameterization is being used
         # allow for direct memory_days parameterization
         if "memory_days_2" in update_rule_parameter_dict:
@@ -209,7 +209,7 @@ def _jax_calc_coarse_weights(
             max_lamb = memory_days_to_lamb(max_memory_days, chunk_period)
             capped_alt_lamb = ste_clip(alt_lamb, lo=0.0, hi=max_lamb)
             alt_lamb = capped_alt_lamb
-        # initial_weights = raw_weight_outputs[0]
+        # initial_weights = rule_outputs[0]
     else:
         alt_lamb = None
 
@@ -221,7 +221,7 @@ def _jax_calc_coarse_weights(
         alt_lamb=alt_lamb,
         interpol_num=weight_interpolation_period + 1,
         maximum_change=maximum_change,
-        raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
+        rule_outputs_are_weights=rule_outputs_are_weights,
         ste_max_change=ste_max_change,
         ste_min_max_weight=ste_min_max_weight,
         max_weights_per_asset=max_weights_per_asset,
@@ -229,23 +229,23 @@ def _jax_calc_coarse_weights(
         use_per_asset_bounds=use_per_asset_bounds,
     )
 
-    if raw_weight_outputs_are_themselves_weights:
+    if rule_outputs_are_weights:
         # Apply guardrails to initial weights
-        initial_carry = [raw_weight_outputs[0]]
+        initial_carry = [rule_outputs[0]]
         guardrailed_init, (
             actual_starts_init,
             scaled_diffs_init,
             target_weights_init,
         ) = _jax_calc_coarse_weight_scan_function(
             initial_carry,
-            raw_weight_outputs[0],
+            rule_outputs[0],
             minimum_weight=minimum_weight,
             asset_arange=asset_arange,
             n_assets=n_assets,
             alt_lamb=alt_lamb,
             interpol_num=2,  # interpol_num = 2 for immediate weight change
             maximum_change=maximum_change,
-            raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
+            rule_outputs_are_weights=rule_outputs_are_weights,
             ste_max_change=ste_max_change,
             ste_min_max_weight=ste_min_max_weight,
             max_weights_per_asset=max_weights_per_asset,
@@ -257,18 +257,18 @@ def _jax_calc_coarse_weights(
         carry_list_init = [initial_weights]
 
     _, (actual_starts, scaled_diffs, target_weights) = scan(
-        scan_fn, carry_list_init, raw_weight_outputs
+        scan_fn, carry_list_init, rule_outputs
     )
     return actual_starts, scaled_diffs, target_weights
 
 
 @partial(jit, static_argnums=(2, 4, 5))
 def calc_fine_weight_output(
-    raw_weight_outputs,
+    rule_outputs,
     initial_weights,
     run_fingerprint,
     params,
-    raw_weight_outputs_are_themselves_weights,
+    rule_outputs_are_weights,
     use_per_asset_bounds=False,
 ):
     """
@@ -282,11 +282,11 @@ def calc_fine_weight_output(
     5. Calculates fine weights using either linear or non-linear interpolation.
 
     Args:
-        raw_weight_outputs (jnp.ndarray): Raw weight outputs from previous calculations.
+        rule_outputs (jnp.ndarray): Raw weight outputs from previous calculations.
         initial_weights (jnp.ndarray): Initial weights for the assets.
         run_fingerprint (dict): The settings for this run.
         params (dict): Dictionary containing parameters for the update rule.
-        raw_weight_outputs_are_themselves_weights (bool): Whether the raw weight outputs are weights or weight changes.
+        rule_outputs_are_weights (bool): Whether the raw weight outputs are weights or weight changes.
         use_per_asset_bounds (bool): Whether to apply per-asset bounds from params.
 
     Returns:
@@ -318,7 +318,7 @@ def calc_fine_weight_output(
         max_weights_per_asset = jnp.ones(n_assets)
 
     actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
-        raw_weight_outputs,
+        rule_outputs,
         initial_weights,
         minimum_weight,
         params,
@@ -328,7 +328,7 @@ def calc_fine_weight_output(
         chunk_period,
         weight_interpolation_period,
         maximum_change,
-        raw_weight_outputs_are_themselves_weights,
+        rule_outputs_are_weights,
         ste_max_change,
         ste_min_max_weight,
         use_per_asset_bounds,
@@ -346,7 +346,7 @@ def calc_fine_weight_output(
         maximum_change=maximum_change,
         method=weight_interpolation_method,
     )
-    if raw_weight_outputs_are_themselves_weights:
+    if rule_outputs_are_weights:
         return weights
     else:
         return jnp.vstack(
@@ -360,7 +360,7 @@ def calc_fine_weight_output(
 calc_fine_weight_output_from_weight_changes = jit(
     Partial(
         calc_fine_weight_output,
-        raw_weight_outputs_are_themselves_weights=False,
+        rule_outputs_are_weights=False,
         use_per_asset_bounds=False,
     ),
     static_argnums=(2,),
@@ -368,7 +368,7 @@ calc_fine_weight_output_from_weight_changes = jit(
 calc_fine_weight_output_from_weights = jit(
     Partial(
         calc_fine_weight_output,
-        raw_weight_outputs_are_themselves_weights=True,
+        rule_outputs_are_weights=True,
         use_per_asset_bounds=False,
     ),
     static_argnums=(2,),
@@ -378,7 +378,7 @@ calc_fine_weight_output_from_weights = jit(
 calc_fine_weight_output_bounded_from_weight_changes = jit(
     Partial(
         calc_fine_weight_output,
-        raw_weight_outputs_are_themselves_weights=False,
+        rule_outputs_are_weights=False,
         use_per_asset_bounds=True,
     ),
     static_argnums=(2,),
@@ -386,7 +386,7 @@ calc_fine_weight_output_bounded_from_weight_changes = jit(
 calc_fine_weight_output_bounded_from_weights = jit(
     Partial(
         calc_fine_weight_output,
-        raw_weight_outputs_are_themselves_weights=True,
+        rule_outputs_are_weights=True,
         use_per_asset_bounds=True,
     ),
     static_argnums=(2,),
@@ -587,14 +587,14 @@ def _jax_calc_fine_weight_ends_only_scan_function(
 )
 def _jax_calc_coarse_weight_scan_function(
     carry_list,
-    raw_weight_outputs,
+    rule_outputs,
     minimum_weight,
     asset_arange,
     n_assets,
     alt_lamb,
     interpol_num,
     maximum_change,
-    raw_weight_outputs_are_themselves_weights=False,
+    rule_outputs_are_weights=False,
     ste_max_change=False,
     ste_min_max_weight=False,
     max_weights_per_asset=None,
@@ -613,7 +613,7 @@ def _jax_calc_coarse_weight_scan_function(
         alt_lamb (float): Alternative lambda value.
         interpol_num (int): Number of interpolation steps.
         maximum_change (float): Maximum allowed weight change.
-        raw_weight_outputs_are_themselves_weights (bool, optional): Whether raw weight outputs represent target weights (True) or weight changes (False). Defaults to False.
+        rule_outputs_are_weights (bool, optional): Whether raw weight outputs represent target weights (True) or weight changes (False). Defaults to False.
         ste_max_change (bool, optional): Use straight-through estimator for max change. Defaults to False.
         ste_min_max_weight (bool, optional): Use straight-through estimator for min/max weight. Defaults to False.
         max_weights_per_asset (ndarray, optional): Per-asset maximum weights (applied before uniform guardrails). Defaults to None.
@@ -640,12 +640,12 @@ def _jax_calc_coarse_weight_scan_function(
     ## it is at the (i-1)th moment in time we calculate the
     ## weights we WISH to have at the ith moment, using
     ## all information available at the (i-1)th moment
-    if raw_weight_outputs_are_themselves_weights:
+    if rule_outputs_are_weights:
         raw_weights = (
-            alt_lamb * prev_actual_position + (1 - alt_lamb) * raw_weight_outputs
+            alt_lamb * prev_actual_position + (1 - alt_lamb) * rule_outputs
         )
     else:
-        raw_weights = prev_actual_position + raw_weight_outputs
+        raw_weights = prev_actual_position + rule_outputs
     ## calc normed weights
     # if i > 5685:
     #     print(i, 'raw w', raw_weights)

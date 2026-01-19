@@ -18,7 +18,7 @@ The core of any update rule is the logic that converts market observations into 
 
     class MyCustomRule(TFMMBasePool):
         @partial(jit, static_argnums=(2))
-        def calculate_raw_weights_outputs(
+        def calculate_rule_outputs(
             self,
             params: Dict[str, Any],
             run_fingerprint: Dict[str, Any],
@@ -31,7 +31,7 @@ The core of any update rule is the logic that converts market observations into 
 To create a custom update rule:
 
 1. Inherit from :class:`~quantammsim.pools.TFMMBasePool`
-2. Implement method :meth:`~quantammsim.pools.TFMMBasePool.calculate_raw_weights_outputs`
+2. Implement method :meth:`~quantammsim.pools.TFMMBasePool.calculate_rule_outputs`
 3. (Optional) Provide the logic for any custom parameters in the pool's helper function :meth:`~quantammsim.pools.AbstractPool.init_base_parameters`
 4. Register the pool with JAX as a pytree node using :func:`~jax.tree_util.register_pytree_node` (see note in :doc:`../tutorials/custom_pools`)
 

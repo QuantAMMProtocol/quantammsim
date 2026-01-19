@@ -33,12 +33,12 @@ class Hashabledict(dict):
 
 # class SimpleTFMMPool(TFMMBasePool):
 #     """Simple TFMM pool implementation for testing"""
-#     def calculate_raw_weights_outputs(self, params, run_fingerprint, prices, additional_oracle_input=None):
+#     def calculate_rule_outputs(self, params, run_fingerprint, prices, additional_oracle_input=None):
 #         # Return constant weights for testing
 #         n_chunks = prices.shape[0] // run_fingerprint["chunk_period"]
 #         return jnp.ones((n_chunks, 2)) * 0.5
 
-#     def fine_weight_output(self, raw_weight_output, initial_weights, run_fingerprint, params):
+#     def calculate_fine_weights(self, rule_output, initial_weights, run_fingerprint, params):
 #         # Simple interpolation for testing
 #         n_fine = run_fingerprint["bout_length"]
 #         return jnp.ones((n_fine, 2)) * 0.5
@@ -172,7 +172,7 @@ def test_no_lookahead_bias_tfmm():
                         params, run_fingerprint, truncated_prices, jnp.array([0,0])
                     )
                     print("len(weights)", len(weights))
-                    raw_weight_outputs_ = pool.calculate_raw_weights_outputs(
+                    rule_outputs_ = pool.calculate_rule_outputs(
                         params, run_fingerprint, truncated_prices)
 
                     memory_days = lamb_to_memory_days_clipped(
@@ -190,7 +190,7 @@ def test_no_lookahead_bias_tfmm():
                         run_fingerprint["use_alt_lamb"],
                         cap_lamb=True,
                     )
-                    raw_weight_outputs = _jax_momentum_weight_update(gradients, k)
+                    rule_outputs = _jax_momentum_weight_update(gradients, k)
                     if cutoff == 500:
                         raise Exception("Stop here")
 

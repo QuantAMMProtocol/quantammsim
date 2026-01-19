@@ -55,8 +55,8 @@ class TFMMBasePool(AbstractPool):
     It defines additional abstract methods that are specific to TFMM pools, such as weight calculation.
 
     Abstract Methods:
-        calculate_raw_weights_outputs: Calculate the raw weight outputs of assets in the pool based on oracle values and parameters.
-        fine_weight_output: Function to handle how raw weights get mapped to per-block/per-minute weights. Two standard methods
+        calculate_rule_outputs: Calculate the raw weight outputs of assets in the pool based on oracle values and parameters.
+        calculate_fine_weights: Function to handle how raw weights get mapped to per-block/per-minute weights. Two standard methods
         are provided, for when 1) rules output raw weight _changes_ and 2) when rule output raw _weights_ themselves. See MomentumPool
         and MinVariancePool as prototypical examples of each respectively.
 
@@ -312,8 +312,7 @@ class TFMMBasePool(AbstractPool):
         )
         return reserves
 
-    @abstractmethod
-    def calculate_raw_weights_outputs(
+    def calculate_rule_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -321,10 +320,10 @@ class TFMMBasePool(AbstractPool):
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         """
-        Calculate raw weight adjustments based on price history.
+        Calculate raw weight adjustments based on price history (vectorized path).
 
         This is the first step in TFMM's two-step weight calculation process.
-        Subclasses must implement their specific weight adjustment logic.
+        Subclasses should implement either this method OR calculate_rule_output_step.
 
         Parameters
         ----------
@@ -342,10 +341,12 @@ class TFMMBasePool(AbstractPool):
         jnp.ndarray
             Raw weight adjustment values
         """
-        pass
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement either calculate_rule_outputs() "
+            "or calculate_rule_output_step()"
+        )
 
-    @abstractmethod
-    def calculate_single_step_weight_update(
+    def calculate_rule_output_step(
         self,
         carry: Dict[str, jnp.ndarray],
         price: jnp.ndarray,
@@ -353,7 +354,7 @@ class TFMMBasePool(AbstractPool):
         run_fingerprint: Dict[str, Any],
     ) -> tuple:
         """
-        Calculate a single step of weight update, mirroring production implementation.
+        Calculate a single step of weight update (scan-based path).
 
         This method represents how the strategy would run in production, where we are
         given current state, receive a new price observation, and output new state
@@ -362,6 +363,8 @@ class TFMMBasePool(AbstractPool):
         This is the core primitive that enables causality-preserving simulation.
         The state (carry) contains all information needed to compute the next step
         without any look-ahead bias.
+
+        Subclasses should implement either this method OR calculate_rule_outputs.
 
         Parameters
         ----------
@@ -380,14 +383,16 @@ class TFMMBasePool(AbstractPool):
         Returns
         -------
         tuple
-            (new_carry, raw_weight_output) where:
+            (new_carry, rule_output) where:
             - new_carry: Updated state dict with same structure as input carry
-            - raw_weight_output: Weight update/output for this timestep (shape: n_assets,)
+            - rule_output: Weight update/output for this timestep (shape: n_assets,)
         """
-        pass
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement either calculate_rule_outputs() "
+            "or calculate_rule_output_step()"
+        )
 
-    @abstractmethod
-    def get_initial_carry(
+    def get_initial_rule_state(
         self,
         initial_price: jnp.ndarray,
         params: Dict[str, Any],
@@ -399,6 +404,8 @@ class TFMMBasePool(AbstractPool):
         This creates the initial state needed to begin the scan-based
         weight calculation. The initial state is typically derived from
         the first price observation.
+
+        Required if using scan-based path (calculate_rule_output_step).
 
         Parameters
         ----------
@@ -414,9 +421,11 @@ class TFMMBasePool(AbstractPool):
         Dict[str, jnp.ndarray]
             Initial carry state with keys appropriate for this pool type.
         """
-        pass
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement get_initial_rule_state() for scan-based calculation"
+        )
 
-    def calculate_raw_weights_outputs_via_scan(
+    def calculate_rule_outputs_scan(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -426,7 +435,7 @@ class TFMMBasePool(AbstractPool):
         """
         Calculate raw weight outputs using jax.lax.scan over single-step updates.
 
-        This method produces the same outputs as calculate_raw_weights_outputs,
+        This method produces the same outputs as calculate_rule_outputs,
         but uses an explicit scan loop over the single-step update method.
         This mirrors how the strategy would be executed in production, where
         we process one price at a time.
@@ -445,33 +454,33 @@ class TFMMBasePool(AbstractPool):
         Returns
         -------
         jnp.ndarray
-            Raw weight outputs with same shape and values as calculate_raw_weights_outputs
+            Raw weight outputs with same shape and values as calculate_rule_outputs
         """
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
         n_assets = chunkwise_price_values.shape[1]
 
         # Initialize carry from first price
-        initial_carry = self.get_initial_carry(
+        initial_carry = self.get_initial_rule_state(
             chunkwise_price_values[0], params, run_fingerprint
         )
 
         # Create scan function with params/fingerprint bound
         scan_fn = Partial(
-            self.calculate_single_step_weight_update,
+            self.calculate_rule_output_step,
             params=params,
             run_fingerprint=run_fingerprint,
         )
 
         # Run scan over remaining prices (starting from index 1)
-        final_carry, raw_weight_outputs = scan(
+        final_carry, rule_outputs = scan(
             scan_fn, initial_carry, chunkwise_price_values[1:]
         )
 
         # Note: The scan produces outputs for prices[1:], which gives (n-1) outputs.
         # This matches calc_gradients which returns gradients[1:] (dropping first zero row).
-        return raw_weight_outputs
+        return rule_outputs
 
-    def get_initial_weight_carry(
+    def get_initial_guardrail_state(
         self,
         initial_weights: jnp.ndarray,
     ) -> Dict[str, jnp.ndarray]:
@@ -490,7 +499,7 @@ class TFMMBasePool(AbstractPool):
         """
         return {"prev_actual_weight": initial_weights}
 
-    def calculate_single_step_guardrailed_weight(
+    def calculate_coarse_weight_step(
         self,
         estimator_carry: Dict[str, jnp.ndarray],
         weight_carry: Dict[str, jnp.ndarray],
@@ -501,7 +510,7 @@ class TFMMBasePool(AbstractPool):
         """
         Compute raw weight update and apply guardrails for a single step.
 
-        This method calls calculate_single_step_weight_update to get the raw
+        This method calls calculate_rule_output_step to get the raw
         weight output, then applies guardrails (normalization, min/max constraints,
         max change limits).
 
@@ -527,7 +536,7 @@ class TFMMBasePool(AbstractPool):
             - step_output: Dict with 'actual_start', 'scaled_diff', 'target_weight'
         """
         # Step 1: Get raw weight output from the pool-specific calculation
-        new_estimator_carry, raw_weight_output = self.calculate_single_step_weight_update(
+        new_estimator_carry, rule_output = self.calculate_rule_output_step(
             estimator_carry, price, params, run_fingerprint
         )
 
@@ -547,14 +556,14 @@ class TFMMBasePool(AbstractPool):
         carry_list = [weight_carry["prev_actual_weight"]]
         new_carry_list, (actual_start, scaled_diff, target_weight) = _jax_calc_coarse_weight_scan_function(
             carry_list,
-            raw_weight_output,
+            rule_output,
             minimum_weight=minimum_weight,
             asset_arange=asset_arange,
             n_assets=n_assets,
             alt_lamb=None,
             interpol_num=interpol_num,
             maximum_change=maximum_change,
-            raw_weight_outputs_are_themselves_weights=False,
+            rule_outputs_are_weights=False,
             ste_max_change=ste_max_change,
             ste_min_max_weight=ste_min_max_weight,
             max_weights_per_asset=None,
@@ -571,7 +580,7 @@ class TFMMBasePool(AbstractPool):
 
         return new_estimator_carry, new_weight_carry, step_output
 
-    def calculate_single_step_interpolation_block(
+    def calculate_fine_weights_step(
         self,
         estimator_carry: Dict[str, jnp.ndarray],
         weight_carry: Dict[str, jnp.ndarray],
@@ -582,7 +591,7 @@ class TFMMBasePool(AbstractPool):
         """
         Compute a single interpolation block of fine weights for one price step.
 
-        This method calls calculate_single_step_guardrailed_weight to get the
+        This method calls calculate_coarse_weight_step to get the
         guardrailed weight outputs, then generates the full interpolation block.
 
         Parameters
@@ -607,7 +616,7 @@ class TFMMBasePool(AbstractPool):
             - interpolation_block: Array of shape (chunk_period, n_assets)
         """
         # Get guardrailed weight outputs
-        new_estimator_carry, new_weight_carry, step_output = self.calculate_single_step_guardrailed_weight(
+        new_estimator_carry, new_weight_carry, step_output = self.calculate_coarse_weight_step(
             estimator_carry, weight_carry, price, params, run_fingerprint
         )
 
@@ -640,7 +649,7 @@ class TFMMBasePool(AbstractPool):
 
         return new_estimator_carry, new_weight_carry, interpolation_block
 
-    def calculate_fine_weights_via_scan(
+    def calculate_weights_scan(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -655,7 +664,7 @@ class TFMMBasePool(AbstractPool):
         a truly sequential approach:
         1. Warm up the estimator over the burn-in period (single-step updates)
         2. Reset weight state to initial_weights at bout start
-        3. Scan over bout prices using calculate_single_step_interpolation_block
+        3. Scan over bout prices using calculate_fine_weights_step
         4. Concatenate interpolation blocks
 
         This mirrors how weights would be computed in a production system
@@ -700,13 +709,13 @@ class TFMMBasePool(AbstractPool):
 
         # Phase 1: Warm up estimator over burn-in period
         # Initialize estimator from first price
-        estimator_carry = self.get_initial_carry(
+        estimator_carry = self.get_initial_rule_state(
             chunkwise_price_values[0], params, run_fingerprint
         )
 
         # Warm-up scan: process burn-in prices, only update estimator state
         def warm_up_scan_fn(est_carry, price):
-            new_est_carry, _ = self.calculate_single_step_weight_update(
+            new_est_carry, _ = self.calculate_rule_output_step(
                 est_carry, price, params, run_fingerprint
             )
             return new_est_carry, None
@@ -719,12 +728,12 @@ class TFMMBasePool(AbstractPool):
 
         # Phase 2: Compute fine weights for bout period
         # Reset weight carry to initial_weights (fresh start for bout)
-        weight_carry = self.get_initial_weight_carry(initial_weights)
+        weight_carry = self.get_initial_guardrail_state(initial_weights)
 
         # Bout scan: process bout prices, output interpolation blocks
         def bout_scan_fn(carry, price):
             est_carry, wt_carry = carry
-            new_est_carry, new_wt_carry, interpolation_block = self.calculate_single_step_interpolation_block(
+            new_est_carry, new_wt_carry, interpolation_block = self.calculate_fine_weights_step(
                 est_carry, wt_carry, price, params, run_fingerprint
             )
             return (new_est_carry, new_wt_carry), interpolation_block
@@ -744,7 +753,7 @@ class TFMMBasePool(AbstractPool):
         # Reshape blocks: (n_bout_chunks, chunk_period, n_assets) -> flat
         fine_weights = interpolation_blocks.reshape(-1, n_assets)
 
-        # Prepend initial weights for first chunk (matching fine_weight_output)
+        # Prepend initial weights for first chunk (matching calculate_fine_weights)
         fine_weights = jnp.vstack([
             jnp.ones((chunk_period, n_assets), dtype=jnp.float64) * initial_weights,
             fine_weights,
@@ -755,7 +764,7 @@ class TFMMBasePool(AbstractPool):
 
         return weights
 
-    def calculate_weights_via_scan(
+    def calculate_weights_hybrid(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -769,7 +778,7 @@ class TFMMBasePool(AbstractPool):
         Calculate the weights of assets in the pool using scan-based raw weight calculation.
 
         This method produces the same outputs as calculate_weights, but uses
-        calculate_raw_weights_outputs_via_scan instead of calculate_raw_weights_outputs.
+        calculate_rule_outputs_scan instead of calculate_rule_outputs.
 
         Parameters
         ----------
@@ -792,7 +801,7 @@ class TFMMBasePool(AbstractPool):
         chunk_period = run_fingerprint["chunk_period"]
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
-        raw_weight_outputs = self.calculate_raw_weights_outputs_via_scan(
+        rule_outputs = self.calculate_rule_outputs_scan(
             params, run_fingerprint, prices, additional_oracle_input
         )
         # we don't want to change the initial weights during any training
@@ -805,25 +814,25 @@ class TFMMBasePool(AbstractPool):
 
         start_index_coarse = ((start_index[0] / chunk_period).astype("int64"), 0)
 
-        # if the chunk period is not a divisor of bout_length, we need to pad the raw_weight_outputs.
+        # if the chunk period is not a divisor of bout_length, we need to pad the rule_outputs.
         # this can require more data to be available, potentially beyond the end of the bout.
         if bout_length % chunk_period != 0:
             raw_weight_additional_offset = 1
         else:
             raw_weight_additional_offset = 0
-        raw_weight_outputs = dynamic_slice(
-            raw_weight_outputs,
+        rule_outputs = dynamic_slice(
+            rule_outputs,
             start_index_coarse,
             (
                 int((bout_length) / chunk_period) + raw_weight_additional_offset,
                 n_assets,
             ),
         )
-        raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
+        rule_outputs_cpu = device_put(rule_outputs, CPU_DEVICE)
         initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
 
-        weights = self.fine_weight_output(
-            raw_weight_outputs_cpu,
+        weights = self.calculate_fine_weights(
+            rule_outputs_cpu,
             initial_weights_cpu,
             run_fingerprint,
             params,
@@ -845,7 +854,7 @@ class TFMMBasePool(AbstractPool):
         Calculate readouts (internal estimator variables, other running variables) for the pool,
         based on price history.
 
-        This method can potentially have some overlap with calculate_raw_weights_outputs, but
+        This method can potentially have some overlap with calculate_rule_outputs, but
         for most TFMM pools it will simply correspond to the readout values for the
         gradient estimator (the ewma of prices and running a), sliced in the same way that
         the raw weight outputs are sliced.
@@ -871,9 +880,9 @@ class TFMMBasePool(AbstractPool):
         pass
 
     @abstractmethod
-    def fine_weight_output(
+    def calculate_fine_weights(
         self,
-        raw_weight_output: jnp.ndarray,
+        rule_output: jnp.ndarray,
         initial_weights: jnp.ndarray,
         run_fingerprint: Dict[str, Any],
         params: Dict[str, Any],
@@ -886,8 +895,8 @@ class TFMMBasePool(AbstractPool):
 
         Parameters
         ----------
-        raw_weight_output : jnp.ndarray
-            Output from calculate_raw_weights_outputs
+        rule_output : jnp.ndarray
+            Output from calculate_rule_outputs
         initial_weights : jnp.ndarray
             Starting weights
         run_fingerprint : Dict[str, Any]
@@ -934,7 +943,7 @@ class TFMMBasePool(AbstractPool):
         chunk_period = run_fingerprint["chunk_period"]
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
-        raw_weight_outputs = self.calculate_raw_weights_outputs(
+        rule_outputs = self.calculate_rule_outputs(
             params, run_fingerprint, prices, additional_oracle_input
         )
         # we dont't want to change the initial weights during any training
@@ -947,25 +956,25 @@ class TFMMBasePool(AbstractPool):
 
         start_index_coarse = ((start_index[0] / chunk_period).astype("int64"), 0)
 
-        # if the chunk period is not a divisor of bout_length, we need to pad the raw_weight_outputs.
+        # if the chunk period is not a divisor of bout_length, we need to pad the rule_outputs.
         # this can require more data to be available, potentially beyond the end of the bout.
         if bout_length % chunk_period != 0:
             raw_weight_additional_offset = 1
         else:
             raw_weight_additional_offset = 0
-        raw_weight_outputs = dynamic_slice(
-            raw_weight_outputs,
+        rule_outputs = dynamic_slice(
+            rule_outputs,
             start_index_coarse,
             (
                 int((bout_length) / chunk_period) + raw_weight_additional_offset,
                 n_assets,
             ),
         )
-        raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
+        rule_outputs_cpu = device_put(rule_outputs, CPU_DEVICE)
         initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
 
-        weights = self.fine_weight_output(
-            raw_weight_outputs_cpu,
+        weights = self.calculate_fine_weights(
+            rule_outputs_cpu,
             initial_weights_cpu,
             run_fingerprint,
             params,
@@ -1008,7 +1017,7 @@ class TFMMBasePool(AbstractPool):
         chunk_period = run_fingerprint["chunk_period"]
         bout_length = len(prices) - start_index[0]
         n_assets = run_fingerprint["n_assets"]
-        raw_weight_outputs = self.calculate_raw_weights_outputs(
+        rule_outputs = self.calculate_rule_outputs(
             params, run_fingerprint, prices, additional_oracle_input
         )
         # we dont't want to change the initial weights during any training
@@ -1021,25 +1030,25 @@ class TFMMBasePool(AbstractPool):
 
         start_index_coarse = ((start_index[0] / chunk_period).astype("int64"), 0)
 
-        # if the chunk period is not a divisor of bout_length, we need to pad the raw_weight_outputs.
+        # if the chunk period is not a divisor of bout_length, we need to pad the rule_outputs.
         # this can require more data to be available, potentially beyond the end of the bout.
         raw_weight_additional_offset = jnp.where(bout_length % chunk_period != 0, 1, 0).astype("int64")
         from jax.lax import slice as jax_slice
-        alt_slice = jax_slice(raw_weight_outputs, start_index_coarse, int((len(prices)/chunk_period), n_assets))
+        alt_slice = jax_slice(rule_outputs, start_index_coarse, int((len(prices)/chunk_period), n_assets))
 
-        raw_weight_outputs = dynamic_slice(
-            raw_weight_outputs,
+        rule_outputs = dynamic_slice(
+            rule_outputs,
             start_index_coarse,
             (
                 int((bout_length) / chunk_period) + raw_weight_additional_offset,
                 n_assets,
             ),
         )
-        raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
+        rule_outputs_cpu = device_put(rule_outputs, CPU_DEVICE)
         initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
 
-        weights = self.fine_weight_output(
-            raw_weight_outputs_cpu,
+        weights = self.calculate_fine_weights(
+            rule_outputs_cpu,
             initial_weights_cpu,
             run_fingerprint,
             params,
@@ -1313,7 +1322,7 @@ class TFMMBasePool(AbstractPool):
             "use_alt_lamb": False,
         }
 
-        raw_weight_outputs = self.calculate_raw_weights_outputs(
+        rule_outputs = self.calculate_rule_outputs(
             params, local_fingerprint, prices, None
         )
         # we dont't want to change the initial weights during any training
@@ -1321,11 +1330,11 @@ class TFMMBasePool(AbstractPool):
         if initial_weights is None:
             initial_weights = self.calculate_initial_weights(params)
 
-        raw_weight_outputs_cpu = device_put(raw_weight_outputs, CPU_DEVICE)
+        rule_outputs_cpu = device_put(rule_outputs, CPU_DEVICE)
         initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
 
         actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
-            raw_weight_outputs,
+            rule_outputs,
             initial_weights,
             minimum_weight,
             params,

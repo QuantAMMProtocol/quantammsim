@@ -412,9 +412,9 @@ class BoundedWeightsHook:
             )
 
     @partial(jit, static_argnums=(3,))
-    def fine_weight_output(
+    def calculate_fine_weights(
         self,
-        raw_weight_output: jnp.ndarray,
+        rule_output: jnp.ndarray,
         initial_weights: jnp.ndarray,
         run_fingerprint: Dict[str, Any],
         params: Dict[str, Any],
@@ -422,11 +422,11 @@ class BoundedWeightsHook:
         """
         Calculate fine weights with per-asset bounds.
 
-        This method overrides the base pool's fine_weight_output to use
+        This method overrides the base pool's calculate_fine_weights to use
         per-asset min/max constraints before the uniform bounds.
 
         Args:
-            raw_weight_output: Raw weight changes from the strategy.
+            rule_output: Raw weight changes from the strategy.
             initial_weights: Initial weights.
             run_fingerprint: Run configuration.
             params: Parameters including per-asset bounds.
@@ -435,7 +435,7 @@ class BoundedWeightsHook:
             Fine weights satisfying per-asset bounds and uniform guardrails.
         """
         return calc_fine_weight_output_bounded_from_weight_changes(
-            raw_weight_output, initial_weights, run_fingerprint, params
+            rule_output, initial_weights, run_fingerprint, params
         )
 
     def init_bounded_weight_parameters(

@@ -107,8 +107,8 @@ weights_logit = pool.calculate_weights(params_logit, rf, prices, [0, 0])
 weights_memory = pool.calculate_weights(params_memory, rf, prices, [0, 0])
 
 # Calculate raw weights for both
-raw_weights_logit = pool.calculate_raw_weights_outputs(params_logit, rf, prices, None)
-raw_weights_memory = pool.calculate_raw_weights_outputs(params_memory, rf, prices, None)
+raw_weights_logit = pool.calculate_rule_outputs(params_logit, rf, prices, None)
+raw_weights_memory = pool.calculate_rule_outputs(params_memory, rf, prices, None)
 
 # Plot comparisons
 plot_comparison(

@@ -45,7 +45,7 @@ from typing import Dict, Any, Optional
 from functools import partial
 import numpy as np
 
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_themselves_weights
 # as this is False for momentum pools --- the strategy outputs weight _changes_
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weight_changes,
@@ -65,7 +65,7 @@ class DifferenceMomentumPool(MomentumPool):
 
     Methods
     -------
-    calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
+    calculate_rule_outputs(params, run_fingerprint, prices, additional_oracle_input)
         Calculate the raw weight outputs based on mean-reversion signals.
 
     Notes
@@ -87,7 +87,7 @@ class DifferenceMomentumPool(MomentumPool):
         super().__init__()
 
     @partial(jit, static_argnums=(2))
-    def calculate_raw_weights_outputs(
+    def calculate_rule_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -146,10 +146,10 @@ class DifferenceMomentumPool(MomentumPool):
 
         # Calculate signal
         ewma_proportional_difference = 1.0 - ewma_2 / ewma_1
-        raw_weight_outputs = _jax_momentum_weight_update(
+        rule_outputs = _jax_momentum_weight_update(
             ewma_proportional_difference, k
         )
-        return raw_weight_outputs
+        return rule_outputs
 
     def init_base_parameters(
         self,
@@ -285,7 +285,7 @@ tree_util.register_pytree_node(
 #     # Force CPU backend
 #     config.update("jax_platform_name", "cpu")
 #     pool_cpu = DifferenceMomentumPool()
-#     cpu_output = pool_cpu.calculate_raw_weights_outputs(
+#     cpu_output = pool_cpu.calculate_rule_outputs(
 #         params, Hashabledict(run_fingerprint), prices
 #     )
 #     print(cpu_output)
@@ -293,7 +293,7 @@ tree_util.register_pytree_node(
 #     try:
 #         config.update("jax_platform_name", "gpu")
 #         pool_gpu = DifferenceMomentumPool()
-#         gpu_output = pool_gpu.calculate_raw_weights_outputs(
+#         gpu_output = pool_gpu.calculate_rule_outputs(
 #             params, Hashabledict(run_fingerprint), prices
 #         )
 #         print(gpu_output)

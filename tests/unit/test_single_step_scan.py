@@ -2,7 +2,7 @@
 Tests for single-step weight update methods and scan-based calculation.
 
 These tests verify that:
-1. calculate_raw_weights_outputs_via_scan produces the same results as calculate_raw_weights_outputs
+1. calculate_rule_outputs_scan produces the same results as calculate_rule_outputs
 2. The single-step methods correctly implement the weight update logic
 """
 import pytest
@@ -118,12 +118,12 @@ class TestMomentumPoolScanEquivalence:
         prices = generate_price_data(n_timesteps, n_assets)
 
         # Original method
-        original_output = pool.calculate_raw_weights_outputs(
+        original_output = pool.calculate_rule_outputs(
             params, run_fingerprint, prices, None
         )
 
         # Scan-based method
-        scan_output = pool.calculate_raw_weights_outputs_via_scan(
+        scan_output = pool.calculate_rule_outputs_scan(
             params, run_fingerprint, prices, None
         )
 
@@ -142,10 +142,10 @@ class TestMomentumPoolScanEquivalence:
         run_fingerprint = make_run_fingerprint(n_assets)
         prices = generate_price_data(n_timesteps, n_assets)
 
-        original_output = pool.calculate_raw_weights_outputs(
+        original_output = pool.calculate_rule_outputs(
             params, run_fingerprint, prices, None
         )
-        scan_output = pool.calculate_raw_weights_outputs_via_scan(
+        scan_output = pool.calculate_rule_outputs_scan(
             params, run_fingerprint, prices, None
         )
 
@@ -164,10 +164,10 @@ class TestMomentumPoolScanEquivalence:
         run_fingerprint = make_run_fingerprint(n_assets)
         prices = generate_price_data(n_timesteps, n_assets)
 
-        original_output = pool.calculate_raw_weights_outputs(
+        original_output = pool.calculate_rule_outputs(
             params, run_fingerprint, prices, None
         )
-        scan_output = pool.calculate_raw_weights_outputs_via_scan(
+        scan_output = pool.calculate_rule_outputs_scan(
             params, run_fingerprint, prices, None
         )
 
@@ -188,10 +188,10 @@ class TestMomentumPoolScanEquivalence:
         for memory_days in [7.0, 30.0, 90.0]:
             params = make_momentum_params(n_assets, memory_days=memory_days)
 
-            original_output = pool.calculate_raw_weights_outputs(
+            original_output = pool.calculate_rule_outputs(
                 params, run_fingerprint, prices, None
             )
-            scan_output = pool.calculate_raw_weights_outputs_via_scan(
+            scan_output = pool.calculate_rule_outputs_scan(
                 params, run_fingerprint, prices, None
             )
 
@@ -212,10 +212,10 @@ class TestMomentumPoolScanEquivalence:
         for k_per_day in [0.5, 1.0, 2.0, 5.0]:
             params = make_momentum_params(n_assets, k_per_day=k_per_day)
 
-            original_output = pool.calculate_raw_weights_outputs(
+            original_output = pool.calculate_rule_outputs(
                 params, run_fingerprint, prices, None
             )
-            scan_output = pool.calculate_raw_weights_outputs_via_scan(
+            scan_output = pool.calculate_rule_outputs_scan(
                 params, run_fingerprint, prices, None
             )
 
@@ -238,10 +238,10 @@ class TestPowerChannelPoolScanEquivalence:
         run_fingerprint = make_run_fingerprint(n_assets)
         prices = generate_price_data(n_timesteps, n_assets)
 
-        original_output = pool.calculate_raw_weights_outputs(
+        original_output = pool.calculate_rule_outputs(
             params, run_fingerprint, prices, None
         )
-        scan_output = pool.calculate_raw_weights_outputs_via_scan(
+        scan_output = pool.calculate_rule_outputs_scan(
             params, run_fingerprint, prices, None
         )
 
@@ -260,10 +260,10 @@ class TestPowerChannelPoolScanEquivalence:
         run_fingerprint = make_run_fingerprint(n_assets)
         prices = generate_price_data(n_timesteps, n_assets)
 
-        original_output = pool.calculate_raw_weights_outputs(
+        original_output = pool.calculate_rule_outputs(
             params, run_fingerprint, prices, None
         )
-        scan_output = pool.calculate_raw_weights_outputs_via_scan(
+        scan_output = pool.calculate_rule_outputs_scan(
             params, run_fingerprint, prices, None
         )
 
@@ -284,10 +284,10 @@ class TestPowerChannelPoolScanEquivalence:
         for exponents in [1.0, 1.5, 2.0, 3.0]:
             params = make_power_channel_params(n_assets, exponents=exponents)
 
-            original_output = pool.calculate_raw_weights_outputs(
+            original_output = pool.calculate_rule_outputs(
                 params, run_fingerprint, prices, None
             )
-            scan_output = pool.calculate_raw_weights_outputs_via_scan(
+            scan_output = pool.calculate_rule_outputs_scan(
                 params, run_fingerprint, prices, None
             )
 
@@ -308,10 +308,10 @@ class TestPowerChannelPoolScanEquivalence:
         for pre_exp_scaling in [0.25, 0.5, 0.75, 1.0]:
             params = make_power_channel_params(n_assets, pre_exp_scaling=pre_exp_scaling)
 
-            original_output = pool.calculate_raw_weights_outputs(
+            original_output = pool.calculate_rule_outputs(
                 params, run_fingerprint, prices, None
             )
-            scan_output = pool.calculate_raw_weights_outputs_via_scan(
+            scan_output = pool.calculate_rule_outputs_scan(
                 params, run_fingerprint, prices, None
             )
 
@@ -334,10 +334,10 @@ class TestMeanReversionChannelPoolScanEquivalence:
         run_fingerprint = make_run_fingerprint(n_assets)
         prices = generate_price_data(n_timesteps, n_assets)
 
-        original_output = pool.calculate_raw_weights_outputs(
+        original_output = pool.calculate_rule_outputs(
             params, run_fingerprint, prices, None
         )
-        scan_output = pool.calculate_raw_weights_outputs_via_scan(
+        scan_output = pool.calculate_rule_outputs_scan(
             params, run_fingerprint, prices, None
         )
 
@@ -356,10 +356,10 @@ class TestMeanReversionChannelPoolScanEquivalence:
         run_fingerprint = make_run_fingerprint(n_assets)
         prices = generate_price_data(n_timesteps, n_assets)
 
-        original_output = pool.calculate_raw_weights_outputs(
+        original_output = pool.calculate_rule_outputs(
             params, run_fingerprint, prices, None
         )
-        scan_output = pool.calculate_raw_weights_outputs_via_scan(
+        scan_output = pool.calculate_rule_outputs_scan(
             params, run_fingerprint, prices, None
         )
 
@@ -380,10 +380,10 @@ class TestMeanReversionChannelPoolScanEquivalence:
         for amplitude in [0.5, 1.0, 2.0]:
             params = make_mean_reversion_channel_params(n_assets, amplitude=amplitude)
 
-            original_output = pool.calculate_raw_weights_outputs(
+            original_output = pool.calculate_rule_outputs(
                 params, run_fingerprint, prices, None
             )
-            scan_output = pool.calculate_raw_weights_outputs_via_scan(
+            scan_output = pool.calculate_rule_outputs_scan(
                 params, run_fingerprint, prices, None
             )
 
@@ -404,10 +404,10 @@ class TestMeanReversionChannelPoolScanEquivalence:
         for width in [0.05, 0.1, 0.2, 0.5]:
             params = make_mean_reversion_channel_params(n_assets, width=width)
 
-            original_output = pool.calculate_raw_weights_outputs(
+            original_output = pool.calculate_rule_outputs(
                 params, run_fingerprint, prices, None
             )
-            scan_output = pool.calculate_raw_weights_outputs_via_scan(
+            scan_output = pool.calculate_rule_outputs_scan(
                 params, run_fingerprint, prices, None
             )
 
@@ -430,14 +430,14 @@ class TestSingleStepMethods:
         initial_price = jnp.array([100.0, 150.0, 200.0])
         next_price = jnp.array([101.0, 149.0, 202.0])
 
-        initial_carry = pool.get_initial_carry(initial_price, params, run_fingerprint)
+        initial_carry = pool.get_initial_rule_state(initial_price, params, run_fingerprint)
 
         assert "ewma" in initial_carry
         assert "running_a" in initial_carry
         assert initial_carry["ewma"].shape == (n_assets,)
         assert initial_carry["running_a"].shape == (n_assets,)
 
-        new_carry, output = pool.calculate_single_step_weight_update(
+        new_carry, output = pool.calculate_rule_output_step(
             initial_carry, next_price, params, run_fingerprint
         )
 
@@ -455,8 +455,8 @@ class TestSingleStepMethods:
         initial_price = jnp.array([100.0, 150.0, 200.0])
         next_price = jnp.array([101.0, 149.0, 202.0])
 
-        initial_carry = pool.get_initial_carry(initial_price, params, run_fingerprint)
-        new_carry, output = pool.calculate_single_step_weight_update(
+        initial_carry = pool.get_initial_rule_state(initial_price, params, run_fingerprint)
+        new_carry, output = pool.calculate_rule_output_step(
             initial_carry, next_price, params, run_fingerprint
         )
 
@@ -474,8 +474,8 @@ class TestSingleStepMethods:
         initial_price = jnp.array([100.0, 150.0, 200.0])
         next_price = jnp.array([101.0, 149.0, 202.0])
 
-        initial_carry = pool.get_initial_carry(initial_price, params, run_fingerprint)
-        new_carry, output = pool.calculate_single_step_weight_update(
+        initial_carry = pool.get_initial_rule_state(initial_price, params, run_fingerprint)
+        new_carry, output = pool.calculate_rule_output_step(
             initial_carry, next_price, params, run_fingerprint
         )
 
@@ -493,8 +493,8 @@ class TestSingleStepMethods:
         initial_price = jnp.array([100.0, 150.0, 200.0])
         next_price = jnp.array([105.0, 145.0, 210.0])
 
-        initial_carry = pool.get_initial_carry(initial_price, params, run_fingerprint)
-        _, output = pool.calculate_single_step_weight_update(
+        initial_carry = pool.get_initial_rule_state(initial_price, params, run_fingerprint)
+        _, output = pool.calculate_rule_output_step(
             initial_carry, next_price, params, run_fingerprint
         )
 
@@ -513,8 +513,8 @@ class TestSingleStepMethods:
         initial_price = jnp.array([100.0, 200.0])
         next_price = jnp.array([110.0, 190.0])
 
-        initial_carry = pool.get_initial_carry(initial_price, params, run_fingerprint)
-        new_carry, _ = pool.calculate_single_step_weight_update(
+        initial_carry = pool.get_initial_rule_state(initial_price, params, run_fingerprint)
+        new_carry, _ = pool.calculate_rule_output_step(
             initial_carry, next_price, params, run_fingerprint
         )
 
@@ -555,9 +555,9 @@ def make_fine_weight_run_fingerprint(n_assets, chunk_period=60, max_memory_days=
 
 
 class TestFineWeightsScanEquivalence:
-    """Test that calculate_fine_weights_via_scan matches calculate_weights.
+    """Test that calculate_weights_scan matches calculate_weights.
 
-    calculate_fine_weights_via_scan uses a truly sequential approach with
+    calculate_weights_scan uses a truly sequential approach with
     single-step interpolation blocks, producing the same output as calculate_weights.
     """
 
@@ -580,7 +580,7 @@ class TestFineWeightsScanEquivalence:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_fine_weights_via_scan(
+        scan_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -608,7 +608,7 @@ class TestFineWeightsScanEquivalence:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_fine_weights_via_scan(
+        scan_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -636,7 +636,7 @@ class TestFineWeightsScanEquivalence:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_fine_weights_via_scan(
+        scan_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -664,7 +664,7 @@ class TestFineWeightsScanEquivalence:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_fine_weights_via_scan(
+        scan_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -700,7 +700,7 @@ class TestFineWeightsScanEquivalence:
             original_weights = pool.calculate_weights(
                 params, run_fingerprint, prices, start_index, None
             )
-            scan_weights = pool.calculate_fine_weights_via_scan(
+            scan_weights = pool.calculate_weights_scan(
                 params, run_fingerprint, prices, start_index, None
             )
 
@@ -731,7 +731,7 @@ class TestFineWeightsScanEquivalence:
             original_weights = pool.calculate_weights(
                 params, run_fingerprint, prices, start_index, None
             )
-            scan_weights = pool.calculate_fine_weights_via_scan(
+            scan_weights = pool.calculate_weights_scan(
                 params, run_fingerprint, prices, start_index, None
             )
 
@@ -756,7 +756,7 @@ class TestFineWeightsScanEquivalence:
         prices = generate_price_data(n_timesteps, n_assets)
         start_index = jnp.array([burn_in])
 
-        scan_weights = pool.calculate_fine_weights_via_scan(
+        scan_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -788,7 +788,7 @@ class TestFineWeightsScanEquivalence:
         prices = generate_price_data(n_timesteps, n_assets)
         start_index = jnp.array([burn_in])
 
-        scan_weights = pool.calculate_fine_weights_via_scan(
+        scan_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -797,7 +797,7 @@ class TestFineWeightsScanEquivalence:
             f"Some weights below minimum: min={jnp.min(scan_weights)}"
 
     def test_fine_weights_zero_burn_in(self):
-        """Test calculate_fine_weights_via_scan with zero burn-in (start_index=0).
+        """Test calculate_weights_scan with zero burn-in (start_index=0).
 
         With zero burn-in, the warm-up scan processes an empty array.
         This is an important edge case.
@@ -818,18 +818,18 @@ class TestFineWeightsScanEquivalence:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_fine_weights_via_scan(
+        scan_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
         # Use looser tolerance for accumulated floating-point differences
         np.testing.assert_allclose(
             original_weights, scan_weights, rtol=1e-6, atol=1e-6,
-            err_msg="calculate_fine_weights_via_scan should match original with zero burn-in"
+            err_msg="calculate_weights_scan should match original with zero burn-in"
         )
 
     def test_fine_weights_approx_optimal_interpolation(self):
-        """Test calculate_fine_weights_via_scan with approx_optimal interpolation method."""
+        """Test calculate_weights_scan with approx_optimal interpolation method."""
         n_assets = 2
         chunk_period = 60
         bout_length = 2880
@@ -848,7 +848,7 @@ class TestFineWeightsScanEquivalence:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_fine_weights_via_scan(
+        scan_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -878,7 +878,7 @@ class TestFineWeightsScanEquivalence:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_fine_weights_via_scan(
+        scan_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -914,7 +914,7 @@ class TestFineWeightsScanEquivalence:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_fine_weights_via_scan(
+        scan_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -957,7 +957,7 @@ class TestFineWeightsScanEquivalence:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_fine_weights_via_scan(
+        scan_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -1000,7 +1000,7 @@ class TestFineWeightsScanEquivalence:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_fine_weights_via_scan(
+        scan_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -1020,8 +1020,8 @@ class TestFineWeightsScanEquivalence:
         np.testing.assert_allclose(weight_sums, 1.0, rtol=1e-10, atol=1e-10)
 
 
-class TestSingleStepGuardrailedWeight:
-    """Test calculate_single_step_guardrailed_weight directly."""
+class TestCoarseWeightStep:
+    """Test calculate_coarse_weight_step directly."""
 
     def test_guardrailed_weight_output_structure(self):
         """Test that guardrailed weight method returns correct structure."""
@@ -1034,10 +1034,10 @@ class TestSingleStepGuardrailedWeight:
         next_price = jnp.array([105.0, 195.0])
         initial_weights = jnp.array([0.5, 0.5])
 
-        estimator_carry = pool.get_initial_carry(initial_price, params, run_fingerprint)
-        weight_carry = pool.get_initial_weight_carry(initial_weights)
+        estimator_carry = pool.get_initial_rule_state(initial_price, params, run_fingerprint)
+        weight_carry = pool.get_initial_guardrail_state(initial_weights)
 
-        new_est_carry, new_wt_carry, step_output = pool.calculate_single_step_guardrailed_weight(
+        new_est_carry, new_wt_carry, step_output = pool.calculate_coarse_weight_step(
             estimator_carry, weight_carry, next_price, params, run_fingerprint
         )
 
@@ -1067,10 +1067,10 @@ class TestSingleStepGuardrailedWeight:
         next_price = jnp.array([105.0, 145.0, 210.0])
         initial_weights = jnp.array([0.4, 0.35, 0.25])
 
-        estimator_carry = pool.get_initial_carry(initial_price, params, run_fingerprint)
-        weight_carry = pool.get_initial_weight_carry(initial_weights)
+        estimator_carry = pool.get_initial_rule_state(initial_price, params, run_fingerprint)
+        weight_carry = pool.get_initial_guardrail_state(initial_weights)
 
-        _, new_wt_carry, step_output = pool.calculate_single_step_guardrailed_weight(
+        _, new_wt_carry, step_output = pool.calculate_coarse_weight_step(
             estimator_carry, weight_carry, next_price, params, run_fingerprint
         )
 
@@ -1087,8 +1087,8 @@ class TestSingleStepGuardrailedWeight:
         )
 
 
-class TestSingleStepInterpolationBlock:
-    """Test calculate_single_step_interpolation_block directly."""
+class TestFineWeightsStep:
+    """Test calculate_fine_weights_step directly."""
 
     def test_interpolation_block_shape(self):
         """Test that interpolation block has correct shape."""
@@ -1104,10 +1104,10 @@ class TestSingleStepInterpolationBlock:
         next_price = jnp.array([105.0, 195.0])
         initial_weights = jnp.array([0.5, 0.5])
 
-        estimator_carry = pool.get_initial_carry(initial_price, params, run_fingerprint)
-        weight_carry = pool.get_initial_weight_carry(initial_weights)
+        estimator_carry = pool.get_initial_rule_state(initial_price, params, run_fingerprint)
+        weight_carry = pool.get_initial_guardrail_state(initial_weights)
 
-        _, _, interpolation_block = pool.calculate_single_step_interpolation_block(
+        _, _, interpolation_block = pool.calculate_fine_weights_step(
             estimator_carry, weight_carry, next_price, params, run_fingerprint
         )
 
@@ -1129,10 +1129,10 @@ class TestSingleStepInterpolationBlock:
         next_price = jnp.array([105.0, 145.0, 210.0])
         initial_weights = jnp.array([0.4, 0.35, 0.25])
 
-        estimator_carry = pool.get_initial_carry(initial_price, params, run_fingerprint)
-        weight_carry = pool.get_initial_weight_carry(initial_weights)
+        estimator_carry = pool.get_initial_rule_state(initial_price, params, run_fingerprint)
+        weight_carry = pool.get_initial_guardrail_state(initial_weights)
 
-        _, _, interpolation_block = pool.calculate_single_step_interpolation_block(
+        _, _, interpolation_block = pool.calculate_fine_weights_step(
             estimator_carry, weight_carry, next_price, params, run_fingerprint
         )
 
@@ -1190,10 +1190,10 @@ class TestHistoricDataScanEquivalence:
         params = make_momentum_params(n_assets)
         run_fingerprint = make_run_fingerprint(n_assets)
 
-        original_output = pool.calculate_raw_weights_outputs(
+        original_output = pool.calculate_rule_outputs(
             params, run_fingerprint, prices, None
         )
-        scan_output = pool.calculate_raw_weights_outputs_via_scan(
+        scan_output = pool.calculate_rule_outputs_scan(
             params, run_fingerprint, prices, None
         )
 
@@ -1211,10 +1211,10 @@ class TestHistoricDataScanEquivalence:
         params = make_power_channel_params(n_assets)
         run_fingerprint = make_run_fingerprint(n_assets)
 
-        original_output = pool.calculate_raw_weights_outputs(
+        original_output = pool.calculate_rule_outputs(
             params, run_fingerprint, prices, None
         )
-        scan_output = pool.calculate_raw_weights_outputs_via_scan(
+        scan_output = pool.calculate_rule_outputs_scan(
             params, run_fingerprint, prices, None
         )
 
@@ -1232,10 +1232,10 @@ class TestHistoricDataScanEquivalence:
         params = make_mean_reversion_channel_params(n_assets)
         run_fingerprint = make_run_fingerprint(n_assets)
 
-        original_output = pool.calculate_raw_weights_outputs(
+        original_output = pool.calculate_rule_outputs(
             params, run_fingerprint, prices, None
         )
-        scan_output = pool.calculate_raw_weights_outputs_via_scan(
+        scan_output = pool.calculate_rule_outputs_scan(
             params, run_fingerprint, prices, None
         )
 
@@ -1262,7 +1262,7 @@ class TestHistoricDataScanEquivalence:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_fine_weights = pool.calculate_fine_weights_via_scan(
+        scan_fine_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -1289,7 +1289,7 @@ class TestHistoricDataScanEquivalence:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_fine_weights = pool.calculate_fine_weights_via_scan(
+        scan_fine_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -1316,7 +1316,7 @@ class TestHistoricDataScanEquivalence:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_fine_weights = pool.calculate_fine_weights_via_scan(
+        scan_fine_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -1344,10 +1344,10 @@ class TestHistoricDataScanEquivalence:
         for case in test_cases:
             params = make_momentum_params(n_assets, **case)
 
-            original_output = pool.calculate_raw_weights_outputs(
+            original_output = pool.calculate_rule_outputs(
                 params, run_fingerprint, prices, None
             )
-            scan_output = pool.calculate_raw_weights_outputs_via_scan(
+            scan_output = pool.calculate_rule_outputs_scan(
                 params, run_fingerprint, prices, None
             )
 
@@ -1377,7 +1377,7 @@ class TestHistoricDataScanEquivalence:
             original_weights = pool.calculate_weights(
                 params, run_fingerprint, prices, start_index, None
             )
-            scan_fine_weights = pool.calculate_fine_weights_via_scan(
+            scan_fine_weights = pool.calculate_weights_scan(
                 params, run_fingerprint, prices, start_index, None
             )
 
@@ -1427,10 +1427,10 @@ class TestHistoricDataThreeAssets:
         params = make_momentum_params(n_assets)
         run_fingerprint = make_run_fingerprint(n_assets)
 
-        original_output = pool.calculate_raw_weights_outputs(
+        original_output = pool.calculate_rule_outputs(
             params, run_fingerprint, prices, None
         )
-        scan_output = pool.calculate_raw_weights_outputs_via_scan(
+        scan_output = pool.calculate_rule_outputs_scan(
             params, run_fingerprint, prices, None
         )
 
@@ -1457,7 +1457,7 @@ class TestHistoricDataThreeAssets:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_fine_weights = pool.calculate_fine_weights_via_scan(
+        scan_fine_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -1484,7 +1484,7 @@ class TestHistoricDataThreeAssets:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_fine_weights = pool.calculate_fine_weights_via_scan(
+        scan_fine_weights = pool.calculate_weights_scan(
             params, run_fingerprint, prices, start_index, None
         )
 
@@ -1523,10 +1523,10 @@ def make_calculate_weights_run_fingerprint(n_assets, chunk_period=60, bout_lengt
 
 
 class TestCalculateWeightsViaScan:
-    """Test that calculate_weights_via_scan matches calculate_weights."""
+    """Test that calculate_weights_hybrid matches calculate_weights."""
 
     def test_momentum_calculate_weights_match_two_assets(self):
-        """Test MomentumPool calculate_weights_via_scan matches original for 2 assets."""
+        """Test MomentumPool calculate_weights_hybrid matches original for 2 assets."""
         n_assets = 2
         chunk_period = 60
         bout_length = 2880  # 2 days
@@ -1544,17 +1544,17 @@ class TestCalculateWeightsViaScan:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_weights_via_scan(
+        scan_weights = pool.calculate_weights_hybrid(
             params, run_fingerprint, prices, start_index, None
         )
 
         np.testing.assert_allclose(
             original_weights, scan_weights, rtol=1e-10, atol=1e-10,
-            err_msg="MomentumPool calculate_weights_via_scan should match original"
+            err_msg="MomentumPool calculate_weights_hybrid should match original"
         )
 
     def test_momentum_calculate_weights_match_three_assets(self):
-        """Test MomentumPool calculate_weights_via_scan matches original for 3 assets."""
+        """Test MomentumPool calculate_weights_hybrid matches original for 3 assets."""
         n_assets = 3
         chunk_period = 60
         bout_length = 2880
@@ -1572,17 +1572,17 @@ class TestCalculateWeightsViaScan:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_weights_via_scan(
+        scan_weights = pool.calculate_weights_hybrid(
             params, run_fingerprint, prices, start_index, None
         )
 
         np.testing.assert_allclose(
             original_weights, scan_weights, rtol=1e-10, atol=1e-10,
-            err_msg="MomentumPool calculate_weights_via_scan should match original (3 assets)"
+            err_msg="MomentumPool calculate_weights_hybrid should match original (3 assets)"
         )
 
     def test_power_channel_calculate_weights_match(self):
-        """Test PowerChannelPool calculate_weights_via_scan matches original."""
+        """Test PowerChannelPool calculate_weights_hybrid matches original."""
         n_assets = 2
         chunk_period = 60
         bout_length = 2880
@@ -1600,17 +1600,17 @@ class TestCalculateWeightsViaScan:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_weights_via_scan(
+        scan_weights = pool.calculate_weights_hybrid(
             params, run_fingerprint, prices, start_index, None
         )
 
         np.testing.assert_allclose(
             original_weights, scan_weights, rtol=1e-10, atol=1e-10,
-            err_msg="PowerChannelPool calculate_weights_via_scan should match original"
+            err_msg="PowerChannelPool calculate_weights_hybrid should match original"
         )
 
     def test_mean_reversion_calculate_weights_match(self):
-        """Test MeanReversionChannelPool calculate_weights_via_scan matches original."""
+        """Test MeanReversionChannelPool calculate_weights_hybrid matches original."""
         n_assets = 2
         chunk_period = 60
         bout_length = 2880
@@ -1628,17 +1628,17 @@ class TestCalculateWeightsViaScan:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_weights_via_scan(
+        scan_weights = pool.calculate_weights_hybrid(
             params, run_fingerprint, prices, start_index, None
         )
 
         np.testing.assert_allclose(
             original_weights, scan_weights, rtol=1e-10, atol=1e-10,
-            err_msg="MeanReversionChannelPool calculate_weights_via_scan should match original"
+            err_msg="MeanReversionChannelPool calculate_weights_hybrid should match original"
         )
 
     def test_calculate_weights_zero_burn_in(self):
-        """Test calculate_weights_via_scan with zero burn-in (start_index=0)."""
+        """Test calculate_weights_hybrid with zero burn-in (start_index=0)."""
         n_assets = 2
         chunk_period = 60
         bout_length = 2880
@@ -1655,18 +1655,18 @@ class TestCalculateWeightsViaScan:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_weights_via_scan(
+        scan_weights = pool.calculate_weights_hybrid(
             params, run_fingerprint, prices, start_index, None
         )
 
         # Use looser tolerance for accumulated floating-point differences
         np.testing.assert_allclose(
             original_weights, scan_weights, rtol=1e-6, atol=1e-6,
-            err_msg="calculate_weights_via_scan should match original with zero burn-in"
+            err_msg="calculate_weights_hybrid should match original with zero burn-in"
         )
 
     def test_calculate_weights_long_burn_in(self):
-        """Test calculate_weights_via_scan with longer burn-in period."""
+        """Test calculate_weights_hybrid with longer burn-in period."""
         n_assets = 2
         chunk_period = 60
         bout_length = 2880
@@ -1684,17 +1684,17 @@ class TestCalculateWeightsViaScan:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_weights_via_scan(
+        scan_weights = pool.calculate_weights_hybrid(
             params, run_fingerprint, prices, start_index, None
         )
 
         np.testing.assert_allclose(
             original_weights, scan_weights, rtol=1e-10, atol=1e-10,
-            err_msg="calculate_weights_via_scan should match original with long burn-in"
+            err_msg="calculate_weights_hybrid should match original with long burn-in"
         )
 
     def test_calculate_weights_different_bout_lengths(self):
-        """Test calculate_weights_via_scan with various bout lengths."""
+        """Test calculate_weights_hybrid with various bout lengths."""
         n_assets = 2
         chunk_period = 60
         burn_in = 1440
@@ -1713,7 +1713,7 @@ class TestCalculateWeightsViaScan:
             original_weights = pool.calculate_weights(
                 params, run_fingerprint, prices, start_index, None
             )
-            scan_weights = pool.calculate_weights_via_scan(
+            scan_weights = pool.calculate_weights_hybrid(
                 params, run_fingerprint, prices, start_index, None
             )
 
@@ -1724,7 +1724,7 @@ class TestCalculateWeightsViaScan:
 
 
 class TestCalculateWeightsViaScanHistoric:
-    """Test calculate_weights_via_scan with real historic data."""
+    """Test calculate_weights_hybrid with real historic data."""
 
     @pytest.fixture
     def historic_data(self):
@@ -1754,7 +1754,7 @@ class TestCalculateWeightsViaScanHistoric:
         }
 
     def test_momentum_calculate_weights_historic(self, historic_data):
-        """Test MomentumPool calculate_weights_via_scan with real BTC/ETH data."""
+        """Test MomentumPool calculate_weights_hybrid with real BTC/ETH data."""
         n_assets = historic_data["n_assets"]
         prices = historic_data["prices"]
         chunk_period = 60
@@ -1771,17 +1771,17 @@ class TestCalculateWeightsViaScanHistoric:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_weights_via_scan(
+        scan_weights = pool.calculate_weights_hybrid(
             params, run_fingerprint, prices, start_index, None
         )
 
         np.testing.assert_allclose(
             original_weights, scan_weights, rtol=1e-10, atol=1e-10,
-            err_msg="MomentumPool calculate_weights_via_scan should match with real BTC/ETH data"
+            err_msg="MomentumPool calculate_weights_hybrid should match with real BTC/ETH data"
         )
 
     def test_power_channel_calculate_weights_historic(self, historic_data):
-        """Test PowerChannelPool calculate_weights_via_scan with real BTC/ETH data."""
+        """Test PowerChannelPool calculate_weights_hybrid with real BTC/ETH data."""
         n_assets = historic_data["n_assets"]
         prices = historic_data["prices"]
         chunk_period = 60
@@ -1798,17 +1798,17 @@ class TestCalculateWeightsViaScanHistoric:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_weights_via_scan(
+        scan_weights = pool.calculate_weights_hybrid(
             params, run_fingerprint, prices, start_index, None
         )
 
         np.testing.assert_allclose(
             original_weights, scan_weights, rtol=1e-10, atol=1e-10,
-            err_msg="PowerChannelPool calculate_weights_via_scan should match with real BTC/ETH data"
+            err_msg="PowerChannelPool calculate_weights_hybrid should match with real BTC/ETH data"
         )
 
     def test_mean_reversion_calculate_weights_historic(self, historic_data):
-        """Test MeanReversionChannelPool calculate_weights_via_scan with real BTC/ETH data."""
+        """Test MeanReversionChannelPool calculate_weights_hybrid with real BTC/ETH data."""
         n_assets = historic_data["n_assets"]
         prices = historic_data["prices"]
         chunk_period = 60
@@ -1825,17 +1825,17 @@ class TestCalculateWeightsViaScanHistoric:
         original_weights = pool.calculate_weights(
             params, run_fingerprint, prices, start_index, None
         )
-        scan_weights = pool.calculate_weights_via_scan(
+        scan_weights = pool.calculate_weights_hybrid(
             params, run_fingerprint, prices, start_index, None
         )
 
         np.testing.assert_allclose(
             original_weights, scan_weights, rtol=1e-10, atol=1e-10,
-            err_msg="MeanReversionChannelPool calculate_weights_via_scan should match with real BTC/ETH data"
+            err_msg="MeanReversionChannelPool calculate_weights_hybrid should match with real BTC/ETH data"
         )
 
     def test_calculate_weights_multiple_params_historic(self, historic_data):
-        """Test calculate_weights_via_scan with various parameters on real data."""
+        """Test calculate_weights_hybrid with various parameters on real data."""
         n_assets = historic_data["n_assets"]
         prices = historic_data["prices"]
         chunk_period = 60
@@ -1860,7 +1860,7 @@ class TestCalculateWeightsViaScanHistoric:
             original_weights = pool.calculate_weights(
                 params, run_fingerprint, prices, start_index, None
             )
-            scan_weights = pool.calculate_weights_via_scan(
+            scan_weights = pool.calculate_weights_hybrid(
                 params, run_fingerprint, prices, start_index, None
             )
 

@@ -35,7 +35,7 @@ from functools import partial
 from abc import abstractmethod
 import numpy as np
 
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_weights
 # as this is True for min variance pools --- the strategy outputs weights themselves, not changes
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weights,
@@ -64,9 +64,9 @@ class MinVariancePool(TFMMBasePool):
 
     Methods
     -------
-    calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
+    calculate_rule_outputs(params, run_fingerprint, prices, additional_oracle_input)
         Calculate the raw weight outputs based on min variance calculations.
-    fine_weight_output(raw_weight_output, initial_weights, run_fingerprint, params)
+    calculate_fine_weights(rule_output, initial_weights, run_fingerprint, params)
         Refine the raw weight outputs to produce final weights.
     calculate_weights(params, run_fingerprint, prices, additional_oracle_input)
         Orchestrate the weight calculation process.
@@ -88,7 +88,7 @@ class MinVariancePool(TFMMBasePool):
         super().__init__()
 
     @partial(jit, static_argnums=(2))
-    def calculate_raw_weights_outputs(
+    def calculate_rule_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -131,14 +131,14 @@ class MinVariancePool(TFMMBasePool):
         """
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
         variances = calc_return_variances(params, chunkwise_price_values, run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"], cap_lamb=True)
-        raw_weight_outputs = _jax_min_variance_weights(variances)
+        rule_outputs = _jax_min_variance_weights(variances)
 
-        return raw_weight_outputs
+        return rule_outputs
 
     @partial(jit, static_argnums=(3))
-    def fine_weight_output(
+    def calculate_fine_weights(
         self,
-        raw_weight_output: jnp.ndarray,
+        rule_output: jnp.ndarray,
         initial_weights: jnp.ndarray,
         run_fingerprint: Dict[str, Any],
         params: Dict[str, Any],
@@ -152,7 +152,7 @@ class MinVariancePool(TFMMBasePool):
 
         Parameters
         ----------
-        raw_weight_output : jnp.ndarray
+        rule_output : jnp.ndarray
             Raw weight changes or outputs from momentum calculations.
         initial_weights : jnp.ndarray
             Initial weights of assets in the pool.
@@ -173,7 +173,7 @@ class MinVariancePool(TFMMBasePool):
         interpolation, maximum change limits, and ensuring weights sum to 1.
         """
         return calc_fine_weight_output_from_weights(
-            raw_weight_output, initial_weights, run_fingerprint, params
+            rule_output, initial_weights, run_fingerprint, params
         )
 
     def init_base_parameters(

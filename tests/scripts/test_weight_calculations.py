@@ -47,13 +47,13 @@ for case in test_cases:
 
     # Generate test data
     key, subkey = random.split(key)
-    raw_weight_outputs = softmax(random.normal(
+    rule_outputs = softmax(random.normal(
         subkey, 
         shape=(n_timesteps, n_assets),
         dtype=jnp.float64
     ),axis=1)
     if mvpt is False:
-        raw_weight_outputs = raw_weight_outputs - jnp.mean(raw_weight_outputs,axis=0)
+        rule_outputs = rule_outputs - jnp.mean(rule_outputs,axis=0)
     # Initial weights that sum to 1
     initial_weights = jnp.ones(n_assets, dtype=jnp.float64) / n_assets
 
@@ -78,7 +78,7 @@ for case in test_cases:
 
     # Calculate weights using both methods
     weights_new = calc_fine_weight_output_new(
-        raw_weight_outputs,
+        rule_outputs,
         initial_weights,
         Hashabledict(run_fingerprint),
         params,
@@ -87,7 +87,7 @@ for case in test_cases:
     weights_new = jnp.vstack([jnp.ones((run_fingerprint["chunk_period"],n_assets),dtype=jnp.float64)*initial_weights, weights_new])
 
     weights_old = calc_fine_weight_output_old(
-        raw_weight_outputs,
+        rule_outputs,
         initial_weights,
         Hashabledict(run_fingerprint),
         params,

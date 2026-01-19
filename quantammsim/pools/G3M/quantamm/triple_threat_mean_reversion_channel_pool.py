@@ -43,7 +43,7 @@ from typing import Dict, Any, Optional
 from functools import partial
 import numpy as np
 
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_themselves_weights
 # as this is False for momentum pools --- the strategy outputs weight _changes_
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weight_changes,
@@ -128,7 +128,7 @@ class TripleThreatMeanReversionChannelPool(MomentumPool):
 
     Methods
     -------
-    calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
+    calculate_rule_outputs(params, run_fingerprint, prices, additional_oracle_input)
         Calculate the raw weight outputs based on mean reversion channel signals.
 
     Notes
@@ -150,7 +150,7 @@ class TripleThreatMeanReversionChannelPool(MomentumPool):
         super().__init__()
 
     @partial(jit, static_argnums=(2))
-    def calculate_raw_weights_outputs(
+    def calculate_rule_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -233,7 +233,7 @@ class TripleThreatMeanReversionChannelPool(MomentumPool):
         exponents = squareplus(params.get("raw_exponents"))
         amplitude = (2 ** params.get("log_amplitude")) * memory_days
         width = 2 ** params.get("raw_width")
-        raw_weight_outputs = _jax_triple_threat_mean_reversion_channel_weight_update(
+        rule_outputs = _jax_triple_threat_mean_reversion_channel_weight_update(
             gradients_channel,
             gradients_trend,
             gradients_envelope,
@@ -244,7 +244,7 @@ class TripleThreatMeanReversionChannelPool(MomentumPool):
             pre_exp_scaling=pre_exp_scaling,
         )
 
-        return raw_weight_outputs
+        return rule_outputs
 
     def init_base_parameters(
         self,

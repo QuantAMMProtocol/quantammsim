@@ -613,9 +613,9 @@ def forward_pass(
             "weights": pool.calculate_weights(
                 params, static_dict, prices, start_index, additional_oracle_input=None
             ),
-            "raw_weight_outputs": pool.calculate_raw_weights_outputs(
+            "rule_outputs": pool.calculate_rule_outputs(
                 params, static_dict, prices, additional_oracle_input=None
-            ) if hasattr(pool, "calculate_raw_weights_outputs") else None,
+            ) if hasattr(pool, "calculate_rule_outputs") else None,
         }
         if hasattr(pool, "calculate_readouts"):
             return_dict.update({

@@ -1385,9 +1385,9 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     coarse_weights_padded = jnp.vstack(
         [coarse_weights["weights"], coarse_weights["weights"][-1]]
     )
-    raw_weight_outputs = jnp.diff(coarse_weights_padded, axis=0)
+    coarse_weight_changes = jnp.diff(coarse_weights_padded, axis=0)
     actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
-        raw_weight_outputs,
+        coarse_weight_changes,
         initial_weights,
         minimum_weight,
         params,
@@ -1516,7 +1516,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         "prices": local_prices,
         "reserves": reserves,
         "weights": weights,
-        "raw_weight_outputs": raw_weight_outputs,
+        "coarse_weight_changes": coarse_weight_changes,
         "data_dict": data_dict,
         "unix_values": local_unix_values,
     }

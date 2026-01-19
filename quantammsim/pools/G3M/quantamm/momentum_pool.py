@@ -41,7 +41,7 @@ from functools import partial
 from abc import abstractmethod
 import numpy as np
 
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_themselves_weights
 # as this is False for momentum pools --- the strategy outputs weight _changes_
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weight_changes,
@@ -98,9 +98,9 @@ class MomentumPool(TFMMBasePool):
 
     Methods
     -------
-    calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
+    calculate_rule_outputs(params, run_fingerprint, prices, additional_oracle_input)
         Calculate the raw weight outputs based on momentum signals.
-    fine_weight_output(raw_weight_output, initial_weights, run_fingerprint, params)
+    calculate_fine_weights(rule_output, initial_weights, run_fingerprint, params)
         Refine the raw weight outputs to produce final weights.
     calculate_weights(params, run_fingerprint, prices, additional_oracle_input)
         Orchestrate the weight calculation process.
@@ -122,7 +122,7 @@ class MomentumPool(TFMMBasePool):
         super().__init__()
 
     @partial(jit, static_argnums=(2))
-    def calculate_raw_weights_outputs(
+    def calculate_rule_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -178,8 +178,8 @@ class MomentumPool(TFMMBasePool):
             run_fingerprint["use_alt_lamb"],
             cap_lamb=True,
         )
-        raw_weight_outputs = _jax_momentum_weight_update(gradients, k)
-        return raw_weight_outputs
+        rule_outputs = _jax_momentum_weight_update(gradients, k)
+        return rule_outputs
 
     def calculate_readouts(
         self,
@@ -285,7 +285,7 @@ class MomentumPool(TFMMBasePool):
         saturated_b = lamb / ((1 - lamb) ** 3)
         return G_inf, saturated_b
 
-    def get_initial_carry(
+    def get_initial_rule_state(
         self,
         initial_price: jnp.ndarray,
         params: Dict[str, Any],
@@ -318,7 +318,7 @@ class MomentumPool(TFMMBasePool):
             "running_a": jnp.zeros((n_assets,), dtype=jnp.float64),
         }
 
-    def calculate_single_step_weight_update(
+    def calculate_rule_output_step(
         self,
         carry: Dict[str, jnp.ndarray],
         price: jnp.ndarray,
@@ -347,7 +347,7 @@ class MomentumPool(TFMMBasePool):
         Returns
         -------
         tuple
-            (new_carry, raw_weight_output)
+            (new_carry, rule_output)
         """
         # Compute lambda with max_memory_days capping
         lamb = calc_lamb(params)
@@ -372,19 +372,19 @@ class MomentumPool(TFMMBasePool):
         k = calc_k(params, memory_days)
 
         # Apply momentum weight update
-        raw_weight_output = _jax_momentum_weight_update(gradient, k)
+        rule_output = _jax_momentum_weight_update(gradient, k)
 
         new_carry = {
             "ewma": new_carry_list[0],
             "running_a": new_carry_list[1],
         }
 
-        return new_carry, raw_weight_output
+        return new_carry, rule_output
 
     @partial(jit, static_argnums=(3))
-    def fine_weight_output(
+    def calculate_fine_weights(
         self,
-        raw_weight_output: jnp.ndarray,
+        rule_output: jnp.ndarray,
         initial_weights: jnp.ndarray,
         run_fingerprint: Dict[str, Any],
         params: Dict[str, Any],
@@ -398,7 +398,7 @@ class MomentumPool(TFMMBasePool):
 
         Parameters
         ----------
-        raw_weight_output : jnp.ndarray
+        rule_output : jnp.ndarray
             Raw weight changes or outputs from momentum calculations.
         initial_weights : jnp.ndarray
             Initial weights of assets in the pool.
@@ -419,7 +419,7 @@ class MomentumPool(TFMMBasePool):
         interpolation, maximum change limits, and ensuring weights sum to 1.
         """
         return calc_fine_weight_output_from_weight_changes(
-            raw_weight_output, initial_weights, run_fingerprint, params
+            rule_output, initial_weights, run_fingerprint, params
         )
 
     def init_base_parameters(

@@ -17,7 +17,7 @@ raw_in_weight = jnp.array(
 )
 out = _jax_calc_coarse_weight_scan_function(
     carry_list=[raw_in_weight],
-    raw_weight_outputs=jnp.zeros(n_assets),
+    rule_outputs=jnp.zeros(n_assets),
     minimum_weight=min_weight,
     asset_arange=jnp.arange(n_assets),
     n_assets=n_assets,

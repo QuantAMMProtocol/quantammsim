@@ -126,4 +126,4 @@ Implementation
 ~~~~~~~~~~~~~~
 
 The TFMM base class, :class:`~quantammsim.pools.TFMMBasePool` implements the logic needed for the application of guardrails and for weight change interpolation.
-This means that QuantAMM pools can be created by simply subclassing :class:`~quantammsim.pools.TFMMBasePool` and implementing the update rule as the method :meth:`~quantammsim.pools.TFMMBasePool.calculate_raw_weights_outputs` (plus a few helper methods for initialising/handling the particular parameters the pool's strategy needs).
+This means that QuantAMM pools can be created by simply subclassing :class:`~quantammsim.pools.TFMMBasePool` and implementing the update rule as the method :meth:`~quantammsim.pools.TFMMBasePool.calculate_rule_outputs` (plus a few helper methods for initialising/handling the particular parameters the pool's strategy needs).

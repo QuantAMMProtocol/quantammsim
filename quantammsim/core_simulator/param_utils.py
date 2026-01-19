@@ -1686,7 +1686,7 @@ def split_param_combinations(param_combinations):
         for i in range(len(dict_[keys[0]])):
             split_dict = {}
             for key in keys:
-                if key == "subsidary_params" or key == "raw_weight_outputs_dict":
+                if key == "subsidary_params" or key == "rule_outputs_dict":
                     split_dict[key] = split_subsidary_params(dict_[key])
                 else:
                     split_dict[key] = dict_[key][i]

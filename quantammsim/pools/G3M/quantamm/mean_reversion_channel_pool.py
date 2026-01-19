@@ -46,7 +46,7 @@ from typing import Dict, Any, Optional
 from functools import partial
 import numpy as np
 
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_themselves_weights
 # as this is False for momentum pools --- the strategy outputs weight _changes_
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weight_changes,
@@ -129,7 +129,7 @@ class MeanReversionChannelPool(MomentumPool):
 
     Methods
     -------
-    calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
+    calculate_rule_outputs(params, run_fingerprint, prices, additional_oracle_input)
         Calculate the raw weight outputs based on mean reversion channel signals.
 
     Notes
@@ -151,7 +151,7 @@ class MeanReversionChannelPool(MomentumPool):
         super().__init__()
 
     @partial(jit, static_argnums=(2))
-    def calculate_raw_weights_outputs(
+    def calculate_rule_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -241,7 +241,7 @@ class MeanReversionChannelPool(MomentumPool):
             width = squareplus(params.get("sp_width"))
         else:
             width = 2 ** params.get("raw_width")
-        raw_weight_outputs = _jax_mean_reversion_channel_weight_update(
+        rule_outputs = _jax_mean_reversion_channel_weight_update(
             gradients,
             k,
             width,
@@ -250,9 +250,9 @@ class MeanReversionChannelPool(MomentumPool):
             pre_exp_scaling=pre_exp_scaling,
         )
 
-        return raw_weight_outputs
+        return rule_outputs
 
-    def calculate_single_step_weight_update(
+    def calculate_rule_output_step(
         self,
         carry: Dict[str, jnp.ndarray],
         price: jnp.ndarray,
@@ -281,7 +281,7 @@ class MeanReversionChannelPool(MomentumPool):
         Returns
         -------
         tuple
-            (new_carry, raw_weight_output)
+            (new_carry, rule_output)
         """
         # Compute lambda with max_memory_days capping
         lamb = calc_lamb(params)
@@ -343,7 +343,7 @@ class MeanReversionChannelPool(MomentumPool):
             width = 2 ** params.get("raw_width")
 
         # Apply mean reversion channel weight update
-        raw_weight_output = _jax_mean_reversion_channel_weight_update(
+        rule_output = _jax_mean_reversion_channel_weight_update(
             gradient,
             k,
             width,
@@ -357,7 +357,7 @@ class MeanReversionChannelPool(MomentumPool):
             "running_a": new_carry_list[1],
         }
 
-        return new_carry, raw_weight_output
+        return new_carry, rule_output
 
     def init_base_parameters(
         self,

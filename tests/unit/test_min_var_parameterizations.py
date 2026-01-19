@@ -105,10 +105,10 @@ class TestMinVarParameterizations:
         )
 
         # Calculate raw weights with both parameterizations
-        raw_weights_logit = pool.calculate_raw_weights_outputs(
+        raw_weights_logit = pool.calculate_rule_outputs(
             params_logit, rf, prices, None
         )
-        raw_weights_memory = pool.calculate_raw_weights_outputs(
+        raw_weights_memory = pool.calculate_rule_outputs(
             params_memory, rf, prices, None
         )
 
@@ -122,7 +122,7 @@ class TestMinVarParameterizations:
         rf = create_run_fingerprint(len(prices), 2)
         params = create_params_logit_lamb(10.0, 20.0, rf["chunk_period"], n_assets=2)
 
-        raw_weights = pool.calculate_raw_weights_outputs(params, rf, prices, None)
+        raw_weights = pool.calculate_rule_outputs(params, rf, prices, None)
 
         assert raw_weights.shape[1] == 2, \
             f"Expected 2 weight columns, got {raw_weights.shape[1]}"
@@ -133,7 +133,7 @@ class TestMinVarParameterizations:
         rf = create_run_fingerprint(len(prices), 3)
         params = create_params_logit_lamb(10.0, 20.0, rf["chunk_period"], n_assets=3)
 
-        raw_weights = pool.calculate_raw_weights_outputs(params, rf, prices, None)
+        raw_weights = pool.calculate_rule_outputs(params, rf, prices, None)
         weight_sums = jnp.sum(raw_weights, axis=1)
 
         # Raw weights should sum to approximately 1
