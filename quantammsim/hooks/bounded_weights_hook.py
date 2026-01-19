@@ -17,6 +17,7 @@ from jax import jit
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_bounded_from_weight_changes,
     calc_fine_weight_output_bounded_from_weights,
+    _jax_calc_coarse_weight_scan_function,
 )
 
 
@@ -420,7 +421,7 @@ class BoundedWeightsHook:
         params: Dict[str, Any],
     ) -> jnp.ndarray:
         """
-        Calculate fine weights with per-asset bounds.
+        Calculate fine weights with per-asset bounds (vectorized path).
 
         This method overrides the base pool's calculate_fine_weights to use
         per-asset min/max constraints before the uniform bounds.
@@ -437,6 +438,104 @@ class BoundedWeightsHook:
         return calc_fine_weight_output_bounded_from_weight_changes(
             rule_output, initial_weights, run_fingerprint, params
         )
+
+    def calculate_coarse_weight_step(
+        self,
+        estimator_carry: Dict[str, jnp.ndarray],
+        weight_carry: Dict[str, jnp.ndarray],
+        price: jnp.ndarray,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+    ) -> tuple:
+        """
+        Compute raw weight update and apply guardrails with per-asset bounds (scan path).
+
+        This method overrides the base pool's calculate_coarse_weight_step to use
+        per-asset min/max constraints. The per-asset bounds are applied before
+        the standard uniform guardrails.
+
+        Parameters
+        ----------
+        estimator_carry : Dict[str, jnp.ndarray]
+            Current estimator state (ewma, running_a, etc.)
+        weight_carry : Dict[str, jnp.ndarray]
+            Current weight state with 'prev_actual_weight'
+        price : jnp.ndarray
+            Current price observation (shape: n_assets,)
+        params : Dict[str, Any]
+            Pool parameters including per-asset bounds
+        run_fingerprint : Dict[str, Any]
+            Simulation settings
+
+        Returns
+        -------
+        tuple
+            (new_estimator_carry, new_weight_carry, step_output) where:
+            - new_estimator_carry: Updated estimator state
+            - new_weight_carry: Updated weight state with 'prev_actual_weight'
+            - step_output: Dict with 'actual_start', 'scaled_diff', 'target_weight'
+        """
+        # Step 1: Get raw weight output from the pool-specific calculation
+        new_estimator_carry, rule_output = self.calculate_rule_output_step(
+            estimator_carry, price, params, run_fingerprint
+        )
+
+        # Step 2: Apply guardrails with per-asset bounds
+        n_assets = run_fingerprint["n_assets"]
+        minimum_weight = run_fingerprint.get("minimum_weight")
+        if minimum_weight is None:
+            minimum_weight = 0.1 / n_assets
+        maximum_change = run_fingerprint["maximum_change"]
+        weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
+        interpol_num = weight_interpolation_period + 1
+        ste_max_change = run_fingerprint.get("ste_max_change", False)
+        ste_min_max_weight = run_fingerprint.get("ste_min_max_weight", False)
+
+        asset_arange = jnp.arange(n_assets)
+
+        # Extract per-asset bounds from params
+        # These should have shape (n_parameter_sets, n_assets), we take first set for scan
+        min_weights_per_asset = params.get("min_weights_per_asset")
+        max_weights_per_asset = params.get("max_weights_per_asset")
+
+        # For scan path, we need to handle the parameter set dimension
+        if min_weights_per_asset is not None:
+            if min_weights_per_asset.ndim > 1:
+                min_weights_per_asset = min_weights_per_asset[0]
+        if max_weights_per_asset is not None:
+            if max_weights_per_asset.ndim > 1:
+                max_weights_per_asset = max_weights_per_asset[0]
+
+        use_per_asset_bounds = (
+            min_weights_per_asset is not None and max_weights_per_asset is not None
+        )
+
+        carry_list = [weight_carry["prev_actual_weight"]]
+        new_carry_list, (actual_start, scaled_diff, target_weight) = _jax_calc_coarse_weight_scan_function(
+            carry_list,
+            rule_output,
+            minimum_weight=minimum_weight,
+            asset_arange=asset_arange,
+            n_assets=n_assets,
+            alt_lamb=None,
+            interpol_num=interpol_num,
+            maximum_change=maximum_change,
+            rule_outputs_are_weights=False,
+            ste_max_change=ste_max_change,
+            ste_min_max_weight=ste_min_max_weight,
+            max_weights_per_asset=max_weights_per_asset,
+            min_weights_per_asset=min_weights_per_asset,
+            use_per_asset_bounds=use_per_asset_bounds,
+        )
+
+        new_weight_carry = {"prev_actual_weight": new_carry_list[0]}
+        step_output = {
+            "actual_start": actual_start,
+            "scaled_diff": scaled_diff,
+            "target_weight": target_weight,
+        }
+
+        return new_estimator_carry, new_weight_carry, step_output
 
     def init_bounded_weight_parameters(
         self,
@@ -707,3 +806,12 @@ class BoundedWeightsHook:
             initial_values_dict, run_fingerprint, n_assets, n_parameter_sets
         )
         return {**base_params, **learnable_params}
+
+    def _tree_flatten(self):
+        children = ()
+        aux_data = dict()  # static values
+        return (children, aux_data)
+
+    @classmethod
+    def _tree_unflatten(cls, aux_data, children):
+        return cls(*children, **aux_data)
