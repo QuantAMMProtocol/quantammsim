@@ -22,6 +22,7 @@ Constant Weight Pools
 
    BalancerPool
    CowPool
+   HODLPool
 
 QuantAMM Dynamic Weight Pools
 -----------------------------
@@ -54,3 +55,4 @@ Helper Functions
    :nosignatures:
 
    creator.create_pool
+   creator.create_hooked_pool_instance

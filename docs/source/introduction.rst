@@ -95,13 +95,13 @@ Quick Start
        'endDateString': '2024-06-15 00:00:00',
    }
    
-    # Initialise pool parameters, equal weights. Equivalent to a Uniswap v2 poo;
-    params = {
+   # Initialise pool parameters, equal weights. Equivalent to a Uniswap v2 pool
+   params = {
        "initial_weights": jnp.array([0.5, 0.5]),
-    }
+   }
 
-    # Run simulation
-    result = do_run_on_historic_data(run_fingerprint, params, verbose=True)
+   # Run simulation
+   result = do_run_on_historic_data(run_fingerprint, params, verbose=True)
 
 .. _this paper: https://arxiv.org/abs/2307.02074
 .. _the TFMM litepaper: https://cdn.prod.website-files.com/6616670ddddc931f1dd3aa73/6617c4c2381409947dc42c7a_TFMM_litepaper.pdf

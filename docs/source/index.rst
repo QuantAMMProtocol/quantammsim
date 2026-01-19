@@ -27,7 +27,7 @@ Once installed, here's a basic usage example:
        'initial_pool_value': 1000000.0
    }
 
-   # Initialise pool parameters, equal weights. Equivalent to a Uniswap v2 poo;
+   # Initialise pool parameters, equal weights. Equivalent to a Uniswap v2 pool
    params = {
        "initial_weights": jnp.array([0.5, 0.5]),
    }
