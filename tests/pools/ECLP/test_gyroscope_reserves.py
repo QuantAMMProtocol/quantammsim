@@ -61,17 +61,17 @@ def test_numeraire_price_relationships():
     usdc_fingerprint = {
         **base_fingerprint,
         "numeraire": "USDC",
-        "token_list": ["ETH", "USDC"],
+        "tokens": ["ETH", "USDC"],
     }
 
     # Test with ETH numeraire
     eth_fingerprint = {
         **base_fingerprint,
         "numeraire": "ETH",
-        "token_list": ["ETH", "USDC"],
+        "tokens": ["ETH", "USDC"],
     }
 
-    start_index = jnp.array(0)
+    start_index = jnp.array([0, 0])  # Start indices for 2D prices array
 
     # Calculate reserves for both configurations
     usdc_reserves = pool.calculate_reserves_zero_fees(
@@ -231,10 +231,10 @@ def test_lam_phi_symmetry():
         usdc_fingerprint = {
             **base_fingerprint,
             "numeraire": "USDC",
-            "token_list": ["ETH", "USDC"],
+            "tokens": ["ETH", "USDC"],
         }
         usdc_reserves = pool.calculate_reserves_zero_fees(
-            usdc_params, Hashabledict(usdc_fingerprint), prices, jnp.array(0)
+            usdc_params, Hashabledict(usdc_fingerprint), prices, jnp.array([0, 0])
         )
 
         # Get USDC price curve
@@ -257,7 +257,7 @@ def test_lam_phi_symmetry():
             eth_fingerprint = {
                 **base_fingerprint,
                 "numeraire": "ETH",
-                "token_list": ["ETH", "USDC"],
+                "tokens": ["ETH", "USDC"],
             }
             eth_reserves = pool.calculate_reserves_zero_fees(
                 eth_params, Hashabledict(eth_fingerprint), eth_prices, jnp.array(0)
