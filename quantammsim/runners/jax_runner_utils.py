@@ -527,7 +527,13 @@ class Hashabledict(dict):
     """
 
     def __key(self):
-        return tuple((k, self[k]) for k in sorted(self))
+        def make_hashable(v):
+            if isinstance(v, list):
+                return tuple(make_hashable(x) for x in v)
+            elif isinstance(v, dict):
+                return tuple(sorted((k, make_hashable(val)) for k, val in v.items()))
+            return v
+        return tuple((k, make_hashable(self[k])) for k in sorted(self))
 
     def __hash__(self):
         return hash(self.__key())
@@ -556,9 +562,13 @@ class NestedHashabledict(dict):
                 ]
 
     def __key(self):
-        return tuple(
-            (k, tuple(v) if isinstance(v, list) else v) for k, v in sorted(self.items())
-        )
+        def make_hashable(v):
+            if isinstance(v, list):
+                return tuple(make_hashable(x) for x in v)
+            elif isinstance(v, dict):
+                return tuple(sorted((k, make_hashable(val)) for k, val in v.items()))
+            return v
+        return tuple((k, make_hashable(v)) for k, v in sorted(self.items()))
 
     def __hash__(self):
         try:
