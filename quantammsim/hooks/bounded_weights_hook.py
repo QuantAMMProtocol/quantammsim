@@ -13,6 +13,7 @@ import numpy as np
 import jax.numpy as jnp
 import jax.nn as jnn
 from jax import jit
+from jax.lax import stop_gradient
 
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_bounded_from_weight_changes,
@@ -48,6 +49,7 @@ def reparameterize_bounds(
     raw_gap_logits: jnp.ndarray,
     n_assets: int,
     eps: float = 1e-6,
+    freeze_bounds: bool = False,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Transform unconstrained raw parameters into valid min/max weight bounds.
@@ -96,6 +98,8 @@ def reparameterize_bounds(
             Controls gap between min and max per asset. sigmoid(0) = 0.5.
         n_assets: Number of assets.
         eps: Small constant for numerical stability.
+        freeze_bounds: If True, wrap inputs in stop_gradient so bounds act
+            as hyperparameters (not learned). Default False (bounds are learned).
 
     Returns:
         Tuple of (min_weights_per_asset, max_weights_per_asset), each with
@@ -113,34 +117,50 @@ def reparameterize_bounds(
     >>> # min_w ≈ [0.068, 0.068, 0.068, 0.068], sum ≈ 0.27
     >>> # max_w: each initial_max ≈ 0.068 + 0.5*(1-0.068) ≈ 0.534
     >>> #        sum(initial_max) ≈ 2.14 > 1, so scale = 1, max_w ≈ [0.534, ...]
+
+    >>> # Freeze bounds as hyperparameters (no gradients)
+    >>> min_w, max_w = reparameterize_bounds(
+    ...     raw_min_budget, raw_min_logits, raw_gap_logits, n_assets=4,
+    ...     freeze_bounds=True
+    ... )
     """
-    # Ensure proper shapes
-    raw_min_budget = jnp.atleast_1d(raw_min_budget)
+    # If freeze_bounds is True, wrap inputs in stop_gradient so no gradients
+    # flow through the bound parameters (treat them as hyperparameters)
+    if freeze_bounds:
+        raw_min_budget = stop_gradient(raw_min_budget)
+        raw_min_logits = stop_gradient(raw_min_logits)
+        raw_gap_logits = stop_gradient(raw_gap_logits)
+
+    # This function works with simple (non-batched) params:
+    # - raw_min_budget: scalar
+    # - raw_min_logits: (n_assets,)
+    # - raw_gap_logits: (n_assets,)
+    # Batching over n_parameter_sets is handled externally by vmap.
 
     # Step 1: Minimum weights
     # min_budget in (0, 1), controls sum of minimums
-    min_budget = jnn.sigmoid(raw_min_budget)  # shape: (n_parameter_sets,)
+    min_budget = jnn.sigmoid(raw_min_budget)  # scalar
     # Distribute budget across assets using softmax
-    min_fractions = jnn.softmax(raw_min_logits, axis=-1)  # shape: (n_param_sets, n_assets)
-    min_weights = min_budget[:, None] * min_fractions  # shape: (n_param_sets, n_assets)
+    min_fractions = jnn.softmax(raw_min_logits, axis=-1)  # (n_assets,)
+    min_weights = min_budget * min_fractions  # (n_assets,)
     # Now: sum(min_weights) = min_budget < 1, each min_weight >= 0
 
     # Step 2: Gaps between min and max
     # available_i = 1 - min_i (maximum possible gap per asset)
-    available = 1.0 - min_weights  # shape: (n_param_sets, n_assets)
+    available = 1.0 - min_weights  # (n_assets,)
     # gap_i in (0, available_i), so initial_max_i in (min_i, 1]
-    gap = available * jnn.sigmoid(raw_gap_logits)  # shape: (n_param_sets, n_assets)
+    gap = available * jnn.sigmoid(raw_gap_logits)  # (n_assets,)
 
     # Step 3: Initial max weights
-    initial_max = min_weights + gap  # shape: (n_param_sets, n_assets)
+    initial_max = min_weights + gap  # (n_assets,)
     # Each initial_max_i in (min_i, 1] by construction
 
     # Step 4: Scale up if sum < 1, otherwise leave alone
-    sum_initial = jnp.sum(initial_max, axis=-1, keepdims=True)  # shape: (n_param_sets, 1)
-    scale = jnp.maximum(1.0 / (sum_initial + eps), 1.0)
+    sum_initial = jnp.sum(initial_max)  # scalar
+    scale = jnp.maximum(1.0 / (sum_initial + eps), 1.0)  # scalar
 
     # Final max weights
-    max_weights = initial_max * scale  # shape: (n_param_sets, n_assets)
+    max_weights = initial_max * scale  # (n_assets,)
     # sum(max) = sum(initial_max) * scale >= 1
     # Each max_i <= 1 because scale <= 1/max(initial_max) (since sum >= max)
 
@@ -430,11 +450,34 @@ class BoundedWeightsHook:
             rule_output: Raw weight changes from the strategy.
             initial_weights: Initial weights.
             run_fingerprint: Run configuration.
-            params: Parameters including per-asset bounds.
+            params: Parameters containing either:
+                - Learnable: raw_min_budget, raw_min_logits, raw_gap_logits
+                - Direct: min_weights_per_asset, max_weights_per_asset
 
         Returns:
             Fine weights satisfying per-asset bounds and uniform guardrails.
         """
+        # Convert learnable raw params to actual bounds if present
+        # This check happens at trace time (dict structure is static)
+        if "raw_min_budget" in params:
+            n_assets = run_fingerprint["n_assets"]
+            freeze_bounds = run_fingerprint.get("learnable_bounds_settings", {}).get(
+                "freeze_bounds", False
+            )
+            min_weights_per_asset, max_weights_per_asset = reparameterize_bounds(
+                params["raw_min_budget"],
+                params["raw_min_logits"],
+                params["raw_gap_logits"],
+                n_assets,
+                freeze_bounds=freeze_bounds,
+            )
+            # Shallow copy with actual bounds added
+            params = {
+                **params,
+                "min_weights_per_asset": min_weights_per_asset,
+                "max_weights_per_asset": max_weights_per_asset,
+            }
+
         return calc_fine_weight_output_bounded_from_weight_changes(
             rule_output, initial_weights, run_fingerprint, params
         )
@@ -494,16 +537,28 @@ class BoundedWeightsHook:
         asset_arange = jnp.arange(n_assets)
 
         # Extract per-asset bounds from params
-        # These should have shape (n_parameter_sets, n_assets), we take first set for scan
-        min_weights_per_asset = params.get("min_weights_per_asset")
-        max_weights_per_asset = params.get("max_weights_per_asset")
-
-        # For scan path, we need to handle the parameter set dimension
-        if min_weights_per_asset is not None:
-            if min_weights_per_asset.ndim > 1:
+        # Check for learnable raw params first, then fall back to direct bounds
+        raw_min_budget = params.get("raw_min_budget")
+        if raw_min_budget is not None:
+            # Convert raw learnable params to actual bounds
+            freeze_bounds = run_fingerprint.get("learnable_bounds_settings", {}).get(
+                "freeze_bounds", False
+            )
+            min_weights_per_asset, max_weights_per_asset = reparameterize_bounds(
+                params["raw_min_budget"],
+                params["raw_min_logits"],
+                params["raw_gap_logits"],
+                n_assets,
+                freeze_bounds=freeze_bounds,
+            )
+        else:
+            # Use direct bounds from params (e.g., for forward pass with fixed bounds)
+            min_weights_per_asset = params.get("min_weights_per_asset")
+            max_weights_per_asset = params.get("max_weights_per_asset")
+            # For scan path, handle the parameter set dimension
+            if min_weights_per_asset is not None and min_weights_per_asset.ndim > 1:
                 min_weights_per_asset = min_weights_per_asset[0]
-        if max_weights_per_asset is not None:
-            if max_weights_per_asset.ndim > 1:
+            if max_weights_per_asset is not None and max_weights_per_asset.ndim > 1:
                 max_weights_per_asset = max_weights_per_asset[0]
 
         use_per_asset_bounds = (
@@ -537,104 +592,55 @@ class BoundedWeightsHook:
 
         return new_estimator_carry, new_weight_carry, step_output
 
-    def init_bounded_weight_parameters(
-        self,
-        initial_values_dict: Dict[str, Any],
-        run_fingerprint: Dict[str, Any],
-        n_assets: int,
-        n_parameter_sets: int = 1,
-    ) -> Dict[str, Any]:
-        """
-        Initialise parameters for bounded weights.
-
-        Args:
-            initial_values_dict: Initial values. Can contain:
-                - min_weights_per_asset: array or scalar (default: 0.05)
-                - max_weights_per_asset: array or scalar (default: 0.95)
-            run_fingerprint: Run configuration.
-            n_assets: Number of assets.
-            n_parameter_sets: Number of parameter sets for parallel optimisation.
-
-        Returns:
-            Parameters dict with bounded weight parameters.
-
-        Raises:
-            ValueError: If bounds are invalid (min >= max, sum of mins > 1, etc.)
-        """
-        # Get min weights per asset - must be scalar or 1D array of length n_assets
-        min_w = initial_values_dict.get("min_weights_per_asset", 0.05)
-        if isinstance(min_w, (int, float)):
-            min_w = np.array([min_w] * n_assets)
-        else:
-            min_w = np.asarray(min_w)
-            if min_w.ndim != 1:
-                raise ValueError(
-                    f"min_weights_per_asset must be a scalar or 1D array, "
-                    f"got shape {min_w.shape}"
-                )
-            if len(min_w) != n_assets:
-                raise ValueError(
-                    f"min_weights_per_asset length {len(min_w)} != n_assets {n_assets}"
-                )
-
-        # Get max weights per asset - must be scalar or 1D array of length n_assets
-        max_w = initial_values_dict.get("max_weights_per_asset", 0.95)
-        if isinstance(max_w, (int, float)):
-            max_w = np.array([max_w] * n_assets)
-        else:
-            max_w = np.asarray(max_w)
-            if max_w.ndim != 1:
-                raise ValueError(
-                    f"max_weights_per_asset must be a scalar or 1D array, "
-                    f"got shape {max_w.shape}"
-                )
-            if len(max_w) != n_assets:
-                raise ValueError(
-                    f"max_weights_per_asset length {len(max_w)} != n_assets {n_assets}"
-                )
-
-        # Validate bounds using the dedicated validation method
-        self.validate_bounds(min_w, max_w, n_assets)
-
-        # Expand to n_parameter_sets - bounds are not optimised, same for all sets
-        min_weights_per_asset = np.array([min_w] * n_parameter_sets)
-        max_weights_per_asset = np.array([max_w] * n_parameter_sets)
-
-        return {
-            "min_weights_per_asset": min_weights_per_asset,
-            "max_weights_per_asset": max_weights_per_asset,
-        }
-
     def extend_parameters(
         self,
         base_params: Dict[str, Any],
         initial_values_dict: Dict[str, Any],
-        run_fingerprint: Dict[str, Any],
         n_assets: int,
         n_parameter_sets: int = 1,
     ) -> Dict[str, Any]:
         """
-        Extend base pool parameters with bounded weight parameters.
+        Extend base pool parameters with learnable bounded weight parameters.
+
+        The bounds are stored as raw learnable parameters (raw_min_budget,
+        raw_min_logits, raw_gap_logits) that are converted to actual bounds
+        during the forward pass via reparameterize_bounds.
 
         Args:
             base_params: Base parameters from the underlying pool.
-            initial_values_dict: Initial values for all parameters.
-            run_fingerprint: Run configuration.
+            initial_values_dict: Initial values for all parameters. Must contain:
+                - min_weights_per_asset: Target minimum weights (scalar or array)
+                - max_weights_per_asset: Target maximum weights (scalar or array)
             n_assets: Number of assets.
             n_parameter_sets: Number of parameter sets.
 
         Returns:
-            Combined parameters.
+            Combined parameters with learnable bound raw params.
+
+        Raises:
+            ValueError: If min_weights_per_asset or max_weights_per_asset
+                are not provided in initial_values_dict.
         """
-        bounded_params = self.init_bounded_weight_parameters(
-            initial_values_dict, run_fingerprint, n_assets, n_parameter_sets
+        # Validate that bounds are provided
+        min_w = initial_values_dict.get("min_weights_per_asset")
+        max_w = initial_values_dict.get("max_weights_per_asset")
+
+        if min_w is None or max_w is None:
+            raise ValueError(
+                "Bounded pools require min_weights_per_asset and max_weights_per_asset "
+                "to be specified in initial_params or run_fingerprint['learnable_bounds_settings']. "
+                f"Got min_weights_per_asset={min_w}, max_weights_per_asset={max_w}"
+            )
+
+        # Use learnable parameters (raw params that get converted to bounds)
+        learnable_params = self.init_learnable_bounded_weight_parameters(
+            initial_values_dict, n_assets, n_parameter_sets
         )
-        return {**base_params, **bounded_params}
+        return {**base_params, **learnable_params}
 
     def init_learnable_bounded_weight_parameters(
         self,
         initial_values_dict: Dict[str, Any],
-        run_fingerprint: Dict[str, Any],
         n_assets: int,
         n_parameter_sets: int = 1,
     ) -> Dict[str, Any]:
@@ -653,7 +659,6 @@ class BoundedWeightsHook:
                 Or, if providing explicit starting bounds:
                 - min_weights_per_asset: array or scalar (default: 0.05)
                 - max_weights_per_asset: array or scalar (default: 0.95)
-            run_fingerprint: Run configuration.
             n_assets: Number of assets.
             n_parameter_sets: Number of parameter sets for parallel optimisation.
 
@@ -756,6 +761,7 @@ class BoundedWeightsHook:
     def raw_params_to_bounds(
         params: Dict[str, Any],
         n_assets: int,
+        freeze_bounds: bool = False,
     ) -> Tuple[jnp.ndarray, jnp.ndarray]:
         """
         Convert raw learnable parameters to actual min/max bounds.
@@ -767,6 +773,8 @@ class BoundedWeightsHook:
             params: Dict containing raw_min_budget, raw_min_logits,
                 raw_gap_logits.
             n_assets: Number of assets.
+            freeze_bounds: If True, wrap inputs in stop_gradient so bounds
+                act as hyperparameters (not learned). Default False.
 
         Returns:
             Tuple of (min_weights_per_asset, max_weights_per_asset).
@@ -776,13 +784,13 @@ class BoundedWeightsHook:
             params["raw_min_logits"],
             params["raw_gap_logits"],
             n_assets,
+            freeze_bounds=freeze_bounds,
         )
 
     def extend_parameters_learnable(
         self,
         base_params: Dict[str, Any],
         initial_values_dict: Dict[str, Any],
-        run_fingerprint: Dict[str, Any],
         n_assets: int,
         n_parameter_sets: int = 1,
     ) -> Dict[str, Any]:
@@ -795,7 +803,6 @@ class BoundedWeightsHook:
         Args:
             base_params: Base parameters from the underlying pool.
             initial_values_dict: Initial values for all parameters.
-            run_fingerprint: Run configuration.
             n_assets: Number of assets.
             n_parameter_sets: Number of parameter sets.
 
@@ -803,7 +810,7 @@ class BoundedWeightsHook:
             Combined parameters with learnable bound raw params.
         """
         learnable_params = self.init_learnable_bounded_weight_parameters(
-            initial_values_dict, run_fingerprint, n_assets, n_parameter_sets
+            initial_values_dict, n_assets, n_parameter_sets
         )
         return {**base_params, **learnable_params}
 

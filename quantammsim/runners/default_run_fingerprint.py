@@ -61,6 +61,13 @@ run_fingerprint_defaults = {
     "ste_max_change": False,
     "ste_min_max_weight": False,
     "weight_calculation_method": "auto",  # "auto", "vectorized", or "scan"
+    # Learnable bounds settings - for per-asset min/max weight constraints
+    # Control is via rule string prefix (e.g., "bounded__momentum")
+    "learnable_bounds_settings": {
+        "freeze_bounds": False,  # If True, treat bounds as hyperparameters (no gradients)
+        "min_weights_per_asset": None,  # Must be set if using bounded pool, e.g., [0.05, 0.05]
+        "max_weights_per_asset": None,  # Must be set if using bounded pool, e.g., [0.60, 0.60]
+    },
 }
 
 
