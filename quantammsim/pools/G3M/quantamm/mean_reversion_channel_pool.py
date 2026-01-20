@@ -368,10 +368,10 @@ class MeanReversionChannelPool(MomentumPool):
         noise: str = "gaussian",
     ) -> Dict[str, Any]:
         """
-        Initialize parameters for a power channel pool.
+        Initialize parameters for a mean reversion channel pool.
 
-        This method sets up the initial parameters for the power channel pool strategy, including
-        weights, memory length (lambda), the update agressiveness (k) and the exponents.
+        This method sets up the initial parameters for the mean reversion channel pool strategy, including
+        weights, memory length (lambda), the update aggressiveness (k) and the exponents.
 
 
         Parameters

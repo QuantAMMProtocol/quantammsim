@@ -312,7 +312,7 @@ class PowerChannelPool(MomentumPool):
         Initialize parameters for a power channel pool.
 
         This method sets up the initial parameters for the power channel pool strategy, including
-        weights, memory length (lambda), the update agressiveness (k) and the exponents.
+        weights, memory length (lambda), the update aggressiveness (k) and the exponents.
 
         Parameters
         ----------

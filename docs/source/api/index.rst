@@ -9,3 +9,5 @@ API Reference
    core/runners
    core/pools
    core/estimators
+   core/analysis
+   rest_api

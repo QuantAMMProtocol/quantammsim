@@ -9,3 +9,4 @@ User Guide
    weight_calculation_paths
    hooks
    per_asset_bounds
+   jax_configuration

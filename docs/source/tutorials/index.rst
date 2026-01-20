@@ -15,4 +15,5 @@ These tutorials will help you get started with quantammsim.
    cow_pools
    gyroscope_pools
    custom_pools
+   training_pipeline
    tuning

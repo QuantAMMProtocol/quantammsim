@@ -135,7 +135,141 @@ For hyperparameter optimization using Optuna:
         }
     }
 
-For more details on the Optuna settings see :doc:`../tutorials/tuning`.
+Complete Optuna Settings Reference
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    optuna_settings = {
+        # Study configuration
+        "study_name": None,              # Auto-generated if None
+        "storage": {
+            "type": "sqlite",            # "sqlite", "mysql", or "postgresql"
+            "url": None,                 # e.g., "sqlite:///studies.db"
+        },
+
+        # Trial settings
+        "n_trials": 20,                  # Number of optimization trials
+        "n_jobs": 4,                     # Parallel workers
+        "timeout": 7200,                 # Max optimization time (seconds)
+        "n_startup_trials": 10,          # Random trials before TPE sampler
+
+        # Early stopping
+        "early_stopping": {
+            "enabled": False,
+            "patience": 100,             # Trials without improvement
+            "min_improvement": 0.001,    # Minimum relative improvement
+        },
+
+        # Search behavior
+        "expand_around": True,           # Search around initial values (see below)
+        "multi_objective": False,        # Multi-objective optimization
+        "make_scalar": False,            # Force scalar objective
+
+        # Overfitting control
+        "overfitting_penalty": 0.0,      # Penalize train >> validation (see below)
+
+        # Parameter search ranges
+        "parameter_config": { ... }
+    }
+
+Search Behavior: expand_around
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``expand_around`` setting controls how parameter ranges are interpreted:
+
+- ``expand_around: True`` - Search within a window around initial parameter values.
+  Good for fine-tuning when you have reasonable starting points.
+
+- ``expand_around: False`` - Search the full range specified in ``parameter_config``.
+  Better for exploration when optimal values are unknown.
+
+For financial strategies, ``False`` often gives better exploration of the parameter space.
+
+Overfitting Penalty
+~~~~~~~~~~~~~~~~~~~
+
+The ``overfitting_penalty`` discourages solutions where training performance greatly exceeds validation:
+
+.. code-block:: python
+
+    # Penalty calculation:
+    # penalty = overfitting_penalty * max(0, train_score - validation_score)
+    #
+    # Example: train=1.0, val=0.5, penalty_weight=0.5
+    # penalty = 0.5 * (1.0 - 0.5) = 0.25
+    # adjusted_score = validation_score - penalty = 0.5 - 0.25 = 0.25
+
+    run_fingerprint["optimisation_settings"]["optuna_settings"]["overfitting_penalty"] = 0.3
+
+Set to ``0.0`` to disable. Range ``[0.0, 1.0]`` recommended.
+
+Parameter Configuration
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Each parameter in ``parameter_config`` accepts:
+
+.. code-block:: python
+
+    "parameter_name": {
+        "low": 1,              # Minimum value
+        "high": 200,           # Maximum value
+        "log_scale": True,     # Use logarithmic scale
+        "scalar": False,       # Same value for all assets (True) or per-asset (False)
+    }
+
+Available parameters:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 15 15 45
+
+   * - Parameter
+     - Default Range
+     - Log Scale
+     - Description
+   * - ``memory_length``
+     - 1-200
+     - Yes
+     - EWMA memory in days
+   * - ``memory_length_delta``
+     - 0.1-100
+     - Yes
+     - Memory length variation
+   * - ``log_k``
+     - -10 to 10
+     - No
+     - Log trading intensity
+   * - ``k_per_day``
+     - 0.1-1000
+     - Yes
+     - Trading intensity per day
+   * - ``weights_logits``
+     - -10 to 10
+     - No
+     - Initial weight logits
+   * - ``log_amplitude``
+     - -10 to 10
+     - No
+     - Signal amplitude (log scale)
+   * - ``raw_width``
+     - -10 to 10
+     - No
+     - Channel width
+   * - ``raw_exponents``
+     - 0-10
+     - No
+     - Power exponents
+   * - ``raw_pre_exp_scaling``
+     - -10 to 10
+     - No
+     - Pre-exponential scaling
+   * - ``logit_lamb``
+     - -10 to 10
+     - No
+     - Logit-transformed lambda
+
+For more details on Optuna optimization see :doc:`../tutorials/tuning`.
 
 
 Return Metrics
@@ -223,7 +357,7 @@ Advanced Settings
 Straight-Through Estimators
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-For improved gradient flow during training:
+For improved gradient flow during training through non-differentiable clipping operations:
 
 .. code-block:: python
 
@@ -231,6 +365,9 @@ For improved gradient flow during training:
         "ste_max_change": False,            # STE for max weight change clipping
         "ste_min_max_weight": False,        # STE for min/max weight bounds
     })
+
+When ``True``, these allow gradients to flow through clipping operations during backpropagation,
+which can improve training stability and convergence.
 
 Alternative Lambda Parameterization
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -242,6 +379,9 @@ Alternative Lambda Parameterization
         "use_pre_exp_scaling": True,        # Pre-exponential scaling
     })
 
+- ``use_alt_lamb`` - When ``True``, allows different memory lengths for different estimators
+- ``use_pre_exp_scaling`` - When ``True``, applies pre-exponential scaling to weight changes
+
 Noise Traders
 ~~~~~~~~~~~~~
 
@@ -250,6 +390,68 @@ Noise Traders
     run_fingerprint.update({
         "noise_trader_ratio": 0.0,          # Ratio of noise trader volume (0-1)
     })
+
+Simulates uninformed trading activity. Value of ``0.1`` means 10% of volume comes from noise traders.
+
+Numeraire Token
+~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    run_fingerprint.update({
+        "numeraire": None,                  # Token used as price base (default: last token)
+    })
+
+When ``None``, the last token in the ``tokens`` list is used as the numeraire.
+Set explicitly if you want prices quoted in a specific token.
+
+Timing Parameters
+~~~~~~~~~~~~~~~~~
+
+Understanding the relationship between timing parameters:
+
+.. code-block:: python
+
+    run_fingerprint.update({
+        "chunk_period": 1440,               # Strategy evaluation frequency (minutes)
+        "weight_interpolation_period": 1440, # Weight update frequency (minutes)
+        "bout_offset": 24 * 60 * 7,         # Training window offset (minutes)
+    })
+
+- ``chunk_period`` - How often the strategy calculates new target weights.
+  1440 = daily, 60 = hourly, 1 = per minute.
+
+- ``weight_interpolation_period`` - How often weights actually change.
+  Must be <= chunk_period. When < chunk_period, weights are interpolated
+  between chunk evaluations.
+
+- ``bout_offset`` - Controls training data sampling. Training uses periods of
+  length (total_duration - bout_offset), sampled from different starting points
+  within the bout_offset window.
+
+Weight Interpolation Method
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    run_fingerprint.update({
+        "weight_interpolation_method": "linear",  # "linear" or "optimal"
+    })
+
+- ``linear`` - Linear interpolation between weight updates
+- ``optimal`` - Uses optimal interpolation that minimizes tracking error
+
+Trade Simulation
+~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    run_fingerprint.update({
+        "do_trades": False,                 # Enable explicit trade simulation
+    })
+
+When ``True``, allows simulating specific trade sequences through the ``trade_array``
+input to ``calculate_reserves_with_dynamic_inputs``.
 
 Implementation Notes
 --------------------

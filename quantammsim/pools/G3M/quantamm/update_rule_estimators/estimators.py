@@ -516,7 +516,36 @@ def calc_ewma_padded(
     max_memory_days,
     cap_lamb=True,
 ):
+    """Calculate padded exponentially weighted moving average (EWMA) of prices.
 
+    Computes EWMA using convolution with padding to handle initialization.
+    The padding extends the price series backward using the first price value,
+    allowing the EWMA to converge before the actual data begins.
+
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        Dictionary containing 'logit_lamb' parameter controlling memory length.
+    chunkwise_price_values : ndarray
+        Array of shape (time_steps, n_assets) containing price values.
+    chunk_period : float
+        Time period between chunks in minutes.
+    max_memory_days : float
+        Maximum allowed memory length in days, used to cap lambda.
+    cap_lamb : bool, optional
+        Whether to apply max_memory_days restriction. Defaults to True.
+
+    Returns
+    -------
+    ndarray
+        Padded EWMA array. Note: includes padding prefix, so length is
+        greater than input length.
+
+    See Also
+    --------
+    calc_alt_ewma_padded : Similar but uses alternative lambda parameter.
+    calc_gradients : Uses EWMA internally for gradient calculation.
+    """
     lamb = calc_lamb(update_rule_parameter_dict)
     max_lamb = memory_days_to_lamb(max_memory_days, chunk_period)
     # Apply max_memory_days restriction to lamb and alt_lamb
@@ -553,7 +582,42 @@ def calc_alt_ewma_padded(
     max_memory_days,
     cap_lamb=True,
 ):
+    """Calculate padded EWMA using an alternative (secondary) lambda parameter.
 
+    Similar to calc_ewma_padded but uses a different memory length derived from
+    'logit_delta_lamb'. This allows update rules to use two different time scales
+    for different components of the calculation.
+
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        Dictionary containing:
+        - 'logit_lamb': Base lambda parameter
+        - 'logit_delta_lamb': Delta to add to logit_lamb for alternative lambda
+    chunkwise_price_values : ndarray
+        Array of shape (time_steps, n_assets) containing price values.
+    chunk_period : float
+        Time period between chunks in minutes.
+    max_memory_days : float
+        Maximum allowed memory length in days, used to cap lambda.
+    cap_lamb : bool, optional
+        Whether to apply max_memory_days restriction. Defaults to True.
+
+    Returns
+    -------
+    ndarray
+        Padded EWMA array using alternative lambda. Note: includes padding
+        prefix, so length is greater than input length.
+
+    Raises
+    ------
+    Exception
+        If 'logit_delta_lamb' is not present in update_rule_parameter_dict.
+
+    See Also
+    --------
+    calc_ewma_padded : Uses primary lambda parameter.
+    """
     lamb = calc_lamb(update_rule_parameter_dict)
     max_lamb = memory_days_to_lamb(max_memory_days, chunk_period)
     # Apply max_memory_days restriction to lamb and alt_lamb
@@ -840,6 +904,36 @@ def calc_return_precision_based_weights(
     max_memory_days,
     cap_lamb,
 ):
+    """Calculate precision-based (inverse variance) portfolio weights.
+
+    Computes weights proportional to the inverse of return variances,
+    giving higher weight to assets with lower volatility. This is
+    a simplified minimum variance approach.
+
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        Dictionary containing lambda parameters for variance calculation.
+    chunkwise_price_values : ndarray
+        Array of shape (time_steps, n_assets) containing price values.
+    chunk_period : float
+        Time period between chunks in minutes.
+    max_memory_days : float
+        Maximum allowed memory length in days.
+    cap_lamb : bool
+        Whether to apply max_memory_days restriction to lambda.
+
+    Returns
+    -------
+    ndarray
+        Array of shape (time_steps-1, n_assets) containing normalized
+        precision-based weights that sum to 1 at each timestep.
+
+    See Also
+    --------
+    calc_return_variances : Calculates the variances used here.
+    MinVariancePool : Uses similar inverse-variance weighting logic.
+    """
     variances = calc_return_variances(
         update_rule_parameter_dict,
         chunkwise_price_values,
@@ -870,6 +964,32 @@ def calc_return_precision_based_weights(
 
 
 def calc_k(update_rule_parameter_dict, memory_days):
+    """Calculate the 'k' parameter controlling update aggressiveness.
+
+    The 'k' parameter scales weight updates in momentum-based strategies.
+    Higher k values lead to more aggressive weight changes in response
+    to price movements. Supports three parameterization modes.
+
+    Parameters
+    ----------
+    update_rule_parameter_dict : dict
+        Dictionary containing one of:
+        - 'log_k': Log2-scale k, computed as (2^log_k) * memory_days
+        - 'absolute_k': Direct k value, used as-is
+        - 'k': Linear k, computed as k * memory_days
+    memory_days : float
+        Memory length in days, used to scale k in log_k and k modes.
+
+    Returns
+    -------
+    float or ndarray
+        The computed k value(s). Shape matches input parameter shape.
+
+    Notes
+    -----
+    The log_k parameterization is preferred for optimization as it allows
+    k to vary over several orders of magnitude with bounded parameter values.
+    """
     if update_rule_parameter_dict.get("log_k") is not None:
         log_k = update_rule_parameter_dict.get("log_k")
         k = (2**log_k) * memory_days

@@ -65,7 +65,7 @@ class TFMMBasePool(AbstractPool):
 
     Note:
         This class is designed to be subclassed, not instantiated directly. Concrete implementations
-        should provide specific logic for weight calculation and slippage estimation. It is reccomended
+        should provide specific logic for weight calculation and slippage estimation. It is recommended
         to implement the functions used within implementations of these methods as external JAX functions
         that are jitted and then used within pool methods. This separation of concerns comes from that JAX
         is a functional programming language and we want to keep the pool methods pure. Finally, note that due
@@ -1132,7 +1132,7 @@ class TFMMBasePool(AbstractPool):
         rule_outputs = self.calculate_rule_outputs(
             params, run_fingerprint, prices, additional_oracle_input
         )
-        # we dont't want to change the initial weights during any training
+        # we don't want to change the initial weights during any training
         # so wrap them in a stop_grad
         initial_weights = self.calculate_initial_weights(params)
 

@@ -79,11 +79,7 @@ class MinVariancePool(TFMMBasePool):
 
     def __init__(self):
         """
-        Initialize a new MomentumPool instance.
-
-        Parameters
-        ----------
-        None
+        Initialize a new MinVariancePool instance.
         """
         super().__init__()
 
@@ -96,38 +92,38 @@ class MinVariancePool(TFMMBasePool):
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         """
-        Calculate the raw weight outputs based on momentum signals.
+        Calculate the raw weight outputs based on minimum variance optimization.
 
-        This method computes the raw weight adjustments for the momentum strategy. It processes
-        the input prices to calculate gradients, which are then used to determine weight updates.
+        This method computes target weights that minimize portfolio variance. It processes
+        the input prices to calculate return variances, which are then used to determine
+        inverse-variance weighted allocations.
 
         Parameters
         ----------
         params : Dict[str, Any]
-            A dictionary of strategy parameters.
+            A dictionary of strategy parameters including lambda values.
         run_fingerprint : Dict[str, Any]
-            A dictionary containing run-specific settings.
+            A dictionary containing run-specific settings including chunk_period
+            and max_memory_days.
         prices : jnp.ndarray
             An array of asset prices over time.
         additional_oracle_input : Optional[jnp.ndarray], optional
-            Additional input data, if any.
+            Additional input data, if any. Not used in this implementation.
 
         Returns
         -------
         jnp.ndarray
-            Raw weight outputs representing the suggested weight adjustments.
+            Raw weight outputs representing the target minimum variance weights.
 
         Notes
         -----
         The method performs the following steps:
-        1. Calculates the memory days based on the lambda parameter.
-        2. Computes the 'k' factor which scales the weight updates.
-        3. Extracts chunkwise price values from the input prices.
-        4. Calculates price gradients using the calc_gradients function.
-        5. Applies the momentum weight update formula to get raw weight outputs.
+        1. Extracts chunkwise price values from the input prices.
+        2. Calculates return variances using an EWMA estimator.
+        3. Computes inverse-variance weights via the min variance formula.
 
-        The raw weight outputs are not the final weights, but rather the changes
-        to be applied to the previous weights. These will be refined in subsequent steps.
+        Unlike momentum-based rules, these outputs represent target weights directly,
+        not weight changes to be applied incrementally.
         """
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
         variances = calc_return_variances(params, chunkwise_price_values, run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"], cap_lamb=True)
