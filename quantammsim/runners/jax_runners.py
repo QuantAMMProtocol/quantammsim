@@ -100,7 +100,9 @@ def train_on_historic_data(
 
     Returns:
     --------
-    None
+    dict or list or None
+        - For gradient descent optimization: returns the best training parameters dict
+        - For Optuna optimization: returns the best trials list, or None if no trials completed
 
     Notes:
     ------
@@ -135,6 +137,7 @@ def train_on_historic_data(
         run_fingerprint["optimisation_settings"]["initial_random_key"]
     )
 
+    learnable_bounds = run_fingerprint.get("learnable_bounds_settings", {})
     initial_params = {
         "initial_memory_length": run_fingerprint["initial_memory_length"],
         "initial_memory_length_delta": run_fingerprint["initial_memory_length_delta"],
@@ -144,6 +147,8 @@ def train_on_historic_data(
         "initial_raw_width": run_fingerprint["initial_raw_width"],
         "initial_raw_exponents": run_fingerprint["initial_raw_exponents"],
         "initial_pre_exp_scaling": run_fingerprint["initial_pre_exp_scaling"],
+        "min_weights_per_asset": learnable_bounds.get("min_weights_per_asset"),
+        "max_weights_per_asset": learnable_bounds.get("max_weights_per_asset"),
     }
 
     unique_tokens = get_unique_tokens(run_fingerprint)
@@ -264,6 +269,7 @@ def train_on_historic_data(
         "ste_max_change": run_fingerprint["ste_max_change"],
         "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
         "weight_calculation_method": run_fingerprint.get("weight_calculation_method", "auto"),
+        "learnable_bounds_settings": run_fingerprint.get("learnable_bounds_settings", {}),
     }
 
     partial_training_step = Partial(
@@ -1063,6 +1069,7 @@ def do_run_on_historic_data(
         "ste_max_change": run_fingerprint["ste_max_change"],
         "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
         "weight_calculation_method": run_fingerprint.get("weight_calculation_method", "auto"),
+        "learnable_bounds_settings": run_fingerprint.get("learnable_bounds_settings", {}),
     }
 
     # Create static dictionaries for training and testing
@@ -1196,7 +1203,10 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     -----------
     run_fingerprint : dict
         A dictionary containing the configuration and settings for the run.
-    params : dict or list
+    coarse_weights : jnp.ndarray
+        Pre-computed coarse weights to use instead of calculating from params.
+        Shape should be (n_timesteps, n_assets).
+    params : dict or list, optional
         The parameters for the model. Can be a single set (dict) or multiple sets (list of dicts).
     root : str, optional
         The root directory for data files.
@@ -1367,6 +1377,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         "ste_max_change": run_fingerprint["ste_max_change"],
         "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
         "weight_calculation_method": run_fingerprint.get("weight_calculation_method", "auto"),
+        "learnable_bounds_settings": run_fingerprint.get("learnable_bounds_settings", {}),
     }
 
     # Create static dictionaries for training and testing
