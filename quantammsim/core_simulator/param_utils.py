@@ -1333,8 +1333,40 @@ def load_manually(
             return params[index], context
 
 
-def retrieve_best(data_location, load_method, re_calc_hess, min_alt_obj = 0.0, return_as_iterables=False):
-    params, contexts = load_manually(data_location,load_method, re_calc_hess, min_alt_obj, return_as_iterables=True)
+def retrieve_best(data_location, load_method, re_calc_hess, min_alt_obj=0.0, return_as_iterables=False):
+    """Retrieve the best parameters from a training run.
+
+    Loads parameters using the specified method and extracts the best
+    parameter set based on the context (index of best performing parameters).
+    Removes training metadata (step, hessian_trace, etc.) from the returned params.
+
+    Parameters
+    ----------
+    data_location : str
+        Path to the directory containing saved training results.
+    load_method : str
+        Method for loading parameters. Options include:
+        - 'last': Load the most recent checkpoint
+        - 'best_train_objective': Load checkpoint with best training objective
+        - 'best_test_objective': Load checkpoint with best test objective
+    re_calc_hess : bool
+        Whether to recalculate hessian information when loading.
+    min_alt_obj : float, optional
+        Minimum alternative objective threshold. Defaults to 0.0.
+    return_as_iterables : bool, optional
+        If True, returns lists of all loaded params and steps.
+        If False, returns only the first (best) params and step.
+        Defaults to False.
+
+    Returns
+    -------
+    params : dict or list of dict
+        Best parameter dictionary (or list if return_as_iterables=True).
+        Training metadata fields are removed.
+    steps : int or list of int
+        Training step(s) at which the parameters were saved.
+    """
+    params, contexts = load_manually(data_location, load_method, re_calc_hess, min_alt_obj, return_as_iterables=True)
     steps = []
     params_list = []
     for param, context in zip(params, contexts):
