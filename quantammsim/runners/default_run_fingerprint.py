@@ -7,7 +7,8 @@ run_fingerprint_defaults = {
     "rule": "mean_reversion_channel",
     "optimisation_settings": {
         "base_lr": 0.1,
-        "optimiser": "adam",
+        "optimiser": "adamw",  # adamw supports weight_decay; use "adam" or "sgd" if no decay needed
+        "weight_decay": 0.01,  # L2 regularization coefficient (only effective with adamw)
         "decay_lr_ratio": 0.8,
         "decay_lr_plateau": 100,
         "batch_size": 8,
@@ -24,11 +25,32 @@ run_fingerprint_defaults = {
         "method": "gradient_descent",
         "force_scalar": False,
         "use_plateau_decay": False,
-        "use_gradient_clipping": False,
+        "use_gradient_clipping": True,  # Prevents gradient explosion
         "clip_norm": 10.0,
         "lr_schedule_type": "constant",
         "warmup_steps": 100,
+        # Early stopping settings
+        "early_stopping": True,  # Stop training when test metric stops improving
+        "early_stopping_patience": 200,  # Iterations without test improvement before stopping
+        "early_stopping_metric": "sharpe",  # Metric to monitor: "sharpe", "returns", etc.
+        # Stochastic Weight Averaging (SWA) settings
+        "use_swa": False,  # Average parameters from last N checkpoints
+        "swa_start_frac": 0.75,  # Start SWA after this fraction of training
+        "swa_freq": 10,  # Collect parameters every N iterations for averaging
     },
+    # Ensemble training settings
+    # Use "ensemble__<rule>" in run_fingerprint["rule"] to enable ensemble averaging
+    # e.g., "ensemble__momentum" or "ensemble__bounded__mean_reversion_channel"
+    # n_ensemble_members: number of param sets averaged together per "parameter set"
+    # When > 1, params shape becomes (n_parameter_sets, n_ensemble_members, ...)
+    # and rule outputs are averaged across ensemble members before fine weights
+    "n_ensemble_members": 1,  # Default 1 = no ensembling (backwards compatible)
+    # Ensemble initialization method - controls how members are distributed in param space
+    # Options: "gaussian" (random noise), "lhs" (Latin Hypercube), "centered_lhs",
+    #          "sobol" (quasi-random), "grid" (regular grid)
+    "ensemble_init_method": "gaussian",  # Default to Gaussian for backwards compatibility
+    "ensemble_init_scale": 0.5,  # Spread of ensemble members (multiplier for offsets)
+    "ensemble_init_seed": 42,  # Random seed for reproducible initialization
     "initial_memory_length": 10.0,
     "initial_memory_length_delta": 0.0,
     "initial_k_per_day": 20,
@@ -95,7 +117,7 @@ optuna_settings = {
     # overfitting_penalty: Penalize solutions where train performance >> validation.
     # Value of 0.5 means: if train=1.0 and val=0.5, penalty = 0.5 * (1.0 - 0.5) = 0.25
     # Set to 0.0 to disable. Range [0.0, 1.0] recommended.
-    "overfitting_penalty": 0.0,
+    "overfitting_penalty": 0.2,
     "parameter_config": {
         "memory_length": {
             "low": 1,

@@ -130,3 +130,138 @@ def calculate_continuous_test_metrics(continuous_results, train_len, test_len, p
 
     metrics = calculate_period_metrics(continuous_test_results)
     return {f"continuous_test_{k}": v for k, v in metrics.items()}
+
+
+def process_continuous_outputs(
+    continuous_outputs,
+    data_dict,
+    n_parameter_sets,
+    use_ensemble_mode=False,
+):
+    """
+    Process continuous forward pass outputs into per-parameter-set metrics.
+
+    This function handles both standard mode (outputs batched over param sets)
+    and ensemble mode (single output from averaged rule outputs).
+
+    Parameters
+    ----------
+    continuous_outputs : dict
+        Output from continuous forward pass containing:
+        - "value": Pool value over time
+        - "reserves": Pool reserves over time
+        Shape depends on mode:
+        - Standard: (n_parameter_sets, time_steps) / (n_parameter_sets, time_steps, n_assets)
+        - Ensemble: (time_steps,) / (time_steps, n_assets)
+    data_dict : dict
+        Data dictionary containing:
+        - "start_idx": Start index for the simulation
+        - "bout_length": Length of training period
+        - "bout_length_test": Length of test period
+        - "prices": Price data array
+    n_parameter_sets : int
+        Number of parameter sets (used for standard mode iteration)
+    use_ensemble_mode : bool, optional
+        If True, outputs are unbatched (ensemble averaging was used).
+        Default is False.
+
+    Returns
+    -------
+    tuple of (list, list, list)
+        (train_metrics_list, test_metrics_list, continuous_test_metrics_list)
+        Each list contains one dict per parameter set (or one dict total for ensemble mode).
+    """
+    train_metrics_list = []
+    test_metrics_list = []
+    continuous_test_metrics_list = []
+
+    start_idx = data_dict["start_idx"]
+    bout_length = data_dict["bout_length"]
+    bout_length_test = data_dict["bout_length_test"]
+    prices = data_dict["prices"]
+
+    if use_ensemble_mode:
+        # Ensemble mode: single output (not batched over param sets)
+        param_value = continuous_outputs["value"]
+        param_reserves = continuous_outputs["reserves"]
+
+        # Slice train period
+        train_dict = {
+            "value": param_value[:bout_length],
+            "reserves": param_reserves[:bout_length],
+        }
+        train_prices = prices[start_idx : start_idx + bout_length]
+
+        # Slice test period
+        test_dict = {
+            "value": param_value[bout_length:],
+            "reserves": param_reserves[bout_length:],
+        }
+        test_prices = prices[
+            start_idx + bout_length : start_idx + bout_length + bout_length_test
+        ]
+
+        # Continuous dict for test metrics
+        param_continuous_dict = {
+            "value": param_value,
+            "reserves": param_reserves,
+        }
+        continuous_prices = prices[
+            start_idx : start_idx + bout_length + bout_length_test
+        ]
+
+        # Calculate metrics
+        train_metrics = calculate_period_metrics(train_dict, train_prices)
+        test_metrics = calculate_period_metrics(test_dict, test_prices)
+        continuous_test_metrics = calculate_continuous_test_metrics(
+            param_continuous_dict, bout_length, bout_length_test, continuous_prices
+        )
+
+        train_metrics_list.append(train_metrics)
+        test_metrics_list.append(test_metrics)
+        continuous_test_metrics_list.append(continuous_test_metrics)
+
+    else:
+        # Standard mode: outputs batched over param sets
+        for param_idx in range(n_parameter_sets):
+            # Extract outputs for this parameter set
+            param_value = continuous_outputs["value"][param_idx]
+            param_reserves = continuous_outputs["reserves"][param_idx]
+
+            # Slice train period
+            train_dict = {
+                "value": param_value[:bout_length],
+                "reserves": param_reserves[:bout_length],
+            }
+            train_prices = prices[start_idx : start_idx + bout_length]
+
+            # Slice test period
+            test_dict = {
+                "value": param_value[bout_length:],
+                "reserves": param_reserves[bout_length:],
+            }
+            test_prices = prices[
+                start_idx + bout_length : start_idx + bout_length + bout_length_test
+            ]
+
+            # Continuous dict for test metrics
+            param_continuous_dict = {
+                "value": param_value,
+                "reserves": param_reserves,
+            }
+            continuous_prices = prices[
+                start_idx : start_idx + bout_length + bout_length_test
+            ]
+
+            # Calculate metrics
+            train_metrics = calculate_period_metrics(train_dict, train_prices)
+            test_metrics = calculate_period_metrics(test_dict, test_prices)
+            continuous_test_metrics = calculate_continuous_test_metrics(
+                param_continuous_dict, bout_length, bout_length_test, continuous_prices
+            )
+
+            train_metrics_list.append(train_metrics)
+            test_metrics_list.append(test_metrics)
+            continuous_test_metrics_list.append(continuous_test_metrics)
+
+    return train_metrics_list, test_metrics_list, continuous_test_metrics_list

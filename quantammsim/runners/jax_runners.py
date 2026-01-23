@@ -270,6 +270,7 @@ def train_on_historic_data(
         "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
         "weight_calculation_method": run_fingerprint.get("weight_calculation_method", "auto"),
         "learnable_bounds_settings": run_fingerprint.get("learnable_bounds_settings", {}),
+        "n_ensemble_members": run_fingerprint.get("n_ensemble_members", 1),
     }
 
     partial_training_step = Partial(
@@ -356,6 +357,20 @@ def train_on_historic_data(
     ]
     decay_lr_ratio = run_fingerprint["optimisation_settings"]["decay_lr_ratio"]
     min_lr = run_fingerprint["optimisation_settings"]["min_lr"]
+
+    # Early stopping settings
+    use_early_stopping = run_fingerprint["optimisation_settings"].get("early_stopping", False)
+    early_stopping_patience = run_fingerprint["optimisation_settings"].get("early_stopping_patience", 200)
+    early_stopping_metric = run_fingerprint["optimisation_settings"].get("early_stopping_metric", "sharpe")
+    best_test_metric = -float("inf")
+    iterations_since_test_improvement = 0
+
+    # SWA settings
+    use_swa = run_fingerprint["optimisation_settings"].get("use_swa", False)
+    swa_start_frac = run_fingerprint["optimisation_settings"].get("swa_start_frac", 0.75)
+    swa_freq = run_fingerprint["optimisation_settings"].get("swa_freq", 10)
+    swa_params_list = []  # Will collect parameters for averaging
+    n_iterations = run_fingerprint["optimisation_settings"]["n_iterations"]
 
     if run_fingerprint["optimisation_settings"]["method"] == "gradient_descent":
         if run_fingerprint["optimisation_settings"]["optimiser"] in ["adam", "adamw"]:
@@ -524,6 +539,27 @@ def train_on_historic_data(
                 iterations_since_improvement = 0
                 if local_learning_rate < min_lr:
                     local_learning_rate = min_lr
+
+            # Early stopping based on test metrics
+            if use_early_stopping and test_metrics_list:
+                # Get the mean test metric across parameter sets
+                current_test_metric = np.mean([t.get(early_stopping_metric, -float("inf")) for t in test_metrics_list])
+                if current_test_metric > best_test_metric:
+                    best_test_metric = current_test_metric
+                    iterations_since_test_improvement = 0
+                else:
+                    iterations_since_test_improvement += 1
+
+                if iterations_since_test_improvement >= early_stopping_patience:
+                    if verbose:
+                        print(f"Early stopping at iteration {step}: no test improvement for {early_stopping_patience} iterations")
+                        print(f"Best test {early_stopping_metric}: {best_test_metric:.4f}")
+                    break
+
+            # SWA: collect parameters after swa_start_frac of training
+            if use_swa and i >= int(n_iterations * swa_start_frac) and i % swa_freq == 0:
+                swa_params_list.append(deepcopy(params))
+
             if step % iterations_per_print == 0:
                 if verbose:
                     print(step, "Objective: ", objective_value)
@@ -575,6 +611,22 @@ def train_on_historic_data(
                 stepSteps = []
         if verbose:
             print("final objective value: ", objective_value)
+
+        # SWA: average collected parameters
+        if use_swa and len(swa_params_list) > 0:
+            if verbose:
+                print(f"Applying SWA: averaging {len(swa_params_list)} parameter snapshots")
+            swa_params = {}
+            for key in swa_params_list[0].keys():
+                if key == "subsidary_params":
+                    # Don't average subsidiary params
+                    swa_params[key] = swa_params_list[-1][key]
+                else:
+                    # Stack and average along new axis
+                    stacked = jnp.stack([p[key] for p in swa_params_list], axis=0)
+                    swa_params[key] = jnp.mean(stacked, axis=0)
+            return swa_params
+
         return best_train_params
     elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
 
@@ -1070,6 +1122,7 @@ def do_run_on_historic_data(
         "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
         "weight_calculation_method": run_fingerprint.get("weight_calculation_method", "auto"),
         "learnable_bounds_settings": run_fingerprint.get("learnable_bounds_settings", {}),
+        "n_ensemble_members": run_fingerprint.get("n_ensemble_members", 1),
     }
 
     # Create static dictionaries for training and testing
@@ -1378,6 +1431,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
         "weight_calculation_method": run_fingerprint.get("weight_calculation_method", "auto"),
         "learnable_bounds_settings": run_fingerprint.get("learnable_bounds_settings", {}),
+        "n_ensemble_members": run_fingerprint.get("n_ensemble_members", 1),
     }
 
     # Create static dictionaries for training and testing
