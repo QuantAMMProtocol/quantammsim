@@ -1414,6 +1414,7 @@ def get_data_dict(
     # This reduces memory usage by keeping only:
     # - max_memory_days worth of burn-in data before start_idx
     # - the full training period (start_idx to end_idx)
+    # - when do_test_period=True, also includes test period (no back trim)
     # Controlled by preslice_burnin parameter (default True)
     # Disabled when using slippage/gas/supply features (they use original arrays)
     if preslice_burnin and not (return_slippage or return_gas_prices or return_supply):
@@ -1433,8 +1434,11 @@ def get_data_dict(
 
         # Only slice if there's data to remove
         needs_front_trim = min_required_idx > 0
-        needs_back_trim = max_required_idx < len(prices_rebased)
-
+        # When do_test_period=True, don't trim the back - we need data for the test period
+        # The continuous forward pass needs prices covering both training and test
+        needs_back_trim = (not do_test_period) and (max_required_idx < len(prices_rebased))
+        if needs_back_trim is False:
+            max_required_idx = len(prices_rebased)
         if needs_front_trim or needs_back_trim:
             # Pre-slice arrays
             prices_rebased = prices_rebased[min_required_idx:max_required_idx]
@@ -1612,6 +1616,10 @@ def get_data_dict(
                 start_date=startDateTest,
                 end_date=endDateTest,
             )
+
+            # Preslice test prices to only include the test period (remove data after test end)
+            price_values_test = price_values_test[:end_idx_test]
+            unix_values_test = unix_values_test[:end_idx_test]
 
             data_dict["prices_test"] = price_values_test
             data_dict["start_idx_test"] = start_idx_test
