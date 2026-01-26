@@ -75,6 +75,7 @@ def train_on_historic_data(
     price_data=None,
     verbose=True,
     run_location=None,
+    return_training_metadata=False,
 ):
     """
     Train a model on historical price data using JAX.
@@ -98,11 +99,18 @@ def train_on_historic_data(
         If True, print detailed progress information (default is True).
     run_location : str, optional
         The location of the run to load from. If None, the run will be initialized.
+    return_training_metadata : bool, optional
+        If True, return (params, metadata) tuple where metadata contains training info
+        including checkpoint_returns for Rademacher complexity calculation (default is False).
 
     Returns:
     --------
-    dict or list or None
-        - For gradient descent optimization: returns the best training parameters dict
+    dict or tuple or list or None
+        - For gradient descent with return_training_metadata=False: returns the best params dict
+        - For gradient descent with return_training_metadata=True: returns (params, metadata) where
+          metadata contains 'epochs_trained', 'final_objective', and 'checkpoint_returns'
+          (checkpoint_returns is a numpy array of shape (n_checkpoints, T-1) if track_checkpoints
+          is enabled, otherwise None)
         - For Optuna optimization: returns the best trials list, or None if no trials completed
 
     Notes:
@@ -192,9 +200,73 @@ def train_on_historic_data(
     max_memory_days = data_dict["max_memory_days"]
     print("max_memory_days: ", max_memory_days)
 
-    bout_length_window = data_dict["bout_length"] - run_fingerprint["bout_offset"]
+    # Validation holdout setup
+    # If val_fraction > 0, carve out validation window from end of training
+    val_fraction = run_fingerprint["optimisation_settings"].get("val_fraction", 0.0)
+
+    # Validate val_fraction
+    if val_fraction < 0 or val_fraction >= 1.0:
+        raise ValueError(
+            f"val_fraction must be in [0, 1), got {val_fraction}. "
+            f"Use 0 for no validation holdout, or a value like 0.2 for 20% validation."
+        )
+
+    if val_fraction > 0:
+        # Store original bout_length for reference (used for continuous forward pass and test slicing)
+        original_bout_length = data_dict["bout_length"]
+
+        # Calculate validation and effective training lengths
+        val_length = int(original_bout_length * val_fraction)
+        effective_train_length = original_bout_length - val_length
+
+        # Ensure validation window is meaningful (at least 1 day of data for minute frequency)
+        min_val_length = run_fingerprint.get("chunk_period", 1440)  # Default 1 day
+        if val_length < min_val_length:
+            raise ValueError(
+                f"val_fraction={val_fraction} results in val_length={val_length} steps, "
+                f"which is less than minimum {min_val_length} steps (1 chunk_period). "
+                f"Increase val_fraction or use a longer training period."
+            )
+
+        # Override data_dict["bout_length"] to be the effective training length
+        # This ensures training sampling and forward passes use the correct (reduced) length
+        data_dict["bout_length"] = effective_train_length
+
+        val_start_idx = data_dict["start_idx"] + effective_train_length
+
+        # Ensure we have room for random sampling in the training region
+        bout_length_window = effective_train_length - run_fingerprint["bout_offset"]
+
+        if bout_length_window <= 0:
+            raise ValueError(
+                f"val_fraction={val_fraction} is too large. "
+                f"effective_train_length ({effective_train_length}) must be > bout_offset ({run_fingerprint['bout_offset']}). "
+                f"Either reduce val_fraction or increase bout_length or reduce bout_offset."
+            )
+
+        if verbose:
+            print(f"Validation holdout: {val_fraction*100:.1f}% ({val_length} steps)")
+            print(f"  Original training length: {original_bout_length} steps")
+            print(f"  Effective training length: {effective_train_length} steps")
+            print(f"  Validation length: {val_length} steps")
+            print(f"  Training bout_length_window: {bout_length_window} steps")
+    else:
+        # No validation holdout - use full training window
+        # Early stopping will use test data (not recommended but backwards compatible)
+        original_bout_length = data_dict["bout_length"]  # No difference when no validation
+        bout_length_window = data_dict["bout_length"] - run_fingerprint["bout_offset"]
+        val_length = 0
+        val_start_idx = None
 
     assert bout_length_window > 0
+
+    # Determine the end index for sampling (must not overlap with validation)
+    if val_fraction > 0:
+        # Sampling must stay within effective training region
+        sampling_end_idx = val_start_idx
+    else:
+        # No validation - use original behavior
+        sampling_end_idx = data_dict["end_idx"]
 
     if run_location is None:
         run_location = './results/' + get_run_location(run_fingerprint) + ".json"
@@ -225,7 +297,7 @@ def train_on_historic_data(
             print("loaded params ", params)
             print("starting at step ", offset)
         best_train_objective = np.array(params["objective"])
-        for key in ["step", "test_objective", "train_objective", "hessian_trace", "local_learning_rate", "iterations_since_improvement", "objective", "continuous_test_metrics"]:
+        for key in ["step", "test_objective", "train_objective", "hessian_trace", "local_learning_rate", "iterations_since_improvement", "objective", "continuous_test_metrics", "validation_metrics"]:
             if key in params:
                 params.pop(key)
         if run_fingerprint["optimisation_settings"]["method"] == "optuna":
@@ -273,6 +345,19 @@ def train_on_historic_data(
         pool=pool,
     )
 
+    # Validation forward pass (if using validation holdout)
+    if val_fraction > 0:
+        val_static_dict = base_static_dict.copy()
+        val_static_dict["bout_length"] = val_length
+        val_static_dict["return_val"] = "reserves_and_values"
+        partial_forward_pass_nograd_batch_val = Partial(
+            forward_pass_nograd,
+            static_dict=Hashabledict(val_static_dict),
+            pool=pool,
+        )
+    else:
+        partial_forward_pass_nograd_batch_val = None
+
     returns_train_static_dict = base_static_dict.copy()
     returns_train_static_dict["return_val"] = "returns"
     returns_train_static_dict["bout_length"] = data_dict["bout_length"]
@@ -291,10 +376,11 @@ def train_on_historic_data(
         pool=pool,
     )
 
-    # Create continuous forward pass that covers train + test period
+    # Create continuous forward pass that covers train + validation + test period
+    # Use original_bout_length to include validation period when val_fraction > 0
     continuous_static_dict = base_static_dict.copy()
     continuous_static_dict["return_val"] = "reserves_and_values"
-    continuous_static_dict["bout_length"] = data_dict["bout_length"] + data_dict["bout_length_test"]
+    continuous_static_dict["bout_length"] = original_bout_length + data_dict["bout_length_test"]
     partial_forward_pass_nograd_batch_continuous = Partial(
         forward_pass_nograd,
         static_dict=Hashabledict(continuous_static_dict),
@@ -322,6 +408,17 @@ def train_on_historic_data(
         )
     )
 
+    # Vmapped validation forward pass (if using validation holdout)
+    if val_fraction > 0:
+        partial_forward_pass_nograd_val = jit(
+            vmap(
+                partial_forward_pass_nograd_batch_val,
+                in_axes=nograd_in_axes,
+            )
+        )
+    else:
+        partial_forward_pass_nograd_val = None
+
     partial_fixed_training_step = Partial(
         partial_training_step, start_index=(data_dict["start_idx"], 0)
     )
@@ -337,11 +434,28 @@ def train_on_historic_data(
     min_lr = run_fingerprint["optimisation_settings"]["min_lr"]
 
     # Early stopping settings
+    # If val_fraction > 0, early stopping uses validation metrics (recommended)
+    # If val_fraction == 0, early stopping uses test metrics (data leakage - not recommended)
     use_early_stopping = run_fingerprint["optimisation_settings"].get("early_stopping", False)
     early_stopping_patience = run_fingerprint["optimisation_settings"].get("early_stopping_patience", 200)
     early_stopping_metric = run_fingerprint["optimisation_settings"].get("early_stopping_metric", "sharpe")
-    best_test_metric = -float("inf")
-    iterations_since_test_improvement = 0
+
+    # Validate early stopping metric
+    # Note: For most metrics, higher is better. For max_drawdown, lower is better.
+    valid_metrics = ["sharpe", "returns", "returns_over_hodl", "returns_over_uniform_hodl", "max_drawdown"]
+    lower_is_better_metrics = ["max_drawdown"]  # Metrics where lower values are better
+    if use_early_stopping and early_stopping_metric not in valid_metrics:
+        raise ValueError(
+            f"early_stopping_metric '{early_stopping_metric}' is not valid. "
+            f"Must be one of: {valid_metrics}"
+        )
+    metric_direction = -1 if early_stopping_metric in lower_is_better_metrics else 1
+
+    # Initialize best metric (use +inf for lower-is-better, -inf for higher-is-better)
+    best_early_stopping_metric = float("inf") if metric_direction == -1 else -float("inf")
+    best_early_stopping_params = deepcopy(params)  # Initialize with starting params
+    iterations_since_early_stopping_improvement = 0
+    use_validation_for_early_stopping = val_fraction > 0
 
     # SWA settings
     use_swa = run_fingerprint["optimisation_settings"].get("use_swa", False)
@@ -349,6 +463,21 @@ def train_on_historic_data(
     swa_freq = run_fingerprint["optimisation_settings"].get("swa_freq", 10)
     swa_params_list = []  # Will collect parameters for averaging
     n_iterations = run_fingerprint["optimisation_settings"]["n_iterations"]
+
+    # Checkpoint tracking for Rademacher complexity
+    track_checkpoints = run_fingerprint["optimisation_settings"].get("track_checkpoints", False)
+    checkpoint_interval = run_fingerprint["optimisation_settings"].get("checkpoint_interval", 10)
+    checkpoint_returns_list = []  # Will collect returns at each checkpoint for Rademacher
+
+    # Warn about SWA + validation early stopping conflict
+    if use_swa and use_validation_for_early_stopping:
+        import warnings
+        warnings.warn(
+            "Both SWA and validation-based early stopping are enabled. "
+            "Validation-based early stopping will take precedence over SWA. "
+            "To use SWA, set val_fraction=0 or early_stopping=False.",
+            UserWarning
+        )
 
     if run_fingerprint["optimisation_settings"]["method"] == "gradient_descent":
         if run_fingerprint["optimisation_settings"]["optimiser"] in ["adam", "adamw"]:
@@ -404,6 +533,7 @@ def train_on_historic_data(
         trainingSteps = []
         testSteps = []
         continuousTestSteps = []
+        validationSteps = []  # Collect validation metrics when val_fraction > 0
         objectiveSteps = []
         learningRateSteps = []
         interationsSinceImprovementSteps = []
@@ -413,7 +543,7 @@ def train_on_historic_data(
             start_indexes, random_key = get_indices(
                 start_index=data_dict["start_idx"],
                 bout_length=bout_length_window,
-                len_prices=data_dict["end_idx"],
+                len_prices=sampling_end_idx,  # Limited to not overlap with validation
                 key=random_key,
                 optimisation_settings=run_fingerprint["optimisation_settings"],
             )
@@ -462,33 +592,35 @@ def train_on_historic_data(
                 param_value = continuous_outputs["value"][param_idx]
                 param_reserves = continuous_outputs["reserves"][param_idx]
 
-                # Slice train period
+                # Slice train period (uses effective_train_length when val_fraction > 0)
                 train_dict = {
                     "value": param_value[:data_dict["bout_length"]],
                     "reserves": param_reserves[:data_dict["bout_length"]],
                 }
                 train_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"]]
 
-                # Slice test period
+                # Slice test period (starts after original training + validation period)
+                # Use original_bout_length since test period comes after both train and validation
                 test_dict = {
-                    "value": param_value[data_dict["bout_length"]:],
-                    "reserves": param_reserves[data_dict["bout_length"]:],
+                    "value": param_value[original_bout_length:],
+                    "reserves": param_reserves[original_bout_length:],
                 }
-                test_prices = data_dict["prices"][data_dict["start_idx"] + data_dict["bout_length"]:data_dict["start_idx"] + data_dict["bout_length"] + data_dict["bout_length_test"]]
+                test_prices = data_dict["prices"][data_dict["start_idx"] + original_bout_length:data_dict["start_idx"] + original_bout_length + data_dict["bout_length_test"]]
 
                 # Create continuous dict for test metrics
                 param_continuous_dict = {
                     "value": param_value,
                     "reserves": param_reserves,
                 }
-                continuous_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"] + data_dict["bout_length_test"]]
+                continuous_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + original_bout_length + data_dict["bout_length_test"]]
 
                 # Calculate comprehensive metrics
+                # Note: train_metrics use effective training length, test_metrics use full original length as boundary
                 train_metrics = calculate_period_metrics(train_dict, train_prices)
                 test_metrics = calculate_period_metrics(test_dict, test_prices)
                 continuous_test_metrics = calculate_continuous_test_metrics(
                     param_continuous_dict,
-                    data_dict["bout_length"],
+                    original_bout_length,  # Use original length as train/test boundary
                     data_dict["bout_length_test"],
                     continuous_prices
                 )
@@ -518,25 +650,114 @@ def train_on_historic_data(
                 if local_learning_rate < min_lr:
                     local_learning_rate = min_lr
 
-            # Early stopping based on test metrics
-            if use_early_stopping and test_metrics_list:
-                # Get the mean test metric across parameter sets
-                current_test_metric = np.mean([t.get(early_stopping_metric, -float("inf")) for t in test_metrics_list])
-                if current_test_metric > best_test_metric:
-                    best_test_metric = current_test_metric
-                    iterations_since_test_improvement = 0
-                else:
-                    iterations_since_test_improvement += 1
+            # Compute validation metrics whenever val_fraction > 0 (for logging/saving)
+            # Early stopping will use these if enabled
+            if val_fraction > 0:
+                val_outputs = partial_forward_pass_nograd_val(
+                    params,
+                    (val_start_idx, 0),
+                    data_dict["prices"],
+                )
+                val_metrics_list = []
+                for param_idx in range(n_parameter_sets):
+                    val_dict = {
+                        "value": val_outputs["value"][param_idx],
+                        "reserves": val_outputs["reserves"][param_idx],
+                    }
+                    val_prices = data_dict["prices"][val_start_idx:val_start_idx + val_length]
+                    val_metrics = calculate_period_metrics(val_dict, val_prices)
+                    val_metrics_list.append(val_metrics)
+                # Collect validation metrics for saving
+                validationSteps.append(val_metrics_list)
+            else:
+                val_metrics_list = None
 
-                if iterations_since_test_improvement >= early_stopping_patience:
+            # Early stopping based on validation or test metrics
+            if use_early_stopping:
+                if use_validation_for_early_stopping and val_metrics_list:
+                    current_early_stopping_metric = np.mean([
+                        t.get(early_stopping_metric, -float("inf")) for t in val_metrics_list
+                    ])
+                    metric_source = "validation"
+                    # Warn if metric is NaN (indicates problem with validation data/metrics)
+                    if np.isnan(current_early_stopping_metric) and i == 0:
+                        import warnings
+                        warnings.warn(
+                            f"Validation {early_stopping_metric} is NaN. "
+                            f"Early stopping may not work correctly. "
+                            f"Check that validation period has sufficient data.",
+                            UserWarning
+                        )
+                elif test_metrics_list:
+                    # Fallback to test metrics (not recommended - data leakage)
+                    current_early_stopping_metric = np.mean([
+                        t.get(early_stopping_metric, -float("inf")) for t in test_metrics_list
+                    ])
+                    metric_source = "test"
+                else:
+                    current_early_stopping_metric = -float("inf")
+                    metric_source = "none"
+
+                # Compare metrics (metric_direction handles lower-is-better metrics like max_drawdown)
+                metric_improved = (current_early_stopping_metric * metric_direction) > (best_early_stopping_metric * metric_direction)
+                if metric_improved:
+                    best_early_stopping_metric = current_early_stopping_metric
+                    best_early_stopping_params = deepcopy(params)
+                    iterations_since_early_stopping_improvement = 0
+                else:
+                    iterations_since_early_stopping_improvement += 1
+
+                if iterations_since_early_stopping_improvement >= early_stopping_patience:
                     if verbose:
-                        print(f"Early stopping at iteration {step}: no test improvement for {early_stopping_patience} iterations")
-                        print(f"Best test {early_stopping_metric}: {best_test_metric:.4f}")
+                        print(f"Early stopping at iteration {step}: no {metric_source} improvement for {early_stopping_patience} iterations")
+                        print(f"Best {metric_source} {early_stopping_metric}: {best_early_stopping_metric:.4f}")
+                    # Restore best params
+                    params = best_early_stopping_params
                     break
 
             # SWA: collect parameters after swa_start_frac of training
             if use_swa and i >= int(n_iterations * swa_start_frac) and i % swa_freq == 0:
                 swa_params_list.append(deepcopy(params))
+
+            # Checkpoint tracking for Rademacher complexity
+            # Save DAILY EXCESS returns (vs uniform HODL) at checkpoint intervals
+            # Daily aggregation gives more meaningful Rademacher values
+            if track_checkpoints and i % checkpoint_interval == 0:
+                # Extract values and prices from the training period
+                # continuous_outputs["value"] has shape (n_parameter_sets, time_steps)
+                train_values = continuous_outputs["value"][:, :data_dict["bout_length"]]
+                train_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"]]
+
+                # Compute uniform HODL benchmark (equal weight, no rebalancing)
+                # Price ratio for each asset: p_t / p_0
+                price_ratios = train_prices / (train_prices[0:1] + 1e-10)  # (T, n_assets)
+                # Uniform HODL value = initial_value * mean(price_ratios across assets)
+                uniform_hodl_value = price_ratios.mean(axis=-1)  # (T,)
+
+                # Compute log returns for model and benchmark
+                # Shape: (n_parameter_sets, bout_length - 1)
+                model_log_returns = jnp.diff(jnp.log(train_values + 1e-10), axis=-1)
+                hodl_log_returns = jnp.diff(jnp.log(uniform_hodl_value + 1e-10))  # (bout_length - 1,)
+
+                # Excess returns = model returns - benchmark returns
+                excess_returns = model_log_returns - hodl_log_returns[None, :]
+
+                # Take mean across parameter sets (they're independent runs)
+                # Shape: (bout_length - 1,)
+                checkpoint_excess_returns = np.array(excess_returns.mean(axis=0))
+
+                # Aggregate to daily resolution (1440 minutes per day)
+                # This gives more meaningful Rademacher values
+                minutes_per_day = 1440
+                n_full_days = len(checkpoint_excess_returns) // minutes_per_day
+                if n_full_days > 0:
+                    # Sum minute returns to get daily returns (log returns are additive)
+                    daily_excess = checkpoint_excess_returns[:n_full_days * minutes_per_day]
+                    daily_excess = daily_excess.reshape(n_full_days, minutes_per_day).sum(axis=1)
+
+                    # Only save if no NaN values (training didn't explode)
+                    if not np.isnan(daily_excess).any():
+                        checkpoint_returns_list.append(daily_excess)
 
             if step % iterations_per_print == 0:
                 if verbose:
@@ -565,6 +786,13 @@ def train_on_historic_data(
                             else None
                         ),
                     )
+                    # Print validation metrics if using validation holdout
+                    if val_fraction > 0 and val_metrics_list:
+                        val_sharpe = np.mean([t.get("sharpe", float("nan")) for t in val_metrics_list])
+                        print(step, "val_metrics", f"sharpe={val_sharpe:.4f}")
+                        if use_early_stopping:
+                            print(step, f"  early_stop_{early_stopping_metric}", f"{current_early_stopping_metric:.4f}",
+                                  f"(best: {best_early_stopping_metric:.4f}, patience: {iterations_since_early_stopping_improvement}/{early_stopping_patience})")
                     # print(step, "local_learning_rate", local_learning_rate)
                 save_multi_params(
                     deepcopy(run_fingerprint),
@@ -576,6 +804,7 @@ def train_on_historic_data(
                     interationsSinceImprovementSteps,
                     stepSteps,
                     continuousTestSteps,
+                    validation_metrics=validationSteps if validationSteps else None,
                     sorted_tokens=True,
                 )
 
@@ -583,6 +812,7 @@ def train_on_historic_data(
                 trainingSteps = []
                 testSteps = []
                 continuousTestSteps = []
+                validationSteps = []
                 objectiveSteps = []
                 learningRateSteps = []
                 interationsSinceImprovementSteps = []
@@ -590,7 +820,33 @@ def train_on_historic_data(
         if verbose:
             print("final objective value: ", objective_value)
 
-        # SWA: average collected parameters
+        # Build training metadata for Rademacher complexity calculation
+        training_metadata = {
+            "epochs_trained": i + 1,  # Actual iterations completed
+            "final_objective": float(np.array(objective_value).mean()),
+        }
+        if track_checkpoints and checkpoint_returns_list:
+            # Stack checkpoint returns: shape (n_checkpoints, T-1)
+            training_metadata["checkpoint_returns"] = np.stack(checkpoint_returns_list, axis=0)
+        else:
+            training_metadata["checkpoint_returns"] = None
+
+        # Helper to return params with optional metadata
+        def _return_result(result_params):
+            if return_training_metadata:
+                return result_params, training_metadata
+            return result_params
+
+        # Return best params based on what metric we're optimizing for
+        # Priority: validation-based early stopping > SWA > training-objective-best
+        if use_early_stopping and use_validation_for_early_stopping:
+            # When using validation-based early stopping, return validation-best params
+            # This takes precedence over SWA to avoid data leakage
+            if verbose:
+                print(f"Returning validation-best params (best {early_stopping_metric}: {best_early_stopping_metric:.4f})")
+            return _return_result(best_early_stopping_params)
+
+        # SWA: average collected parameters (only if not using validation-based early stopping)
         if use_swa and len(swa_params_list) > 0:
             if verbose:
                 print(f"Applying SWA: averaging {len(swa_params_list)} parameter snapshots")
@@ -603,9 +859,10 @@ def train_on_historic_data(
                     # Stack and average along new axis
                     stacked = jnp.stack([p[key] for p in swa_params_list], axis=0)
                     swa_params[key] = jnp.mean(stacked, axis=0)
-            return swa_params
+            return _return_result(swa_params)
 
-        return best_train_params
+        # Otherwise return training-objective-best params
+        return _return_result(best_train_params)
     elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
 
         n_evaluation_points = 20

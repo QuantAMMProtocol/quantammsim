@@ -30,13 +30,22 @@ run_fingerprint_defaults = {
         "lr_schedule_type": "constant",
         "warmup_steps": 100,
         # Early stopping settings
-        "early_stopping": True,  # Stop training when test metric stops improving
-        "early_stopping_patience": 200,  # Iterations without test improvement before stopping
+        "early_stopping": True,  # Stop training when validation metric stops improving
+        "early_stopping_patience": 200,  # Iterations without validation improvement before stopping
         "early_stopping_metric": "sharpe",  # Metric to monitor: "sharpe", "returns", etc.
+        # Validation holdout - fraction of training data held out for early stopping
+        # If 0.0, early stopping uses test data (not recommended - data leakage)
+        # If > 0.0, carves out this fraction from end of training for validation
+        # Constraint: (1 - val_fraction) * bout_length > bout_offset
+        "val_fraction": 0.2,
         # Stochastic Weight Averaging (SWA) settings
         "use_swa": False,  # Average parameters from last N checkpoints
         "swa_start_frac": 0.75,  # Start SWA after this fraction of training
         "swa_freq": 10,  # Collect parameters every N iterations for averaging
+        # Checkpoint tracking for Rademacher complexity estimation
+        # Tracks parameter performance at intervals to measure overfitting risk
+        "track_checkpoints": False,  # Enable checkpoint tracking
+        "checkpoint_interval": 10,  # Save checkpoint every N iterations
     },
     # Ensemble training settings
     # Use "ensemble__<rule>" in run_fingerprint["rule"] to enable ensemble averaging
