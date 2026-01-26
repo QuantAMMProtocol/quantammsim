@@ -99,26 +99,19 @@ class TestStartAndEndCalcs:
         assert first_ts % ms_per_day == 0, \
             f"First timestamp {first_ts} should be at midnight (divisible by {ms_per_day})"
 
-    @pytest.mark.skip(reason="Bug in start_and_end_calcs: remainder_idx not set when no dates provided")
     def test_no_date_constraints(self):
-        """Test behavior when no start/end dates provided.
-
-        Note: This test is skipped because it reveals a bug in the original code.
-        When no dates are provided, remainder_idx is referenced before assignment.
-        This is an unused code path in production (dates are always provided).
-        """
+        """Test behavior when no start/end dates provided."""
         n_minutes = 1000
         unix_values = np.arange(n_minutes)
         prices = np.random.randn(n_minutes, 2)
 
-        # When no dates provided, remainder_idx is not set (returns tuple of 7)
-        # but we only care about start_idx, end_idx, bout_length
         result = start_and_end_calcs(unix_values, prices=prices)
-        start_idx, end_idx, bout_length = result[0], result[1], result[2]
+        start_idx, end_idx, bout_length, _, _, _, remainder_idx = result
 
         assert start_idx == 0
         assert end_idx == n_minutes
         assert bout_length == n_minutes
+        assert remainder_idx == 0  # No alignment needed when no dates provided
 
 
 class TestGetDataDictBasics:
@@ -917,24 +910,23 @@ class TestDoRunOnHistoricDataPreSlicing:
         except ImportError:
             pytest.skip("jax_runners not available")
 
-        try:
-            # Run simulation WITH pre-slicing (default behavior)
-            result_presliced = do_run_on_historic_data(
-                run_fingerprint=copy.deepcopy(base_fingerprint),
-                params=copy.deepcopy(base_params),
-                verbose=False,
-                preslice_burnin=True,
-            )
+        # Run simulation WITH pre-slicing (default behavior)
+        result_presliced = do_run_on_historic_data(
+            run_fingerprint=copy.deepcopy(base_fingerprint),
+            params=copy.deepcopy(base_params),
+            verbose=False,
+            preslice_burnin=True,
+            root=TEST_DATA_DIR,
+        )
 
-            # Run simulation WITHOUT pre-slicing
-            result_full = do_run_on_historic_data(
-                run_fingerprint=copy.deepcopy(base_fingerprint),
-                params=copy.deepcopy(base_params),
-                verbose=False,
-                preslice_burnin=False,
-            )
-        except FileNotFoundError:
-            pytest.skip("Price data files not available")
+        # Run simulation WITHOUT pre-slicing
+        result_full = do_run_on_historic_data(
+            run_fingerprint=copy.deepcopy(base_fingerprint),
+            params=copy.deepcopy(base_params),
+            verbose=False,
+            preslice_burnin=False,
+            root=TEST_DATA_DIR,
+        )
 
         # Compare reserves - should be exactly identical with max_memory_days=365
         reserves_presliced = np.array(result_presliced["reserves"])
@@ -1004,24 +996,23 @@ class TestDoRunOnHistoricDataPreSlicing:
                 "log_k": jnp.array([5.0] * n_assets),
             }
 
-        try:
-            # Run with pre-slicing
-            result_presliced = do_run_on_historic_data(
-                run_fingerprint=copy.deepcopy(fp),
-                params=copy.deepcopy(params),
-                verbose=False,
-                preslice_burnin=True,
-            )
+        # Run with pre-slicing
+        result_presliced = do_run_on_historic_data(
+            run_fingerprint=copy.deepcopy(fp),
+            params=copy.deepcopy(params),
+            verbose=False,
+            preslice_burnin=True,
+            root=TEST_DATA_DIR,
+        )
 
-            # Run without pre-slicing
-            result_full = do_run_on_historic_data(
-                run_fingerprint=copy.deepcopy(fp),
-                params=copy.deepcopy(params),
-                verbose=False,
-                preslice_burnin=False,
-            )
-        except FileNotFoundError:
-            pytest.skip("Price data files not available")
+        # Run without pre-slicing
+        result_full = do_run_on_historic_data(
+            run_fingerprint=copy.deepcopy(fp),
+            params=copy.deepcopy(params),
+            verbose=False,
+            preslice_burnin=False,
+            root=TEST_DATA_DIR,
+        )
 
         # Compare reserves - should be exactly identical with max_memory_days=365
         reserves_presliced = np.array(result_presliced["reserves"])
@@ -1155,24 +1146,23 @@ class TestDoRunOnHistoricDataPreSlicing:
         fp["do_arb"] = True
         fp["arb_quality"] = 1.0
 
-        try:
-            # Run with pre-slicing (what production will use)
-            result_with_preslice = do_run_on_historic_data(
-                run_fingerprint=copy.deepcopy(fp),
-                params=copy.deepcopy(base_params),
-                verbose=False,
-                preslice_burnin=True,
-            )
+        # Run with pre-slicing (what production will use)
+        result_with_preslice = do_run_on_historic_data(
+            run_fingerprint=copy.deepcopy(fp),
+            params=copy.deepcopy(base_params),
+            verbose=False,
+            preslice_burnin=True,
+            root=TEST_DATA_DIR,
+        )
 
-            # Run without pre-slicing (reference/gold standard)
-            result_without_preslice = do_run_on_historic_data(
-                run_fingerprint=copy.deepcopy(fp),
-                params=copy.deepcopy(base_params),
-                verbose=False,
-                preslice_burnin=False,
-            )
-        except FileNotFoundError:
-            pytest.skip("Price data files not available")
+        # Run without pre-slicing (reference/gold standard)
+        result_without_preslice = do_run_on_historic_data(
+            run_fingerprint=copy.deepcopy(fp),
+            params=copy.deepcopy(base_params),
+            verbose=False,
+            preslice_burnin=False,
+            root=TEST_DATA_DIR,
+        )
 
         # Verify all key outputs are exactly identical with max_memory_days=365
         # Reserves
