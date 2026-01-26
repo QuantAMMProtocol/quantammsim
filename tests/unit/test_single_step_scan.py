@@ -1408,7 +1408,7 @@ class TestHistoricDataThreeAssets:
             list_of_tickers,
             run_fingerprint,
             data_kind="historic",
-            root=None,
+            root=TEST_DATA_DIR,
             start_date_string="2023-06-01 00:00:00",
             end_time_string="2023-07-01 00:00:00",
         )
@@ -1744,7 +1744,7 @@ class TestCalculateWeightsViaScanHistoric:
             list_of_tickers,
             run_fingerprint,
             data_kind="historic",
-            root=None,
+            root=TEST_DATA_DIR,
             start_date_string="2023-06-01 00:00:00",
             end_time_string="2023-07-01 00:00:00",
         )
