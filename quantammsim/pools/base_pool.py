@@ -128,7 +128,7 @@ class AbstractPool(ABC):
     ) -> jnp.ndarray:
         """
         Calculate initial pool weights from initial logits or from directly-provided weights.
-        If both are provided, the weights calculated from logits take precendence.
+        If both are provided, the weights calculated from logits take precedence.
 
         Uses softmax with stop_gradient to ensure weights remain constant
         during any optimization.
@@ -154,11 +154,11 @@ class AbstractPool(ABC):
         initial_weights_logits = params.get("initial_weights_logits", None)
         initial_weights = params.get("initial_weights", None)
         if initial_weights_logits is not None:
-            # we dont't want to change the initial weights during any training
+            # we don't want to change the initial weights during any training
             # so wrap them in a stop_grad
             weights = softmax(stop_gradient(initial_weights_logits))
         elif initial_weights is not None:
-            # we dont't want to change the initial weights during any training
+            # we don't want to change the initial weights during any training
             # so wrap them in a stop_grad
             weights = stop_gradient(initial_weights)
         else:
