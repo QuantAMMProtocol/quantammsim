@@ -30,6 +30,7 @@ from quantammsim.core_simulator.param_utils import (
     calc_lamb,
 )
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import calc_gradients, calc_k
+from quantammsim.core_simulator.param_schema import ParamSpec, OptunaRange
 
 from typing import Dict, Any, Optional
 from functools import partial
@@ -64,6 +65,9 @@ class AntiMomentumPool(MomentumPool):
     The class provides methods to calculate raw weight outputs based on these signals and refine them
     into final asset weights, taking into account various parameters and constraints defined in the pool setup.
     """
+
+    # AntiMomentum uses same params as Momentum (just negates k internally)
+    # Inherits PARAM_SCHEMA from MomentumPool
 
     def __init__(self):
         """

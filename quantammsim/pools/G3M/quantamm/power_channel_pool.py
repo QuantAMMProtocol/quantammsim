@@ -40,6 +40,7 @@ from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives import (
     _jax_gradient_scan_function,
 )
+from quantammsim.core_simulator.param_schema import ParamSpec, OptunaRange
 
 from typing import Dict, Any, Optional
 from functools import partial
@@ -112,6 +113,57 @@ class PowerChannelPool(MomentumPool):
     The class provides methods to calculate raw weight outputs based on these signals and refine them
     into final asset weights, taking into account various parameters and constraints defined in the pool setup.
     """
+
+    # Pool-owned parameter schema for PowerChannel
+    # Uses sp_* (squareplus-transformed) params instead of log_*/raw_*
+    #
+    # Internal param mappings:
+    #   sp_k: squareplus(sp_k) = k -> inverse_squareplus(k) = sp_k
+    #     k_per_day in [0.5, 100] -> sp_k in [-0.25, 99.5] approximately
+    #   logit_lamb: logit(lamb) -> memory_length depends on chunk_period
+    #   sp_exponents: squareplus(sp_exponents) = exponents, typically 1-4
+    #   sp_pre_exp_scaling: squareplus(sp_pre_exp_scaling) = scaling, typically 0.1-2
+    PARAM_SCHEMA = {
+        # sp_k: squareplus transformed, maps to k_per_day
+        # k in [0.5, 100] gives sp_k in roughly [-0.2, 99]
+        "sp_k": ParamSpec(
+            initial=19.5,  # squareplus(19.5) ≈ 20
+            optuna=OptunaRange(low=-1.0, high=100.0, log_scale=False, scalar=False),
+            description="Squareplus-space k factor (squareplus gives k_per_day)",
+        ),
+        "logit_lamb": ParamSpec(
+            initial=4.0,
+            optuna=OptunaRange(low=-4.0, high=8.0, log_scale=False, scalar=False),
+            description="Logit of decay parameter lambda (memory length)",
+        ),
+        "logit_delta_lamb": ParamSpec(
+            initial=0.0,
+            optuna=OptunaRange(low=-5.0, high=5.0, log_scale=False, scalar=False),
+            description="Delta in logit space for alternative lambda",
+        ),
+        # Power channel specific parameters (squareplus transformed)
+        "sp_exponents": ParamSpec(
+            initial=0.0,  # squareplus(0) ≈ 1.0
+            optuna=OptunaRange(low=-2.0, high=4.0, log_scale=False, scalar=False),
+            description="Squareplus-space exponents (typically gives 0.3-5)",
+        ),
+        "sp_pre_exp_scaling": ParamSpec(
+            initial=-1.0,  # squareplus(-1) ≈ 0.38
+            optuna=OptunaRange(low=-3.0, high=2.0, log_scale=False, scalar=False),
+            description="Squareplus-space pre-exp scaling (gives 0.09-2.4)",
+        ),
+        "initial_weights_logits": ParamSpec(
+            initial=1.0,
+            optuna=OptunaRange(low=-10, high=10, log_scale=False, scalar=False),
+            description="Logit-space initial portfolio weights",
+            trainable=False,
+        ),
+    }
+
+    @classmethod
+    def get_param_schema(cls) -> dict:
+        """Get the full parameter schema for PowerChannelPool."""
+        return cls.PARAM_SCHEMA
 
     def __init__(self):
         """

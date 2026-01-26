@@ -35,6 +35,14 @@ from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives 
     _jax_gradient_scan_function,
 )
 from quantammsim.core_simulator.param_utils import jax_memory_days_to_lamb
+from quantammsim.core_simulator.param_schema import (
+    ParamSpec,
+    OptunaRange,
+    get_param_value,
+    get_optuna_range,
+    sample_in_range,
+    COMMON_PARAM_SCHEMA,
+)
 
 from typing import Dict, Any, Optional
 from functools import partial
@@ -110,6 +118,62 @@ class MomentumPool(TFMMBasePool):
     The class provides methods to calculate raw weight outputs based on momentum signals and refine them
     into final asset weights, taking into account various parameters and constraints defined in the pool setup.
     """
+
+    # Pool-owned parameter schema: defines all parameters this pool uses,
+    # their defaults, and Optuna search ranges.
+    #
+    # IMPORTANT: Ranges are defined in INTERNAL param space (after transforms).
+    # This ensures ensemble sampling produces correctly-transformed values.
+    #
+    # Internal param mappings:
+    #   log_k = log2(k_per_day)  -> k_per_day=0.01 gives log_k≈-6.6, k_per_day=4096 gives log_k=12
+    #   logit_lamb = logit(lamb) -> depends on chunk_period, but roughly:
+    #     memory_length=0.5 days (very fast) -> low logit
+    #     memory_length=365 days (slow) -> high logit
+    PARAM_SCHEMA = {
+        # log_k: log2(k_per_day)
+        # k_per_day in [0.01, 4096] -> log_k in [-6.6, 12]
+        "log_k": ParamSpec(
+            initial=4.32,  # log2(20) ≈ 4.32
+            optuna=OptunaRange(low=-6.6, high=12.0, log_scale=False, scalar=False),
+            description="Log2 of momentum sensitivity factor (k) per day",
+        ),
+        # logit_lamb: logit of decay parameter lambda
+        # Wide range to accommodate memory_length from 0.5 to 365 days
+        # The exact mapping depends on chunk_period
+        "logit_lamb": ParamSpec(
+            initial=4.0,  # Corresponds to ~10 day memory at chunk_period=1440
+            optuna=OptunaRange(low=-4.0, high=8.0, log_scale=False, scalar=False),
+            description="Logit of decay parameter lambda (memory length)",
+        ),
+        # logit_delta_lamb: delta in logit space for alternative lambda
+        "logit_delta_lamb": ParamSpec(
+            initial=0.0,
+            optuna=OptunaRange(low=-5.0, high=5.0, log_scale=False, scalar=False),
+            description="Delta in logit space for alternative lambda calculation",
+        ),
+        # initial_weights_logits: no transform needed
+        "initial_weights_logits": ParamSpec(
+            initial=1.0,
+            optuna=OptunaRange(low=-10, high=10, log_scale=False, scalar=False),
+            description="Logit-space initial portfolio weights",
+            trainable=False,
+        ),
+    }
+
+    @classmethod
+    def get_param_schema(cls) -> Dict[str, ParamSpec]:
+        """Get the full parameter schema for this pool.
+
+        Returns the pool-specific schema merged with common parameters
+        from the base class.
+
+        Returns
+        -------
+        Dict[str, ParamSpec]
+            Complete parameter schema for this pool
+        """
+        return {**COMMON_PARAM_SCHEMA, **cls.PARAM_SCHEMA}
 
     def __init__(self):
         """
