@@ -1,6 +1,15 @@
 """
 Pytest configuration and shared fixtures for quantammsim tests.
 """
+import os
+from pathlib import Path
+
+# Configure JAX compilation cache BEFORE importing JAX
+# This speeds up repeated test runs by caching compiled XLA computations
+_jax_cache_dir = Path.home() / ".cache" / "jax_compilations" / "quantammsim_tests"
+_jax_cache_dir.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", str(_jax_cache_dir))
+
 import pytest
 import jax
 import jax.numpy as jnp
