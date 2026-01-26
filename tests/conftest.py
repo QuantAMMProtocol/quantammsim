@@ -6,6 +6,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import config
+from pathlib import Path
+
+
+# Test data directory - use this for all tests that need historical price data
+# This ensures tests use stable test data rather than production data that may change
+TEST_DATA_DIR = Path(__file__).parent / "data"
 
 # Configure JAX for testing - enable float64 for numerical precision
 config.update("jax_enable_x64", True)

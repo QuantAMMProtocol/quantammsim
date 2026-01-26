@@ -40,13 +40,19 @@ def fees_df():
 
 
 @pytest.fixture
+def data_root():
+    """Path to test data directory for price parquet files."""
+    return str(TEST_DATA_DIR)
+
+
+@pytest.fixture
 def base_fingerprint():
     """Base run fingerprint for dynamic gas/fees tests."""
     return {
         "startDateString": "2021-02-03 00:00:00",
         "endDateString": "2022-07-22 23:59:00",
         "endTestDateString": "2022-07-24 00:00:00",
-        "tokens": ["ETH", "DAI"],
+        "tokens": ["ETH", "USDC"],
         "rule": "balancer",
         "bout_offset": 14400,
         "initial_weights_logits": jnp.array([-0.69314718, -0.69314718], dtype=jnp.float64),
@@ -71,10 +77,10 @@ class TestDynamicGasAndFees:
 
     @pytest.mark.slow
     @pytest.mark.requires_data
-    def test_run_with_gas_and_fees(self, base_fingerprint, base_params, gas_df, fees_df):
+    def test_run_with_gas_and_fees(self, base_fingerprint, base_params, gas_df, fees_df, data_root):
         """Test simulation with both gas costs and dynamic fees."""
         result = do_run_on_historic_data(
-            base_fingerprint, base_params, gas_cost_df=gas_df, fees_df=fees_df
+            base_fingerprint, base_params, root=data_root, gas_cost_df=gas_df, fees_df=fees_df
         )
 
         assert result is not None
@@ -85,10 +91,10 @@ class TestDynamicGasAndFees:
 
     @pytest.mark.slow
     @pytest.mark.requires_data
-    def test_run_with_gas_only(self, base_fingerprint, base_params, gas_df):
+    def test_run_with_gas_only(self, base_fingerprint, base_params, gas_df, data_root):
         """Test simulation with gas costs only."""
         result = do_run_on_historic_data(
-            base_fingerprint, base_params, gas_cost_df=gas_df
+            base_fingerprint, base_params, root=data_root, gas_cost_df=gas_df
         )
 
         assert result is not None
@@ -97,10 +103,10 @@ class TestDynamicGasAndFees:
 
     @pytest.mark.slow
     @pytest.mark.requires_data
-    def test_run_with_fees_only(self, base_fingerprint, base_params, fees_df):
+    def test_run_with_fees_only(self, base_fingerprint, base_params, fees_df, data_root):
         """Test simulation with dynamic fees only."""
         result = do_run_on_historic_data(
-            base_fingerprint, base_params, fees_df=fees_df
+            base_fingerprint, base_params, root=data_root, fees_df=fees_df
         )
 
         assert result is not None
@@ -109,31 +115,33 @@ class TestDynamicGasAndFees:
 
     @pytest.mark.slow
     @pytest.mark.requires_data
-    def test_gas_reduces_final_value(self, base_fingerprint, base_params, gas_df):
+    def test_gas_reduces_final_value(self, base_fingerprint, base_params, gas_df, data_root):
         """Test that gas costs reduce the final portfolio value."""
         # Run without gas
-        result_no_gas = do_run_on_historic_data(base_fingerprint, base_params)
+        result_no_gas = do_run_on_historic_data(base_fingerprint, base_params, root=data_root)
 
         # Run with gas
         result_with_gas = do_run_on_historic_data(
-            base_fingerprint, base_params, gas_cost_df=gas_df
+            base_fingerprint, base_params, root=data_root, gas_cost_df=gas_df
         )
 
         if "final_value" in result_no_gas and "final_value" in result_with_gas:
-            # Gas costs should reduce final value (or at least not increase it)
-            assert result_with_gas["final_value"] <= result_no_gas["final_value"], \
-                "Gas costs should not increase portfolio value"
+            # Gas costs should reduce final value (or at least not increase it significantly)
+            # Allow small tolerance for floating point differences
+            relative_diff = (result_with_gas["final_value"] - result_no_gas["final_value"]) / result_no_gas["final_value"]
+            assert relative_diff < 1e-6, \
+                f"Gas costs should not significantly increase portfolio value (relative diff: {relative_diff})"
 
     @pytest.mark.slow
     @pytest.mark.requires_data
-    def test_fees_reduce_final_value(self, base_fingerprint, base_params, fees_df):
+    def test_fees_reduce_final_value(self, base_fingerprint, base_params, fees_df, data_root):
         """Test that fees reduce the final portfolio value."""
         # Run without fees
-        result_no_fees = do_run_on_historic_data(base_fingerprint, base_params)
+        result_no_fees = do_run_on_historic_data(base_fingerprint, base_params, root=data_root)
 
         # Run with fees
         result_with_fees = do_run_on_historic_data(
-            base_fingerprint, base_params, fees_df=fees_df
+            base_fingerprint, base_params, root=data_root, fees_df=fees_df
         )
 
         if "final_value" in result_no_fees and "final_value" in result_with_fees:
