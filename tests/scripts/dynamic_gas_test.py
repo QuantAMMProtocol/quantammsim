@@ -15,7 +15,6 @@ run_fingerprint = {
     "tokens": ["ETH", "DAI"],
     "rule": "balancer",
     "bout_offset": 14400,
-    "initial_weights_logits": jnp.array([-0.69314718, -0.69314718], dtype=jnp.float64),
     "initial_pool_value": 60000000,
     "use_alt_lamb": False,
     "return_val": "final_reserves_value_and_weights",

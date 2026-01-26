@@ -14,6 +14,7 @@ from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
 from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import MeanReversionChannelPool
 from quantammsim.core_simulator.param_utils import memory_days_to_lamb
 from quantammsim.runners.jax_runner_utils import NestedHashabledict
+from tests.conftest import TEST_DATA_DIR
 
 
 def make_run_fingerprint(n_assets, chunk_period=60, max_memory_days=365.0, hashable=True):
@@ -1170,7 +1171,7 @@ class TestHistoricDataScanEquivalence:
             list_of_tickers,
             run_fingerprint,
             data_kind="historic",
-            root=None,  # Use package data
+            root=TEST_DATA_DIR,  # Use test data
             start_date_string="2023-06-01 00:00:00",
             end_time_string="2023-07-01 00:00:00",
         )

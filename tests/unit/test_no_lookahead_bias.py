@@ -5,6 +5,26 @@ These tests verify that calculations at time t do not depend on
 data from time t+k (no lookahead/future information leakage).
 
 This is a critical correctness property for any financial simulation.
+
+Index Relationships
+-------------------
+Understanding the index mapping is critical for these tests. Empirically verified:
+
+- prices[i] is the price at timestep i.
+
+- gradient[i] uses price[i+1]. When prices[cutoff:] are modified:
+  * gradient[cutoff-1] IS the first affected
+  * gradient[cutoff-2] is NOT affected
+  This is expected behavior - gradient[i] measures the rate of change up to
+  price[i+1]. The test checks [:cutoff-1] to exclude gradient[cutoff-1].
+
+- reserve[i] uses prices up to i (after the fix to fine_weights.py). When prices[cutoff:]
+  are modified:
+  * reserve[cutoff] is the first affected for all pool types
+  * reserve[cutoff-1] is NOT affected
+  The test uses [:cutoff-1] which is conservative but safe for all pools.
+
+The tests verify no lookahead by comparing calculations with full vs truncated price data.
 """
 import pytest
 import jax
@@ -72,7 +92,9 @@ class TestGradientNoLookahead:
             params, truncated_prices, chunk_period, max_memory_days, use_alt_lamb
         )
 
-        # Gradients before cutoff should be identical
+        # Gradients before cutoff should be identical (excluding gradient[cutoff-1])
+        # gradient[i] uses price[i+1], so gradient[cutoff-1] uses price[cutoff] which IS changed.
+        # Therefore we check [:cutoff-1] to exclude gradient[cutoff-1].
         max_diff = jnp.max(jnp.abs(
             full_gradients[:cutoff - 1] - truncated_gradients[:cutoff - 1]
         ))
@@ -120,7 +142,7 @@ class TestReservesNoLookahead:
     def base_fingerprint(self):
         """Create base run fingerprint for reserve tests."""
         return {
-            "bout_length": 996,  # n_timesteps - 2*chunk_period + 1
+            "bout_length": 996,  # n_timesteps - 2*chunk_period (1000 - 4 = 996)
             "chunk_period": 2,
             "n_assets": 2,
             "initial_pool_value": 1000.0,
@@ -176,18 +198,24 @@ class TestReservesNoLookahead:
         This test is run for all QuantAMM pool types to ensure none have
         lookahead bias in their reserve calculations.
         """
-        # min_variance requires price variation to compute variance - skip for now
-        if pool_type == "min_variance":
-            pytest.skip("min_variance requires non-constant prices")
-
         n_timesteps = 1000
         n_assets = 2
 
         pool = create_pool(pool_type)
         run_fingerprint = NestedHashabledict(base_fingerprint)
 
-        # Generate constant price data
-        prices = jnp.ones((n_timesteps, n_assets))
+        # Generate price data
+        if pool_type == "min_variance":
+            # min_variance needs non-zero variance - use sinusoidal prices
+            # Sinusoid has constant variance over full cycles
+            t = jnp.arange(n_timesteps)
+            # Different frequencies per asset to get different variances
+            prices = jnp.column_stack([
+                1.0 + 0.1 * jnp.sin(2 * jnp.pi * t / 100),
+                1.0 + 0.05 * jnp.sin(2 * jnp.pi * t / 100),
+            ])
+        else:
+            prices = jnp.ones((n_timesteps, n_assets))
 
         # Calculate reserves for full dataset
         if fees_case == "zero_fees":
@@ -217,6 +245,9 @@ class TestReservesNoLookahead:
             )
 
         # Reserves before cutoff should be identical
+        # After the fix to fine_weights.py, all pool types have consistent behavior:
+        # reserve[i] depends only on prices[0:i], so reserve[cutoff-1] is NOT affected.
+        # We use [:cutoff-1] which is conservative but safe for all pools.
         max_diff = jnp.max(jnp.abs(
             full_reserves[:cutoff - 1] - truncated_reserves[:cutoff - 1]
         ))
@@ -238,11 +269,16 @@ class TestReservesNoLookahead:
         pool = create_pool(pool_type)
         run_fingerprint = NestedHashabledict(base_fingerprint)
 
-        # min_variance needs price variation to avoid division by zero in 1/variance
+        # Generate price data
         if pool_type == "min_variance":
-            pytest.skip("min_variance requires non-constant prices to compute variance")
-
-        prices = jnp.ones((n_timesteps, n_assets))
+            # min_variance needs non-zero variance - use sinusoidal prices
+            t = jnp.arange(n_timesteps)
+            prices = jnp.column_stack([
+                1.0 + 0.1 * jnp.sin(2 * jnp.pi * t / 100),
+                1.0 + 0.05 * jnp.sin(2 * jnp.pi * t / 100),
+            ])
+        else:
+            prices = jnp.ones((n_timesteps, n_assets))
 
         full_reserves = pool.calculate_reserves_zero_fees(
             base_params, run_fingerprint, prices, jnp.array([0, 0])
