@@ -94,6 +94,7 @@ def start_and_end_calcs(
     else:
         start_idx = 0
         end_idx = len(prices)
+        remainder_idx = 0  # No alignment needed when no dates provided
 
     bout_length = end_idx - start_idx
     return (
