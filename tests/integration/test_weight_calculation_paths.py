@@ -12,6 +12,7 @@ import numpy as np
 import jax.numpy as jnp
 
 from quantammsim.runners.jax_runners import do_run_on_historic_data
+from tests.conftest import TEST_DATA_DIR
 from quantammsim.pools.G3M.quantamm.momentum_pool import MomentumPool
 from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
 from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import MeanReversionChannelPool
@@ -63,10 +64,12 @@ class TestPathEquivalence:
         result_vectorized = do_run_on_historic_data(
             run_fingerprint=fingerprint_vectorized,
             params=momentum_params,
+            root=TEST_DATA_DIR,
         )
         result_scan = do_run_on_historic_data(
             run_fingerprint=fingerprint_scan,
             params=momentum_params,
+            root=TEST_DATA_DIR,
         )
 
         # Final values should match within tolerance
@@ -124,10 +127,12 @@ class TestPathEquivalence:
         result_vectorized = do_run_on_historic_data(
             run_fingerprint=fingerprint_vectorized,
             params=params,
+            root=TEST_DATA_DIR,
         )
         result_scan = do_run_on_historic_data(
             run_fingerprint=fingerprint_scan,
             params=params,
+            root=TEST_DATA_DIR,
         )
 
         np.testing.assert_allclose(
@@ -176,10 +181,12 @@ class TestPathEquivalence:
         result_vectorized = do_run_on_historic_data(
             run_fingerprint=fingerprint_vectorized,
             params=params,
+            root=TEST_DATA_DIR,
         )
         result_scan = do_run_on_historic_data(
             run_fingerprint=fingerprint_scan,
             params=params,
+            root=TEST_DATA_DIR,
         )
 
         np.testing.assert_allclose(
@@ -225,6 +232,7 @@ class TestPathSelection:
         result = do_run_on_historic_data(
             run_fingerprint=fingerprint,
             params=momentum_params,
+            root=TEST_DATA_DIR,
         )
         assert result["final_value"] > 0
 
@@ -239,6 +247,7 @@ class TestPathSelection:
         result = do_run_on_historic_data(
             run_fingerprint=fingerprint,
             params=momentum_params,
+            root=TEST_DATA_DIR,
         )
         assert result["final_value"] > 0
 
@@ -253,6 +262,7 @@ class TestPathSelection:
         result = do_run_on_historic_data(
             run_fingerprint=fingerprint,
             params=momentum_params,
+            root=TEST_DATA_DIR,
         )
         assert result["final_value"] > 0
 
@@ -314,10 +324,12 @@ class TestThreeAssetEquivalence:
         result_vectorized = do_run_on_historic_data(
             run_fingerprint=fingerprint_vectorized,
             params=params,
+            root=TEST_DATA_DIR,
         )
         result_scan = do_run_on_historic_data(
             run_fingerprint=fingerprint_scan,
             params=params,
+            root=TEST_DATA_DIR,
         )
 
         np.testing.assert_allclose(

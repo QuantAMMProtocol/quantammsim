@@ -22,6 +22,7 @@ dependencies = [
     "optuna",
     "pyarrow",
     "plotly",
+    "dask",
 ]
 
 [project.optional-dependencies]
@@ -74,7 +75,7 @@ testpaths = ["tests"]
 norecursedirs = ["tests/scripts", "tests/__pycache__", ".git", "*.egg-info"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
-python_functions = ["test_*"]
+python_functions = ["test_*", "test*"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",

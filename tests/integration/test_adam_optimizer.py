@@ -10,6 +10,7 @@ import copy
 from quantammsim.runners.jax_runners import train_on_historic_data
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.core_simulator.param_utils import recursive_default_set, check_run_fingerprint
+from tests.conftest import TEST_DATA_DIR
 
 
 @pytest.fixture
@@ -53,6 +54,7 @@ class TestAdamOptimizer:
             adam_training_fingerprint,
             iterations_per_print=1,
             verbose=False,
+            root=TEST_DATA_DIR,
         )
 
         # Verify result is returned
@@ -72,6 +74,7 @@ class TestAdamOptimizer:
             sgd_training_fingerprint,
             iterations_per_print=1,
             verbose=False,
+            root=TEST_DATA_DIR,
         )
 
         # Verify result is returned
@@ -106,6 +109,7 @@ class TestAdamOptimizer:
                 fp,
                 iterations_per_print=1,
                 verbose=False,
+                root=TEST_DATA_DIR,
             )
 
             assert result is not None, f"Training failed with learning rate {lr}"

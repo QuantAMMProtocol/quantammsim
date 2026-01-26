@@ -33,6 +33,10 @@ Thumbs.db
 *.msgpack
 *.html
 
+# Exception: allow test data files (tracked via Git LFS)
+!tests/data/*.parquet
+!tests/data/*.csv
+
 # ignore compiled files
 *.com
 *.class

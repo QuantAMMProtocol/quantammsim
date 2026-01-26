@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 from quantammsim.core_simulator.param_utils import memory_days_to_logit_lamb
 from quantammsim.runners.jax_runners import do_run_on_historic_data
+from tests.conftest import TEST_DATA_DIR
 
 
 # Baseline values captured from demo_run_.py on 2026-01-19
@@ -119,6 +120,7 @@ class TestBaselineValues:
         result = do_run_on_historic_data(
             run_fingerprint=config["fingerprint"],
             params=config["params"],
+            root=TEST_DATA_DIR,
         )
 
         expected_final = config["expected"]["final_value"]
@@ -139,6 +141,7 @@ class TestBaselineValues:
         result = do_run_on_historic_data(
             run_fingerprint=config["fingerprint"],
             params=config["params"],
+            root=TEST_DATA_DIR,
         )
 
         actual_return = (result["final_value"] / result["value"][0] - 1) * 100
@@ -158,6 +161,7 @@ class TestBaselineValues:
         result = do_run_on_historic_data(
             run_fingerprint=config["fingerprint"],
             params=config["params"],
+            root=TEST_DATA_DIR,
         )
 
         expected_first = np.array(config["expected"]["first_weights"])
@@ -179,6 +183,7 @@ class TestBaselineValues:
         result = do_run_on_historic_data(
             run_fingerprint=config["fingerprint"],
             params=config["params"],
+            root=TEST_DATA_DIR,
         )
 
         expected_last = np.array(config["expected"]["last_weights"])
@@ -195,6 +200,7 @@ class TestBaselineValues:
             result = do_run_on_historic_data(
                 run_fingerprint=config["fingerprint"],
                 params=config["params"],
+                root=TEST_DATA_DIR,
             )
 
             weight_sums = np.sum(result["weights"], axis=1)
@@ -209,6 +215,7 @@ class TestBaselineValues:
             result = do_run_on_historic_data(
                 run_fingerprint=config["fingerprint"],
                 params=config["params"],
+                root=TEST_DATA_DIR,
             )
 
             assert np.all(result["reserves"] > 0), (
@@ -238,6 +245,7 @@ class TestDifferentPoolTypes:
         result = do_run_on_historic_data(
             run_fingerprint=fingerprint,
             params=params,
+            root=TEST_DATA_DIR,
         )
 
         # All weights should be [0.5, 0.5] for balancer with equal logits
@@ -275,6 +283,7 @@ class TestPowerChannelBaseline:
         result = do_run_on_historic_data(
             run_fingerprint=fingerprint,
             params=params,
+            root=TEST_DATA_DIR,
         )
 
         # Basic sanity checks
@@ -315,6 +324,7 @@ class TestMeanReversionBaseline:
         result = do_run_on_historic_data(
             run_fingerprint=fingerprint,
             params=params,
+            root=TEST_DATA_DIR,
         )
 
         # Basic sanity checks

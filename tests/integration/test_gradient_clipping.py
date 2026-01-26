@@ -10,13 +10,14 @@ import copy
 from quantammsim.runners.jax_runners import train_on_historic_data
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.core_simulator.param_utils import recursive_default_set, check_run_fingerprint
+from tests.conftest import TEST_DATA_DIR
 
 
 @pytest.fixture
 def explosive_training_fingerprint():
     """Create a fingerprint prone to parameter explosion without clipping."""
     return {
-        "tokens": ["BTC", "ETH", "S", "USDC"],
+        "tokens": ["BTC", "ETH", "SOL", "USDC"],
         "rule": "power_channel",  # Power channel is most sensitive to explosion
         "startDateString": "2021-03-01 00:00:00",
         "endDateString": "2024-08-01 00:00:00",
@@ -91,6 +92,7 @@ class TestGradientClipping:
                 fp,
                 iterations_per_print=1,
                 verbose=False,
+                root=TEST_DATA_DIR,
             )
             # If it completes, result should exist (may contain NaN due to explosion)
             assert result is not None
@@ -115,6 +117,7 @@ class TestGradientClipping:
             fp,
             iterations_per_print=1,
             verbose=False,
+            root=TEST_DATA_DIR,
         )
 
         assert result is not None
@@ -136,6 +139,7 @@ class TestGradientClipping:
             fp,
             iterations_per_print=1,
             verbose=False,
+            root=TEST_DATA_DIR,
         )
 
         assert result is not None
@@ -160,6 +164,7 @@ class TestGradientClipping:
             fp,
             iterations_per_print=1,
             verbose=False,
+            root=TEST_DATA_DIR,
         )
 
         assert result is not None, f"Training failed with clip_norm={clip_norm}"

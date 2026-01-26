@@ -11,6 +11,7 @@ import jax.numpy as jnp
 from jax import block_until_ready
 
 from quantammsim.runners.jax_runners import do_run_on_historic_data
+from tests.conftest import TEST_DATA_DIR
 from quantammsim.pools.G3M.quantamm.momentum_pool import MomentumPool
 from quantammsim.core_simulator.param_utils import memory_days_to_logit_lamb
 
@@ -51,6 +52,7 @@ class TestWeightCalculationTiming:
             result = do_run_on_historic_data(
                 run_fingerprint=fingerprint,
                 params=params,
+                root=TEST_DATA_DIR,
             )
             block_until_ready(result["final_value"])
 
@@ -61,6 +63,7 @@ class TestWeightCalculationTiming:
             result = do_run_on_historic_data(
                 run_fingerprint=fingerprint,
                 params=params,
+                root=TEST_DATA_DIR,
             )
             block_until_ready(result["final_value"])
             end = time.perf_counter()
@@ -243,7 +246,7 @@ class TestJITCompilationTiming:
 
         # First run (includes JIT compilation)
         start = time.perf_counter()
-        result = do_run_on_historic_data(run_fingerprint=fingerprint, params=params)
+        result = do_run_on_historic_data(run_fingerprint=fingerprint, params=params, root=TEST_DATA_DIR)
         block_until_ready(result["final_value"])
         first_run_time = time.perf_counter() - start
         print(f"First run (with JIT):  {first_run_time:.4f}s")
@@ -252,7 +255,7 @@ class TestJITCompilationTiming:
         times = []
         for i in range(3):
             start = time.perf_counter()
-            result = do_run_on_historic_data(run_fingerprint=fingerprint, params=params)
+            result = do_run_on_historic_data(run_fingerprint=fingerprint, params=params, root=TEST_DATA_DIR)
             block_until_ready(result["final_value"])
             times.append(time.perf_counter() - start)
 
