@@ -54,6 +54,7 @@ from quantammsim.runners.jax_runner_utils import (
     OptunaManager,
     generate_evaluation_points,
     create_trial_params,
+    create_static_dict,
 )
 
 from quantammsim.pools.creator import create_pool
@@ -237,41 +238,18 @@ def train_on_historic_data(
         params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale=0.1)
 
     params_in_axes_dict = pool.make_vmap_in_axes(params)
-    base_static_dict = {
-        "chunk_period": chunk_period,
-        "bout_length": bout_length_window,
-        "n_assets": n_assets,
-        "maximum_change": run_fingerprint["maximum_change"],
-        "weight_interpolation_period": weight_interpolation_period,
-        "return_val": run_fingerprint["return_val"],
-        "rule": run_fingerprint["rule"],
-        "initial_pool_value": run_fingerprint["initial_pool_value"],
-        "fees": fees,
-        "arb_fees": arb_fees,
-        "gas_cost": gas_cost,
-        "run_type": "normal",
-        "max_memory_days": run_fingerprint["max_memory_days"],
-        "training_data_kind": run_fingerprint["optimisation_settings"][
-            "training_data_kind"
-        ],
-        "tokens": tuple(run_fingerprint["tokens"]),
-        "use_alt_lamb": use_alt_lamb,
-        "use_pre_exp_scaling": use_pre_exp_scaling,
-        "all_sig_variations": all_sig_variations,
-        "weight_interpolation_method": weight_interpolation_method,
-        "arb_frequency": arb_frequency,
-        "do_arb": run_fingerprint["do_arb"],
-        "arb_quality": run_fingerprint["arb_quality"],
-        "numeraire": run_fingerprint["numeraire"],
-        "do_trades": False,
-        "noise_trader_ratio": run_fingerprint["noise_trader_ratio"],
-        "minimum_weight": run_fingerprint["minimum_weight"],
-        "ste_max_change": run_fingerprint["ste_max_change"],
-        "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
-        "weight_calculation_method": run_fingerprint.get("weight_calculation_method", "auto"),
-        "learnable_bounds_settings": run_fingerprint.get("learnable_bounds_settings", {}),
-        "n_ensemble_members": run_fingerprint.get("n_ensemble_members", 1),
-    }
+
+    # Create static dict using helper - overrides for training-specific values
+    base_static_dict = create_static_dict(
+        run_fingerprint,
+        bout_length=bout_length_window,
+        all_sig_variations=all_sig_variations,
+        overrides={
+            "n_assets": n_assets,
+            "training_data_kind": run_fingerprint["optimisation_settings"]["training_data_kind"],
+            "do_trades": False,
+        },
+    )
 
     partial_training_step = Partial(
         forward_pass,
@@ -1086,44 +1064,25 @@ def do_run_on_historic_data(
     # create pool
     pool = create_pool(rule)
 
-    base_static_dict = {
-        "chunk_period": chunk_period,
-        "bout_length": data_dict["bout_length"],
-        "n_assets": n_assets,
-        "maximum_change": run_fingerprint["maximum_change"],
-        "weight_interpolation_period": weight_interpolation_period,
-        "return_val": run_fingerprint["return_val"],
-        "rule": run_fingerprint["rule"],
-        "initial_pool_value": run_fingerprint["initial_pool_value"],
-        "fees": fees if fees is not None else run_fingerprint["fees"],
-        "arb_fees": arb_fees if arb_fees is not None else run_fingerprint["arb_fees"],
-        "gas_cost": gas_cost if gas_cost is not None else run_fingerprint["gas_cost"],
-        "run_type": "normal",
-        "max_memory_days": run_fingerprint["max_memory_days"],
-        "training_data_kind": run_fingerprint["optimisation_settings"][
-            "training_data_kind"
-        ],
-        "use_alt_lamb": use_alt_lamb,
-        "use_pre_exp_scaling": use_pre_exp_scaling,
-        "all_sig_variations": all_sig_variations,
-        "weight_interpolation_method": weight_interpolation_method,
-        "arb_frequency": arb_frequency,
-        "do_trades": False if raw_trades is None else run_fingerprint["do_trades"],
-        "tokens": tuple(run_fingerprint["tokens"]),
-        "startDateString": run_fingerprint["startDateString"],
-        "endDateString": run_fingerprint["endDateString"],
-        "endTestDateString": run_fingerprint["endTestDateString"],
-        "do_arb": run_fingerprint["do_arb"],
-        "arb_quality": run_fingerprint["arb_quality"],
-        "numeraire": run_fingerprint["numeraire"],
-        "noise_trader_ratio": run_fingerprint["noise_trader_ratio"],
-        "minimum_weight": run_fingerprint["minimum_weight"],
-        "ste_max_change": run_fingerprint["ste_max_change"],
-        "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
-        "weight_calculation_method": run_fingerprint.get("weight_calculation_method", "auto"),
-        "learnable_bounds_settings": run_fingerprint.get("learnable_bounds_settings", {}),
-        "n_ensemble_members": run_fingerprint.get("n_ensemble_members", 1),
-    }
+    # Create static dict using helper - with run-specific overrides
+    base_static_dict = create_static_dict(
+        run_fingerprint,
+        bout_length=data_dict["bout_length"],
+        all_sig_variations=all_sig_variations,
+        overrides={
+            "n_assets": n_assets,
+            "training_data_kind": run_fingerprint["optimisation_settings"]["training_data_kind"],
+            # Override fees if provided as function args
+            "fees": fees if fees is not None else run_fingerprint["fees"],
+            "arb_fees": arb_fees if arb_fees is not None else run_fingerprint["arb_fees"],
+            "gas_cost": gas_cost if gas_cost is not None else run_fingerprint["gas_cost"],
+            "do_trades": False if raw_trades is None else run_fingerprint["do_trades"],
+            # Include date strings for run-time use
+            "startDateString": run_fingerprint["startDateString"],
+            "endDateString": run_fingerprint["endDateString"],
+            "endTestDateString": run_fingerprint["endTestDateString"],
+        },
+    )
 
     # Create static dictionaries for training and testing
     reserves_values_train_static_dict = base_static_dict.copy()
@@ -1395,44 +1354,25 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     # create pool
     pool = create_pool(rule)
 
-    base_static_dict = {
-        "chunk_period": chunk_period,
-        "bout_length": data_dict["bout_length"],
-        "n_assets": n_assets,
-        "maximum_change": run_fingerprint["maximum_change"],
-        "weight_interpolation_period": weight_interpolation_period,
-        "return_val": run_fingerprint["return_val"],
-        "rule": run_fingerprint["rule"],
-        "initial_pool_value": run_fingerprint["initial_pool_value"],
-        "fees": fees if fees is not None else run_fingerprint["fees"],
-        "arb_fees": arb_fees if arb_fees is not None else run_fingerprint["arb_fees"],
-        "gas_cost": gas_cost if gas_cost is not None else run_fingerprint["gas_cost"],
-        "run_type": "normal",
-        "max_memory_days": run_fingerprint["max_memory_days"],
-        "training_data_kind": run_fingerprint["optimisation_settings"][
-            "training_data_kind"
-        ],
-        "use_alt_lamb": use_alt_lamb,
-        "use_pre_exp_scaling": use_pre_exp_scaling,
-        "all_sig_variations": all_sig_variations,
-        "weight_interpolation_method": weight_interpolation_method,
-        "arb_frequency": arb_frequency,
-        "do_trades": False if raw_trades is None else run_fingerprint["do_trades"],
-        "tokens": tuple(run_fingerprint["tokens"]),
-        "startDateString": run_fingerprint["startDateString"],
-        "endDateString": run_fingerprint["endDateString"],
-        "endTestDateString": run_fingerprint["endTestDateString"],
-        "do_arb": run_fingerprint["do_arb"],
-        "arb_quality": run_fingerprint["arb_quality"],
-        "numeraire": run_fingerprint["numeraire"],
-        "noise_trader_ratio": run_fingerprint["noise_trader_ratio"],
-        "minimum_weight": run_fingerprint["minimum_weight"],
-        "ste_max_change": run_fingerprint["ste_max_change"],
-        "ste_min_max_weight": run_fingerprint["ste_min_max_weight"],
-        "weight_calculation_method": run_fingerprint.get("weight_calculation_method", "auto"),
-        "learnable_bounds_settings": run_fingerprint.get("learnable_bounds_settings", {}),
-        "n_ensemble_members": run_fingerprint.get("n_ensemble_members", 1),
-    }
+    # Create static dict using helper - with run-specific overrides
+    base_static_dict = create_static_dict(
+        run_fingerprint,
+        bout_length=data_dict["bout_length"],
+        all_sig_variations=all_sig_variations,
+        overrides={
+            "n_assets": n_assets,
+            "training_data_kind": run_fingerprint["optimisation_settings"]["training_data_kind"],
+            # Override fees if provided as function args
+            "fees": fees if fees is not None else run_fingerprint["fees"],
+            "arb_fees": arb_fees if arb_fees is not None else run_fingerprint["arb_fees"],
+            "gas_cost": gas_cost if gas_cost is not None else run_fingerprint["gas_cost"],
+            "do_trades": False if raw_trades is None else run_fingerprint["do_trades"],
+            # Include date strings for run-time use
+            "startDateString": run_fingerprint["startDateString"],
+            "endDateString": run_fingerprint["endDateString"],
+            "endTestDateString": run_fingerprint["endTestDateString"],
+        },
+    )
 
     # Create static dictionaries for training and testing
     static_dict = base_static_dict.copy()

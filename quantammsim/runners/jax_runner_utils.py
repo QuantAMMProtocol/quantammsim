@@ -588,6 +588,119 @@ class NestedHashabledict(dict):
         return self.__key() == NestedHashabledict(other).__key()
 
 
+# Fields that are only used during training setup, not in forward passes
+# These are excluded when creating static_dict from run_fingerprint
+_TRAINING_ONLY_FIELDS = frozenset({
+    "optimisation_settings",  # Contains lr, optimizer, etc.
+    "startDateString",  # Data loading dates
+    "endDateString",
+    "endTestDateString",
+    "subsidary_pools",  # Handled separately
+    "bout_offset",  # Training sampling config
+    "freq",  # Data frequency string
+})
+
+
+def get_sig_variations(n_assets: int) -> tuple:
+    """
+    Compute signature variations for arbitrage.
+
+    Returns all possible (asset_in, asset_out) pairs encoded as a tuple of tuples,
+    where each inner tuple has exactly one +1 (asset out) and one -1 (asset in),
+    with zeros elsewhere.
+
+    Parameters
+    ----------
+    n_assets : int
+        Number of assets in the pool.
+
+    Returns
+    -------
+    tuple
+        Tuple of tuples representing valid arbitrage directions.
+        Each inner tuple has shape (n_assets,) with values in {-1, 0, 1}.
+
+    Example
+    -------
+    >>> get_sig_variations(3)
+    ((1, -1, 0), (1, 0, -1), (-1, 1, 0), (0, 1, -1), (-1, 0, 1), (0, -1, 1))
+    """
+    from itertools import product
+
+    all_sig_variations = np.array(list(product([1, 0, -1], repeat=n_assets)))
+    # Keep only variations with exactly one +1 and one -1
+    all_sig_variations = all_sig_variations[(all_sig_variations == 1).sum(-1) == 1]
+    all_sig_variations = all_sig_variations[(all_sig_variations == -1).sum(-1) == 1]
+    return tuple(map(tuple, all_sig_variations))
+
+
+def create_static_dict(
+    run_fingerprint: dict,
+    bout_length: int,
+    all_sig_variations: list = None,
+    overrides: dict = None,
+) -> NestedHashabledict:
+    """Create a static_dict from run_fingerprint for use in forward passes.
+
+    This simplifies the previous pattern of manually picking ~30 fields
+    from run_fingerprint to create static_dict. Instead, we start with
+    the full run_fingerprint and:
+    1. Exclude training-only fields
+    2. Apply necessary transformations (e.g., tokens -> tuple)
+    3. Add computed fields (bout_length, all_sig_variations)
+    4. Apply any overrides
+
+    Parameters
+    ----------
+    run_fingerprint : dict
+        The full run configuration dictionary
+    bout_length : int
+        Bout length to use (varies between train/test)
+    all_sig_variations : list, optional
+        Pre-computed signature variations for arbitrage
+    overrides : dict, optional
+        Additional key-value pairs to override/add
+
+    Returns
+    -------
+    NestedHashabledict
+        Hashable static dictionary for use in JAX forward passes
+
+    Example
+    -------
+    >>> static_dict = create_static_dict(run_fingerprint, bout_length=10080)
+    >>> # Instead of manually building:
+    >>> # static_dict = {"chunk_period": rf["chunk_period"], "bout_length": ..., ...}
+    """
+    # Start with filtered copy
+    static = {k: v for k, v in run_fingerprint.items() if k not in _TRAINING_ONLY_FIELDS}
+
+    # Apply transformations
+    if "tokens" in static:
+        static["tokens"] = tuple(static["tokens"])
+
+    # Add computed fields
+    static["bout_length"] = bout_length
+
+    # Compute all_sig_variations if not provided but n_assets is available
+    if all_sig_variations is not None:
+        static["all_sig_variations"] = all_sig_variations
+    elif "n_assets" in static or (overrides and "n_assets" in overrides):
+        n_assets = overrides.get("n_assets") if overrides and "n_assets" in overrides else static.get("n_assets")
+        if n_assets is not None:
+            static["all_sig_variations"] = get_sig_variations(n_assets)
+
+    # Default run_type if not present
+    if "run_type" not in static:
+        static["run_type"] = "normal"
+
+    # Apply overrides
+    if overrides:
+        static.update(overrides)
+
+    return NestedHashabledict(static)
+
+
 class HashableArrayWrapper(Generic[T]):
     def __init__(self, val: T):
         self.val = val
@@ -1192,3 +1305,390 @@ def optimized_output_conversion(simulationRunDto, outputDict, tokens):
     ).tolist()
 
     return resultTimeSteps
+
+
+# =============================================================================
+# Memory Probing Utilities
+# =============================================================================
+
+
+def probe_max_n_parameter_sets(
+    run_fingerprint: dict,
+    min_sets: int = 1,
+    max_sets: int = 64,
+    safety_margin: float = 0.9,
+    verbose: bool = True,
+) -> dict:
+    """
+    Probe to find the maximum n_parameter_sets that fits in GPU memory.
+
+    Uses binary search to find the largest n_parameter_sets value that can
+    complete a forward pass without OOM. Returns a dict with the recommended
+    value and diagnostic info.
+
+    Parameters
+    ----------
+    run_fingerprint : dict
+        The run fingerprint configuration. Will be modified temporarily during probing.
+    min_sets : int
+        Minimum n_parameter_sets to try (default 1).
+    max_sets : int
+        Maximum n_parameter_sets to try (default 64).
+    safety_margin : float
+        Fraction of max found to use as recommendation (default 0.9).
+        This provides headroom for gradient computation which uses more memory.
+    verbose : bool
+        Whether to print progress information.
+
+    Returns
+    -------
+    dict
+        {
+            "max_n_parameter_sets": int,  # Maximum that fit in memory
+            "recommended_n_parameter_sets": int,  # With safety margin applied
+            "probed_values": list,  # Values tried during binary search
+            "success_values": list,  # Values that succeeded
+            "failed_values": list,  # Values that OOM'd
+        }
+
+    Notes
+    -----
+    - This function temporarily modifies run_fingerprint during probing
+    - JAX caches are cleared between attempts
+    - The forward pass (without gradients) is used for probing, so gradient
+      computation may require ~2x more memory. Hence the safety_margin.
+    """
+    from copy import deepcopy
+    from jax import clear_caches
+    from jax.tree_util import Partial
+    import jax.numpy as jnp
+
+    from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
+    from quantammsim.core_simulator.param_utils import recursive_default_set
+    from quantammsim.pools.creator import create_pool
+    from quantammsim.utils.data_processing.historic_data_utils import get_data_dict
+    from quantammsim.core_simulator.forward_pass import forward_pass_nograd
+    from jax import jit, vmap
+
+    # Work with a copy to avoid side effects
+    probe_fingerprint = deepcopy(run_fingerprint)
+    recursive_default_set(probe_fingerprint, run_fingerprint_defaults)
+
+    probed_values = []
+    success_values = []
+    failed_values = []
+
+    def try_forward_pass(n_sets: int) -> bool:
+        """Attempt a forward pass with n_sets parameter sets. Returns True if successful."""
+        probe_fingerprint["optimisation_settings"]["n_parameter_sets"] = n_sets
+
+        try:
+            # Get tokens and setup
+            unique_tokens = get_unique_tokens(probe_fingerprint)
+            n_tokens = len(unique_tokens)
+
+            # Load minimal data
+            data_dict = get_data_dict(
+                unique_tokens,
+                probe_fingerprint,
+                data_kind=probe_fingerprint["optimisation_settings"]["training_data_kind"],
+                max_memory_days=probe_fingerprint["max_memory_days"],
+                start_date_string=probe_fingerprint["startDateString"],
+                end_time_string=probe_fingerprint["endDateString"],
+                start_time_test_string=probe_fingerprint["endDateString"],
+                end_time_test_string=probe_fingerprint.get("endTestDateString"),
+                do_test_period=False,
+            )
+
+            bout_length_window = data_dict["bout_length"] - probe_fingerprint["bout_offset"]
+            if bout_length_window <= 0:
+                bout_length_window = data_dict["bout_length"] // 2
+
+            # Create pool and params
+            rule = probe_fingerprint["rule"]
+            pool = create_pool(rule)
+
+            learnable_bounds = probe_fingerprint.get("learnable_bounds_settings", {})
+            initial_params = {
+                "initial_memory_length": probe_fingerprint["initial_memory_length"],
+                "initial_memory_length_delta": probe_fingerprint["initial_memory_length_delta"],
+                "initial_k_per_day": probe_fingerprint["initial_k_per_day"],
+                "initial_weights_logits": probe_fingerprint["initial_weights_logits"],
+                "initial_log_amplitude": probe_fingerprint["initial_log_amplitude"],
+                "initial_raw_width": probe_fingerprint["initial_raw_width"],
+                "initial_raw_exponents": probe_fingerprint["initial_raw_exponents"],
+                "initial_pre_exp_scaling": probe_fingerprint["initial_pre_exp_scaling"],
+                "min_weights_per_asset": learnable_bounds.get("min_weights_per_asset"),
+                "max_weights_per_asset": learnable_bounds.get("max_weights_per_asset"),
+            }
+
+            params = pool.init_parameters(initial_params, probe_fingerprint, n_tokens, n_sets)
+            params_in_axes_dict = pool.make_vmap_in_axes(params)
+
+            # Setup static dict using encapsulated helper
+            # all_sig_variations is auto-computed from n_assets
+            static_dict = create_static_dict(
+                probe_fingerprint,
+                bout_length=bout_length_window,
+                overrides={
+                    "n_assets": n_tokens,
+                    "training_data_kind": probe_fingerprint["optimisation_settings"]["training_data_kind"],
+                    "do_trades": False,
+                },
+            )
+
+            # Create vmapped forward pass
+            partial_forward = Partial(
+                forward_pass_nograd,
+                prices=data_dict["prices"],
+                static_dict=static_dict,
+                pool=pool,
+            )
+
+            vmapped_forward = jit(
+                vmap(partial_forward, in_axes=[params_in_axes_dict, None, None])
+            )
+
+            # Run forward pass
+            start_index = (data_dict["start_idx"], 0)
+            _ = vmapped_forward(params, start_index, None)
+
+            # Force computation to complete
+            jnp.zeros(1).block_until_ready()
+
+            return True
+
+        except Exception as e:
+            error_str = str(e).lower()
+            if "resource" in error_str or "memory" in error_str or "oom" in error_str:
+                return False
+            # Re-raise non-memory errors
+            raise
+
+    # Binary search for max n_parameter_sets
+    low, high = min_sets, max_sets
+    best = min_sets
+
+    while low <= high:
+        mid = (low + high) // 2
+        probed_values.append(mid)
+
+        if verbose:
+            print(f"Probing n_parameter_sets={mid}...", end=" ")
+
+        # Clear caches before each attempt
+        clear_caches()
+        import gc
+        gc.collect()
+
+        try:
+            success = try_forward_pass(mid)
+        except Exception as e:
+            if verbose:
+                print(f"Error: {e}")
+            success = False
+
+        if success:
+            if verbose:
+                print("OK")
+            success_values.append(mid)
+            best = mid
+            low = mid + 1
+        else:
+            if verbose:
+                print("OOM")
+            failed_values.append(mid)
+            high = mid - 1
+
+        # Clear caches after attempt
+        clear_caches()
+        gc.collect()
+
+    recommended = max(min_sets, int(best * safety_margin))
+
+    result = {
+        "max_n_parameter_sets": best,
+        "recommended_n_parameter_sets": recommended,
+        "probed_values": sorted(probed_values),
+        "success_values": sorted(success_values),
+        "failed_values": sorted(failed_values),
+    }
+
+    if verbose:
+        print(f"\nMemory probe results:")
+        print(f"  Max n_parameter_sets: {best}")
+        print(f"  Recommended (with {safety_margin:.0%} margin): {recommended}")
+
+    return result
+
+
+def allocate_memory_budget(
+    run_fingerprint: dict,
+    available_memory_gb: float = None,
+    priority: str = "exploration",
+    probe_if_needed: bool = True,
+    max_ensemble_members: int = 1,
+    verbose: bool = True,
+) -> dict:
+    """
+    Allocate memory budget across hyperparameters based on priority.
+
+    Parameters
+    ----------
+    run_fingerprint : dict
+        The run fingerprint configuration.
+    available_memory_gb : float, optional
+        Available GPU memory in GB. If None and probe_if_needed=True,
+        will probe to determine capacity.
+    priority : str
+        How to allocate memory budget:
+        - "exploration": Maximize n_parameter_sets (find diverse solutions)
+        - "robustness": Balance n_parameter_sets and n_ensemble_members
+        - "variance_reduction": Maximize batch_size (stable gradients)
+    probe_if_needed : bool
+        Whether to probe memory if available_memory_gb is not provided.
+    max_ensemble_members : int
+        Maximum ensemble members to allocate (default 1 = no ensembling).
+        Set higher (e.g., 4) if you want the "robustness" priority to use ensembles.
+    verbose : bool
+        Whether to print allocation info.
+
+    Returns
+    -------
+    dict
+        Recommended settings:
+        {
+            "n_parameter_sets": int,
+            "n_ensemble_members": int,
+            "batch_size": int,
+            "priority_used": str,
+            "probe_result": dict or None,
+        }
+    """
+    probe_result = None
+
+    if available_memory_gb is None and probe_if_needed:
+        # Probe to find capacity
+        probe_result = probe_max_n_parameter_sets(
+            run_fingerprint,
+            verbose=verbose,
+            safety_margin=0.85,  # More conservative for allocation
+        )
+        max_units = probe_result["recommended_n_parameter_sets"]
+    elif available_memory_gb is not None:
+        # Rough estimate: assume ~0.5-2 GB per parameter set depending on config
+        # This is a very rough heuristic
+        max_units = int(available_memory_gb * 4)  # ~4 param sets per GB as rough estimate
+    else:
+        # Default conservative estimate
+        max_units = 8
+
+    # Allocate based on priority
+    if priority == "exploration":
+        # Maximize exploration with independent param sets
+        n_parameter_sets = max(1, max_units)
+        n_ensemble_members = 1
+        batch_size = 1  # Small batch, rely on param diversity
+
+    elif priority == "robustness":
+        # Balance exploration and ensembling (if allowed)
+        if max_ensemble_members > 1:
+            n_parameter_sets = max(1, max_units // 2)
+            n_ensemble_members = min(max_ensemble_members, max(1, max_units // n_parameter_sets // 2))
+            batch_size = max(1, max_units // (n_parameter_sets * n_ensemble_members))
+        else:
+            # No ensembling allowed, fall back to exploration-like allocation
+            n_parameter_sets = max(1, max_units)
+            n_ensemble_members = 1
+            batch_size = 1
+
+    elif priority == "variance_reduction":
+        # Fewer param sets, larger batches for stable gradients
+        n_parameter_sets = min(4, max_units)
+        n_ensemble_members = 1
+        batch_size = max(1, max_units // n_parameter_sets)
+
+    else:
+        raise ValueError(f"Unknown priority: {priority}. Use 'exploration', 'robustness', or 'variance_reduction'")
+
+    result = {
+        "n_parameter_sets": n_parameter_sets,
+        "n_ensemble_members": n_ensemble_members,
+        "batch_size": batch_size,
+        "priority_used": priority,
+        "probe_result": probe_result,
+    }
+
+    if verbose:
+        print(f"\nMemory allocation ({priority} priority):")
+        print(f"  n_parameter_sets: {n_parameter_sets}")
+        print(f"  n_ensemble_members: {n_ensemble_members}")
+        print(f"  batch_size: {batch_size}")
+        if probe_result:
+            print(f"  (based on probed max: {probe_result['max_n_parameter_sets']})")
+
+    return result
+
+
+def apply_memory_allocation(run_fingerprint: dict, allocation: dict) -> dict:
+    """
+    Apply memory allocation results to a run_fingerprint.
+
+    Parameters
+    ----------
+    run_fingerprint : dict
+        The run fingerprint to modify (will be modified in place).
+    allocation : dict
+        Result from allocate_memory_budget().
+
+    Returns
+    -------
+    dict
+        The modified run_fingerprint.
+    """
+    run_fingerprint["optimisation_settings"]["n_parameter_sets"] = allocation["n_parameter_sets"]
+    run_fingerprint["optimisation_settings"]["batch_size"] = allocation["batch_size"]
+    run_fingerprint["n_ensemble_members"] = allocation["n_ensemble_members"]
+
+    return run_fingerprint
+
+
+def auto_configure_memory_params(
+    run_fingerprint: dict,
+    priority: str = "exploration",
+    max_ensemble_members: int = 1,
+    verbose: bool = True,
+) -> dict:
+    """
+    Convenience function: probe memory and apply allocation in one step.
+
+    Parameters
+    ----------
+    run_fingerprint : dict
+        The run fingerprint to configure (will be modified in place).
+    priority : str
+        Allocation priority ("exploration", "robustness", "variance_reduction").
+    max_ensemble_members : int
+        Maximum ensemble members to allocate (default 1 = no ensembling).
+    verbose : bool
+        Whether to print progress info.
+
+    Returns
+    -------
+    dict
+        The modified run_fingerprint with optimal memory settings.
+
+    Example
+    -------
+    >>> run = {...}  # your run_fingerprint
+    >>> auto_configure_memory_params(run, priority="exploration")
+    >>> train_on_historic_data(run)
+    """
+    allocation = allocate_memory_budget(
+        run_fingerprint,
+        priority=priority,
+        probe_if_needed=True,
+        max_ensemble_members=max_ensemble_members,
+        verbose=verbose,
+    )
+    return apply_memory_allocation(run_fingerprint, allocation)
