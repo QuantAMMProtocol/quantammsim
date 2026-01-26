@@ -1,7 +1,6 @@
 import numpy as np
 from copy import deepcopy
 
-from itertools import product
 from tqdm import tqdm
 import math
 import gc
@@ -55,6 +54,7 @@ from quantammsim.runners.jax_runner_utils import (
     generate_evaluation_points,
     create_trial_params,
     create_static_dict,
+    get_sig_variations,
 )
 
 from quantammsim.pools.creator import create_pool
@@ -164,17 +164,7 @@ def train_on_historic_data(
     n_tokens = len(unique_tokens)
     n_assets = n_tokens
 
-    # all_sig_variations = np.array(list(product([1, 0, -1], repeat=n_assets)))
-    # all_sig_variations = all_sig_variations[(all_sig_variations != 0).sum(-1) > 1]
-    # all_sig_variations = all_sig_variations[np.any(all_sig_variations == 1, -1)]
-    # all_sig_variations = all_sig_variations[np.any(all_sig_variations == -1, -1)]
-    # all_sig_variations = tuple(map(tuple, all_sig_variations))
-
-    all_sig_variations = np.array(list(product([1, 0, -1], repeat=n_assets)))
-    # Keep only variations with exactly one +1 and one -1
-    all_sig_variations = all_sig_variations[(all_sig_variations == 1).sum(-1) == 1]
-    all_sig_variations = all_sig_variations[(all_sig_variations == -1).sum(-1) == 1]
-    all_sig_variations = tuple(map(tuple, all_sig_variations))
+    all_sig_variations = get_sig_variations(n_assets)
 
     np.random.seed(0)
 
@@ -424,6 +414,7 @@ def train_on_historic_data(
     )
 
     best_train_objective = -100.0
+    best_train_params_idx = 0  # Track which param set is best
     local_learning_rate = run_fingerprint["optimisation_settings"]["base_lr"]
     iterations_since_improvement = 0
 
@@ -438,24 +429,36 @@ def train_on_historic_data(
     # If val_fraction == 0, early stopping uses test metrics (data leakage - not recommended)
     use_early_stopping = run_fingerprint["optimisation_settings"].get("early_stopping", False)
     early_stopping_patience = run_fingerprint["optimisation_settings"].get("early_stopping_patience", 200)
-    early_stopping_metric = run_fingerprint["optimisation_settings"].get("early_stopping_metric", "sharpe")
 
-    # Validate early stopping metric
+    # This metric is used for TWO purposes:
+    # 1. Early stopping: determines when to stop training (if use_early_stopping=True)
+    # 2. Param selection: determines which params to return (if val_fraction > 0)
+    # The name "early_stopping_metric" is historical - it's really a "selection_metric"
+    selection_metric = run_fingerprint["optimisation_settings"].get("early_stopping_metric", "sharpe")
+
+    # Validate selection metric
     # Note: For most metrics, higher is better. For max_drawdown, lower is better.
     valid_metrics = ["sharpe", "returns", "returns_over_hodl", "returns_over_uniform_hodl", "max_drawdown"]
     lower_is_better_metrics = ["max_drawdown"]  # Metrics where lower values are better
-    if use_early_stopping and early_stopping_metric not in valid_metrics:
+    if (use_early_stopping or val_fraction > 0) and selection_metric not in valid_metrics:
         raise ValueError(
-            f"early_stopping_metric '{early_stopping_metric}' is not valid. "
+            f"early_stopping_metric '{selection_metric}' is not valid. "
             f"Must be one of: {valid_metrics}"
         )
-    metric_direction = -1 if early_stopping_metric in lower_is_better_metrics else 1
+    metric_direction = -1 if selection_metric in lower_is_better_metrics else 1
 
-    # Initialize best metric (use +inf for lower-is-better, -inf for higher-is-better)
+    # Early stopping state (only used when use_early_stopping=True)
+    # Early stopping only controls WHEN to stop, not WHAT params to return.
+    # Final param selection uses best_val_params (if val_fraction > 0) or best_train_params.
     best_early_stopping_metric = float("inf") if metric_direction == -1 else -float("inf")
-    best_early_stopping_params = deepcopy(params)  # Initialize with starting params
     iterations_since_early_stopping_improvement = 0
     use_validation_for_early_stopping = val_fraction > 0
+
+    # Validation-based param selection (independent of early stopping)
+    # Tracked whenever val_fraction > 0, used for final param selection
+    best_val_metric = float("inf") if metric_direction == -1 else -float("inf")
+    best_val_params = deepcopy(params)  # Params when validation was best
+    best_val_params_idx = 0  # Which param set was best on validation
 
     # SWA settings
     use_swa = run_fingerprint["optimisation_settings"].get("use_swa", False)
@@ -469,13 +472,13 @@ def train_on_historic_data(
     checkpoint_interval = run_fingerprint["optimisation_settings"].get("checkpoint_interval", 10)
     checkpoint_returns_list = []  # Will collect returns at each checkpoint for Rademacher
 
-    # Warn about SWA + validation early stopping conflict
-    if use_swa and use_validation_for_early_stopping:
+    # Warn about SWA + validation conflict
+    if use_swa and val_fraction > 0:
         import warnings
         warnings.warn(
-            "Both SWA and validation-based early stopping are enabled. "
-            "Validation-based early stopping will take precedence over SWA. "
-            "To use SWA, set val_fraction=0 or early_stopping=False.",
+            "Both SWA and validation holdout are enabled. "
+            "Validation-based param selection will take precedence over SWA. "
+            "To use SWA, set val_fraction=0.",
             UserWarning
         )
 
@@ -639,6 +642,7 @@ def train_on_historic_data(
             stepSteps.append(step)
 
             if (objective_value > best_train_objective).any():
+                best_train_params_idx = int(np.argmax(objective_value))
                 best_train_objective = np.array(objective_value.max())
                 best_train_params = deepcopy(params)
                 iterations_since_improvement = 0
@@ -651,7 +655,7 @@ def train_on_historic_data(
                     local_learning_rate = min_lr
 
             # Compute validation metrics whenever val_fraction > 0 (for logging/saving)
-            # Early stopping will use these if enabled
+            # Used for: (1) param selection, (2) early stopping if enabled
             if val_fraction > 0:
                 val_outputs = partial_forward_pass_nograd_val(
                     params,
@@ -669,40 +673,59 @@ def train_on_historic_data(
                     val_metrics_list.append(val_metrics)
                 # Collect validation metrics for saving
                 validationSteps.append(val_metrics_list)
+
+                # Track best validation performance (independent of early stopping)
+                # This is used for param selection at the end
+                current_val_metric = np.mean([
+                    t.get(selection_metric, -float("inf")) for t in val_metrics_list
+                ])
+                val_metric_improved = (current_val_metric * metric_direction) > (best_val_metric * metric_direction)
+                if val_metric_improved:
+                    best_val_metric = current_val_metric
+                    best_val_params = deepcopy(params)
+                    # Track which param set was best on validation at this moment
+                    val_metrics_per_set = [t.get(selection_metric, -float("inf")) for t in val_metrics_list]
+                    if metric_direction == -1:
+                        best_val_params_idx = int(np.argmin(val_metrics_per_set))
+                    else:
+                        best_val_params_idx = int(np.argmax(val_metrics_per_set))
             else:
                 val_metrics_list = None
 
             # Early stopping based on validation or test metrics
+            # Note: Early stopping only controls WHEN to stop training.
+            # Final param selection uses best_val_params (if val_fraction > 0) or best_train_params.
             if use_early_stopping:
                 if use_validation_for_early_stopping and val_metrics_list:
-                    current_early_stopping_metric = np.mean([
-                        t.get(early_stopping_metric, -float("inf")) for t in val_metrics_list
-                    ])
+                    # Reuse current_val_metric computed above (same value)
+                    current_early_stopping_metric = current_val_metric
                     metric_source = "validation"
                     # Warn if metric is NaN (indicates problem with validation data/metrics)
                     if np.isnan(current_early_stopping_metric) and i == 0:
                         import warnings
                         warnings.warn(
-                            f"Validation {early_stopping_metric} is NaN. "
+                            f"Validation {selection_metric} is NaN. "
                             f"Early stopping may not work correctly. "
                             f"Check that validation period has sufficient data.",
                             UserWarning
                         )
                 elif test_metrics_list:
-                    # Fallback to test metrics (not recommended - data leakage)
+                    # Fallback to test metrics (not recommended - causes data leakage)
+                    # Note: When using test metrics for early stopping, param SELECTION still uses
+                    # training-best (since val_fraction=0). This is intentional - we don't want to
+                    # select params based on test performance, only use it as a stopping heuristic.
                     current_early_stopping_metric = np.mean([
-                        t.get(early_stopping_metric, -float("inf")) for t in test_metrics_list
+                        t.get(selection_metric, -float("inf")) for t in test_metrics_list
                     ])
                     metric_source = "test"
                 else:
                     current_early_stopping_metric = -float("inf")
                     metric_source = "none"
 
-                # Compare metrics (metric_direction handles lower-is-better metrics like max_drawdown)
+                # Track early stopping metric for patience countdown
                 metric_improved = (current_early_stopping_metric * metric_direction) > (best_early_stopping_metric * metric_direction)
                 if metric_improved:
                     best_early_stopping_metric = current_early_stopping_metric
-                    best_early_stopping_params = deepcopy(params)
                     iterations_since_early_stopping_improvement = 0
                 else:
                     iterations_since_early_stopping_improvement += 1
@@ -710,9 +733,8 @@ def train_on_historic_data(
                 if iterations_since_early_stopping_improvement >= early_stopping_patience:
                     if verbose:
                         print(f"Early stopping at iteration {step}: no {metric_source} improvement for {early_stopping_patience} iterations")
-                        print(f"Best {metric_source} {early_stopping_metric}: {best_early_stopping_metric:.4f}")
-                    # Restore best params
-                    params = best_early_stopping_params
+                        print(f"Best {metric_source} {selection_metric}: {best_early_stopping_metric:.4f}")
+                    # Just break - param selection happens at the end using best_val_params or best_train_params
                     break
 
             # SWA: collect parameters after swa_start_frac of training
@@ -791,7 +813,7 @@ def train_on_historic_data(
                         val_sharpe = np.mean([t.get("sharpe", float("nan")) for t in val_metrics_list])
                         print(step, "val_metrics", f"sharpe={val_sharpe:.4f}")
                         if use_early_stopping:
-                            print(step, f"  early_stop_{early_stopping_metric}", f"{current_early_stopping_metric:.4f}",
+                            print(step, f"  early_stop_{selection_metric}", f"{current_early_stopping_metric:.4f}",
                                   f"(best: {best_early_stopping_metric:.4f}, patience: {iterations_since_early_stopping_improvement}/{early_stopping_patience})")
                     # print(step, "local_learning_rate", local_learning_rate)
                 save_multi_params(
@@ -831,6 +853,32 @@ def train_on_historic_data(
         else:
             training_metadata["checkpoint_returns"] = None
 
+        # Helper to select best param set when n_parameter_sets > 1
+        def _select_best_param_set(params_dict, idx, n_param_sets):
+            """Select best param set, reducing shape from (n_param_sets, ...) to (...)."""
+            if n_param_sets == 1:
+                # Already single param set, just squeeze
+                selected = {}
+                for k, v in params_dict.items():
+                    if k == "subsidary_params":
+                        selected[k] = v
+                    elif hasattr(v, 'shape') and len(v.shape) >= 1 and v.shape[0] == 1:
+                        selected[k] = jnp.squeeze(v, axis=0)
+                    else:
+                        selected[k] = v
+                return selected
+            else:
+                # Select the param set at idx
+                selected = {}
+                for k, v in params_dict.items():
+                    if k == "subsidary_params":
+                        selected[k] = v
+                    elif hasattr(v, 'shape') and len(v.shape) >= 1 and v.shape[0] == n_param_sets:
+                        selected[k] = v[idx]
+                    else:
+                        selected[k] = v
+                return selected
+
         # Helper to return params with optional metadata
         def _return_result(result_params):
             if return_training_metadata:
@@ -838,31 +886,40 @@ def train_on_historic_data(
             return result_params
 
         # Return best params based on what metric we're optimizing for
-        # Priority: validation-based early stopping > SWA > training-objective-best
-        if use_early_stopping and use_validation_for_early_stopping:
-            # When using validation-based early stopping, return validation-best params
-            # This takes precedence over SWA to avoid data leakage
+        # Priority: validation available > SWA > training-objective-best
+        if val_fraction > 0:
+            # Validation data available - use validation-best params
+            # best_val_params: params from when mean validation metric was best
+            # best_val_params_idx: which param set was best on validation at that moment
             if verbose:
-                print(f"Returning validation-best params (best {early_stopping_metric}: {best_early_stopping_metric:.4f})")
-            return _return_result(best_early_stopping_params)
+                print(f"Returning validation-best params (best {selection_metric}: {best_val_metric:.4f}, param set {best_val_params_idx})")
+            selected_params = _select_best_param_set(best_val_params, best_val_params_idx, n_parameter_sets)
+            return _return_result(selected_params)
 
-        # SWA: average collected parameters (only if not using validation-based early stopping)
+        # SWA: Stochastic Weight Averaging (only if no validation data)
+        # SWA averages params across TIME (different training iterations), not across param sets.
+        # After SWA averaging, we still have n_parameter_sets param sets - we then select the
+        # best one based on training objective.
         if use_swa and len(swa_params_list) > 0:
             if verbose:
-                print(f"Applying SWA: averaging {len(swa_params_list)} parameter snapshots")
+                print(f"Applying SWA: averaging {len(swa_params_list)} parameter snapshots across time")
             swa_params = {}
             for key in swa_params_list[0].keys():
                 if key == "subsidary_params":
                     # Don't average subsidiary params
                     swa_params[key] = swa_params_list[-1][key]
                 else:
-                    # Stack and average along new axis
+                    # Stack snapshots and average along time axis (axis=0)
+                    # Each snapshot has shape (n_parameter_sets, ...), result keeps same shape
                     stacked = jnp.stack([p[key] for p in swa_params_list], axis=0)
                     swa_params[key] = jnp.mean(stacked, axis=0)
-            return _return_result(swa_params)
+            # Select param set with best training objective
+            selected_params = _select_best_param_set(swa_params, best_train_params_idx, n_parameter_sets)
+            return _return_result(selected_params)
 
-        # Otherwise return training-objective-best params
-        return _return_result(best_train_params)
+        # Otherwise return training-objective-best params (with best idx selected)
+        selected_params = _select_best_param_set(best_train_params, best_train_params_idx, n_parameter_sets)
+        return _return_result(selected_params)
     elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
 
         n_evaluation_points = 20
@@ -1265,17 +1322,7 @@ def do_run_on_historic_data(
     n_assets = n_tokens
 
     # Generate all possible signature variations
-    # all_sig_variations = np.array(list(product([1, 0, -1], repeat=n_assets)))
-    # all_sig_variations = all_sig_variations[(all_sig_variations != 0).sum(-1) > 1]
-    # all_sig_variations = all_sig_variations[np.any(all_sig_variations == 1, -1)]
-    # all_sig_variations = all_sig_variations[np.any(all_sig_variations == -1, -1)]
-    # all_sig_variations = tuple(map(tuple, all_sig_variations))
-
-    all_sig_variations = np.array(list(product([1, 0, -1], repeat=n_assets)))
-    # Keep only variations with exactly one +1 and one -1
-    all_sig_variations = all_sig_variations[(all_sig_variations == 1).sum(-1) == 1]
-    all_sig_variations = all_sig_variations[(all_sig_variations == -1).sum(-1) == 1]
-    all_sig_variations = tuple(map(tuple, all_sig_variations))
+    all_sig_variations = get_sig_variations(n_assets)
 
     max_memory_days = run_fingerprint["max_memory_days"]
 
@@ -1555,17 +1602,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     n_assets = n_tokens
 
     # Generate all possible signature variations
-    # all_sig_variations = np.array(list(product([1, 0, -1], repeat=n_assets)))
-    # all_sig_variations = all_sig_variations[(all_sig_variations != 0).sum(-1) > 1]
-    # all_sig_variations = all_sig_variations[np.any(all_sig_variations == 1, -1)]
-    # all_sig_variations = all_sig_variations[np.any(all_sig_variations == -1, -1)]
-    # all_sig_variations = tuple(map(tuple, all_sig_variations))
-
-    all_sig_variations = np.array(list(product([1, 0, -1], repeat=n_assets)))
-    # Keep only variations with exactly one +1 and one -1
-    all_sig_variations = all_sig_variations[(all_sig_variations == 1).sum(-1) == 1]
-    all_sig_variations = all_sig_variations[(all_sig_variations == -1).sum(-1) == 1]
-    all_sig_variations = tuple(map(tuple, all_sig_variations))
+    all_sig_variations = get_sig_variations(n_assets)
 
     max_memory_days = run_fingerprint["max_memory_days"]
 

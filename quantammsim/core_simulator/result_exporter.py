@@ -111,6 +111,7 @@ def save_multi_params(
     iterations_since_improvement,
     steps,
     continuous_test_metrics=None,
+    validation_metrics=None,
     sorted_tokens=True,
 ):
     """
@@ -136,6 +137,8 @@ def save_multi_params(
         List of step counts for each parameter set
     continuous_test_metrics : list, optional
         List of continuous test metrics for each parameter set
+    validation_metrics : list, optional
+        List of validation metrics for each parameter set (when using val_fraction > 0)
     sorted_tokens : bool, optional
         Whether tokens are sorted alphabetically, by default True
 
@@ -161,6 +164,8 @@ def save_multi_params(
         param["iterations_since_improvement"] = iterations_since_improvement[i]
         if continuous_test_metrics is not None:
             param["continuous_test_metrics"] = continuous_test_metrics[i]
+        if validation_metrics is not None:
+            param["validation_metrics"] = validation_metrics[i]
         params[i] = dict_of_jnp_to_np(param)
     if sorted_tokens:
         run_fingerprint["alphabetic"] = True
