@@ -62,6 +62,7 @@ from quantammsim.runners.training_evaluator import (
 )
 from quantammsim.core_simulator.param_utils import recursive_default_set
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
+from quantammsim.runners.metric_extraction import extract_cycle_metric
 
 
 # =============================================================================
@@ -115,172 +116,63 @@ class HyperparamSpace:
     params: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
-    def default_sgd_space(cls, cycle_days: int = 180) -> "HyperparamSpace":
-        """
-        Default search space for SGD-based training.
-
-        Parameters
-        ----------
-        cycle_days : int
-            Approximate duration of one WFA cycle in days.
-            Used to set bout_offset upper bound (~90% of cycle).
-
-        Conditional parameters:
-        - use_weight_decay: if True, samples weight_decay and uses AdamW
-        - warmup_steps: only sampled when lr_schedule_type != "constant"
-        """
-        # bout_offset_days: 1 day to 90% of cycle in days
-        min_bout_offset_days = 1
-        max_bout_offset_days = int(cycle_days * 0.9)
-
-        return cls(params={
-            "base_lr": {"low": 0.001, "high": 1.0, "log": True},
-            "batch_size": {"low": 1, "high": 16, "log": False, "type": "int"},
-            "n_iterations": {"low": 50, "high": 500, "log": True, "type": "int"},
-            "bout_offset_days": {"low": min_bout_offset_days, "high": max_bout_offset_days, "log": True, "type": "int"},
-            # Weight decay: binary choice, then value if enabled
-            "use_weight_decay": {"choices": [True, False]},
-            "weight_decay": {
-                "low": 0.0001, "high": 0.1, "log": True,
-                "conditional_on": "use_weight_decay", "conditional_value": True
-            },
-            "clip_norm": {"low": 1.0, "high": 100.0, "log": True},
-            # LR schedule with conditional warmup
-            "lr_schedule_type": {"choices": ["constant", "cosine", "linear_decay"]},
-            "warmup_steps": {
-                "low": 5, "high": 200, "log": False, "type": "int",
-                "conditional_on": "lr_schedule_type", "conditional_value_not": "constant"
-            },
-            "early_stopping_patience": {"low": 20, "high": 200, "log": True, "type": "int"},
-        })
-
-    @classmethod
-    def default_adam_space(cls, cycle_days: int = 180) -> "HyperparamSpace":
-        """
-        Default search space for Adam-based training.
-
-        Parameters
-        ----------
-        cycle_days : int
-            Approximate duration of one WFA cycle in days.
-
-        Conditional parameters:
-        - use_weight_decay: if True, samples weight_decay and uses AdamW
-        - warmup_steps: only sampled when lr_schedule_type != "constant"
-        """
-        min_bout_offset_days = 1
-        max_bout_offset_days = int(cycle_days * 0.9)
-
-        return cls(params={
-            "base_lr": {"low": 0.01, "high": 0.5, "log": True},
-            "batch_size": {"low": 1, "high": 16, "log": False, "type": "int"},
-            "n_iterations": {"low": 50, "high": 300, "log": True, "type": "int"},
-            "bout_offset_days": {"low": min_bout_offset_days, "high": max_bout_offset_days, "log": True, "type": "int"},
-            # Weight decay: binary choice, then value if enabled
-            "use_weight_decay": {"choices": [True, False]},
-            "weight_decay": {
-                "low": 0.001, "high": 0.1, "log": True,
-                "conditional_on": "use_weight_decay", "conditional_value": True
-            },
-            # LR schedule with conditional warmup
-            "lr_schedule_type": {"choices": ["constant", "cosine", "linear_decay"]},
-            "warmup_steps": {
-                "low": 5, "high": 100, "log": False, "type": "int",
-                "conditional_on": "lr_schedule_type", "conditional_value_not": "constant"
-            },
-            "early_stopping_patience": {"low": 20, "high": 200, "log": True, "type": "int"},
-        })
-
-    @classmethod
-    def default_multi_period_space(cls, cycle_days: int = 180) -> "HyperparamSpace":
-        """
-        Default search space for multi_period_sgd.
-
-        Parameters
-        ----------
-        cycle_days : int
-            Approximate duration of one WFA cycle in days.
-
-        Conditional parameters:
-        - softmin_temperature: only sampled when aggregation="softmin"
-        - use_weight_decay: if True, samples weight_decay and uses AdamW
-        - warmup_steps: only sampled when lr_schedule_type != "constant"
-        """
-        min_bout_offset_days = 1
-        max_bout_offset_days = int(cycle_days * 0.9)
-
-        return cls(params={
-            "base_lr": {"low": 0.01, "high": 0.5, "log": True},
-            "n_periods": {"low": 2, "high": 8, "log": False, "type": "int"},
-            "max_epochs": {"low": 50, "high": 300, "log": True, "type": "int"},
-            # Aggregation with conditional softmin_temperature
-            "aggregation": {"choices": ["mean", "worst", "softmin"]},
-            "softmin_temperature": {
-                "low": 0.1, "high": 10.0, "log": True,
-                "conditional_on": "aggregation", "conditional_value": "softmin"
-            },
-            "bout_offset_days": {"low": min_bout_offset_days, "high": max_bout_offset_days, "log": True, "type": "int"},
-            # Weight decay: binary choice, then value if enabled
-            "use_weight_decay": {"choices": [True, False]},
-            "weight_decay": {
-                "low": 0.001, "high": 0.1, "log": True,
-                "conditional_on": "use_weight_decay", "conditional_value": True
-            },
-            # LR schedule with conditional warmup
-            "lr_schedule_type": {"choices": ["constant", "cosine", "linear_decay"]},
-            "warmup_steps": {
-                "low": 5, "high": 100, "log": False, "type": "int",
-                "conditional_on": "lr_schedule_type", "conditional_value_not": "constant"
-            },
-            "early_stopping_patience": {"low": 20, "high": 200, "log": True, "type": "int"},
-        })
-
-    @classmethod
-    def minimal_space(cls) -> "HyperparamSpace":
-        """Minimal space for quick tuning - just lr and iterations."""
-        return cls(params={
-            "base_lr": {"low": 0.01, "high": 0.5, "log": True},
-            "n_iterations": {"low": 50, "high": 200, "log": True, "type": "int"},
-        })
-
-    @classmethod
-    def for_cycle_duration(
+    def create(
         cls,
-        cycle_days: int,
         runner: str = "train_on_historic_data",
+        cycle_days: int = 180,
+        optimizer: str = "adam",
         include_lr_schedule: bool = True,
         include_early_stopping: bool = True,
         include_weight_decay: bool = True,
+        minimal: bool = False,
     ) -> "HyperparamSpace":
         """
-        Create search space with bout_offset scaled to cycle duration.
+        Unified factory method for creating hyperparameter search spaces.
 
         Parameters
         ----------
-        cycle_days : int
-            Duration of one WFA cycle in days.
         runner : str
-            Which runner to create space for.
+            Which runner to create space for: "train_on_historic_data" or "multi_period_sgd"
+        cycle_days : int
+            Approximate duration of one WFA cycle in days. Used to set bout_offset upper bound.
+        optimizer : str
+            Optimizer type: "adam", "adamw", or "sgd". Affects learning rate ranges.
         include_lr_schedule : bool
             Include lr_schedule_type and warmup_steps (conditional).
         include_early_stopping : bool
             Include early_stopping_patience.
         include_weight_decay : bool
             Include use_weight_decay and weight_decay (conditional).
+        minimal : bool
+            If True, return minimal space with just lr and iterations.
+
+        Returns
+        -------
+        HyperparamSpace
+            Configured search space.
 
         Example
         -------
-        >>> # For 6-month cycles
-        >>> space = HyperparamSpace.for_cycle_duration(180)
-        >>> # bout_offset_days will range from 1 to 162 (90% of 180)
-        >>> # This gets converted to minutes (x1440) when applied
+        >>> space = HyperparamSpace.create(cycle_days=180, optimizer="adam")
+        >>> space = HyperparamSpace.create(runner="multi_period_sgd", cycle_days=90)
+        >>> space = HyperparamSpace.create(minimal=True)  # Quick tuning
         """
-        min_bout_offset_days = 1
-        max_bout_offset_days = int(cycle_days * 0.9)
+        if minimal:
+            return cls(params={
+                "base_lr": {"low": 0.01, "high": 0.5, "log": True},
+                "n_iterations": {"low": 50, "high": 200, "log": True, "type": "int"},
+            })
+
+        max_bout_days = int(cycle_days * 0.9)
+        lr_range = (
+            {"low": 0.001, "high": 1.0, "log": True}
+            if optimizer == "sgd"
+            else {"low": 0.01, "high": 0.5, "log": True}
+        )
 
         if runner == "multi_period_sgd":
             params = {
-                "base_lr": {"low": 0.01, "high": 0.5, "log": True},
+                "base_lr": lr_range,
                 "n_periods": {"low": 2, "high": 8, "log": False, "type": "int"},
                 "max_epochs": {"low": 50, "high": 300, "log": True, "type": "int"},
                 "aggregation": {"choices": ["mean", "worst", "softmin"]},
@@ -288,14 +180,14 @@ class HyperparamSpace:
                     "low": 0.1, "high": 10.0, "log": True,
                     "conditional_on": "aggregation", "conditional_value": "softmin"
                 },
-                "bout_offset_days": {"low": min_bout_offset_days, "high": max_bout_offset_days, "log": True, "type": "int"},
+                "bout_offset_days": {"low": 1, "high": max_bout_days, "log": True, "type": "int"},
             }
         else:
             params = {
-                "base_lr": {"low": 0.001, "high": 1.0, "log": True},
+                "base_lr": lr_range,
                 "batch_size": {"low": 1, "high": 16, "log": False, "type": "int"},
                 "n_iterations": {"low": 50, "high": 500, "log": True, "type": "int"},
-                "bout_offset_days": {"low": min_bout_offset_days, "high": max_bout_offset_days, "log": True, "type": "int"},
+                "bout_offset_days": {"low": 1, "high": max_bout_days, "log": True, "type": "int"},
                 "clip_norm": {"low": 1.0, "high": 100.0, "log": True},
             }
 
@@ -317,6 +209,46 @@ class HyperparamSpace:
             params["early_stopping_patience"] = {"low": 20, "high": 200, "log": True, "type": "int"}
 
         return cls(params=params)
+
+    @classmethod
+    def default_sgd_space(cls, cycle_days: int = 180) -> "HyperparamSpace":
+        """Default search space for SGD-based training. Wrapper around create()."""
+        return cls.create(cycle_days=cycle_days, optimizer="sgd")
+
+    @classmethod
+    def default_adam_space(cls, cycle_days: int = 180) -> "HyperparamSpace":
+        """Default search space for Adam-based training. Wrapper around create()."""
+        return cls.create(cycle_days=cycle_days, optimizer="adam")
+
+    @classmethod
+    def default_multi_period_space(cls, cycle_days: int = 180) -> "HyperparamSpace":
+        """Default search space for multi_period_sgd. Wrapper around create()."""
+        return cls.create(runner="multi_period_sgd", cycle_days=cycle_days)
+
+    @classmethod
+    def minimal_space(cls) -> "HyperparamSpace":
+        """Minimal space for quick tuning. Wrapper around create()."""
+        return cls.create(minimal=True)
+
+    @classmethod
+    def for_cycle_duration(
+        cls,
+        cycle_days: int,
+        runner: str = "train_on_historic_data",
+        include_lr_schedule: bool = True,
+        include_early_stopping: bool = True,
+        include_weight_decay: bool = True,
+        **kwargs,
+    ) -> "HyperparamSpace":
+        """Create search space with bout_offset scaled to cycle duration. Wrapper around create()."""
+        return cls.create(
+            runner=runner,
+            cycle_days=cycle_days,
+            include_lr_schedule=include_lr_schedule,
+            include_early_stopping=include_early_stopping,
+            include_weight_decay=include_weight_decay,
+            **kwargs,
+        )
 
     def suggest(self, trial: optuna.Trial) -> Dict[str, Any]:
         """
@@ -485,24 +417,8 @@ def create_objective(
 
                 cycle_evals.append(cycle_eval)
 
-                # Compute running metric for intermediate reporting
-                if objective_metric == "mean_oos_sharpe":
-                    intermediate_value = np.mean([c.oos_sharpe for c in cycle_evals])
-                elif objective_metric == "mean_wfe":
-                    wfes = [c.walk_forward_efficiency for c in cycle_evals]
-                    intermediate_value = np.mean([w for w in wfes if np.isfinite(w)])
-                elif objective_metric == "worst_oos_sharpe":
-                    intermediate_value = min(c.oos_sharpe for c in cycle_evals)
-                elif objective_metric == "adjusted_mean_oos_sharpe":
-                    adj_sharpes = [c.adjusted_oos_sharpe for c in cycle_evals if c.adjusted_oos_sharpe is not None]
-                    if adj_sharpes:
-                        intermediate_value = np.mean(adj_sharpes)
-                    else:
-                        intermediate_value = np.mean([c.oos_sharpe for c in cycle_evals])
-                elif objective_metric == "neg_is_oos_gap":
-                    intermediate_value = -np.mean([c.is_oos_gap for c in cycle_evals])
-                else:
-                    intermediate_value = np.mean([c.oos_sharpe for c in cycle_evals])
+                # Compute running metric for intermediate reporting using unified extraction
+                intermediate_value = extract_cycle_metric(cycle_evals, objective_metric)
 
                 # Report intermediate value for pruning
                 if enable_pruning:
@@ -538,21 +454,8 @@ def create_objective(
             "is_effective": result.is_effective,
         })
 
-        # Return requested metric
-        if objective_metric == "mean_oos_sharpe":
-            return result.mean_oos_sharpe
-        elif objective_metric == "mean_wfe":
-            return result.mean_wfe
-        elif objective_metric == "worst_oos_sharpe":
-            return result.worst_oos_sharpe
-        elif objective_metric == "adjusted_mean_oos_sharpe":
-            # Fall back to unadjusted if Rademacher not computed
-            return result.adjusted_mean_oos_sharpe or result.mean_oos_sharpe
-        elif objective_metric == "neg_is_oos_gap":
-            # Minimize gap (return negative for maximization)
-            return -result.mean_is_oos_gap
-        else:
-            raise ValueError(f"Unknown objective metric: {objective_metric}")
+        # Return requested metric using unified extraction from cycles
+        return extract_cycle_metric(result.cycles, objective_metric)
 
     return objective
 

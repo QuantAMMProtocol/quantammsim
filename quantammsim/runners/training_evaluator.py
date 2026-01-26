@@ -80,7 +80,6 @@ from jax.tree_util import Partial
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Any, Callable, Union, Generator
 from copy import deepcopy
-from itertools import product
 from datetime import datetime
 from functools import partial
 
@@ -90,6 +89,7 @@ from quantammsim.runners.jax_runner_utils import (
     Hashabledict,
     get_unique_tokens,
     create_static_dict,
+    get_sig_variations,
 )
 from quantammsim.utils.post_train_analysis import calculate_period_metrics
 from quantammsim.utils.data_processing.historic_data_utils import get_data_dict
@@ -339,12 +339,9 @@ class ExistingRunnerWrapper(TrainerWrapper):
                 "final_objective": 0.0,
             }
 
-        # train_on_historic_data returns params directly
-        # Squeeze out the n_parameter_sets dimension (axis 0) for single-param-set runs
-        params = {
-            k: jnp.squeeze(v, axis=0) if hasattr(v, 'shape') and len(v.shape) > 1 else v
-            for k, v in params.items()
-        }
+        # train_on_historic_data now returns properly shaped params
+        # (n_ensemble_members, ...) not (n_parameter_sets, n_ensemble_members, ...)
+        # No squeeze needed - selection happens in train_on_historic_data
 
         return params, metadata
 
@@ -472,12 +469,14 @@ class TrainingEvaluator:
         keep_fixed_start: bool = True,
         compute_rademacher: bool = False,  # Off by default (needs checkpoint tracking)
         verbose: bool = True,
+        root: str = None,
     ):
         self.trainer = trainer
         self.n_cycles = n_cycles
         self.keep_fixed_start = keep_fixed_start
         self.compute_rademacher = compute_rademacher
         self.verbose = verbose
+        self.root = root
 
     # -------------------------------------------------------------------------
     # Convenience Constructors
@@ -654,6 +653,7 @@ class TrainingEvaluator:
             start_date_string=run_fingerprint["startDateString"],
             end_time_string=last_test_end,
             do_test_period=False,
+            root=self.root,
         )
 
         if self.verbose:
@@ -826,10 +826,7 @@ class TrainingEvaluator:
         """Evaluate params on a data window."""
         bout_length = end_idx - start_idx
 
-        all_sig_variations = np.array(list(product([1, 0, -1], repeat=n_assets)))
-        all_sig_variations = all_sig_variations[(all_sig_variations == 1).sum(-1) == 1]
-        all_sig_variations = all_sig_variations[(all_sig_variations == -1).sum(-1) == 1]
-        all_sig_variations = tuple(map(tuple, all_sig_variations))
+        all_sig_variations = get_sig_variations(n_assets)
 
         static_dict = create_static_dict(
             run_fingerprint,
