@@ -299,6 +299,21 @@ class TestHasNanGrads:
         }
         assert has_nan_grads(grads)
 
+    def test_with_inf(self):
+        """Test that inf is not considered NaN (inf is valid, just large)."""
+        from quantammsim.runners.jax_runner_utils import has_nan_grads
+
+        grads = {"a": jnp.array([1.0, jnp.inf]), "b": jnp.array([3.0, -jnp.inf])}
+        # inf is not NaN - function should return False
+        assert not has_nan_grads(grads)
+
+    def test_empty_grads(self):
+        """Test with empty gradient dict."""
+        from quantammsim.runners.jax_runner_utils import has_nan_grads
+
+        grads = {}
+        assert not has_nan_grads(grads)
+
 
 class TestNanRollback:
     """Tests for nan_rollback function."""
@@ -378,6 +393,22 @@ class TestInvertPermutation:
         inv = invert_permutation(perm)
         double_inv = invert_permutation(inv)
         np.testing.assert_array_equal(double_inv, perm)
+
+    def test_inverse_property(self):
+        """Test the mathematical property: applying perm then inv gives identity."""
+        from quantammsim.runners.jax_runner_utils import invert_permutation
+
+        perm = np.array([2, 0, 3, 1])
+        inv = invert_permutation(perm)
+
+        # Applying perm then inv should give identity: inv[perm[i]] == i
+        n = len(perm)
+        for i in range(n):
+            assert inv[perm[i]] == i, f"inv[perm[{i}]] = inv[{perm[i]}] = {inv[perm[i]]} != {i}"
+
+        # Also verify: perm[inv[i]] == i
+        for i in range(n):
+            assert perm[inv[i]] == i, f"perm[inv[{i}]] = perm[{inv[i]}] = {perm[inv[i]]} != {i}"
 
 
 class TestCreateStaticDict:
