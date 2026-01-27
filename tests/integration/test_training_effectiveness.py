@@ -19,6 +19,8 @@ from jax import random
 from copy import deepcopy
 from itertools import product
 
+from tests.conftest import TEST_DATA_DIR
+
 # Skip if data not available
 pytestmark = pytest.mark.integration
 
@@ -156,6 +158,7 @@ class TestTrainingImprovement:
             result = train_on_historic_data(
                 simple_run_fingerprint,
                 iterations_per_print=1000,  # Quiet
+                root=TEST_DATA_DIR,
             )
 
             # Check we got some result back
@@ -191,11 +194,13 @@ class TestTrainingImprovement:
             result_short = train_on_historic_data(
                 fp_short,
                 iterations_per_print=1000,
+                root=TEST_DATA_DIR,
             )
 
             result_long = train_on_historic_data(
                 fp_long,
                 iterations_per_print=1000,
+                root=TEST_DATA_DIR,
             )
 
             # Get objective (try different keys)

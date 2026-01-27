@@ -13,6 +13,8 @@ import numpy as np
 import jax.numpy as jnp
 from copy import deepcopy
 
+from tests.conftest import TEST_DATA_DIR
+
 
 # Mark all tests as integration tests
 pytestmark = pytest.mark.integration
@@ -105,7 +107,7 @@ class TestNParameterSetsSupport:
             fp["optimisation_settings"]["n_parameter_sets"] = 1
             fp["optimisation_settings"]["n_iterations"] = 3
 
-            result = train_on_historic_data(fp, verbose=False)
+            result = train_on_historic_data(fp, verbose=False, root=TEST_DATA_DIR)
 
             assert result is not None
             # logit_lamb should not have n_parameter_sets dimension
@@ -129,7 +131,7 @@ class TestNParameterSetsSupport:
             fp["optimisation_settings"]["n_iterations"] = 3
             n_assets = len(fp["tokens"])
 
-            result = train_on_historic_data(fp, verbose=False)
+            result = train_on_historic_data(fp, verbose=False, root=TEST_DATA_DIR)
 
             assert result is not None
 
@@ -160,7 +162,7 @@ class TestNParameterSetsSupport:
             fp["optimisation_settings"]["n_iterations"] = 3
 
             result = train_on_historic_data(
-                fp, verbose=False, return_training_metadata=True
+                fp, verbose=False, return_training_metadata=True, root=TEST_DATA_DIR
             )
 
             assert result is not None
@@ -202,7 +204,9 @@ class TestTrainingEvaluatorNParamSets:
             fp["optimisation_settings"]["n_cycles"] = 2  # Only 2 cycles, not 5
 
             # Use n_cycles=2 to match the short date range (14 days)
-            evaluator = TrainingEvaluator.from_runner("train_on_historic_data", n_cycles=2)
+            evaluator = TrainingEvaluator.from_runner(
+                "train_on_historic_data", n_cycles=2, root=TEST_DATA_DIR
+            )
 
             try:
                 result = evaluator.evaluate(fp)
@@ -490,10 +494,9 @@ class TestOptunaWrappingOptuna:
                 "expand_around": True,
             }
 
-            result = train_on_historic_data(fp, verbose=False)
+            result = train_on_historic_data(fp, verbose=False, root=TEST_DATA_DIR)
 
-            # Currently returns best_trials list
-            # Should not crash
+            # Should return params dict
             assert result is not None
 
         except FileNotFoundError as e:
@@ -522,7 +525,9 @@ class TestOptunaWrappingOptuna:
             }
 
             # Use n_cycles=2 to match the short date range (14 days)
-            evaluator = TrainingEvaluator.from_runner("train_on_historic_data", n_cycles=2)
+            evaluator = TrainingEvaluator.from_runner(
+                "train_on_historic_data", n_cycles=2, root=TEST_DATA_DIR
+            )
 
             result = evaluator.evaluate(fp)
             assert result is not None

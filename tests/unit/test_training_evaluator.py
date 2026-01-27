@@ -1749,6 +1749,7 @@ class TestMultiPeriodSGDParamsChange:
             n_periods=2,
             max_epochs=10,
             verbose=False,
+            root=TEST_DATA_DIR,
         )
 
         trained_params = {

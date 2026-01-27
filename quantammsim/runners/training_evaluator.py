@@ -237,10 +237,12 @@ class ExistingRunnerWrapper(TrainerWrapper):
         runner_name: str,
         runner_kwargs: Optional[Dict] = None,
         compute_rademacher: bool = False,
+        root: str = None,
     ):
         self.runner_name = runner_name
         self.runner_kwargs = runner_kwargs or {}
         self.compute_rademacher = compute_rademacher
+        self.root = root
         super().__init__(
             name=f"{runner_name}",
             config=self.runner_kwargs,
@@ -326,6 +328,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
             local_fp,
             iterations_per_print=self.runner_kwargs.get("iterations_per_print", 10000),
             return_training_metadata=self.compute_rademacher,
+            root=self.root,
         )
 
         if self.compute_rademacher:
@@ -379,6 +382,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
             max_epochs=self.runner_kwargs.get("max_epochs", 200),
             aggregation=self.runner_kwargs.get("aggregation", "mean"),
             verbose=False,
+            root=self.root,
         )
 
         params = result.best_params
@@ -521,7 +525,7 @@ class TrainingEvaluator:
         ... )
         """
         wrapper = ExistingRunnerWrapper(
-            runner_name, runner_kwargs, compute_rademacher=compute_rademacher
+            runner_name, runner_kwargs, compute_rademacher=compute_rademacher, root=root
         )
         return cls(
             trainer=wrapper,

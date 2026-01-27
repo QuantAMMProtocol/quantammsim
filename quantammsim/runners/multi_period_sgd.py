@@ -223,6 +223,7 @@ def multi_period_sgd_training(
     aggregation: str = "mean",
     softmin_temperature: float = 1.0,
     verbose: bool = True,
+    root: str = None,
 ) -> Tuple[MultiPeriodResult, dict]:
     """
     Run multi-period SGD training.
@@ -308,6 +309,7 @@ def multi_period_sgd_training(
         start_date_string=run_fingerprint["startDateString"],
         end_time_string=run_fingerprint["endDateString"],
         do_test_period=False,
+        root=root,
     )
 
     bout_length = data_dict["end_idx"] - data_dict["start_idx"]
