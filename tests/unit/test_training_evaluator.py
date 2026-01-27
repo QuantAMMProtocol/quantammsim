@@ -1080,9 +1080,17 @@ class TestExistingRunnerWrapperE2E:
                 2,  # n_assets
                 1,  # n_parameter_sets
             )
-            # Return params directly (train_on_historic_data returns params dict)
-            # The wrapper will handle squeezing
-            return params
+            # Squeeze params to match what train_on_historic_data returns
+            # (shape goes from (1, n_assets) to (n_assets,))
+            squeezed_params = {}
+            for k, v in params.items():
+                if k == "subsidary_params":
+                    squeezed_params[k] = v
+                elif hasattr(v, 'shape') and len(v.shape) >= 1 and v.shape[0] == 1:
+                    squeezed_params[k] = jnp.squeeze(v, axis=0)
+                else:
+                    squeezed_params[k] = v
+            return squeezed_params
 
         jax_runners.train_on_historic_data = patched_train
 

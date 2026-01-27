@@ -1212,7 +1212,15 @@ def train_on_historic_data(
                 print(f"  Params: {optuna_manager.study.best_params}")
 
         if completed_trials:
-            return optuna_manager.study.best_trials
+            # Convert best trial params to dict format like gradient descent returns
+            from quantammsim.core_simulator.result_exporter import _optuna_params_to_arrays
+            best_trial = optuna_manager.study.best_trial
+            best_params = _optuna_params_to_arrays(best_trial.params, n_assets)
+            best_params["subsidary_params"] = []
+            # Add initial_weights_logits if not present (required by forward pass)
+            if "initial_weights_logits" not in best_params:
+                best_params["initial_weights_logits"] = jnp.zeros(n_assets)
+            return best_params
         else:
             return None
     else:

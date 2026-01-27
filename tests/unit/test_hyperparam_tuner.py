@@ -548,22 +548,24 @@ class TestOptimizerSwitching:
         # Track what fingerprint gets passed to evaluator
         captured_fp = {}
 
-        def capture_evaluate(self, fp):
+        def capture_evaluate_iter(self, fp):
+            """Mock evaluate_iter as a generator that captures fingerprint."""
             captured_fp.update(deepcopy(fp))
-            # Return mock result
+            cycle = CycleEvaluation(
+                cycle_number=1, is_sharpe=1.0, is_returns_over_hodl=0.1,
+                oos_sharpe=1.0, oos_returns_over_hodl=0.05,
+                walk_forward_efficiency=0.6, is_oos_gap=0.4,
+            )
+            yield cycle
             return EvaluationResult(
                 trainer_name="test",
                 trainer_config={},
-                cycles=[CycleEvaluation(
-                    cycle_number=1, is_sharpe=1.0, is_returns_over_hodl=0.1,
-                    oos_sharpe=1.0, oos_returns_over_hodl=0.05,
-                    walk_forward_efficiency=0.6, is_oos_gap=0.4,
-                )],
+                cycles=[cycle],
                 mean_wfe=0.6, mean_oos_sharpe=1.0, std_oos_sharpe=0.1,
                 worst_oos_sharpe=0.9, mean_is_oos_gap=0.4, is_effective=True,
             )
 
-        with patch.object(TrainingEvaluator, 'evaluate', capture_evaluate):
+        with patch.object(TrainingEvaluator, 'evaluate_iter', capture_evaluate_iter):
             objective_fn = create_objective(
                 run_fingerprint=base_fingerprint,
                 runner_name="train_on_historic_data",
@@ -598,21 +600,24 @@ class TestOptimizerSwitching:
 
         captured_fp = {}
 
-        def capture_evaluate(self, fp):
+        def capture_evaluate_iter(self, fp):
+            """Mock evaluate_iter as a generator that captures fingerprint."""
             captured_fp.update(deepcopy(fp))
+            cycle = CycleEvaluation(
+                cycle_number=1, is_sharpe=1.0, is_returns_over_hodl=0.1,
+                oos_sharpe=1.0, oos_returns_over_hodl=0.05,
+                walk_forward_efficiency=0.6, is_oos_gap=0.4,
+            )
+            yield cycle
             return EvaluationResult(
                 trainer_name="test",
                 trainer_config={},
-                cycles=[CycleEvaluation(
-                    cycle_number=1, is_sharpe=1.0, is_returns_over_hodl=0.1,
-                    oos_sharpe=1.0, oos_returns_over_hodl=0.05,
-                    walk_forward_efficiency=0.6, is_oos_gap=0.4,
-                )],
+                cycles=[cycle],
                 mean_wfe=0.6, mean_oos_sharpe=1.0, std_oos_sharpe=0.1,
                 worst_oos_sharpe=0.9, mean_is_oos_gap=0.4, is_effective=True,
             )
 
-        with patch.object(TrainingEvaluator, 'evaluate', capture_evaluate):
+        with patch.object(TrainingEvaluator, 'evaluate_iter', capture_evaluate_iter):
             objective_fn = create_objective(
                 run_fingerprint=base_fingerprint,
                 runner_name="train_on_historic_data",
@@ -755,26 +760,27 @@ class TestHyperparamTunerE2E:
 
     def test_tuner_multi_objective_with_mock(self, base_fingerprint):
         """Multi-objective tuning should produce Pareto front."""
-        def mock_evaluate(self, fp):
+        def mock_evaluate_iter(self, fp):
+            """Mock evaluate_iter as a generator."""
             lr = fp["optimisation_settings"].get("base_lr", 0.1)
             # Trade-off: higher LR = higher sharpe but lower WFE
             mock_sharpe = 0.5 + lr * 2
             mock_wfe = 0.8 - lr * 0.5
 
+            cycle = CycleEvaluation(
+                cycle_number=1,
+                is_sharpe=1.0,
+                is_returns_over_hodl=0.1,
+                oos_sharpe=mock_sharpe,
+                oos_returns_over_hodl=0.05,
+                walk_forward_efficiency=mock_wfe,
+                is_oos_gap=0.4,
+            )
+            yield cycle
             return EvaluationResult(
                 trainer_name="test",
                 trainer_config={},
-                cycles=[
-                    CycleEvaluation(
-                        cycle_number=1,
-                        is_sharpe=1.0,
-                        is_returns_over_hodl=0.1,
-                        oos_sharpe=mock_sharpe,
-                        oos_returns_over_hodl=0.05,
-                        walk_forward_efficiency=mock_wfe,
-                        is_oos_gap=0.4,
-                    )
-                ],
+                cycles=[cycle],
                 mean_wfe=mock_wfe,
                 mean_oos_sharpe=mock_sharpe,
                 std_oos_sharpe=0.1,
@@ -783,7 +789,7 @@ class TestHyperparamTunerE2E:
                 is_effective=True,
             )
 
-        with patch.object(TrainingEvaluator, 'evaluate', mock_evaluate):
+        with patch.object(TrainingEvaluator, 'evaluate_iter', mock_evaluate_iter):
             tuner = HyperparamTuner(
                 runner_name="train_on_historic_data",
                 n_trials=10,
@@ -802,7 +808,8 @@ class TestHyperparamTunerE2E:
 
     def test_different_objectives_produce_different_results(self, base_fingerprint):
         """Different objective metrics should lead to different optimal params."""
-        def mock_evaluate(self, fp):
+        def mock_evaluate_iter(self, fp):
+            """Mock evaluate_iter as a generator."""
             lr = fp["optimisation_settings"].get("base_lr", 0.1)
             n_iter = fp["optimisation_settings"].get("n_iterations", 100)
 
@@ -811,20 +818,20 @@ class TestHyperparamTunerE2E:
             # - WFE favors low LR
             # - Worst OOS favors moderate LR
 
+            cycle = CycleEvaluation(
+                cycle_number=1,
+                is_sharpe=1.0 + lr,
+                is_returns_over_hodl=0.1,
+                oos_sharpe=0.5 + lr * 2,  # Higher LR = higher sharpe
+                oos_returns_over_hodl=0.05,
+                walk_forward_efficiency=0.9 - lr,  # Lower LR = higher WFE
+                is_oos_gap=lr,  # Higher LR = more overfitting
+            )
+            yield cycle
             return EvaluationResult(
                 trainer_name="test",
                 trainer_config={},
-                cycles=[
-                    CycleEvaluation(
-                        cycle_number=1,
-                        is_sharpe=1.0 + lr,
-                        is_returns_over_hodl=0.1,
-                        oos_sharpe=0.5 + lr * 2,  # Higher LR = higher sharpe
-                        oos_returns_over_hodl=0.05,
-                        walk_forward_efficiency=0.9 - lr,  # Lower LR = higher WFE
-                        is_oos_gap=lr,  # Higher LR = more overfitting
-                    )
-                ],
+                cycles=[cycle],
                 mean_wfe=0.9 - lr,
                 mean_oos_sharpe=0.5 + lr * 2,
                 std_oos_sharpe=0.1,
@@ -833,7 +840,7 @@ class TestHyperparamTunerE2E:
                 is_effective=True,
             )
 
-        with patch.object(TrainingEvaluator, 'evaluate', mock_evaluate):
+        with patch.object(TrainingEvaluator, 'evaluate_iter', mock_evaluate_iter):
             # Tune for OOS Sharpe (should favor high LR)
             tuner_sharpe = HyperparamTuner(
                 n_trials=10,

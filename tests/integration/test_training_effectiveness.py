@@ -161,10 +161,11 @@ class TestTrainingImprovement:
             # Check we got some result back
             assert result is not None, "Training returned None"
 
-            # The training should have produced some objective value
-            # (exact key depends on implementation)
-            has_metric = any(k in result for k in ["sharpe", "objective", "final_objective"])
-            assert has_metric, f"Training returned no performance metric: {result.keys()}"
+            # The training should have produced valid params
+            # train_on_historic_data returns clean params dict (log_k, logit_lamb, etc.)
+            # without embedded metrics (those require return_training_metadata=True)
+            has_params = any(k in result for k in ["log_k", "logit_lamb", "initial_weights_logits"])
+            assert has_params, f"Training returned no parameters: {result.keys()}"
 
         except Exception as e:
             if "data" in str(e).lower() or "file" in str(e).lower():

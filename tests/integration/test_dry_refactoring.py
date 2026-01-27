@@ -201,7 +201,8 @@ class TestTrainingEvaluatorNParamSets:
             fp["optimisation_settings"]["n_iterations"] = 5
             fp["optimisation_settings"]["n_cycles"] = 2  # Only 2 cycles, not 5
 
-            evaluator = TrainingEvaluator.from_runner("train_on_historic_data")
+            # Use n_cycles=2 to match the short date range (14 days)
+            evaluator = TrainingEvaluator.from_runner("train_on_historic_data", n_cycles=2)
 
             try:
                 result = evaluator.evaluate(fp)
@@ -520,16 +521,11 @@ class TestOptunaWrappingOptuna:
                 "expand_around": True,
             }
 
-            evaluator = TrainingEvaluator.from_runner("train_on_historic_data")
+            # Use n_cycles=2 to match the short date range (14 days)
+            evaluator = TrainingEvaluator.from_runner("train_on_historic_data", n_cycles=2)
 
-            # This tests optuna-wrapping-optuna integration
-            # May fail until train_on_historic_data returns params for optuna
-            try:
-                result = evaluator.evaluate(fp)
-                assert result is not None
-            except (TypeError, AttributeError) as e:
-                # Expected until full implementation
-                pytest.skip(f"Optuna-wrapping-optuna not fully implemented: {e}")
+            result = evaluator.evaluate(fp)
+            assert result is not None
 
         except FileNotFoundError as e:
             pytest.skip(f"Test data not available: {e}")
