@@ -20,6 +20,7 @@ from quantammsim.runners.training_evaluator import (
     EvaluationResult,
     compare_trainers,
 )
+from tests.conftest import TEST_DATA_DIR
 
 
 # =============================================================================
@@ -484,7 +485,7 @@ class TestEvaluateIntegration:
     @pytest.mark.integration
     def test_evaluate_runs_full_pipeline(self, real_run_fingerprint):
         """evaluate() should run the full pipeline and return valid results."""
-        evaluator = TrainingEvaluator.random_baseline(n_cycles=2, verbose=False)
+        evaluator = TrainingEvaluator.random_baseline(n_cycles=2, verbose=False, root=TEST_DATA_DIR)
         result = evaluator.evaluate(real_run_fingerprint)
 
         # Check result structure
@@ -547,6 +548,7 @@ class TestEvaluateIntegration:
             name="custom",
             n_cycles=2,
             verbose=False,
+            root=TEST_DATA_DIR,
         )
 
         result = evaluator.evaluate(real_run_fingerprint)
@@ -565,7 +567,7 @@ class TestEvaluateIntegration:
     @pytest.mark.integration
     def test_evaluate_computes_wfe_correctly(self, real_run_fingerprint):
         """WFE should be computed as OOS/IS sharpe ratio."""
-        evaluator = TrainingEvaluator.random_baseline(n_cycles=2, verbose=False)
+        evaluator = TrainingEvaluator.random_baseline(n_cycles=2, verbose=False, root=TEST_DATA_DIR)
         result = evaluator.evaluate(real_run_fingerprint)
 
         for cycle in result.cycles:
@@ -586,6 +588,7 @@ class TestEvaluateIntegration:
             n_cycles=2,
             keep_fixed_start=True,
             verbose=False,
+            root=TEST_DATA_DIR,
         )
 
         # Rolling window
@@ -594,6 +597,7 @@ class TestEvaluateIntegration:
             n_cycles=2,
             keep_fixed_start=False,
             verbose=False,
+            root=TEST_DATA_DIR,
         )
 
         # Both should run successfully
@@ -665,6 +669,7 @@ class TestEvaluateParams:
             start_date_string=run_fp["startDateString"],
             end_time_string=run_fp["endDateString"],
             do_test_period=False,
+            root=TEST_DATA_DIR,
         )
 
         pool = create_pool("momentum")
@@ -780,9 +785,11 @@ class TestComputeCycleIndices:
             "startDateString": "2023-01-01 00:00:00",
         }
 
+        # Use enough data points to cover all cycles including test periods
+        # 6 months of daily data = ~180 days, plus buffer for test periods
         data_dict = {
             "start_idx": 0,
-            "end_idx": 1000,
+            "end_idx": 5000,  # Enough for all cycles including test periods
         }
 
         cycles = generate_walk_forward_cycles(
@@ -791,15 +798,20 @@ class TestComputeCycleIndices:
             n_cycles=3,
         )
 
+        # Pass the actual end date including test period
+        last_test_end = cycles[-1].test_end_date
         evaluator._compute_cycle_indices(
-            cycles, run_fp, data_dict, "2023-06-01 00:00:00"
+            cycles, run_fp, data_dict, last_test_end
         )
 
         # Check indices are in order
         for cycle in cycles:
-            assert cycle.train_start_idx < cycle.train_end_idx
-            assert cycle.train_end_idx == cycle.test_start_idx
-            assert cycle.test_start_idx < cycle.test_end_idx
+            assert cycle.train_start_idx < cycle.train_end_idx, \
+                f"train_start_idx ({cycle.train_start_idx}) should be < train_end_idx ({cycle.train_end_idx})"
+            assert cycle.train_end_idx == cycle.test_start_idx, \
+                f"train_end_idx ({cycle.train_end_idx}) should equal test_start_idx ({cycle.test_start_idx})"
+            assert cycle.test_start_idx < cycle.test_end_idx, \
+                f"test_start_idx ({cycle.test_start_idx}) should be < test_end_idx ({cycle.test_end_idx})"
 
         # Check cycles are sequential
         for i in range(len(cycles) - 1):
@@ -886,8 +898,8 @@ class TestCompareTrainersIntegration:
         results = compare_trainers(
             run_fp,
             trainers={
-                "random_a": TrainingEvaluator.random_baseline(seed=1, n_cycles=2, verbose=False),
-                "random_b": TrainingEvaluator.random_baseline(seed=2, n_cycles=2, verbose=False),
+                "random_a": TrainingEvaluator.random_baseline(seed=1, n_cycles=2, verbose=False, root=TEST_DATA_DIR),
+                "random_b": TrainingEvaluator.random_baseline(seed=2, n_cycles=2, verbose=False, root=TEST_DATA_DIR),
             },
             verbose=False,
         )
@@ -1015,6 +1027,7 @@ class TestExistingRunnerWrapperE2E:
             "train_on_historic_data",
             n_cycles=2,
             verbose=False,
+            root=TEST_DATA_DIR,
             max_iterations=3,  # Very few for speed
             iterations_per_print=10000,  # Suppress output
         )
@@ -1079,6 +1092,7 @@ class TestExistingRunnerWrapperE2E:
                 "train_on_historic_data",
                 n_cycles=2,
                 verbose=False,
+                root=TEST_DATA_DIR,
                 max_iterations=3,
             )
 
@@ -1210,6 +1224,7 @@ class TestMultiPeriodSGDWrapperE2E:
             "multi_period_sgd",
             n_cycles=2,
             verbose=False,
+            root=TEST_DATA_DIR,
             n_periods=2,  # Use 2 periods for speed
             max_epochs=5,  # Very few epochs for speed
         )
@@ -1332,6 +1347,7 @@ class TestMultiPeriodSGDWrapperE2E:
                 "multi_period_sgd",
                 n_cycles=2,
                 verbose=False,
+                root=TEST_DATA_DIR,
                 n_periods=2,
                 max_epochs=5,
             )
@@ -1449,6 +1465,7 @@ class TestRademacherE2E:
             name="checkpoint_trainer",
             n_cycles=2,
             verbose=False,
+            root=TEST_DATA_DIR,
         )
         evaluator.compute_rademacher = True
 
@@ -1506,6 +1523,7 @@ class TestRademacherE2E:
             name="no_checkpoint_trainer",
             n_cycles=2,
             verbose=False,
+            root=TEST_DATA_DIR,
         )
         evaluator.compute_rademacher = True
 
@@ -1535,12 +1553,12 @@ class TestRademacherE2E:
         )
 
         evaluator_low = TrainingEvaluator.from_function(
-            trainer_low_var, name="low_var", n_cycles=2, verbose=False
+            trainer_low_var, name="low_var", n_cycles=2, verbose=False, root=TEST_DATA_DIR
         )
         evaluator_low.compute_rademacher = True
 
         evaluator_high = TrainingEvaluator.from_function(
-            trainer_high_var, name="high_var", n_cycles=2, verbose=False
+            trainer_high_var, name="high_var", n_cycles=2, verbose=False, root=TEST_DATA_DIR
         )
         evaluator_high.compute_rademacher = True
 
@@ -1573,12 +1591,12 @@ class TestRademacherE2E:
         )
 
         evaluator_few = TrainingEvaluator.from_function(
-            trainer_few, name="few_checkpoints", n_cycles=2, verbose=False
+            trainer_few, name="few_checkpoints", n_cycles=2, verbose=False, root=TEST_DATA_DIR
         )
         evaluator_few.compute_rademacher = True
 
         evaluator_many = TrainingEvaluator.from_function(
-            trainer_many, name="many_checkpoints", n_cycles=2, verbose=False
+            trainer_many, name="many_checkpoints", n_cycles=2, verbose=False, root=TEST_DATA_DIR
         )
         evaluator_many.compute_rademacher = True
 
@@ -1605,7 +1623,7 @@ class TestRademacherE2E:
         )
 
         evaluator = TrainingEvaluator.from_function(
-            trainer, name="high_rademacher", n_cycles=2, verbose=False
+            trainer, name="high_rademacher", n_cycles=2, verbose=False, root=TEST_DATA_DIR
         )
         evaluator.compute_rademacher = True
 

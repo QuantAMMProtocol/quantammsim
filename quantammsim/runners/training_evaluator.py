@@ -489,6 +489,7 @@ class TrainingEvaluator:
         n_cycles: int = 5,
         verbose: bool = True,
         compute_rademacher: bool = False,
+        root: str = None,
         **runner_kwargs,
     ) -> "TrainingEvaluator":
         """
@@ -506,6 +507,8 @@ class TrainingEvaluator:
             Enable Rademacher complexity computation. This enables checkpoint
             tracking in the trainer, which saves intermediate returns during
             training for Rademacher estimation. Default False.
+        root : str, optional
+            Root directory for data files. If None, uses default data location.
         **runner_kwargs
             Arguments passed to the runner (e.g., max_iterations=500)
 
@@ -525,6 +528,7 @@ class TrainingEvaluator:
             n_cycles=n_cycles,
             verbose=verbose,
             compute_rademacher=compute_rademacher,
+            root=root,
         )
 
     @classmethod
@@ -534,6 +538,7 @@ class TrainingEvaluator:
         name: str = "custom",
         n_cycles: int = 5,
         verbose: bool = True,
+        root: str = None,
         **config,
     ) -> "TrainingEvaluator":
         """
@@ -549,6 +554,8 @@ class TrainingEvaluator:
             Name for this trainer
         n_cycles : int
             Number of walk-forward cycles
+        root : str, optional
+            Root directory for data files. If None, uses default data location.
         **config
             Config dict for reporting
 
@@ -562,7 +569,7 @@ class TrainingEvaluator:
         >>> evaluator = TrainingEvaluator.from_function(my_trainer)
         """
         wrapper = FunctionWrapper(fn, name=name, config=config)
-        return cls(trainer=wrapper, n_cycles=n_cycles, verbose=verbose)
+        return cls(trainer=wrapper, n_cycles=n_cycles, verbose=verbose, root=root)
 
     @classmethod
     def random_baseline(
@@ -570,14 +577,26 @@ class TrainingEvaluator:
         seed: int = 42,
         n_cycles: int = 5,
         verbose: bool = True,
+        root: str = None,
     ) -> "TrainingEvaluator":
         """
         Create evaluator that uses random parameters.
 
         Use this as a baseline to verify your trainer beats random chance.
+
+        Parameters
+        ----------
+        seed : int
+            Random seed for reproducibility
+        n_cycles : int
+            Number of walk-forward cycles
+        verbose : bool
+            Print progress
+        root : str, optional
+            Root directory for data files. If None, uses default data location.
         """
         wrapper = RandomBaselineWrapper(seed=seed)
-        return cls(trainer=wrapper, n_cycles=n_cycles, verbose=verbose)
+        return cls(trainer=wrapper, n_cycles=n_cycles, verbose=verbose, root=root)
 
     # -------------------------------------------------------------------------
     # Core Evaluation

@@ -693,12 +693,25 @@ class TestHyperparamTunerE2E:
         # Create mock evaluation results that vary with params
         call_count = [0]
 
-        def mock_evaluate(self, fp):
+        def mock_evaluate_iter(self, fp):
+            """Mock evaluate_iter as a generator that yields cycle evaluations."""
             call_count[0] += 1
             # Simulate that higher LR gives better results (for testing)
             lr = fp["optimisation_settings"].get("base_lr", 0.1)
             mock_sharpe = 0.5 + lr * 2 + np.random.randn() * 0.1
 
+            # Yield one cycle evaluation
+            yield CycleEvaluation(
+                cycle_number=1,
+                is_sharpe=1.0,
+                is_returns_over_hodl=0.1,
+                oos_sharpe=mock_sharpe,
+                oos_returns_over_hodl=0.05,
+                walk_forward_efficiency=0.6,
+                is_oos_gap=0.4,
+            )
+
+            # Return the full result (accessed via StopIteration.value)
             return EvaluationResult(
                 trainer_name="test",
                 trainer_config={},
@@ -721,7 +734,7 @@ class TestHyperparamTunerE2E:
                 is_effective=True,
             )
 
-        with patch.object(TrainingEvaluator, 'evaluate', mock_evaluate):
+        with patch.object(TrainingEvaluator, 'evaluate_iter', mock_evaluate_iter):
             tuner = HyperparamTuner(
                 runner_name="train_on_historic_data",
                 n_trials=5,
