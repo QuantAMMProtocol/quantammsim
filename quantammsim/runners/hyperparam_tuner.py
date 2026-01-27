@@ -317,6 +317,7 @@ def create_objective(
     objective_metric: str,
     verbose: bool,
     enable_pruning: bool = True,
+    root: str = None,
 ) -> Callable[[optuna.Trial], float]:
     """
     Create an Optuna objective function with pruning support.
@@ -397,6 +398,7 @@ def create_objective(
             runner_name,
             n_cycles=n_wfa_cycles,
             verbose=verbose,
+            root=root,
             **local_runner_kwargs,
         )
 
@@ -469,6 +471,7 @@ def create_multi_objective(
     objectives: List[str],
     verbose: bool,
     enable_pruning: bool = True,
+    root: str = None,
 ) -> Callable[[optuna.Trial], Tuple[float, ...]]:
     """
     Create a multi-objective function for Pareto optimization.
@@ -483,6 +486,7 @@ def create_multi_objective(
         run_fingerprint, runner_name, runner_kwargs,
         hyperparam_space, n_wfa_cycles, objectives[0], verbose,
         enable_pruning=enable_pruning,
+        root=root,
     )
 
     def multi_objective(trial: optuna.Trial) -> Tuple[float, ...]:
@@ -594,6 +598,7 @@ class HyperparamTuner:
         runner_kwargs: Optional[Dict[str, Any]] = None,
         study_name: Optional[str] = None,
         storage: Optional[str] = None,
+        root: str = None,
     ):
         self.runner_name = runner_name
         self.n_trials = n_trials
@@ -607,6 +612,7 @@ class HyperparamTuner:
         self.runner_kwargs = runner_kwargs or {}
         self.study_name = study_name
         self.storage = storage
+        self.root = root
 
         # Set default search space based on runner
         if hyperparam_space is not None:
@@ -675,6 +681,7 @@ class HyperparamTuner:
                 self.multi_objectives,
                 self.verbose,
                 enable_pruning=False,  # Multi-objective doesn't support pruning
+                root=self.root,
             )
         else:
             # Single objective optimization with pruning support
@@ -696,6 +703,7 @@ class HyperparamTuner:
                 self.objective,
                 self.verbose,
                 enable_pruning=self.enable_pruning,
+                root=self.root,
             )
 
         # Run optimization

@@ -22,6 +22,7 @@ from quantammsim.runners.training_evaluator import (
     EvaluationResult,
     CycleEvaluation,
 )
+from tests.conftest import TEST_DATA_DIR
 
 
 # =============================================================================
@@ -425,15 +426,16 @@ class TestObjectiveFunction:
         return {
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
-            "startDateString": "2022-01-01 00:00:00",
-            "endDateString": "2023-01-01 00:00:00",
-            "endTestDateString": "2024-01-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
             "chunk_period": 1440,
-            "bout_offset": 0,
+            "bout_offset": 10080,  # 7 days - reduces effective training window
             "weight_interpolation_period": 1440,
             "optimisation_settings": {
                 "base_lr": 0.01,
-                "n_iterations": 10,
+                "n_iterations": 3,
+                "n_cycles": 1,
                 "training_data_kind": "historic",
                 "n_parameter_sets": 1,
                 "batch_size": 2,
@@ -509,16 +511,17 @@ class TestOptimizerSwitching:
         return {
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
-            "startDateString": "2022-01-01 00:00:00",
-            "endDateString": "2023-01-01 00:00:00",
-            "endTestDateString": "2024-01-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
             "chunk_period": 1440,
-            "bout_offset": 0,
+            "bout_offset": 10080,  # 7 days - reduces effective training window
             "weight_interpolation_period": 1440,
             "optimisation_settings": {
                 "base_lr": 0.01,
                 "optimiser": "adam",  # Default optimizer
-                "n_iterations": 10,
+                "n_iterations": 3,
+                "n_cycles": 1,
                 "training_data_kind": "historic",
                 "n_parameter_sets": 1,
                 "batch_size": 2,
@@ -644,11 +647,11 @@ class TestHyperparamTunerE2E:
         return {
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
-            "startDateString": "2022-01-01 00:00:00",
-            "endDateString": "2024-01-01 00:00:00",
-            "endTestDateString": "2024-06-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
             "chunk_period": 1440,
-            "bout_offset": 0,
+            "bout_offset": 10080,  # 7 days - reduces effective training window
             "weight_interpolation_period": 1440,
             "optimisation_settings": {
                 "base_lr": 0.01,
@@ -875,11 +878,11 @@ class TestHyperparamTunerRealE2E:
         return {
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
-            "startDateString": "2022-01-01 00:00:00",
-            "endDateString": "2023-06-01 00:00:00",
-            "endTestDateString": "2024-01-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
             "chunk_period": 1440,
-            "bout_offset": 30,
+            "bout_offset": 10080,  # 7 days - reduces effective training window
             "weight_interpolation_period": 1440,
             "optimisation_settings": {
                 "base_lr": 0.01,
@@ -929,11 +932,12 @@ class TestHyperparamTunerRealE2E:
         tuner = HyperparamTuner(
             runner_name="train_on_historic_data",
             n_trials=2,  # Very few trials for speed
-            n_wfa_cycles=2,
+            n_wfa_cycles=1,
             hyperparam_space=HyperparamSpace(params={
                 "base_lr": {"low": 0.01, "high": 0.1, "log": True},
             }),
             verbose=False,
+            root=TEST_DATA_DIR,
         )
 
         result = tuner.tune(real_fingerprint)

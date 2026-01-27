@@ -19,22 +19,22 @@ def explosive_training_fingerprint():
     return {
         "tokens": ["BTC", "ETH", "SOL", "USDC"],
         "rule": "power_channel",  # Power channel is most sensitive to explosion
-        "startDateString": "2021-03-01 00:00:00",
-        "endDateString": "2024-08-01 00:00:00",
-        "endTestDateString": "2025-05-25 00:00:00",
+        "startDateString": "2023-01-01 00:00:00",
+        "endDateString": "2023-02-01 00:00:00",
+        "endTestDateString": "2023-02-10 00:00:00",
         "chunk_period": 1440,
-        "bout_offset": 302400,
+        "bout_offset": 30240,  # 21 days - leaves ~10 days effective window
         "weight_interpolation_period": 1440,
         "optimisation_settings": {
             "base_lr": 20.0,  # High learning rate to trigger explosion
             "optimiser": "sgd",
             "decay_lr_ratio": 0.8,
             "decay_lr_plateau": 200,
-            "batch_size": 6,
+            "batch_size": 2,
             "train_on_hessian_trace": False,
             "min_lr": 0.004,
-            "n_iterations": 5,
-            "n_cycles": 5,
+            "n_iterations": 3,
+            "n_cycles": 1,
             "sample_method": "uniform",
             "n_parameter_sets": 1,
             "training_data_kind": "historic",
@@ -155,7 +155,7 @@ class TestGradientClipping:
         fp["clip_norm"] = clip_norm
         fp["clip_by_param_type"] = True
         fp["optimisation_settings"]["n_iterations"] = 3
-        fp["optimisation_settings"]["n_cycles"] = 3
+        fp["optimisation_settings"]["n_cycles"] = 1
 
         recursive_default_set(fp, run_fingerprint_defaults)
         check_run_fingerprint(fp)

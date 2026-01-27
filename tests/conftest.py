@@ -68,24 +68,24 @@ def training_fingerprint():
     return {
         "tokens": ["BTC", "ETH", "USDC"],
         "rule": "momentum",
-        "startDateString": "2023-03-01 00:00:00",
-        "endDateString": "2023-06-01 00:00:00",
-        "endTestDateString": "2023-07-01 00:00:00",
+        "startDateString": "2023-01-01 00:00:00",
+        "endDateString": "2023-01-15 00:00:00",
+        "endTestDateString": "2023-01-20 00:00:00",
         "chunk_period": 1440,
-        "bout_offset": 37800,
+        "bout_offset": 10080,  # 7 days in minutes - reduces effective training window
         "weight_interpolation_period": 1440,
         "optimisation_settings": {
             "base_lr": 0.01,
             "optimiser": "sgd",
             "decay_lr_ratio": 0.8,
             "decay_lr_plateau": 200,
-            "batch_size": 4,
+            "batch_size": 2,
             "train_on_hessian_trace": False,
             "min_lr": 1e-6,
             "n_iterations": 3,
-            "n_cycles": 5,
+            "n_cycles": 1,
             "sample_method": "uniform",
-            "n_parameter_sets": 2,
+            "n_parameter_sets": 1,
             "training_data_kind": "historic",
             "max_mc_version": 9,
             "include_flipped_training_data": False,
@@ -117,7 +117,7 @@ def training_fingerprint():
         "do_trades": False,
         "noise_trader_ratio": 0.0,
         "minimum_weight": 0.03,
-        "max_memory_days": 365,
+        "max_memory_days": 30,
     }
 
 

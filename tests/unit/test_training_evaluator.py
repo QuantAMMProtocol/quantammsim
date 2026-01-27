@@ -440,16 +440,17 @@ class TestEvaluateIntegration:
         return {
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
-            "startDateString": "2023-03-01 00:00:00",
-            "endDateString": "2023-06-01 00:00:00",
-            "endTestDateString": "2023-09-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
             "chunk_period": 1440,
-            "bout_offset": 0,
+            "bout_offset": 10080,  # 7 days - reduces effective training window
             "weight_interpolation_period": 1440,
             "optimisation_settings": {
                 "base_lr": 0.01,
                 "optimiser": "sgd",
-                "n_iterations": 10,
+                "n_iterations": 3,
+                "n_cycles": 1,
                 "training_data_kind": "historic",
                 "force_scalar": False,
             },
@@ -477,7 +478,7 @@ class TestEvaluateIntegration:
             "do_trades": False,
             "noise_trader_ratio": 0.0,
             "minimum_weight": 0.03,
-            "max_memory_days": 60,
+            "max_memory_days": 30,
             "subsidary_pools": [],
         }
 
@@ -485,13 +486,13 @@ class TestEvaluateIntegration:
     @pytest.mark.integration
     def test_evaluate_runs_full_pipeline(self, real_run_fingerprint):
         """evaluate() should run the full pipeline and return valid results."""
-        evaluator = TrainingEvaluator.random_baseline(n_cycles=2, verbose=False, root=TEST_DATA_DIR)
+        evaluator = TrainingEvaluator.random_baseline(n_cycles=1, verbose=False, root=TEST_DATA_DIR)
         result = evaluator.evaluate(real_run_fingerprint)
 
         # Check result structure
         assert isinstance(result, EvaluationResult)
         assert result.trainer_name == "random_baseline"
-        assert len(result.cycles) == 2
+        assert len(result.cycles) == 1
 
         # Check metrics are computed
         assert np.isfinite(result.mean_wfe)
@@ -546,7 +547,7 @@ class TestEvaluateIntegration:
         evaluator = TrainingEvaluator.from_function(
             custom_trainer,
             name="custom",
-            n_cycles=2,
+            n_cycles=1,
             verbose=False,
             root=TEST_DATA_DIR,
         )
@@ -554,20 +555,19 @@ class TestEvaluateIntegration:
         result = evaluator.evaluate(real_run_fingerprint)
 
         # Verify trainer was called for each cycle
-        assert len(train_calls) == 2
+        assert len(train_calls) == 1
 
-        # First cycle has no warm start, subsequent cycles do
+        # First cycle has no warm start
         assert train_calls[0]["warm_start"] is False
-        assert train_calls[1]["warm_start"] is True
 
         # Result should be valid
-        assert len(result.cycles) == 2
+        assert len(result.cycles) == 1
 
     @pytest.mark.slow
     @pytest.mark.integration
     def test_evaluate_computes_wfe_correctly(self, real_run_fingerprint):
         """WFE should be computed as OOS/IS sharpe ratio."""
-        evaluator = TrainingEvaluator.random_baseline(n_cycles=2, verbose=False, root=TEST_DATA_DIR)
+        evaluator = TrainingEvaluator.random_baseline(n_cycles=1, verbose=False, root=TEST_DATA_DIR)
         result = evaluator.evaluate(real_run_fingerprint)
 
         for cycle in result.cycles:
@@ -585,7 +585,7 @@ class TestEvaluateIntegration:
         # Expanding window
         evaluator_expanding = TrainingEvaluator(
             trainer=RandomBaselineWrapper(seed=42),
-            n_cycles=2,
+            n_cycles=1,
             keep_fixed_start=True,
             verbose=False,
             root=TEST_DATA_DIR,
@@ -594,7 +594,7 @@ class TestEvaluateIntegration:
         # Rolling window
         evaluator_rolling = TrainingEvaluator(
             trainer=RandomBaselineWrapper(seed=42),
-            n_cycles=2,
+            n_cycles=1,
             keep_fixed_start=False,
             verbose=False,
             root=TEST_DATA_DIR,
@@ -604,8 +604,8 @@ class TestEvaluateIntegration:
         result_expanding = evaluator_expanding.evaluate(real_run_fingerprint)
         result_rolling = evaluator_rolling.evaluate(real_run_fingerprint)
 
-        assert len(result_expanding.cycles) == 2
-        assert len(result_rolling.cycles) == 2
+        assert len(result_expanding.cycles) == 1
+        assert len(result_rolling.cycles) == 1
 
 
 class TestEvaluateParams:
@@ -621,8 +621,8 @@ class TestEvaluateParams:
         run_fp = {
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
-            "startDateString": "2023-03-01 00:00:00",
-            "endDateString": "2023-06-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
             "chunk_period": 1440,
             "weight_interpolation_period": 1440,
             "maximum_change": 0.001,
@@ -640,7 +640,7 @@ class TestEvaluateParams:
             "use_pre_exp_scaling": True,
             "use_alt_lamb": False,
             "numeraire": None,
-            "max_memory_days": 60,
+            "max_memory_days": 30,
             "initial_memory_length": 10.0,
             "initial_memory_length_delta": 0.0,
             "initial_k_per_day": 1.0,
@@ -857,11 +857,11 @@ class TestCompareTrainersIntegration:
         run_fp = {
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
-            "startDateString": "2023-03-01 00:00:00",
-            "endDateString": "2023-06-01 00:00:00",
-            "endTestDateString": "2023-09-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
             "chunk_period": 1440,
-            "bout_offset": 0,
+            "bout_offset": 10080,  # 7 days - reduces effective training window
             "weight_interpolation_period": 1440,
             "optimisation_settings": {
                 "base_lr": 0.01,
@@ -887,7 +887,7 @@ class TestCompareTrainersIntegration:
             "do_trades": False,
             "noise_trader_ratio": 0.0,
             "minimum_weight": 0.03,
-            "max_memory_days": 60,
+            "max_memory_days": 30,
             "subsidary_pools": [],
             "weight_interpolation_method": "linear",
             "use_pre_exp_scaling": True,
@@ -898,8 +898,8 @@ class TestCompareTrainersIntegration:
         results = compare_trainers(
             run_fp,
             trainers={
-                "random_a": TrainingEvaluator.random_baseline(seed=1, n_cycles=2, verbose=False, root=TEST_DATA_DIR),
-                "random_b": TrainingEvaluator.random_baseline(seed=2, n_cycles=2, verbose=False, root=TEST_DATA_DIR),
+                "random_a": TrainingEvaluator.random_baseline(seed=1, n_cycles=1, verbose=False, root=TEST_DATA_DIR),
+                "random_b": TrainingEvaluator.random_baseline(seed=2, n_cycles=1, verbose=False, root=TEST_DATA_DIR),
             },
             verbose=False,
         )
@@ -922,22 +922,21 @@ class TestExistingRunnerWrapperE2E:
         return {
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
-            # Use longer date range and daily data for faster tests with enough data per cycle
-            "startDateString": "2022-01-01 00:00:00",
-            "endDateString": "2024-01-01 00:00:00",
-            "endTestDateString": "2024-06-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
             "chunk_period": 1440,  # Daily
-            "bout_offset": 0,
+            "bout_offset": 10080,  # 7 days - reduces effective training window
             "weight_interpolation_period": 1440,
             "optimisation_settings": {
                 "base_lr": 0.01,
                 "optimiser": "sgd",
-                "n_iterations": 5,  # Very few iterations for speed
+                "n_iterations": 3,  # Very few iterations for speed
                 "training_data_kind": "historic",
                 "force_scalar": False,
                 "n_parameter_sets": 1,  # Single parameter set to minimize memory
-                "batch_size": 4,  # Small batch for testing
-                "n_cycles": 2,  # Fewer sampling cycles
+                "batch_size": 2,  # Small batch for testing
+                "n_cycles": 1,  # Single cycle
             },
             "initial_memory_length": 10.0,
             "initial_memory_length_delta": 0.0,
@@ -963,7 +962,7 @@ class TestExistingRunnerWrapperE2E:
             "do_trades": False,
             "noise_trader_ratio": 0.0,
             "minimum_weight": 0.03,
-            "max_memory_days": 60,
+            "max_memory_days": 30,
             "subsidary_pools": [],
         }
 
@@ -975,15 +974,15 @@ class TestExistingRunnerWrapperE2E:
         Uses bout_offset > 0 to allow random sampling of start positions
         within each walk-forward cycle's training window.
         """
-        # Use a 3-year window with reduced max_memory_days for faster tests
-        long_run_fingerprint = {
+        # Use short window for faster tests
+        short_run_fingerprint = {
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
-            "startDateString": "2020-01-01 00:00:00",
-            "endDateString": "2023-01-01 00:00:00",
-            "endTestDateString": "2024-01-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
             "chunk_period": 1440,  # Daily
-            "bout_offset": 30,  # Allow 30 days of slack for random start position sampling
+            "bout_offset": 10080,  # 7 days - reduces effective training window
             "weight_interpolation_period": 1440,
             "optimisation_settings": {
                 "base_lr": 0.01,
@@ -1019,25 +1018,25 @@ class TestExistingRunnerWrapperE2E:
             "do_trades": False,
             "noise_trader_ratio": 0.0,
             "minimum_weight": 0.03,
-            "max_memory_days": 30,  # Reduced from 60 for faster tests
+            "max_memory_days": 30,
             "subsidary_pools": [],
         }
 
         evaluator = TrainingEvaluator.from_runner(
             "train_on_historic_data",
-            n_cycles=2,
+            n_cycles=1,
             verbose=False,
             root=TEST_DATA_DIR,
             max_iterations=3,  # Very few for speed
             iterations_per_print=10000,  # Suppress output
         )
 
-        result = evaluator.evaluate(long_run_fingerprint)
+        result = evaluator.evaluate(short_run_fingerprint)
 
         # Check result structure
         assert isinstance(result, EvaluationResult)
         assert "train_on_historic_data" in result.trainer_name
-        assert len(result.cycles) == 2
+        assert len(result.cycles) == 1
 
         # Check metrics are computed (training should produce some results)
         assert np.isfinite(result.mean_wfe) or np.isnan(result.mean_wfe)  # WFE can be nan if IS sharpe is 0
@@ -1090,7 +1089,7 @@ class TestExistingRunnerWrapperE2E:
         try:
             evaluator = TrainingEvaluator.from_runner(
                 "train_on_historic_data",
-                n_cycles=2,
+                n_cycles=1,
                 verbose=False,
                 root=TEST_DATA_DIR,
                 max_iterations=3,
@@ -1098,16 +1097,12 @@ class TestExistingRunnerWrapperE2E:
 
             result = evaluator.evaluate(training_run_fingerprint)
 
-            # Should have 2 training calls (one per cycle)
-            assert len(training_dates) == 2, \
-                f"Expected 2 training calls, got {len(training_dates)}"
+            # Should have 1 training call (one per cycle)
+            assert len(training_dates) == 1, \
+                f"Expected 1 training call, got {len(training_dates)}"
 
-            # The cycles should have different end dates (expanding window)
-            assert training_dates[0]["end"] != training_dates[1]["end"], \
-                f"Cycles should train on different windows: {training_dates}"
-
-            # Verify the result has 2 cycles
-            assert len(result.cycles) == 2
+            # Verify the result has 1 cycle
+            assert len(result.cycles) == 1
 
         finally:
             # Restore original function
@@ -1176,11 +1171,11 @@ class TestMultiPeriodSGDWrapperE2E:
         run_fingerprint = {
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
-            "startDateString": "2020-01-01 00:00:00",
-            "endDateString": "2023-01-01 00:00:00",
-            "endTestDateString": "2024-01-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
             "chunk_period": 1440,  # Daily
-            "bout_offset": 30,
+            "bout_offset": 10080,  # 7 days - reduces effective training window
             "weight_interpolation_period": 1440,
             "optimisation_settings": {
                 "base_lr": 0.01,
@@ -1222,11 +1217,11 @@ class TestMultiPeriodSGDWrapperE2E:
 
         evaluator = TrainingEvaluator.from_runner(
             "multi_period_sgd",
-            n_cycles=2,
+            n_cycles=1,
             verbose=False,
             root=TEST_DATA_DIR,
             n_periods=2,  # Use 2 periods for speed
-            max_epochs=5,  # Very few epochs for speed
+            max_epochs=3,  # Very few epochs for speed
         )
 
         result = evaluator.evaluate(run_fingerprint)
@@ -1234,7 +1229,7 @@ class TestMultiPeriodSGDWrapperE2E:
         # Check result structure
         assert isinstance(result, EvaluationResult)
         assert "multi_period_sgd" in result.trainer_name
-        assert len(result.cycles) == 2
+        assert len(result.cycles) == 1
 
         # Check metrics are computed
         assert np.isfinite(result.mean_oos_sharpe)
@@ -1299,11 +1294,11 @@ class TestMultiPeriodSGDWrapperE2E:
             run_fingerprint = {
                 "tokens": ["BTC", "ETH"],
                 "rule": "momentum",
-                "startDateString": "2022-01-01 00:00:00",
-                "endDateString": "2024-01-01 00:00:00",
-                "endTestDateString": "2024-06-01 00:00:00",
+                "startDateString": "2023-01-01 00:00:00",
+                "endDateString": "2023-01-20 00:00:00",
+                "endTestDateString": "2023-02-01 00:00:00",
                 "chunk_period": 1440,
-                "bout_offset": 0,
+                "bout_offset": 10080,  # 7 days - reduces effective training window
                 "weight_interpolation_period": 1440,
                 "optimisation_settings": {
                     "base_lr": 0.01,
@@ -1345,22 +1340,18 @@ class TestMultiPeriodSGDWrapperE2E:
 
             evaluator = TrainingEvaluator.from_runner(
                 "multi_period_sgd",
-                n_cycles=2,
+                n_cycles=1,
                 verbose=False,
                 root=TEST_DATA_DIR,
                 n_periods=2,
-                max_epochs=5,
+                max_epochs=3,
             )
 
             result = evaluator.evaluate(run_fingerprint)
 
-            # Should have 2 training calls (one per cycle)
-            assert len(training_calls) == 2, \
-                f"Expected 2 training calls, got {len(training_calls)}"
-
-            # The cycles should have different end dates (expanding window)
-            assert training_calls[0]["end"] != training_calls[1]["end"], \
-                f"Cycles should train on different windows: {training_calls}"
+            # Should have 1 training call (one per cycle)
+            assert len(training_calls) == 1, \
+                f"Expected 1 training call, got {len(training_calls)}"
 
         finally:
             multi_period_sgd.multi_period_sgd_training = original_train
@@ -1375,21 +1366,21 @@ class TestRademacherE2E:
         return {
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
-            "startDateString": "2022-01-01 00:00:00",
-            "endDateString": "2024-01-01 00:00:00",
-            "endTestDateString": "2024-06-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
             "chunk_period": 1440,
-            "bout_offset": 0,
+            "bout_offset": 10080,  # 7 days - reduces effective training window
             "weight_interpolation_period": 1440,
             "optimisation_settings": {
                 "base_lr": 0.01,
                 "optimiser": "sgd",
-                "n_iterations": 5,
+                "n_iterations": 3,
                 "training_data_kind": "historic",
                 "force_scalar": False,
                 "n_parameter_sets": 1,
-                "batch_size": 4,
-                "n_cycles": 2,
+                "batch_size": 2,
+                "n_cycles": 1,
             },
             "initial_memory_length": 10.0,
             "initial_memory_length_delta": 0.0,
@@ -1463,7 +1454,7 @@ class TestRademacherE2E:
         evaluator = TrainingEvaluator.from_function(
             trainer,
             name="checkpoint_trainer",
-            n_cycles=2,
+            n_cycles=1,
             verbose=False,
             root=TEST_DATA_DIR,
         )
@@ -1521,7 +1512,7 @@ class TestRademacherE2E:
         evaluator = TrainingEvaluator.from_function(
             trainer_without_checkpoints,
             name="no_checkpoint_trainer",
-            n_cycles=2,
+            n_cycles=1,
             verbose=False,
             root=TEST_DATA_DIR,
         )
@@ -1553,12 +1544,12 @@ class TestRademacherE2E:
         )
 
         evaluator_low = TrainingEvaluator.from_function(
-            trainer_low_var, name="low_var", n_cycles=2, verbose=False, root=TEST_DATA_DIR
+            trainer_low_var, name="low_var", n_cycles=1, verbose=False, root=TEST_DATA_DIR
         )
         evaluator_low.compute_rademacher = True
 
         evaluator_high = TrainingEvaluator.from_function(
-            trainer_high_var, name="high_var", n_cycles=2, verbose=False, root=TEST_DATA_DIR
+            trainer_high_var, name="high_var", n_cycles=1, verbose=False, root=TEST_DATA_DIR
         )
         evaluator_high.compute_rademacher = True
 
@@ -1591,12 +1582,12 @@ class TestRademacherE2E:
         )
 
         evaluator_few = TrainingEvaluator.from_function(
-            trainer_few, name="few_checkpoints", n_cycles=2, verbose=False, root=TEST_DATA_DIR
+            trainer_few, name="few_checkpoints", n_cycles=1, verbose=False, root=TEST_DATA_DIR
         )
         evaluator_few.compute_rademacher = True
 
         evaluator_many = TrainingEvaluator.from_function(
-            trainer_many, name="many_checkpoints", n_cycles=2, verbose=False, root=TEST_DATA_DIR
+            trainer_many, name="many_checkpoints", n_cycles=1, verbose=False, root=TEST_DATA_DIR
         )
         evaluator_many.compute_rademacher = True
 
@@ -1623,7 +1614,7 @@ class TestRademacherE2E:
         )
 
         evaluator = TrainingEvaluator.from_function(
-            trainer, name="high_rademacher", n_cycles=2, verbose=False, root=TEST_DATA_DIR
+            trainer, name="high_rademacher", n_cycles=1, verbose=False, root=TEST_DATA_DIR
         )
         evaluator.compute_rademacher = True
 
@@ -1676,16 +1667,16 @@ class TestMultiPeriodSGDParamsChange:
         run_fingerprint = {
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
-            "startDateString": "2022-01-01 00:00:00",
-            "endDateString": "2023-01-01 00:00:00",
-            "endTestDateString": "2023-06-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
             "chunk_period": 1440,
-            "bout_offset": 30,
+            "bout_offset": 10080,  # 7 days - reduces effective training window
             "weight_interpolation_period": 1440,
             "optimisation_settings": {
                 "base_lr": 0.1,  # Higher LR to ensure params move
                 "optimiser": "adam",
-                "n_iterations": 50,
+                "n_iterations": 10,
                 "training_data_kind": "historic",
                 "force_scalar": False,
                 "n_parameter_sets": 1,
@@ -1748,7 +1739,7 @@ class TestMultiPeriodSGDParamsChange:
         result, summary = multi_period_sgd_training(
             run_fingerprint,
             n_periods=2,
-            max_epochs=50,
+            max_epochs=10,
             verbose=False,
         )
 

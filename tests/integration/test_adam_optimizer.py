@@ -20,8 +20,9 @@ def adam_training_fingerprint(training_fingerprint):
     fp["optimisation_settings"]["optimiser"] = "adam"
     fp["optimisation_settings"]["base_lr"] = 0.01
     fp["optimisation_settings"]["n_iterations"] = 3
-    fp["optimisation_settings"]["n_cycles"] = 5
-    fp["optimisation_settings"]["n_parameter_sets"] = 2
+    fp["optimisation_settings"]["n_cycles"] = 1
+    fp["optimisation_settings"]["n_parameter_sets"] = 1
+    fp["optimisation_settings"]["batch_size"] = 2
     return fp
 
 
@@ -32,8 +33,9 @@ def sgd_training_fingerprint(training_fingerprint):
     fp["optimisation_settings"]["optimiser"] = "sgd"
     fp["optimisation_settings"]["base_lr"] = 0.01
     fp["optimisation_settings"]["n_iterations"] = 3
-    fp["optimisation_settings"]["n_cycles"] = 5
-    fp["optimisation_settings"]["n_parameter_sets"] = 2
+    fp["optimisation_settings"]["n_cycles"] = 1
+    fp["optimisation_settings"]["n_parameter_sets"] = 1
+    fp["optimisation_settings"]["batch_size"] = 2
     return fp
 
 
@@ -100,7 +102,7 @@ class TestAdamOptimizer:
             fp = copy.deepcopy(adam_training_fingerprint)
             fp["optimisation_settings"]["base_lr"] = lr
             fp["optimisation_settings"]["n_iterations"] = 2
-            fp["optimisation_settings"]["n_cycles"] = 2
+            fp["optimisation_settings"]["n_cycles"] = 1
 
             recursive_default_set(fp, run_fingerprint_defaults)
             check_run_fingerprint(fp)
