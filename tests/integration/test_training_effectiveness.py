@@ -597,6 +597,7 @@ class TestFullPipeline:
                 max_epochs_per_cycle=5,  # Very few epochs
                 patience=3,
                 verbose=False,
+                root=TEST_DATA_DIR,
             )
 
             assert result is not None
@@ -624,6 +625,7 @@ class TestFullPipeline:
                 n_periods=2,
                 max_epochs=5,
                 verbose=False,
+                root=TEST_DATA_DIR,
             )
 
             assert result is not None

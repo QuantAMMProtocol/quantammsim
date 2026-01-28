@@ -74,7 +74,7 @@ addopts = [
     "--tb=short",
 ]
 testpaths = ["tests"]
-norecursedirs = ["tests/scripts", "tests/__pycache__", ".git", "*.egg-info"]
+norecursedirs = ["tests/scripts", "tests/__pycache__", ".git", "*.egg-info", ".hypothesis"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*", "test*"]
