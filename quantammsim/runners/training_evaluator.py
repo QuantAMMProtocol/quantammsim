@@ -193,6 +193,7 @@ class TrainerWrapper:
         warm_start_params: Optional[Dict] = None,
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
+        test_end_date: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Train and return (params, metadata)."""
         raise NotImplementedError
@@ -221,6 +222,7 @@ class FunctionWrapper(TrainerWrapper):
         warm_start_params: Optional[Dict] = None,
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
+        test_end_date: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         return self.fn(
             data_dict=data_dict,
@@ -268,6 +270,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
         warm_start_params: Optional[Dict] = None,
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
+        test_end_date: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Call the existing runner.
@@ -280,7 +283,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
             return self._run_train_on_historic_data(
                 data_dict, train_start_idx, train_end_idx,
                 pool, run_fingerprint, n_assets, warm_start_params,
-                train_start_date, train_end_date,
+                train_start_date, train_end_date, test_end_date,
             )
         elif self.runner_name == "multi_period_sgd":
             return self._run_multi_period_sgd(
@@ -302,6 +305,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
         warm_start_params: Optional[Dict],
         train_start_date: Optional[str],
         train_end_date: Optional[str],
+        test_end_date: Optional[str] = None,
     ) -> Tuple[Dict, Dict]:
         """Adapter for train_on_historic_data."""
         from datetime import datetime, timedelta
@@ -315,8 +319,13 @@ class ExistingRunnerWrapper(TrainerWrapper):
             local_fp["startDateString"] = train_start_date
         if train_end_date is not None:
             local_fp["endDateString"] = train_end_date
-            # train_on_historic_data requires a test period, so set endTestDateString
-            # to 1 day after training end (we won't use the test results)
+
+        # Set OOS test period - use actual test_end_date if provided
+        # This ensures train_on_historic_data computes proper OOS metrics
+        if test_end_date is not None:
+            local_fp["endTestDateString"] = test_end_date
+        elif train_end_date is not None:
+            # Fallback to 1 day after training (not recommended)
             train_end_dt = datetime.strptime(train_end_date, "%Y-%m-%d %H:%M:%S")
             test_end_dt = train_end_dt + timedelta(days=1)
             local_fp["endTestDateString"] = test_end_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -332,24 +341,16 @@ class ExistingRunnerWrapper(TrainerWrapper):
                 "checkpoint_interval", 10
             )
 
-        # Run training with metadata return if computing Rademacher
+        # Always return training metadata - we need test metrics from the runner
         result = train_on_historic_data(
             local_fp,
             iterations_per_print=self.runner_kwargs.get("iterations_per_print", 10000),
-            return_training_metadata=self.compute_rademacher,
+            return_training_metadata=True,  # Always get metadata for OOS metrics
             root=self.root,
         )
 
-        if self.compute_rademacher:
-            # Unpack (params, metadata) tuple
-            params, metadata = result
-        else:
-            # Just params returned
-            params = result
-            metadata = {
-                "epochs_trained": local_fp["optimisation_settings"].get("n_iterations", 0),
-                "final_objective": 0.0,
-            }
+        # Unpack (params, metadata) tuple
+        params, metadata = result
 
         # train_on_historic_data now returns properly shaped params
         # (n_ensemble_members, ...) not (n_parameter_sets, n_ensemble_members, ...)
@@ -426,6 +427,7 @@ class RandomBaselineWrapper(TrainerWrapper):
         warm_start_params: Optional[Dict] = None,
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
+        test_end_date: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Return random parameters (ignores date strings)."""
         rng = np.random.RandomState(self.seed + self._call_count)
@@ -703,7 +705,7 @@ class TrainingEvaluator:
             if self.verbose:
                 print(f"\n--- Cycle {cycle.cycle_number} ---")
 
-            # Train
+            # Train - pass test_end_date so runner computes proper OOS metrics
             params, metadata = self.trainer.train(
                 data_dict=data_dict,
                 train_start_idx=cycle.train_start_idx,
@@ -714,21 +716,41 @@ class TrainingEvaluator:
                 warm_start_params=prev_params,
                 train_start_date=cycle.train_start_date,
                 train_end_date=cycle.train_end_date,
+                test_end_date=cycle.test_end_date,
             )
 
-            # Evaluate on IS
-            is_metrics = self._evaluate_params(
-                params, data_dict,
-                cycle.train_start_idx, cycle.train_end_idx,
-                pool, n_assets, run_fingerprint,
-            )
+            # Get metrics from runner's training metadata (computed by train_on_historic_data)
+            # This keeps all metric logic in the runner, not duplicated here
+            #
+            # Structure from jax_runners.py:
+            #   final_train_metrics[param_idx]: dict with sharpe, calmar, etc. (IS metrics)
+            #   final_continuous_test_metrics[param_idx]: dict with continuous_test_sharpe, etc.
+            #     - OOS metrics from continuous forward pass (train→test seamlessly)
+            #   best_param_idx: index of best param set
+            #
+            best_idx = metadata.get("best_param_idx", 0)
+            final_train = metadata.get("final_train_metrics")
+            final_oos = metadata.get("final_continuous_test_metrics")
 
-            # Evaluate on OOS
-            oos_metrics = self._evaluate_params(
-                params, data_dict,
-                cycle.test_start_idx, cycle.test_end_idx,
-                pool, n_assets, run_fingerprint,
-            )
+            if final_train is None or len(final_train) <= best_idx:
+                raise ValueError(
+                    f"Cycle {cycle.cycle_number}: final_train_metrics not available in metadata. "
+                    f"Ensure train_on_historic_data returns training metadata."
+                )
+            if final_oos is None or len(final_oos) <= best_idx:
+                raise ValueError(
+                    f"Cycle {cycle.cycle_number}: final_continuous_test_metrics not available in metadata. "
+                    f"Ensure train_on_historic_data returns training metadata with proper test period."
+                )
+
+            is_metrics = final_train[best_idx]
+
+            # OOS metrics have "continuous_test_" prefix - strip it for consistency
+            oos_metrics_raw = final_oos[best_idx]
+            oos_metrics = {
+                k.replace("continuous_test_", ""): v
+                for k, v in oos_metrics_raw.items()
+            }
 
             # Compute WFE
             wfe = compute_walk_forward_efficiency(

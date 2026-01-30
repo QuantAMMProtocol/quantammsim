@@ -805,9 +805,9 @@ def train_on_historic_data(
                     print(step, "test_metrics", (
                             [
                                 (t["returns_over_uniform_hodl"], t["sharpe"])
-                                for t in test_metrics_list
+                                for t in continuous_test_metrics_list
                             ]
-                            if test_metrics_list
+                            if continuous_test_metrics_list
                             else None
                         ),
                     )
@@ -845,10 +845,25 @@ def train_on_historic_data(
         if verbose:
             print("final objective value: ", objective_value)
 
-        # Build training metadata for Rademacher complexity calculation
+        # Build training metadata for analysis and evaluation
+        # Include final metrics for the best param set (used by training_evaluator)
+        #
+        # Structure:
+        #   final_train_metrics[param_idx]: dict from calculate_period_metrics (IS metrics)
+        #   final_continuous_test_metrics[param_idx]: dict from calculate_continuous_test_metrics
+        #     - These are OOS metrics from continuous forward pass (train→test seamlessly)
+        #     - Keys are prefixed with "continuous_test_" (e.g., "continuous_test_sharpe")
+        #   best_param_idx: index of best param set
+        #
         training_metadata = {
             "epochs_trained": i + 1,  # Actual iterations completed
             "final_objective": float(np.array(objective_value).mean()),
+            # Final metrics from last iteration for each param set
+            "final_train_metrics": train_metrics_list if train_metrics_list else None,
+            # Continuous test metrics - proper OOS from continuous forward pass
+            "final_continuous_test_metrics": continuous_test_metrics_list if continuous_test_metrics_list else None,
+            # Which param set was selected as best (for extracting correct metrics)
+            "best_param_idx": best_val_params_idx if val_fraction > 0 else best_train_params_idx,
         }
         if track_checkpoints and checkpoint_returns_list:
             # Stack checkpoint returns: shape (n_checkpoints, T-1)
