@@ -41,9 +41,25 @@ CYCLE_METRICS: Dict[str, str] = {
 }
 
 # Aggregation functions
+def _mean_agg(v: List[float]) -> float:
+    """Mean aggregator that properly handles inf/nan values."""
+    filtered = [x for x in v if x is not None and np.isfinite(x)]
+    if not filtered:
+        return float("-inf")  # No valid values = worst possible result
+    return float(np.mean(filtered))
+
+
+def _worst_agg(v: List[float]) -> float:
+    """Worst (min) aggregator that properly handles inf/nan values."""
+    filtered = [x for x in v if x is not None and np.isfinite(x)]
+    if not filtered:
+        return float("-inf")  # No valid values = worst possible result
+    return float(np.min(filtered))
+
+
 AGGREGATORS: Dict[str, Callable[[List[float]], float]] = {
-    "mean": lambda v: np.mean([x for x in v if x is not None and np.isfinite(x)]) if v else float("-inf"),
-    "worst": lambda v: np.min([x for x in v if x is not None and np.isfinite(x)]) if v else float("-inf"),
+    "mean": _mean_agg,
+    "worst": _worst_agg,
 }
 
 

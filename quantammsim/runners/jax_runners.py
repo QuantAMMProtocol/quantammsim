@@ -851,9 +851,9 @@ def train_on_historic_data(
         # Structure:
         #   final_train_metrics[param_idx]: dict from calculate_period_metrics (IS metrics)
         #   final_continuous_test_metrics[param_idx]: dict from calculate_continuous_test_metrics
-        #     - These are OOS metrics from continuous forward pass (train→test seamlessly)
-        #     - Keys are prefixed with "continuous_test_" (e.g., "continuous_test_sharpe")
-        #   best_param_idx: index of best param set
+        #     - OOS metrics from continuous forward pass (train→test seamlessly)
+        #     - Keys: "sharpe", "calmar", "sterling", "ulcer", "returns_over_uniform_hodl", etc.
+        #   best_param_idx: index of best param set (from validation if val_fraction > 0)
         #
         training_metadata = {
             "epochs_trained": i + 1,  # Actual iterations completed

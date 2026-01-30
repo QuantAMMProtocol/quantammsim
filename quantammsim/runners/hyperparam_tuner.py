@@ -469,10 +469,21 @@ def create_objective(
                 print(f"Trial {trial.number} failed: {e}")
                 traceback.print_exc()
             # Return bad value for failed trials
-            if objective_metric in ["mean_oos_sharpe", "mean_wfe", "adjusted_mean_oos_sharpe"]:
-                return float("-inf")
+            # Metrics we MAXIMIZE (higher is better): sharpe, wfe, calmar, sterling, returns
+            # Metrics we MINIMIZE (lower is better): ulcer, is_oos_gap
+            maximize_metrics = [
+                "mean_oos_sharpe", "worst_oos_sharpe",
+                "mean_wfe", "worst_wfe",
+                "adjusted_mean_oos_sharpe",
+                "mean_oos_calmar", "worst_oos_calmar",
+                "mean_oos_sterling", "worst_oos_sterling",
+                "mean_oos_returns", "worst_oos_returns",
+                "mean_oos_returns_over_hodl", "worst_oos_returns_over_hodl",
+            ]
+            if objective_metric in maximize_metrics:
+                return float("-inf")  # Worst possible for maximization
             else:
-                return float("inf")
+                return float("inf")  # Worst possible for minimization
 
         # Store full result for later analysis
         trial.set_user_attr("evaluation_result", {
