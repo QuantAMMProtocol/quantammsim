@@ -129,7 +129,7 @@ def calculate_continuous_test_metrics(continuous_results, train_len, test_len, p
     }
 
     metrics = calculate_period_metrics(continuous_test_results)
-    return {f"continuous_test_{k}": v for k, v in metrics.items()}
+    return metrics
 
 
 def process_continuous_outputs(
