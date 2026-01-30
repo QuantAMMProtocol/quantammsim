@@ -18,6 +18,10 @@ run_fingerprint_defaults = {
         "n_cycles": 5,
         "sample_method": "uniform",
         "n_parameter_sets": 4,
+        # noise_scale: Gaussian noise added to param sets 1+ (set 0 is canonical).
+        # Larger values = more diverse initialization = better exploration but more variance.
+        # Only effective when n_parameter_sets > 1.
+        "noise_scale": 0.1,
         "training_data_kind": "historic",
         "max_mc_version": 9,
         "include_flipped_training_data": False,

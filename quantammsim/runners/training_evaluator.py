@@ -123,6 +123,15 @@ class CycleEvaluation:
     epochs_trained: int = 0
     rademacher_complexity: Optional[float] = None
     adjusted_oos_sharpe: Optional[float] = None
+    # Additional risk metrics (from calculate_period_metrics)
+    is_calmar: Optional[float] = None
+    oos_calmar: Optional[float] = None
+    is_sterling: Optional[float] = None
+    oos_sterling: Optional[float] = None
+    is_ulcer: Optional[float] = None
+    oos_ulcer: Optional[float] = None
+    is_returns: Optional[float] = None
+    oos_returns: Optional[float] = None
 
 
 @dataclass
@@ -757,6 +766,15 @@ class TrainingEvaluator:
                 epochs_trained=metadata.get("epochs_trained", 0),
                 rademacher_complexity=rademacher_complexity,
                 adjusted_oos_sharpe=adjusted_oos_sharpe,
+                # Additional risk metrics
+                is_calmar=is_metrics.get("calmar"),
+                oos_calmar=oos_metrics.get("calmar"),
+                is_sterling=is_metrics.get("sterling"),
+                oos_sterling=oos_metrics.get("sterling"),
+                is_ulcer=is_metrics.get("ulcer"),
+                oos_ulcer=oos_metrics.get("ulcer"),
+                is_returns=is_metrics.get("return"),
+                oos_returns=oos_metrics.get("return"),
             )
 
             cycle_results.append(cycle_eval)

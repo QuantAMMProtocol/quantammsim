@@ -27,6 +27,17 @@ CYCLE_METRICS: Dict[str, str] = {
     "wfe": "walk_forward_efficiency",
     "is_oos_gap": "is_oos_gap",
     "adjusted_oos_sharpe": "adjusted_oos_sharpe",
+    # Risk metrics
+    "oos_calmar": "oos_calmar",
+    "is_calmar": "is_calmar",
+    "oos_sterling": "oos_sterling",
+    "is_sterling": "is_sterling",
+    "oos_ulcer": "oos_ulcer",
+    "is_ulcer": "is_ulcer",
+    "oos_returns": "oos_returns",
+    "is_returns": "is_returns",
+    "oos_returns_over_hodl": "oos_returns_over_hodl",
+    "is_returns_over_hodl": "is_returns_over_hodl",
 }
 
 # Aggregation functions

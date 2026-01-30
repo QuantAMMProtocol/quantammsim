@@ -297,7 +297,10 @@ def train_on_historic_data(
                 params, key, n_assets, n_parameter_sets, force_scalar=True
             )
         params["subsidary_params"] = []
-        params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale=0.1)
+        # noise_scale controls initialization diversity for param sets 1+
+        # Default 0.1 maintains backward compatibility
+        noise_scale = run_fingerprint["optimisation_settings"].get("noise_scale", 0.1)
+        params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale=noise_scale)
 
     params_in_axes_dict = pool.make_vmap_in_axes(params)
 

@@ -46,7 +46,7 @@ tuner = HyperparamTuner(
 import numpy as np
 import optuna
 from optuna.samplers import TPESampler
-from optuna.pruners import MedianPruner, PercentilePruner
+from optuna.pruners import MedianPruner, PercentilePruner, HyperbandPruner, SuccessiveHalvingPruner
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple, Callable, Union
 from copy import deepcopy
@@ -220,6 +220,11 @@ class HyperparamSpace:
         if include_early_stopping:
             params["early_stopping_patience"] = {"low": 20, "high": 200, "log": True, "type": "int"}
 
+        # noise_scale: controls initialization diversity for n_parameter_sets > 1
+        # Larger noise = more diverse initializations = better exploration but more variance
+        # Only relevant when n_parameter_sets > 1 (set in run_fingerprint)
+        params["noise_scale"] = {"low": 0.01, "high": 0.5, "log": True}
+
         return cls(params=params)
 
     @classmethod
@@ -382,11 +387,23 @@ def create_objective(
         opt_settings_keys = [
             "base_lr", "batch_size", "n_iterations",
             "clip_norm", "n_cycles", "lr_schedule_type", "lr_decay_ratio",
-            "warmup_steps", "early_stopping_patience",
+            "warmup_steps", "early_stopping_patience", "noise_scale",
         ]
+
+        # Initial strategy parameter values go directly in run_fingerprint
+        initial_param_keys = [
+            "initial_memory_length", "initial_memory_length_delta",
+            "initial_k_per_day", "initial_log_amplitude",
+            "initial_raw_width", "initial_raw_exponents",
+            "initial_pre_exp_scaling", "initial_weights_logits",
+        ]
+
         for key, value in suggested.items():
             if key in opt_settings_keys:
                 fp["optimisation_settings"][key] = value
+            elif key in initial_param_keys:
+                # Initial strategy params go in fingerprint root
+                fp[key] = value
             elif key == "bout_offset_days":
                 # Convert days to minutes (bout_offset is in minutes)
                 fp["bout_offset"] = value * 1440
@@ -641,16 +658,46 @@ class HyperparamTuner:
         )
 
         # Set pruner for early stopping unpromising trials
-        # MedianPruner: prune if below median of completed trials at same step
-        if pruner == "default":
-            self.pruner = MedianPruner(
-                n_startup_trials=max(3, n_trials // 5),  # Complete a few trials first
-                n_warmup_steps=0,  # Can prune after first cycle
-                interval_steps=1,  # Check after each cycle
-            ) if enable_pruning else optuna.pruners.NopPruner()
-        elif pruner is None:
+        # Note: WFA cycles are NOT true multi-fidelity (cycle 1 doesn't predict cycles 2-4,
+        # they're different market regimes). So Hyperband/ASHA are overkill - their
+        # sophisticated logic assumes correlation between fidelities we don't have.
+        # PercentilePruner is better: just filter obvious disasters without predicting.
+        if not enable_pruning or pruner is None or pruner == "none":
             self.pruner = optuna.pruners.NopPruner()
+        elif pruner == "default" or pruner == "percentile":
+            # PercentilePruner with 25%: prune bottom 25% after each cycle.
+            # This is appropriate for WFA where cycles are independent regimes.
+            # We're not predicting future cycles, just filtering disasters.
+            self.pruner = PercentilePruner(
+                percentile=25.0,
+                n_startup_trials=max(5, n_trials // 5),
+                n_warmup_steps=0,
+                interval_steps=1,
+            )
+        elif pruner == "median":
+            # MedianPruner: prune if below median of completed trials at same step
+            self.pruner = MedianPruner(
+                n_startup_trials=max(3, n_trials // 5),
+                n_warmup_steps=0,
+                interval_steps=1,
+            )
+        elif pruner == "hyperband":
+            # HyperbandPruner: structured successive halving with multiple brackets
+            # Note: Designed for true multi-fidelity where cheap evals predict expensive ones.
+            # Use cautiously with WFA - cycles are different regimes, not fidelity levels.
+            self.pruner = HyperbandPruner(
+                min_resource=1,
+                max_resource=n_wfa_cycles,
+                reduction_factor=3,
+            )
+        elif pruner == "successive_halving":
+            # SuccessiveHalvingPruner: single bracket successive halving
+            self.pruner = SuccessiveHalvingPruner(
+                min_resource=1,
+                reduction_factor=3,
+            )
         else:
+            # Custom pruner instance
             self.pruner = pruner
 
     def tune(self, run_fingerprint: dict) -> TuningResult:
