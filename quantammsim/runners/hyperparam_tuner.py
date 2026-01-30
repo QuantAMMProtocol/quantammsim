@@ -106,7 +106,8 @@ class HyperparamSpace:
     Conditional Parameters:
     - softmin_temperature: only sampled when aggregation="softmin"
     - weight_decay: only sampled when use_weight_decay=True (and triggers adamw)
-    - warmup_steps: only sampled when lr_schedule_type != "constant"
+    - lr_decay_ratio: only sampled when lr_schedule_type != "constant"
+    - warmup_steps: only sampled when lr_schedule_type == "warmup_cosine"
 
     Note on bout_offset:
     - bout_offset is in MINUTES, always multiples of 1440 (whole days)
@@ -164,10 +165,13 @@ class HyperparamSpace:
             })
 
         max_bout_days = int(cycle_days * 0.9)
+        # LR ranges calibrated for each optimizer:
+        # - SGD: typically needs higher LR (1e-3 to 1.0)
+        # - Adam/AdamW: typically needs lower LR (1e-5 to 1e-1), with 3e-4 being common default
         lr_range = (
-            {"low": 0.001, "high": 1.0, "log": True}
+            {"low": 1e-3, "high": 1.0, "log": True}
             if optimizer == "sgd"
-            else {"low": 0.01, "high": 0.5, "log": True}
+            else {"low": 1e-5, "high": 1e-1, "log": True}
         )
 
         if runner == "multi_period_sgd":
@@ -199,10 +203,18 @@ class HyperparamSpace:
             }
 
         if include_lr_schedule:
-            params["lr_schedule_type"] = {"choices": ["constant", "cosine", "linear_decay"]}
-            params["warmup_steps"] = {
-                "low": 5, "high": 200, "log": False, "type": "int",
+            # Available schedules in backpropagation._create_lr_schedule:
+            # constant, cosine, exponential, warmup_cosine
+            params["lr_schedule_type"] = {"choices": ["constant", "cosine", "warmup_cosine", "exponential"]}
+            # lr_decay_ratio: min_lr = base_lr / lr_decay_ratio (only for decay schedules)
+            params["lr_decay_ratio"] = {
+                "low": 10, "high": 10000, "log": True,
                 "conditional_on": "lr_schedule_type", "conditional_value_not": "constant"
+            }
+            # Only warmup_cosine uses warmup_steps
+            params["warmup_steps"] = {
+                "low": 10, "high": 500, "log": True, "type": "int",
+                "conditional_on": "lr_schedule_type", "conditional_value": "warmup_cosine"
             }
 
         if include_early_stopping:
@@ -369,8 +381,8 @@ def create_objective(
         # These go in optimisation_settings
         opt_settings_keys = [
             "base_lr", "batch_size", "n_iterations",
-            "clip_norm", "n_cycles", "lr_schedule_type", "warmup_steps",
-            "early_stopping_patience",
+            "clip_norm", "n_cycles", "lr_schedule_type", "lr_decay_ratio",
+            "warmup_steps", "early_stopping_patience",
         ]
         for key, value in suggested.items():
             if key in opt_settings_keys:

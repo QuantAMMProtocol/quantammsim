@@ -558,11 +558,26 @@ def _create_base_optimizer(optimizer_type, learning_rate, weight_decay=0.0):
 
 
 def _create_lr_schedule(settings):
-    """Create a learning rate schedule based on settings."""
+    """Create a learning rate schedule based on settings.
+
+    Supports two ways to specify the minimum LR for decay schedules:
+    - lr_decay_ratio: min_lr = base_lr / lr_decay_ratio (preferred, scale-invariant)
+    - min_lr: absolute minimum LR (fallback for backwards compatibility)
+
+    If both are provided, lr_decay_ratio takes precedence.
+    """
     base_lr = settings.get("base_lr", 0.001)
-    min_lr = settings.get("min_lr", 1e-6)
     n_iterations = settings.get("n_iterations", 1000)
     schedule_type = settings.get("lr_schedule_type", "constant")
+
+    # Compute min_lr: prefer lr_decay_ratio if provided, else use min_lr directly
+    if "lr_decay_ratio" in settings:
+        min_lr = base_lr / settings["lr_decay_ratio"]
+    else:
+        min_lr = settings.get("min_lr", 1e-6)
+        # Safety check: ensure min_lr < base_lr for decay schedules
+        if schedule_type != "constant" and min_lr >= base_lr:
+            min_lr = base_lr / 100  # Fallback to 100:1 ratio
 
     if schedule_type == "constant":
         return optax.constant_schedule(base_lr)
@@ -575,14 +590,14 @@ def _create_lr_schedule(settings):
         )
 
     elif schedule_type == "exponential":
-        # Calculate decay_rate from decay_lr_ratio
-        # If we want to decay from base_lr to min_lr over n_iterations steps
-        # with exponential decay, we need to solve: min_lr = base_lr * (decay_rate)^n_iterations
+        # Decay from base_lr to min_lr over n_iterations steps.
+        # Formula: LR(step) = base_lr * decay_rate^step
+        # At step=n_iterations: min_lr = base_lr * decay_rate^n_iterations
         # So: decay_rate = (min_lr / base_lr)^(1/n_iterations)
         decay_rate = (min_lr / base_lr) ** (1.0 / n_iterations)
         return optax.exponential_decay(
-            init_value=base_lr, 
-            transition_steps=n_iterations,  # Use n_iterations
+            init_value=base_lr,
+            transition_steps=1,  # Apply decay at every step
             decay_rate=decay_rate
         )
 

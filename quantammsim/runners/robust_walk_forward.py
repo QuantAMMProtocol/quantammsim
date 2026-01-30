@@ -765,6 +765,7 @@ def robust_walk_forward_training(
     regularization_strength: float = 0.01,
     checkpoint_every: int = 50,
     verbose: bool = True,
+    root: str = None,
 ) -> Tuple[RobustTrainingResult, dict]:
     """
     Run robust walk-forward training with WFE and Rademacher tracking.
@@ -865,6 +866,7 @@ def robust_walk_forward_training(
         start_date_string=run_fingerprint["startDateString"],
         end_time_string=last_test_end,
         do_test_period=False,
+        root=root,
     )
 
     if verbose:

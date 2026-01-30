@@ -13,7 +13,7 @@ run_fingerprint_defaults = {
         "decay_lr_plateau": 100,
         "batch_size": 8,
         "train_on_hessian_trace": False,
-        "min_lr": 1e-6,
+        "min_lr": 1e-6,  # Fallback if lr_decay_ratio not set; prefer lr_decay_ratio
         "n_iterations": 1000,
         "n_cycles": 5,
         "sample_method": "uniform",
@@ -27,8 +27,9 @@ run_fingerprint_defaults = {
         "use_plateau_decay": False,
         "use_gradient_clipping": True,  # Prevents gradient explosion
         "clip_norm": 10.0,
-        "lr_schedule_type": "constant",
-        "warmup_steps": 100,
+        "lr_schedule_type": "constant",  # Options: "constant", "cosine", "warmup_cosine", "exponential"
+        "lr_decay_ratio": 1000,  # For decay schedules: min_lr = base_lr / lr_decay_ratio
+        "warmup_steps": 100,  # Only used by "warmup_cosine" schedule
         # Early stopping settings
         "early_stopping": True,  # Stop training when validation metric stops improving
         "early_stopping_patience": 200,  # Iterations without validation improvement before stopping
