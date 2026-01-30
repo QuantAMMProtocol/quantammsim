@@ -353,6 +353,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
             local_fp,
             iterations_per_print=self.runner_kwargs.get("iterations_per_print", 10000),
             return_training_metadata=True,  # Always get metadata for OOS metrics
+            force_init=True,  # Don't load/restart previous runs
             root=self.root,
         )
 
