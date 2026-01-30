@@ -132,6 +132,13 @@ class CycleEvaluation:
     oos_ulcer: Optional[float] = None
     is_returns: Optional[float] = None
     oos_returns: Optional[float] = None
+    # Trained strategy parameters for this cycle
+    trained_params: Optional[Dict[str, Any]] = None
+    # Cycle date ranges
+    train_start_date: Optional[str] = None
+    train_end_date: Optional[str] = None
+    test_start_date: Optional[str] = None
+    test_end_date: Optional[str] = None
 
 
 @dataclass
@@ -777,6 +784,19 @@ class TrainingEvaluator:
                     )
                     all_checkpoint_returns.append(checkpoint_returns)
 
+            # Convert params to serializable format (JAX arrays -> Python floats/lists)
+            serializable_params = {}
+            for k, v in params.items():
+                if hasattr(v, 'tolist'):
+                    serializable_params[k] = v.tolist()
+                elif isinstance(v, (int, float, str, bool, type(None))):
+                    serializable_params[k] = v
+                else:
+                    try:
+                        serializable_params[k] = float(v)
+                    except (TypeError, ValueError):
+                        serializable_params[k] = str(v)
+
             cycle_eval = CycleEvaluation(
                 cycle_number=cycle.cycle_number,
                 is_sharpe=is_metrics["sharpe"],
@@ -797,6 +817,12 @@ class TrainingEvaluator:
                 oos_ulcer=oos_metrics.get("ulcer"),
                 is_returns=is_metrics.get("return"),
                 oos_returns=oos_metrics.get("return"),
+                # Trained strategy params and dates
+                trained_params=serializable_params,
+                train_start_date=cycle.train_start_date,
+                train_end_date=cycle.train_end_date,
+                test_start_date=cycle.test_start_date,
+                test_end_date=cycle.test_end_date,
             )
 
             cycle_results.append(cycle_eval)

@@ -486,6 +486,33 @@ def create_objective(
                 return float("inf")  # Worst possible for minimization
 
         # Store full result for later analysis
+        # Include per-cycle metrics for detailed inspection
+        per_cycle_metrics = []
+        for c in result.cycles:
+            per_cycle_metrics.append({
+                "cycle": c.cycle_number,
+                # Date ranges
+                "train_start_date": c.train_start_date,
+                "train_end_date": c.train_end_date,
+                "test_start_date": c.test_start_date,
+                "test_end_date": c.test_end_date,
+                # Metrics
+                "is_sharpe": c.is_sharpe,
+                "oos_sharpe": c.oos_sharpe,
+                "is_calmar": c.is_calmar,
+                "oos_calmar": c.oos_calmar,
+                "is_sterling": c.is_sterling,
+                "oos_sterling": c.oos_sterling,
+                "is_ulcer": c.is_ulcer,
+                "oos_ulcer": c.oos_ulcer,
+                "is_returns_over_hodl": c.is_returns_over_hodl,
+                "oos_returns_over_hodl": c.oos_returns_over_hodl,
+                "wfe": c.walk_forward_efficiency,
+                "is_oos_gap": c.is_oos_gap,
+                # Trained strategy parameters
+                "trained_params": c.trained_params,
+            })
+
         trial.set_user_attr("evaluation_result", {
             "mean_oos_sharpe": result.mean_oos_sharpe,
             "mean_wfe": result.mean_wfe,
@@ -494,6 +521,7 @@ def create_objective(
             "aggregate_rademacher": result.aggregate_rademacher,
             "adjusted_mean_oos_sharpe": result.adjusted_mean_oos_sharpe,
             "is_effective": result.is_effective,
+            "cycles": per_cycle_metrics,
         })
 
         # Return requested metric using unified extraction from cycles
