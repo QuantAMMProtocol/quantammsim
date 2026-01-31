@@ -29,10 +29,10 @@ tuner = HyperparamTuner(
     n_trials=50,
     n_wfa_cycles=3,  # WFA cycles per trial
 )
-best_params, study = tuner.tune(run_fingerprint)
+result = tuner.tune(run_fingerprint)
 
 # Use best params for final training
-run_fingerprint["optimisation_settings"].update(best_params)
+run_fingerprint["optimisation_settings"].update(result.best_params)
 
 # Multi-objective: optimize OOS Sharpe AND WFE
 tuner = HyperparamTuner(
@@ -63,6 +63,31 @@ from quantammsim.runners.training_evaluator import (
 from quantammsim.core_simulator.param_utils import recursive_default_set
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.runners.metric_extraction import extract_cycle_metric
+
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+# Maps outer Optuna objective to inner training metric (return_val / early_stopping_metric)
+# Used in HyperparamSpace.create() to decide if training_objective choice is meaningful,
+# and in create_objective() to resolve "aligned" to the actual metric.
+# Available inner metrics: sharpe, calmar, sterling, ulcer, returns_over_uniform_hodl, etc.
+# (see _calculate_return_value in forward_pass.py for full list)
+OUTER_TO_INNER_METRIC = {
+    "mean_oos_sharpe": "sharpe",
+    "worst_oos_sharpe": "sharpe",
+    "mean_oos_calmar": "calmar",
+    "worst_oos_calmar": "calmar",
+    "mean_oos_sterling": "sterling",
+    "worst_oos_sterling": "sterling",
+    "mean_oos_ulcer": "ulcer",
+    "worst_oos_ulcer": "ulcer",
+    "mean_oos_returns_over_hodl": "returns_over_uniform_hodl",
+    "worst_oos_returns_over_hodl": "returns_over_uniform_hodl",
+    "mean_wfe": "sharpe",  # WFE uses sharpe internally
+    "worst_wfe": "sharpe",
+}
 
 
 # =============================================================================
@@ -126,6 +151,7 @@ class HyperparamSpace:
         include_early_stopping: bool = True,
         include_weight_decay: bool = True,
         minimal: bool = False,
+        objective_metric: str = "mean_oos_sharpe",
     ) -> "HyperparamSpace":
         """
         Unified factory method for creating hyperparameter search spaces.
@@ -146,6 +172,9 @@ class HyperparamSpace:
             Include use_weight_decay and weight_decay (conditional).
         minimal : bool
             If True, return minimal space with just lr and iterations.
+        objective_metric : str
+            Outer Optuna objective (e.g., "mean_oos_sharpe", "mean_oos_calmar").
+            Used to determine if training_objective choice is meaningful.
 
         Returns
         -------
@@ -189,10 +218,10 @@ class HyperparamSpace:
         else:
             params = {
                 "base_lr": lr_range,
-                "batch_size": {"low": 1, "high": 16, "log": False, "type": "int"},
-                "n_iterations": {"low": 50, "high": 500, "log": True, "type": "int"},
-                "bout_offset_days": {"low": 1, "high": max_bout_days, "log": True, "type": "int"},
-                "clip_norm": {"low": 1.0, "high": 100.0, "log": True},
+                "batch_size": {"low": 1, "high": 64, "log": True, "type": "int"},
+                "n_iterations": {"low": 50, "high": 5000, "log": True, "type": "int"},
+                "bout_offset_days": {"low": 7, "high": max_bout_days, "log": True, "type": "int"},
+                "clip_norm": {"low": 0.5, "high": 50.0, "log": True},
             }
 
         if include_weight_decay:
@@ -218,12 +247,42 @@ class HyperparamSpace:
             }
 
         if include_early_stopping:
-            params["early_stopping_patience"] = {"low": 20, "high": 200, "log": True, "type": "int"}
+            params["use_early_stopping"] = {"choices": [True, False]}
+            params["early_stopping_patience"] = {
+                "low": 30, "high": 300, "log": True, "type": "int",
+                "conditional_on": "use_early_stopping", "conditional_value": True
+            }
+            # Validation fraction - how much of training to hold out for early stopping
+            # Larger = more robust validation signal but less training data
+            params["val_fraction"] = {
+                "low": 0.15, "high": 0.4, "log": False,
+                "conditional_on": "use_early_stopping", "conditional_value": True
+            }
+
+        # Training objective: controls BOTH return_val (what gradients optimize) AND
+        # early_stopping_metric (what decides when to stop / which params to select)
+        # - "aligned": match the outer Optuna objective (sharpe→sharpe, calmar→calmar, etc.)
+        # - "returns_over_uniform_hodl": always use this robust proxy metric
+        # If "aligned" performs poorly (e.g., calmar has bad gradients), Optuna will learn
+        # to favor "returns_over_uniform_hodl" instead.
+        #
+        # Only include this choice if it's meaningful (i.e., aligned would differ from
+        # returns_over_uniform_hodl). If outer objective already maps to returns_over_hodl,
+        # both choices would be identical, so we skip it.
+        aligned_metric = OUTER_TO_INNER_METRIC.get(objective_metric, "returns_over_uniform_hodl")
+        if aligned_metric != "returns_over_uniform_hodl":
+            # Choice is meaningful - include it
+            params["training_objective"] = {"choices": ["aligned", "returns_over_uniform_hodl"]}
 
         # noise_scale: controls initialization diversity for n_parameter_sets > 1
         # Larger noise = more diverse initializations = better exploration but more variance
         # Only relevant when n_parameter_sets > 1 (set in run_fingerprint)
         params["noise_scale"] = {"low": 0.01, "high": 0.5, "log": True}
+
+        # maximum_change: max weight change per time step (controls trading speed limit)
+        # Lower = more constrained/slower rebalancing, higher = more aggressive
+        # Default is 3e-4, range from very constrained (1e-5) to effectively unconstrained (2.0)
+        params["maximum_change"] = {"low": 1e-5, "high": 2.0, "log": True}
 
         return cls(params=params)
 
@@ -382,6 +441,31 @@ def create_objective(
             # Ensure no weight decay is applied
             fp["optimisation_settings"]["weight_decay"] = 0.0
 
+        # Handle early_stopping conditional logic:
+        # If use_early_stopping=False, disable early stopping entirely
+        use_early_stopping = suggested.get("use_early_stopping", True)
+        fp["optimisation_settings"]["early_stopping"] = use_early_stopping
+        if use_early_stopping:
+            # Apply val_fraction if provided
+            if "val_fraction" in suggested:
+                fp["optimisation_settings"]["val_fraction"] = suggested["val_fraction"]
+        else:
+            # Set a very high patience so it effectively never triggers
+            fp["optimisation_settings"]["early_stopping_patience"] = 999999
+            # Set val_fraction to 0 when early stopping is disabled
+            fp["optimisation_settings"]["val_fraction"] = 0.0
+
+        # Handle training_objective: controls BOTH return_val AND early_stopping_metric
+        training_obj = suggested.get("training_objective", "returns_over_uniform_hodl")
+        if training_obj == "aligned":
+            # Align with outer objective
+            inner_metric = OUTER_TO_INNER_METRIC.get(objective_metric, "returns_over_uniform_hodl")
+        else:
+            # Use robust proxy
+            inner_metric = "returns_over_uniform_hodl"
+        fp["return_val"] = inner_metric
+        fp["optimisation_settings"]["early_stopping_metric"] = inner_metric
+
         # Apply suggested hyperparameters
         # These go in optimisation_settings
         opt_settings_keys = [
@@ -390,18 +474,21 @@ def create_objective(
             "warmup_steps", "early_stopping_patience", "noise_scale",
         ]
 
-        # Initial strategy parameter values go directly in run_fingerprint
-        initial_param_keys = [
-            "initial_memory_length", "initial_memory_length_delta",
+        # Parameters that go directly in run_fingerprint (not optimisation_settings)
+        fingerprint_root_keys = [
+            # Initial strategy params (tunable)
+            "initial_memory_length",
             "initial_k_per_day", "initial_log_amplitude",
             "initial_raw_width", "initial_raw_exponents",
-            "initial_pre_exp_scaling", "initial_weights_logits",
+            "initial_pre_exp_scaling",
+            # Strategy constraints
+            "maximum_change",
         ]
 
         for key, value in suggested.items():
             if key in opt_settings_keys:
                 fp["optimisation_settings"][key] = value
-            elif key in initial_param_keys:
+            elif key in fingerprint_root_keys:
                 # Initial strategy params go in fingerprint root
                 fp[key] = value
             elif key == "bout_offset_days":
@@ -410,8 +497,9 @@ def create_objective(
             elif key == "bout_offset":
                 # Legacy: direct minutes value
                 fp["bout_offset"] = value
-            # Skip control params that aren't real hyperparams
-            elif key in ["use_weight_decay", "weight_decay"]:
+            # Skip control params that aren't real hyperparams (handled above)
+            elif key in ["use_weight_decay", "weight_decay", "use_early_stopping",
+                         "val_fraction", "training_objective"]:
                 pass  # Already handled above
             # multi_period_sgd specific params handled in runner_kwargs
 
@@ -469,8 +557,9 @@ def create_objective(
                 print(f"Trial {trial.number} failed: {e}")
                 traceback.print_exc()
             # Return bad value for failed trials
-            # Metrics we MAXIMIZE (higher is better): sharpe, wfe, calmar, sterling, returns
-            # Metrics we MINIMIZE (lower is better): ulcer, is_oos_gap
+            # Metrics we MAXIMIZE (higher is better): sharpe, wfe, calmar, sterling, returns, ulcer
+            # Note: ulcer is negated (higher = less pain), so we maximize
+            # Metrics we MINIMIZE (lower is better): is_oos_gap
             maximize_metrics = [
                 "mean_oos_sharpe", "worst_oos_sharpe",
                 "mean_wfe", "worst_wfe",
@@ -479,6 +568,7 @@ def create_objective(
                 "mean_oos_sterling", "worst_oos_sterling",
                 "mean_oos_returns", "worst_oos_returns",
                 "mean_oos_returns_over_hodl", "worst_oos_returns_over_hodl",
+                "mean_oos_ulcer", "worst_oos_ulcer",
             ]
             if objective_metric in maximize_metrics:
                 return float("-inf")  # Worst possible for maximization
@@ -683,12 +773,19 @@ class HyperparamTuner:
         self.root = root
 
         # Set default search space based on runner
+        # IMPORTANT: Pass objective so training_objective is conditionally included correctly
         if hyperparam_space is not None:
             self.hyperparam_space = hyperparam_space
         elif runner_name == "multi_period_sgd":
-            self.hyperparam_space = HyperparamSpace.default_multi_period_space()
+            self.hyperparam_space = HyperparamSpace.create(
+                runner="multi_period_sgd",
+                objective_metric=objective,
+            )
         else:
-            self.hyperparam_space = HyperparamSpace.default_adam_space()
+            self.hyperparam_space = HyperparamSpace.create(
+                optimizer="adam",
+                objective_metric=objective,
+            )
 
         # Set sampler (TPE is good for expensive evaluations)
         self.sampler = sampler or TPESampler(
