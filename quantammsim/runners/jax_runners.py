@@ -261,12 +261,15 @@ def train_on_historic_data(
     if run_location is None:
         run_location = './results/' + get_run_location(run_fingerprint) + ".json"
 
-    if os.path.isfile(run_location):
+    # Check for cached results (skip if force_init=True)
+    if not force_init and os.path.isfile(run_location):
         print("Loading from: ", run_location)
         print("found file")
         params, step = retrieve_best(run_location, "best_train_objective", False, None)
         loaded = True
     else:
+        if force_init and os.path.isfile(run_location):
+            print(f"force_init=True, ignoring cached file: {run_location}")
         loaded = False
     # Create pool
     pool = create_pool(rule)
@@ -867,6 +870,9 @@ def train_on_historic_data(
             "final_continuous_test_metrics": continuous_test_metrics_list if continuous_test_metrics_list else None,
             # Which param set was selected as best (for extracting correct metrics)
             "best_param_idx": best_val_params_idx if val_fraction > 0 else best_train_params_idx,
+            # Provenance: full fingerprint and output file path for debugging/linking
+            "run_location": run_location,
+            "run_fingerprint": deepcopy(run_fingerprint),
         }
         if track_checkpoints and checkpoint_returns_list:
             # Stack checkpoint returns: shape (n_checkpoints, T-1)

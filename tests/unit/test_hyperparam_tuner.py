@@ -75,9 +75,9 @@ class TestHyperparamSpace:
 
         bout_spec = space.params["bout_offset_days"]
 
-        # Minimum should be 1 day
-        assert bout_spec["low"] == 1, \
-            f"bout_offset_days min should be 1 day, got {bout_spec['low']}"
+        # Minimum should be 7 days for train_on_historic_data (1 day for multi_period_sgd)
+        assert bout_spec["low"] == 7, \
+            f"bout_offset_days min should be 7 days, got {bout_spec['low']}"
 
         # Maximum should be ~90% of 180 days = 162 days
         expected_max = int(180 * 0.9)
@@ -133,7 +133,8 @@ class TestHyperparamSpace:
         )
 
         # Check bout_offset_days scaling (in days)
-        assert space.params["bout_offset_days"]["low"] == 1
+        # train_on_historic_data uses low=7, multi_period_sgd uses low=1
+        assert space.params["bout_offset_days"]["low"] == 7
         assert space.params["bout_offset_days"]["high"] == int(120 * 0.9)
 
         # Check optional params included

@@ -538,6 +538,19 @@ def create_objective(
 
                 cycle_evals.append(cycle_eval)
 
+                # Check for NaN in cycle metrics - fail the trial if any cycle produces NaN
+                # This prevents silent propagation of previous values when training collapses
+                if (cycle_eval.oos_sharpe is None or
+                    np.isnan(cycle_eval.oos_sharpe) or
+                    cycle_eval.oos_returns_over_hodl is None or
+                    np.isnan(cycle_eval.oos_returns_over_hodl)):
+                    raise ValueError(
+                        f"Cycle {cycle_eval.cycle_number} produced NaN metrics "
+                        f"(oos_sharpe={cycle_eval.oos_sharpe}, "
+                        f"oos_returns_over_hodl={cycle_eval.oos_returns_over_hodl}). "
+                        f"Training likely collapsed."
+                    )
+
                 # Compute running metric for intermediate reporting using unified extraction
                 intermediate_value = extract_cycle_metric(cycle_evals, objective_metric)
 
@@ -603,6 +616,9 @@ def create_objective(
                 "is_oos_gap": c.is_oos_gap,
                 # Trained strategy parameters
                 "trained_params": c.trained_params,
+                # Provenance: for debugging and linking to output files
+                "run_location": c.run_location,
+                "run_fingerprint": c.run_fingerprint,
             })
 
         trial.set_user_attr("evaluation_result", {

@@ -139,6 +139,9 @@ class CycleEvaluation:
     train_end_date: Optional[str] = None
     test_start_date: Optional[str] = None
     test_end_date: Optional[str] = None
+    # Provenance: for debugging and linking to output files
+    run_location: Optional[str] = None
+    run_fingerprint: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -749,25 +752,28 @@ class TrainingEvaluator:
             final_train = metadata.get("final_train_metrics")
             final_oos = metadata.get("final_continuous_test_metrics")
 
-            if final_train is None or len(final_train) <= best_idx:
-                raise ValueError(
-                    f"Cycle {cycle.cycle_number}: final_train_metrics not available in metadata. "
-                    f"Ensure train_on_historic_data returns training metadata."
+            # Fallback: compute metrics directly if not provided in metadata
+            # This supports trainers like RandomBaselineWrapper that don't compute metrics
+            if final_train is None or (isinstance(final_train, list) and len(final_train) <= best_idx):
+                if self.verbose:
+                    print(f"  Computing metrics directly (not provided in metadata)")
+                is_metrics = self._evaluate_params(
+                    params, data_dict,
+                    cycle.train_start_idx, cycle.train_end_idx,
+                    pool, n_assets, run_fingerprint,
                 )
-            if final_oos is None or len(final_oos) <= best_idx:
-                raise ValueError(
-                    f"Cycle {cycle.cycle_number}: final_continuous_test_metrics not available in metadata. "
-                    f"Ensure train_on_historic_data returns training metadata with proper test period."
+            else:
+                is_metrics = final_train[best_idx]
+
+            if final_oos is None or (isinstance(final_oos, list) and len(final_oos) <= best_idx):
+                oos_metrics = self._evaluate_params(
+                    params, data_dict,
+                    cycle.test_start_idx, cycle.test_end_idx,
+                    pool, n_assets, run_fingerprint,
                 )
-
-            is_metrics = final_train[best_idx]
-
-            # OOS metrics have "continuous_test_" prefix - strip it for consistency
-            oos_metrics_raw = final_oos[best_idx]
-            oos_metrics = {
-                k.replace("continuous_test_", ""): v
-                for k, v in oos_metrics_raw.items()
-            }
+            else:
+                # OOS metrics from calculate_continuous_test_metrics (already unprefixed)
+                oos_metrics = final_oos[best_idx]
 
             # Compute WFE
             wfe = compute_walk_forward_efficiency(
@@ -833,6 +839,9 @@ class TrainingEvaluator:
                 train_end_date=cycle.train_end_date,
                 test_start_date=cycle.test_start_date,
                 test_end_date=cycle.test_end_date,
+                # Provenance: for debugging and linking to output files
+                run_location=metadata.get("run_location"),
+                run_fingerprint=metadata.get("run_fingerprint"),
             )
 
             cycle_results.append(cycle_eval)

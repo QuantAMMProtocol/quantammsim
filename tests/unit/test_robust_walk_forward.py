@@ -225,8 +225,8 @@ class TestCycleGeneration:
     def test_cycle_count(self):
         """Should generate correct number of cycles."""
         cycles = generate_walk_forward_cycles(
-            "2020-01-01 00:00:00",
-            "2021-01-01 00:00:00",
+            "2022-01-01 00:00:00",
+            "2023-01-01 00:00:00",
             n_cycles=4,
         )
         assert len(cycles) == 4
@@ -234,8 +234,8 @@ class TestCycleGeneration:
     def test_cycle_ordering(self):
         """Cycles should be in chronological order."""
         cycles = generate_walk_forward_cycles(
-            "2020-01-01 00:00:00",
-            "2021-01-01 00:00:00",
+            "2022-01-01 00:00:00",
+            "2023-01-01 00:00:00",
             n_cycles=4,
         )
 
@@ -246,8 +246,8 @@ class TestCycleGeneration:
     def test_expanding_window(self):
         """Expanding window should always start from beginning."""
         cycles = generate_walk_forward_cycles(
-            "2020-01-01 00:00:00",
-            "2021-01-01 00:00:00",
+            "2022-01-01 00:00:00",
+            "2023-01-01 00:00:00",
             n_cycles=4,
             keep_fixed_start=True,
         )
@@ -259,8 +259,8 @@ class TestCycleGeneration:
     def test_rolling_window(self):
         """Rolling window should move forward each cycle."""
         cycles = generate_walk_forward_cycles(
-            "2020-01-01 00:00:00",
-            "2021-01-01 00:00:00",
+            "2022-01-01 00:00:00",
+            "2023-01-01 00:00:00",
             n_cycles=4,
             keep_fixed_start=False,
         )

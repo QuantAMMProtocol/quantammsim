@@ -1090,7 +1090,15 @@ class TestExistingRunnerWrapperE2E:
                     squeezed_params[k] = jnp.squeeze(v, axis=0)
                 else:
                     squeezed_params[k] = v
-            return squeezed_params
+            # Return (params, metadata) tuple as train_on_historic_data does
+            metadata = {
+                "epochs_trained": 3,
+                "final_objective": 0.5,
+                "best_param_idx": 0,
+                "final_train_metrics": [{"sharpe": 0.5, "returns_over_uniform_hodl": 0.01}],
+                "final_continuous_test_metrics": [{"sharpe": 0.4, "returns_over_uniform_hodl": 0.005}],
+            }
+            return squeezed_params, metadata
 
         jax_runners.train_on_historic_data = patched_train
 
@@ -1132,12 +1140,16 @@ class TestExistingRunnerWrapperE2E:
             captured_fp["start"] = run_fingerprint["startDateString"]
             captured_fp["end"] = run_fingerprint["endDateString"]
             captured_fp["test_end"] = run_fingerprint["endTestDateString"]
-            # Return a mock result instead of running actual training
-            return {
-                "params": {},
-                "n_iterations": 3,
-                "objective": 0.5,
+            # Return (params, metadata) tuple as train_on_historic_data does
+            params = {}
+            metadata = {
+                "epochs_trained": 3,
+                "final_objective": 0.5,
+                "best_param_idx": 0,
+                "final_train_metrics": [{"sharpe": 0.5, "returns_over_uniform_hodl": 0.01}],
+                "final_continuous_test_metrics": [{"sharpe": 0.4, "returns_over_uniform_hodl": 0.005}],
             }
+            return params, metadata
 
         jax_runners.train_on_historic_data = capture_train
 
