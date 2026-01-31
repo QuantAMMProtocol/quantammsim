@@ -440,15 +440,18 @@ def train_on_historic_data(
     selection_metric = run_fingerprint["optimisation_settings"].get("early_stopping_metric", "sharpe")
 
     # Validate selection metric
-    # Note: For most metrics, higher is better. For max_drawdown, lower is better.
-    valid_metrics = ["sharpe", "returns", "returns_over_hodl", "returns_over_uniform_hodl", "max_drawdown"]
-    lower_is_better_metrics = ["max_drawdown"]  # Metrics where lower values are better
+    # All metrics are normalized so higher = better (see forward_pass.py _calculate_* functions)
+    # These must match keys returned by calculate_period_metrics in post_train_analysis.py
+    valid_metrics = [
+        "sharpe", "return", "returns_over_hodl", "returns_over_uniform_hodl",
+        "calmar", "sterling", "ulcer",
+    ]
     if (use_early_stopping or val_fraction > 0) and selection_metric not in valid_metrics:
         raise ValueError(
             f"early_stopping_metric '{selection_metric}' is not valid. "
             f"Must be one of: {valid_metrics}"
         )
-    metric_direction = -1 if selection_metric in lower_is_better_metrics else 1
+    metric_direction = 1  # All metrics: higher = better
 
     # Early stopping state (only used when use_early_stopping=True)
     # Early stopping only controls WHEN to stop, not WHAT params to return.
