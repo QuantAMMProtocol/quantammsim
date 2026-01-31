@@ -195,7 +195,7 @@ class HyperparamSpace:
                 "n_iterations": {"low": 50, "high": 200, "log": True, "type": "int"},
             })
 
-        max_bout_days = int(cycle_days * 0.9)
+        max_bout_days = max(1, int(cycle_days * 0.9))  # Ensure at least 1 day
         # LR ranges calibrated for each optimizer:
         # - SGD: typically needs higher LR (1e-3 to 1.0)
         # - Adam/AdamW: typically needs lower LR (1e-5 to 1e-1), with 3e-4 being common default
@@ -218,11 +218,14 @@ class HyperparamSpace:
                 "bout_offset_days": {"low": 1, "high": max_bout_days, "log": True, "type": "int"},
             }
         else:
+            # Ensure bout_offset_days bounds are valid (low <= high)
+            # For short cycles, allow smaller bout offsets
+            bout_offset_low = min(7, max_bout_days)  # Use 7 or max if max is smaller
             params = {
                 "base_lr": lr_range,
                 "batch_size": {"low": 1, "high": 64, "log": True, "type": "int"},
                 "n_iterations": {"low": 50, "high": 5000, "log": True, "type": "int"},
-                "bout_offset_days": {"low": 7, "high": max_bout_days, "log": True, "type": "int"},
+                "bout_offset_days": {"low": bout_offset_low, "high": max_bout_days, "log": True, "type": "int"},
                 "clip_norm": {"low": 0.5, "high": 50.0, "log": True},
             }
 
@@ -512,12 +515,16 @@ def create_objective(
             if key in suggested:
                 local_runner_kwargs[key] = suggested[key]
 
+        # Determine WFE metric from outer objective (e.g., "mean_oos_calmar" → "calmar")
+        wfe_metric = OUTER_TO_INNER_METRIC.get(objective_metric, "sharpe")
+
         # Create evaluator
         evaluator = TrainingEvaluator.from_runner(
             runner_name,
             n_cycles=n_wfa_cycles,
             verbose=verbose,
             root=root,
+            wfe_metric=wfe_metric,
             **local_runner_kwargs,
         )
 
@@ -567,11 +574,19 @@ def create_objective(
 
         except optuna.TrialPruned:
             raise  # Re-raise pruning exception
+        except ValueError as e:
+            # Re-raise ValueErrors (including NaN detection) - these should FAIL the trial
+            # not silently return -inf. NaN metrics indicate training collapsed and
+            # Optuna should mark this as a failed trial, not a completed one.
+            if verbose:
+                print(f"Trial {trial.number} failed with ValueError: {e}")
+                traceback.print_exc()
+            raise
         except Exception as e:
             if verbose:
                 print(f"Trial {trial.number} failed: {e}")
                 traceback.print_exc()
-            # Return bad value for failed trials
+            # Return bad value for other failures (e.g., data loading issues)
             # Metrics we MAXIMIZE (higher is better): sharpe, wfe, calmar, sterling, returns, ulcer
             # Note: ulcer is negated (higher = less pain), so we maximize
             # Metrics we MINIMIZE (lower is better): is_oos_gap
@@ -667,10 +682,26 @@ def create_multi_objective(
 
     def multi_objective(trial: optuna.Trial) -> Tuple[float, ...]:
         # Run evaluation once (with pruning on first objective)
-        _ = single_objective(trial)
+        try:
+            _ = single_objective(trial)
+        except optuna.TrialPruned:
+            raise  # Re-raise pruning exception
+        except ValueError:
+            raise  # Re-raise ValueError (e.g., NaN detection) to fail the trial
+        except Exception as e:
+            # For other exceptions, log and return worst values for all objectives
+            if verbose:
+                print(f"Trial {trial.number} multi-objective failed: {e}")
+            return tuple(float("-inf") for _ in objectives)
 
         # Get stored results
         eval_result = trial.user_attrs.get("evaluation_result", {})
+
+        # Check if evaluation_result is empty (shouldn't happen if single_objective succeeded)
+        if not eval_result:
+            if verbose:
+                print(f"Trial {trial.number}: evaluation_result is empty after single_objective succeeded")
+            return tuple(float("-inf") for _ in objectives)
 
         values = []
         for metric in objectives:
