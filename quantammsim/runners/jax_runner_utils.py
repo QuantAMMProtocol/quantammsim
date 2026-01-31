@@ -809,29 +809,46 @@ def has_nan_grads(grad_tree):
     )
 
 
+def has_nan_params(params):
+    """Check if any parameters contain NaN values."""
+    for key in params:
+        if key not in ["initial_weights", "initial_weights_logits", "subsidary_params"]:
+            if hasattr(params[key], 'shape') and jnp.any(jnp.isnan(params[key])):
+                return True
+    return False
+
+
 def nan_param_reinit(
     params, grads, pool, initial_params, run_fingerprint, n_tokens, n_parameter_sets
 ):
-    """Reinitialize parameters with previous values when gradients contain NaNs."""
-    if has_nan_grads(grads):
+    """Reinitialize parameter sets that contain NaN values.
+
+    Checks params directly (not just grads) since params can become NaN
+    from bad update steps even when grads were finite.
+    """
+    # Check if any param set has NaN params (the actual problem)
+    if has_nan_params(params):
         new_noised_params = pool.init_parameters(
             initial_params, run_fingerprint, n_tokens, n_parameter_sets
         )
         # For each parameter set index
-        for i in range(len(next(iter(grads.values())))):
+        n_param_sets = len(next(iter(params.values())))
+        for i in range(n_param_sets):
             # Check if any key has NaNs for this parameter set
             has_nans = False
-            for key in grads:
+            for key in params:
                 if key not in ["initial_weights", "initial_weights_logits", "subsidary_params"]:
-                    if jnp.any(jnp.isnan(grads[key][i])):
-                        has_nans = True
-                        break
+                    if hasattr(params[key], 'shape') and len(params[key].shape) > 0:
+                        if jnp.any(jnp.isnan(params[key][i])):
+                            has_nans = True
+                            break
 
             # If NaNs found, replace all params for this index
             if has_nans:
                 for key in params:
                     if key not in ["initial_weights", "initial_weights_logits", "subsidary_params"]:
-                        params[key] = params[key].at[i].set(new_noised_params[key][i])
+                        if hasattr(params[key], 'shape') and len(params[key].shape) > 0:
+                            params[key] = params[key].at[i].set(new_noised_params[key][i])
     return params
 
 
