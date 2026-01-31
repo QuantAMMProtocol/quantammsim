@@ -1784,5 +1784,102 @@ class TestMultiPeriodSGDParamsChange:
             f"Initial: {initial_params}, Trained: {trained_params}"
 
 
+class TestForceInit:
+    """Tests for force_init parameter in train_on_historic_data."""
+
+    def test_force_init_ignores_cache(self):
+        """force_init=True should ignore cached results and re-train."""
+        from quantammsim.runners import jax_runners
+        original_train = jax_runners.train_on_historic_data
+
+        # Track how many times training actually happens
+        train_calls = []
+
+        def patched_train(run_fingerprint, *args, **kwargs):
+            train_calls.append({
+                "force_init": kwargs.get("force_init", False),
+            })
+            # Return mock result
+            params = {}
+            metadata = {
+                "epochs_trained": 3,
+                "final_objective": 0.5,
+                "best_param_idx": 0,
+                "final_train_metrics": [{"sharpe": 0.5, "returns_over_uniform_hodl": 0.01}],
+                "final_continuous_test_metrics": [{"sharpe": 0.4, "returns_over_uniform_hodl": 0.005}],
+            }
+            return params, metadata
+
+        jax_runners.train_on_historic_data = patched_train
+
+        try:
+            # Create evaluator - this internally uses force_init=True
+            evaluator = TrainingEvaluator.from_runner(
+                "train_on_historic_data",
+                n_cycles=1,
+                verbose=False,
+                root=TEST_DATA_DIR,
+                max_iterations=3,
+            )
+
+            run_fingerprint = {
+                "tokens": ["BTC", "ETH"],
+                "rule": "momentum",
+                "startDateString": "2023-01-01 00:00:00",
+                "endDateString": "2023-01-20 00:00:00",
+                "endTestDateString": "2023-02-01 00:00:00",
+                "chunk_period": 1440,
+                "bout_offset": 10080,
+                "weight_interpolation_period": 1440,
+                "optimisation_settings": {
+                    "base_lr": 0.01,
+                    "optimiser": "sgd",
+                    "n_iterations": 3,
+                    "training_data_kind": "historic",
+                    "force_scalar": False,
+                    "n_parameter_sets": 1,
+                    "batch_size": 2,
+                    "n_cycles": 1,
+                },
+                "initial_memory_length": 10.0,
+                "initial_memory_length_delta": 0.0,
+                "initial_k_per_day": 1.0,
+                "initial_weights_logits": 0.0,
+                "initial_log_amplitude": -5.0,
+                "initial_raw_width": 0.0,
+                "initial_raw_exponents": 0.0,
+                "initial_pre_exp_scaling": 0.001,
+                "maximum_change": 0.001,
+                "return_val": "sharpe",
+                "initial_pool_value": 1000000.0,
+                "fees": 0.003,
+                "arb_fees": 0.0,
+                "gas_cost": 0.0,
+                "use_alt_lamb": False,
+                "use_pre_exp_scaling": True,
+                "weight_interpolation_method": "linear",
+                "arb_frequency": 1,
+                "do_arb": True,
+                "arb_quality": 1.0,
+                "numeraire": None,
+                "do_trades": False,
+                "noise_trader_ratio": 0.0,
+                "minimum_weight": 0.03,
+                "max_memory_days": 30,
+                "subsidary_pools": [],
+            }
+
+            # Run evaluation
+            evaluator.evaluate(run_fingerprint)
+
+            # Verify force_init was passed as True
+            assert len(train_calls) == 1
+            assert train_calls[0]["force_init"] is True, \
+                "TrainingEvaluator should pass force_init=True to train_on_historic_data"
+
+        finally:
+            jax_runners.train_on_historic_data = original_train
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -496,6 +496,7 @@ class TrainingEvaluator:
         compute_rademacher: bool = False,  # Off by default (needs checkpoint tracking)
         verbose: bool = True,
         root: str = None,
+        wfe_metric: str = "sharpe",  # Metric for WFE and IS-OOS gap (default: sharpe per Pardo)
     ):
         self.trainer = trainer
         self.n_cycles = n_cycles
@@ -503,6 +504,7 @@ class TrainingEvaluator:
         self.compute_rademacher = compute_rademacher
         self.verbose = verbose
         self.root = root
+        self.wfe_metric = wfe_metric
 
     # -------------------------------------------------------------------------
     # Convenience Constructors
@@ -517,6 +519,7 @@ class TrainingEvaluator:
         verbose: bool = True,
         compute_rademacher: bool = False,
         root: str = None,
+        wfe_metric: str = "sharpe",
         **runner_kwargs,
     ) -> "TrainingEvaluator":
         """
@@ -536,6 +539,9 @@ class TrainingEvaluator:
             training for Rademacher estimation. Default False.
         root : str, optional
             Root directory for data files. If None, uses default data location.
+        wfe_metric : str
+            Metric to use for WFE and IS-OOS gap computation. Default "sharpe" (per Pardo).
+            Can be any metric from calculate_period_metrics (sharpe, calmar, sterling, etc.)
         **runner_kwargs
             Arguments passed to the runner (e.g., max_iterations=500)
 
@@ -557,6 +563,7 @@ class TrainingEvaluator:
             verbose=verbose,
             compute_rademacher=compute_rademacher,
             root=root,
+            wfe_metric=wfe_metric,
         )
 
     @classmethod
@@ -568,6 +575,7 @@ class TrainingEvaluator:
         keep_fixed_start: bool = False,  # Rolling window by default
         verbose: bool = True,
         root: str = None,
+        wfe_metric: str = "sharpe",
         **config,
     ) -> "TrainingEvaluator":
         """
@@ -588,6 +596,8 @@ class TrainingEvaluator:
             If False, rolling window (train window moves forward).
         root : str, optional
             Root directory for data files. If None, uses default data location.
+        wfe_metric : str
+            Metric to use for WFE and IS-OOS gap computation. Default "sharpe".
         **config
             Config dict for reporting
 
@@ -601,7 +611,7 @@ class TrainingEvaluator:
         >>> evaluator = TrainingEvaluator.from_function(my_trainer)
         """
         wrapper = FunctionWrapper(fn, name=name, config=config)
-        return cls(trainer=wrapper, n_cycles=n_cycles, keep_fixed_start=keep_fixed_start, verbose=verbose, root=root)
+        return cls(trainer=wrapper, n_cycles=n_cycles, keep_fixed_start=keep_fixed_start, verbose=verbose, root=root, wfe_metric=wfe_metric)
 
     @classmethod
     def random_baseline(
@@ -611,6 +621,7 @@ class TrainingEvaluator:
         keep_fixed_start: bool = False,  # Rolling window by default
         verbose: bool = True,
         root: str = None,
+        wfe_metric: str = "sharpe",
     ) -> "TrainingEvaluator":
         """
         Create evaluator that uses random parameters.
@@ -629,9 +640,11 @@ class TrainingEvaluator:
             Print progress
         root : str, optional
             Root directory for data files. If None, uses default data location.
+        wfe_metric : str
+            Metric to use for WFE and IS-OOS gap computation. Default "sharpe".
         """
         wrapper = RandomBaselineWrapper(seed=seed)
-        return cls(trainer=wrapper, n_cycles=n_cycles, keep_fixed_start=keep_fixed_start, verbose=verbose, root=root)
+        return cls(trainer=wrapper, n_cycles=n_cycles, keep_fixed_start=keep_fixed_start, verbose=verbose, root=root, wfe_metric=wfe_metric)
 
     # -------------------------------------------------------------------------
     # Core Evaluation
@@ -775,10 +788,12 @@ class TrainingEvaluator:
                 # OOS metrics from calculate_continuous_test_metrics (already unprefixed)
                 oos_metrics = final_oos[best_idx]
 
-            # Compute WFE
+            # Compute WFE using configured metric (default: sharpe per Pardo)
+            is_wfe_metric = is_metrics.get(self.wfe_metric, is_metrics["sharpe"])
+            oos_wfe_metric = oos_metrics.get(self.wfe_metric, oos_metrics["sharpe"])
             wfe = compute_walk_forward_efficiency(
-                is_metrics["sharpe"],
-                oos_metrics["sharpe"],
+                is_wfe_metric,
+                oos_wfe_metric,
                 cycle.train_end_idx - cycle.train_start_idx,
                 cycle.test_end_idx - cycle.test_start_idx,
             )
@@ -820,7 +835,7 @@ class TrainingEvaluator:
                 oos_sharpe=oos_metrics["sharpe"],
                 oos_returns_over_hodl=oos_metrics["returns_over_uniform_hodl"],
                 walk_forward_efficiency=wfe,
-                is_oos_gap=is_metrics["sharpe"] - oos_metrics["sharpe"],
+                is_oos_gap=is_wfe_metric - oos_wfe_metric,  # Uses configured metric
                 epochs_trained=metadata.get("epochs_trained", 0),
                 rademacher_complexity=rademacher_complexity,
                 adjusted_oos_sharpe=adjusted_oos_sharpe,
@@ -896,30 +911,41 @@ class TrainingEvaluator:
         data_dict: dict,
         last_test_end: str,
     ):
-        """Convert cycle dates to data indices."""
+        """Convert cycle dates to data indices.
+
+        All indices are bounded to [data_dict["start_idx"], data_dict["end_idx"]]
+        to handle edge cases from date rounding in generate_walk_forward_cycles.
+        """
         def to_ts(date_str):
             return datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S").timestamp()
 
         total_ts = to_ts(last_test_end) - to_ts(run_fingerprint["startDateString"])
         data_length = data_dict["end_idx"] - data_dict["start_idx"]
         start_ts = to_ts(run_fingerprint["startDateString"])
+        min_idx = data_dict["start_idx"]
+        max_idx = data_dict["end_idx"]
+
+        def compute_idx(date_str):
+            """Compute index from date, bounded to valid range."""
+            raw_idx = data_dict["start_idx"] + int(
+                data_length * (to_ts(date_str) - start_ts) / total_ts
+            )
+            return max(min_idx, min(raw_idx, max_idx))
 
         for cycle in cycles:
-            cycle.train_start_idx = data_dict["start_idx"] + int(
-                data_length * (to_ts(cycle.train_start_date) - start_ts) / total_ts
-            )
-            cycle.train_end_idx = data_dict["start_idx"] + int(
-                data_length * (to_ts(cycle.train_end_date) - start_ts) / total_ts
-            )
-            cycle.test_start_idx = data_dict["start_idx"] + int(
-                data_length * (to_ts(cycle.test_start_date) - start_ts) / total_ts
-            )
-            cycle.test_end_idx = min(
-                data_dict["start_idx"] + int(
-                    data_length * (to_ts(cycle.test_end_date) - start_ts) / total_ts
-                ),
-                data_dict["end_idx"]
-            )
+            cycle.train_start_idx = compute_idx(cycle.train_start_date)
+            cycle.train_end_idx = compute_idx(cycle.train_end_date)
+            cycle.test_start_idx = compute_idx(cycle.test_start_date)
+            cycle.test_end_idx = compute_idx(cycle.test_end_date)
+
+            # Ensure proper ordering: train_start < train_end <= test_start < test_end
+            # This handles edge cases where dates round to same index
+            if cycle.train_end_idx <= cycle.train_start_idx:
+                cycle.train_end_idx = min(cycle.train_start_idx + 1, max_idx)
+            if cycle.test_start_idx < cycle.train_end_idx:
+                cycle.test_start_idx = cycle.train_end_idx
+            if cycle.test_end_idx <= cycle.test_start_idx:
+                cycle.test_end_idx = min(cycle.test_start_idx + 1, max_idx)
 
     def _evaluate_params(
         self,
@@ -987,16 +1013,22 @@ class TrainingEvaluator:
 
         if self.compute_rademacher and all_checkpoint_returns:
             # Different cycles may have different return lengths
-            min_len = min(arr.shape[-1] for arr in all_checkpoint_returns if arr.size > 0)
-            if min_len > 0:
-                # Truncate and stack
-                truncated = []
-                for arr in all_checkpoint_returns:
-                    if arr.ndim == 1:
-                        arr = arr.reshape(1, -1)
-                    truncated.append(arr[:, :min_len])
-                combined_returns = np.vstack(truncated)
-                aggregate_rademacher = compute_empirical_rademacher(combined_returns)
+            # Filter out empty arrays first
+            non_empty_arrays = [arr for arr in all_checkpoint_returns if arr.size > 0]
+            if non_empty_arrays:
+                min_len = min(arr.shape[-1] for arr in non_empty_arrays)
+                if min_len > 0:
+                    # Truncate and stack, skipping any that would become empty
+                    truncated = []
+                    for arr in non_empty_arrays:
+                        if arr.ndim == 1:
+                            arr = arr.reshape(1, -1)
+                        truncated_arr = arr[:, :min_len]
+                        if truncated_arr.size > 0:
+                            truncated.append(truncated_arr)
+                    if truncated:
+                        combined_returns = np.vstack(truncated)
+                        aggregate_rademacher = compute_empirical_rademacher(combined_returns)
 
                 # Compute haircut on aggregate OOS sharpe
                 total_test_T = sum(c.test_end_idx - c.test_start_idx for c in cycles)

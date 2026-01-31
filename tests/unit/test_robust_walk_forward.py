@@ -1,12 +1,11 @@
 """
-Unit tests for robust walk-forward training module.
+Unit tests for robust walk-forward training utilities.
 
 Tests:
 1. Rademacher complexity computation
 2. Rademacher haircut calculation
 3. Walk-Forward Efficiency (WFE) computation
-4. Checkpoint tracker functionality
-5. Cycle generation
+4. Cycle generation
 """
 
 import pytest
@@ -15,7 +14,6 @@ from quantammsim.runners.robust_walk_forward import (
     compute_empirical_rademacher,
     compute_rademacher_haircut,
     compute_walk_forward_efficiency,
-    CheckpointTracker,
     generate_walk_forward_cycles,
     WalkForwardCycle,
 )
@@ -113,6 +111,18 @@ class TestRademacherHaircut:
         assert haircut > 0  # Estimation error term
         assert adj_sharpe < 1.5
 
+    def test_haircut_returns_nan_for_zero_T(self):
+        """T=0 should return NaN, not divide by zero."""
+        adj_sharpe, haircut = compute_rademacher_haircut(1.5, 0.1, 0)
+        assert np.isnan(adj_sharpe)
+        assert np.isnan(haircut)
+
+    def test_haircut_returns_nan_for_negative_T(self):
+        """Negative T should return NaN."""
+        adj_sharpe, haircut = compute_rademacher_haircut(1.5, 0.1, -10)
+        assert np.isnan(adj_sharpe)
+        assert np.isnan(haircut)
+
 
 class TestWalkForwardEfficiency:
     """Tests for WFE computation."""
@@ -133,90 +143,21 @@ class TestWalkForwardEfficiency:
         wfe = compute_walk_forward_efficiency(0.8, 1.0, 365, 90)
         assert wfe > 1.0
 
-    def test_wfe_zero_is(self):
-        """Zero IS Sharpe should return 0 (undefined ratio)."""
+    def test_wfe_zero_is_returns_nan(self):
+        """Zero IS Sharpe should return NaN (undefined ratio)."""
         wfe = compute_walk_forward_efficiency(0.0, 0.5, 365, 90)
-        assert wfe == 0.0  # Returns 0 for undefined cases
+        assert np.isnan(wfe)
 
-    def test_wfe_negative_is(self):
-        """Negative IS Sharpe returns 0 (undefined ratio)."""
+    def test_wfe_negative_is_returns_nan(self):
+        """Negative IS Sharpe returns NaN (undefined ratio)."""
         # When IS is negative, WFE is undefined/meaningless
-        # The function returns 0 to indicate this
         wfe = compute_walk_forward_efficiency(-1.0, -0.5, 365, 90)
-        assert wfe == 0.0
+        assert np.isnan(wfe)
 
-    def test_wfe_zero_is_negative_oos(self):
-        """Zero IS with negative OOS."""
+    def test_wfe_zero_is_negative_oos_returns_nan(self):
+        """Zero IS with negative OOS returns NaN."""
         wfe = compute_walk_forward_efficiency(0.0, -0.5, 365, 90)
-        assert wfe == 0.0
-
-
-class TestCheckpointTracker:
-    """Tests for checkpoint tracking."""
-
-    def test_checkpoint_frequency(self):
-        """Checkpoints should be recorded at correct frequency."""
-        tracker = CheckpointTracker(checkpoint_every=10, max_checkpoints=100)
-
-        for i in range(50):
-            tracker.maybe_checkpoint(
-                {"param": np.array([i])},
-                np.random.randn(10)
-            )
-
-        # 50 iterations, checkpoint every 10 = 5 checkpoints
-        assert len(tracker.checkpoints) == 5
-
-    def test_checkpoint_max_limit(self):
-        """Should not exceed max checkpoints."""
-        tracker = CheckpointTracker(checkpoint_every=1, max_checkpoints=10)
-
-        for i in range(50):
-            tracker.maybe_checkpoint(
-                {"param": np.array([i])},
-                np.random.randn(10)
-            )
-
-        assert len(tracker.checkpoints) == 10
-
-    def test_force_checkpoint(self):
-        """Force should checkpoint regardless of iteration."""
-        tracker = CheckpointTracker(checkpoint_every=100, max_checkpoints=10)
-
-        tracker.maybe_checkpoint(
-            {"param": np.array([1])},
-            np.random.randn(10),
-            force=True
-        )
-
-        assert len(tracker.checkpoints) == 1
-
-    def test_returns_matrix(self):
-        """Returns matrix should have correct shape."""
-        tracker = CheckpointTracker(checkpoint_every=5, max_checkpoints=100)
-
-        for i in range(25):
-            tracker.maybe_checkpoint(
-                {"param": np.array([i])},
-                np.random.randn(10)  # 10 time points
-            )
-
-        matrix = tracker.get_returns_matrix()
-        # 25 iterations / 5 = 5 checkpoints, 10 time points each
-        assert matrix.shape == (5, 10)
-
-    def test_reset(self):
-        """Reset should clear all state."""
-        tracker = CheckpointTracker(checkpoint_every=1)
-
-        for i in range(10):
-            tracker.maybe_checkpoint({"p": np.array([i])}, np.random.randn(5))
-
-        tracker.reset()
-
-        assert len(tracker.checkpoints) == 0
-        assert len(tracker.checkpoint_returns) == 0
-        assert tracker.iteration == 0
+        assert np.isnan(wfe)
 
 
 class TestCycleGeneration:

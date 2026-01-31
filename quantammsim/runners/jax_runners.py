@@ -421,6 +421,7 @@ def train_on_historic_data(
 
     best_train_objective = -100.0
     best_train_params_idx = 0  # Track which param set is best
+    best_train_params = deepcopy(params)  # Initialize to starting params
     local_learning_rate = run_fingerprint["optimisation_settings"]["base_lr"]
     iterations_since_improvement = 0
 
@@ -462,6 +463,7 @@ def train_on_historic_data(
     best_early_stopping_metric = float("inf") if metric_direction == -1 else -float("inf")
     iterations_since_early_stopping_improvement = 0
     use_validation_for_early_stopping = val_fraction > 0
+    warned_about_nan = False  # Track if we've already warned about NaN metrics
 
     # Validation-based param selection (independent of early stopping)
     # Tracked whenever val_fraction > 0, used for final param selection
@@ -650,12 +652,21 @@ def train_on_historic_data(
             interationsSinceImprovementSteps.append(iterations_since_improvement)
             stepSteps.append(step)
 
-            if (objective_value > best_train_objective).any():
-                best_train_params_idx = int(np.argmax(objective_value))
-                best_train_objective = np.array(objective_value.max())
-                best_train_params = deepcopy(params)
-                iterations_since_improvement = 0
+            # Use nanmax to find best objective among non-NaN param sets
+            # Some param sets may produce NaN (training collapsed) while others succeed
+            objective_arr = np.array(objective_value)
+            valid_mask = ~np.isnan(objective_arr)
+            if valid_mask.any():
+                current_best = np.nanmax(objective_arr)
+                if current_best > best_train_objective:
+                    best_train_params_idx = int(np.nanargmax(objective_arr))
+                    best_train_objective = current_best
+                    best_train_params = deepcopy(params)
+                    iterations_since_improvement = 0
+                else:
+                    iterations_since_improvement += 1
             else:
+                # All param sets produced NaN - no improvement possible
                 iterations_since_improvement += 1
             if iterations_since_improvement > max_iterations_with_no_improvement:
                 local_learning_rate = local_learning_rate * decay_lr_ratio
@@ -685,19 +696,30 @@ def train_on_historic_data(
 
                 # Track best validation performance (independent of early stopping)
                 # This is used for param selection at the end
-                current_val_metric = np.mean([
-                    t.get(selection_metric, -float("inf")) for t in val_metrics_list
+                # Use nanmean to ignore NaN param sets - some may fail while others succeed
+                val_metrics_per_set = np.array([
+                    t.get(selection_metric, np.nan) for t in val_metrics_list
                 ])
-                val_metric_improved = (current_val_metric * metric_direction) > (best_val_metric * metric_direction)
+                current_val_metric = np.nanmean(val_metrics_per_set)
+
+                # Check if we have any valid (non-NaN) metrics
+                valid_mask = ~np.isnan(val_metrics_per_set)
+                has_valid_metrics = np.any(valid_mask)
+
+                val_metric_improved = (
+                    has_valid_metrics and
+                    not np.isnan(current_val_metric) and
+                    (current_val_metric * metric_direction) > (best_val_metric * metric_direction)
+                )
                 if val_metric_improved:
                     best_val_metric = current_val_metric
                     best_val_params = deepcopy(params)
                     # Track which param set was best on validation at this moment
-                    val_metrics_per_set = [t.get(selection_metric, -float("inf")) for t in val_metrics_list]
+                    # Use nanargmax/nanargmin to select best non-NaN param set
                     if metric_direction == -1:
-                        best_val_params_idx = int(np.argmin(val_metrics_per_set))
+                        best_val_params_idx = int(np.nanargmin(val_metrics_per_set))
                     else:
-                        best_val_params_idx = int(np.argmax(val_metrics_per_set))
+                        best_val_params_idx = int(np.nanargmax(val_metrics_per_set))
             else:
                 val_metrics_list = None
 
@@ -709,22 +731,24 @@ def train_on_historic_data(
                     # Reuse current_val_metric computed above (same value)
                     current_early_stopping_metric = current_val_metric
                     metric_source = "validation"
-                    # Warn if metric is NaN (indicates problem with validation data/metrics)
-                    if np.isnan(current_early_stopping_metric) and i == 0:
+                    # Warn on first occurrence of NaN (not just iteration 0)
+                    if np.isnan(current_early_stopping_metric) and not warned_about_nan:
                         import warnings
                         warnings.warn(
-                            f"Validation {selection_metric} is NaN. "
+                            f"Validation {selection_metric} is NaN at iteration {i}. "
                             f"Early stopping may not work correctly. "
                             f"Check that validation period has sufficient data.",
                             UserWarning
                         )
+                        warned_about_nan = True
                 elif test_metrics_list:
                     # Fallback to test metrics (not recommended - causes data leakage)
                     # Note: When using test metrics for early stopping, param SELECTION still uses
                     # training-best (since val_fraction=0). This is intentional - we don't want to
                     # select params based on test performance, only use it as a stopping heuristic.
-                    current_early_stopping_metric = np.mean([
-                        t.get(selection_metric, -float("inf")) for t in test_metrics_list
+                    # Use nanmean to ignore NaN param sets
+                    current_early_stopping_metric = np.nanmean([
+                        t.get(selection_metric, np.nan) for t in test_metrics_list
                     ])
                     metric_source = "test"
                 else:
@@ -819,7 +843,7 @@ def train_on_historic_data(
                     )
                     # Print validation metrics if using validation holdout
                     if val_fraction > 0 and val_metrics_list:
-                        val_sharpe = np.mean([t.get("sharpe", float("nan")) for t in val_metrics_list])
+                        val_sharpe = np.nanmean([t.get("sharpe", np.nan) for t in val_metrics_list])
                         print(step, "val_metrics", f"sharpe={val_sharpe:.4f}")
                         if use_early_stopping:
                             print(step, f"  early_stop_{selection_metric}", f"{current_early_stopping_metric:.4f}",

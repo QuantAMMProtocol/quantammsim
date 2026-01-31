@@ -964,5 +964,167 @@ class TestHyperparamTunerRealE2E:
                 assert trial["evaluation_result"] is not None
 
 
+class TestNaNCycleDetection:
+    """Tests for NaN cycle detection and trial failure."""
+
+    @pytest.fixture
+    def base_fingerprint(self):
+        """Base fingerprint for NaN detection tests."""
+        return {
+            "tokens": ["BTC", "ETH"],
+            "rule": "momentum",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
+            "chunk_period": 1440,
+            "bout_offset": 10080,
+            "weight_interpolation_period": 1440,
+            "optimisation_settings": {
+                "base_lr": 0.01,
+                "optimiser": "sgd",
+                "n_iterations": 3,
+                "training_data_kind": "historic",
+                "force_scalar": False,
+                "n_parameter_sets": 1,
+                "batch_size": 2,
+                "n_cycles": 1,
+            },
+            "initial_memory_length": 10.0,
+            "initial_memory_length_delta": 0.0,
+            "initial_k_per_day": 1.0,
+            "initial_weights_logits": 0.0,
+            "initial_log_amplitude": -5.0,
+            "initial_raw_width": 0.0,
+            "initial_raw_exponents": 0.0,
+            "initial_pre_exp_scaling": 0.001,
+            "maximum_change": 0.001,
+            "return_val": "sharpe",
+            "initial_pool_value": 1000000.0,
+            "fees": 0.003,
+            "arb_fees": 0.0,
+            "gas_cost": 0.0,
+            "use_alt_lamb": False,
+            "use_pre_exp_scaling": True,
+            "weight_interpolation_method": "linear",
+            "arb_frequency": 1,
+            "do_arb": True,
+            "arb_quality": 1.0,
+            "numeraire": None,
+            "do_trades": False,
+            "noise_trader_ratio": 0.0,
+            "minimum_weight": 0.03,
+            "max_memory_days": 30,
+            "subsidary_pools": [],
+        }
+
+    def test_nan_cycle_fails_trial(self, base_fingerprint):
+        """When a cycle produces NaN metrics, the trial should FAIL (not complete)."""
+        def mock_evaluate_iter_with_nan(self, fp):
+            """Mock evaluate_iter that produces NaN on first cycle."""
+            # Yield a cycle with NaN metrics
+            cycle = CycleEvaluation(
+                cycle_number=0,
+                is_sharpe=float("nan"),  # NaN in-sample sharpe
+                is_returns_over_hodl=0.1,
+                oos_sharpe=float("nan"),  # NaN out-of-sample sharpe
+                oos_returns_over_hodl=float("nan"),  # NaN returns
+                walk_forward_efficiency=float("nan"),
+                is_oos_gap=float("nan"),
+            )
+            yield cycle
+            # Should never reach here due to NaN detection
+            return EvaluationResult(
+                trainer_name="test",
+                trainer_config={},
+                cycles=[cycle],
+                mean_wfe=float("nan"),
+                mean_oos_sharpe=float("nan"),
+                std_oos_sharpe=float("nan"),
+                worst_oos_sharpe=float("nan"),
+                mean_is_oos_gap=float("nan"),
+                is_effective=False,
+            )
+
+        with patch.object(TrainingEvaluator, 'evaluate_iter', mock_evaluate_iter_with_nan):
+            tuner = HyperparamTuner(
+                runner_name="train_on_historic_data",
+                n_trials=1,
+                n_wfa_cycles=1,
+                hyperparam_space=HyperparamSpace.minimal_space(),
+                verbose=False,
+            )
+
+            result = tuner.tune(base_fingerprint)
+
+            # Trial should FAIL, not complete
+            assert result.n_completed == 0, \
+                f"Trial with NaN should fail, not complete. Got n_completed={result.n_completed}"
+            assert result.n_failed == 1, \
+                f"Trial with NaN should be marked as failed. Got n_failed={result.n_failed}"
+
+    def test_nan_cycle_prevents_intermediate_value_propagation(self, base_fingerprint):
+        """NaN detection should fail trial early, not propagate stale values.
+
+        This tests the bug where NaN cycles caused intermediate values to repeat
+        (propagating the previous good value instead of detecting the problem).
+        """
+        def mock_evaluate_iter_nan_second_cycle(self, fp):
+            """Mock where first cycle is good, second cycle produces NaN."""
+            # First cycle: good metrics
+            cycle1 = CycleEvaluation(
+                cycle_number=0,
+                is_sharpe=1.0,
+                is_returns_over_hodl=0.1,
+                oos_sharpe=0.8,  # Good OOS sharpe
+                oos_returns_over_hodl=0.05,
+                walk_forward_efficiency=0.7,
+                is_oos_gap=0.2,
+            )
+            yield cycle1
+
+            # Second cycle: NaN due to training collapse
+            cycle2 = CycleEvaluation(
+                cycle_number=1,
+                is_sharpe=float("nan"),
+                is_returns_over_hodl=float("nan"),
+                oos_sharpe=float("nan"),  # Training collapsed
+                oos_returns_over_hodl=float("nan"),
+                walk_forward_efficiency=float("nan"),
+                is_oos_gap=float("nan"),
+            )
+            yield cycle2
+
+            # Should not reach here
+            return EvaluationResult(
+                trainer_name="test",
+                trainer_config={},
+                cycles=[cycle1, cycle2],
+                mean_wfe=float("nan"),
+                mean_oos_sharpe=float("nan"),
+                std_oos_sharpe=float("nan"),
+                worst_oos_sharpe=float("nan"),
+                mean_is_oos_gap=float("nan"),
+                is_effective=False,
+            )
+
+        with patch.object(TrainingEvaluator, 'evaluate_iter', mock_evaluate_iter_nan_second_cycle):
+            tuner = HyperparamTuner(
+                runner_name="train_on_historic_data",
+                n_trials=1,
+                n_wfa_cycles=2,  # Two cycles
+                hyperparam_space=HyperparamSpace.minimal_space(),
+                verbose=False,
+            )
+
+            result = tuner.tune(base_fingerprint)
+
+            # Trial should FAIL when second cycle produces NaN
+            # NOT complete with the first cycle's 0.8 sharpe value propagated
+            assert result.n_completed == 0, \
+                f"NaN in second cycle should fail trial, not complete. Got n_completed={result.n_completed}"
+            assert result.n_failed == 1, \
+                f"Trial should be marked as failed. Got n_failed={result.n_failed}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
