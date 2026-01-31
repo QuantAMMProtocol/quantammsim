@@ -489,7 +489,7 @@ class TrainingEvaluator:
         self,
         trainer: TrainerWrapper,
         n_cycles: int = 5,
-        keep_fixed_start: bool = True,
+        keep_fixed_start: bool = False,  # Rolling window by default (consistent bout_offset meaning)
         compute_rademacher: bool = False,  # Off by default (needs checkpoint tracking)
         verbose: bool = True,
         root: str = None,

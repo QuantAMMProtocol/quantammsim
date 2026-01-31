@@ -72,8 +72,10 @@ from quantammsim.runners.metric_extraction import extract_cycle_metric
 # Maps outer Optuna objective to inner training metric (return_val / early_stopping_metric)
 # Used in HyperparamSpace.create() to decide if training_objective choice is meaningful,
 # and in create_objective() to resolve "aligned" to the actual metric.
-# Available inner metrics: sharpe, calmar, sterling, ulcer, returns_over_uniform_hodl, etc.
-# (see _calculate_return_value in forward_pass.py for full list)
+#
+# Valid inner metrics (from calculate_period_metrics / forward_pass.py):
+#   sharpe, return, returns_over_hodl, returns_over_uniform_hodl, calmar, sterling, ulcer
+# All metrics are normalized so higher = better.
 OUTER_TO_INNER_METRIC = {
     "mean_oos_sharpe": "sharpe",
     "worst_oos_sharpe": "sharpe",
