@@ -369,7 +369,7 @@ def generate_walk_forward_cycles(
     start_date: str,
     end_date: str,
     n_cycles: int,
-    keep_fixed_start: bool = True,
+    keep_fixed_start: bool = False,  # Rolling window by default (consistent bout_offset meaning)
     test_fraction: float = 0.25,
 ) -> List[WalkForwardCycle]:
     """
@@ -384,8 +384,10 @@ def generate_walk_forward_cycles(
     n_cycles : int
         Number of training/test cycles
     keep_fixed_start : bool
-        If True, training starts from beginning (expanding window)
-        If False, training window rolls forward (rolling window)
+        If True, training starts from beginning (expanding window).
+        If False (default), training window rolls forward (rolling window).
+        Rolling window is preferred when tuning bout_offset, as it keeps
+        training duration consistent across cycles.
     test_fraction : float
         Fraction of each cycle's period to use for testing (Pardo: 25-35%)
 

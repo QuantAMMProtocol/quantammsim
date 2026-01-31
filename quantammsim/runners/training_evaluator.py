@@ -510,6 +510,7 @@ class TrainingEvaluator:
         cls,
         runner_name: str,
         n_cycles: int = 5,
+        keep_fixed_start: bool = False,  # Rolling window by default
         verbose: bool = True,
         compute_rademacher: bool = False,
         root: str = None,
@@ -549,6 +550,7 @@ class TrainingEvaluator:
         return cls(
             trainer=wrapper,
             n_cycles=n_cycles,
+            keep_fixed_start=keep_fixed_start,
             verbose=verbose,
             compute_rademacher=compute_rademacher,
             root=root,
@@ -560,6 +562,7 @@ class TrainingEvaluator:
         fn: Callable,
         name: str = "custom",
         n_cycles: int = 5,
+        keep_fixed_start: bool = False,  # Rolling window by default
         verbose: bool = True,
         root: str = None,
         **config,
@@ -577,6 +580,9 @@ class TrainingEvaluator:
             Name for this trainer
         n_cycles : int
             Number of walk-forward cycles
+        keep_fixed_start : bool
+            If True, expanding window (train always starts from beginning).
+            If False, rolling window (train window moves forward).
         root : str, optional
             Root directory for data files. If None, uses default data location.
         **config
@@ -592,13 +598,14 @@ class TrainingEvaluator:
         >>> evaluator = TrainingEvaluator.from_function(my_trainer)
         """
         wrapper = FunctionWrapper(fn, name=name, config=config)
-        return cls(trainer=wrapper, n_cycles=n_cycles, verbose=verbose, root=root)
+        return cls(trainer=wrapper, n_cycles=n_cycles, keep_fixed_start=keep_fixed_start, verbose=verbose, root=root)
 
     @classmethod
     def random_baseline(
         cls,
         seed: int = 42,
         n_cycles: int = 5,
+        keep_fixed_start: bool = False,  # Rolling window by default
         verbose: bool = True,
         root: str = None,
     ) -> "TrainingEvaluator":
@@ -613,13 +620,15 @@ class TrainingEvaluator:
             Random seed for reproducibility
         n_cycles : int
             Number of walk-forward cycles
+        keep_fixed_start : bool
+            If True, expanding window. If False, rolling window.
         verbose : bool
             Print progress
         root : str, optional
             Root directory for data files. If None, uses default data location.
         """
         wrapper = RandomBaselineWrapper(seed=seed)
-        return cls(trainer=wrapper, n_cycles=n_cycles, verbose=verbose, root=root)
+        return cls(trainer=wrapper, n_cycles=n_cycles, keep_fixed_start=keep_fixed_start, verbose=verbose, root=root)
 
     # -------------------------------------------------------------------------
     # Core Evaluation
