@@ -360,7 +360,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
             root=self.root,
         )
 
-        # Unpack (params, metadata) tuple
+        # Unpack (params, metadata) tuple - both SGD and optuna return this format
         params, metadata = result
 
         # train_on_historic_data now returns properly shaped params

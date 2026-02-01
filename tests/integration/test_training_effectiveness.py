@@ -530,12 +530,12 @@ class TestWalkForwardEfficiency:
         # Negative IS (strategy loses money in-sample)
         wfe = compute_walk_forward_efficiency(-0.5, 0.3, 365, 90)
 
-        # Should return 0 (undefined ratio when IS is non-positive)
-        assert wfe == 0.0, f"Expected WFE=0 for negative IS, got {wfe}"
+        # Should return nan (undefined ratio when IS is non-positive)
+        assert np.isnan(wfe), f"Expected WFE=nan for negative IS, got {wfe}"
 
-        # Zero IS should also return 0
+        # Zero IS should also return nan
         wfe_zero = compute_walk_forward_efficiency(0.0, 0.3, 365, 90)
-        assert wfe_zero == 0.0, f"Expected WFE=0 for zero IS, got {wfe_zero}"
+        assert np.isnan(wfe_zero), f"Expected WFE=nan for zero IS, got {wfe_zero}"
 
 
 # =============================================================================
@@ -575,40 +575,6 @@ class TestPoolStateContinuity:
 
 class TestFullPipeline:
     """Integration tests for full training pipeline."""
-
-    @pytest.mark.slow
-    def test_robust_walk_forward_runs_without_error(self, simple_run_fingerprint):
-        """
-        The full robust walk-forward pipeline should run without error.
-
-        This is a smoke test - just verify it completes.
-        """
-        try:
-            from quantammsim.runners.robust_walk_forward import (
-                robust_walk_forward_training,
-            )
-
-            # Very short run just to test it works
-            fp = deepcopy(simple_run_fingerprint)
-
-            result, summary = robust_walk_forward_training(
-                fp,
-                n_cycles=1,
-                max_epochs_per_cycle=5,  # Very few epochs
-                patience=3,
-                verbose=False,
-                root=TEST_DATA_DIR,
-            )
-
-            assert result is not None
-            assert "mean_wfe" in summary
-            assert len(result.cycles) == 1
-
-        except Exception as e:
-            # Allow data loading errors (test environment may not have data)
-            if "data" in str(e).lower() or "file" in str(e).lower():
-                pytest.skip(f"Skipping due to data availability: {e}")
-            raise
 
     @pytest.mark.slow
     def test_multi_period_sgd_runs_without_error(self, simple_run_fingerprint):

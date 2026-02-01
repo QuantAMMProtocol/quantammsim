@@ -49,9 +49,9 @@ def data_root():
 def base_fingerprint():
     """Base run fingerprint for dynamic gas/fees tests."""
     return {
-        "startDateString": "2021-02-03 00:00:00",
-        "endDateString": "2022-07-22 23:59:00",
-        "endTestDateString": "2022-07-24 00:00:00",
+        "startDateString": "2023-01-01 00:00:00",
+        "endDateString": "2023-06-01 00:00:00",
+        "endTestDateString": "2023-06-15 00:00:00",
         "tokens": ["ETH", "USDC"],
         "rule": "balancer",
         "bout_offset": 14400,

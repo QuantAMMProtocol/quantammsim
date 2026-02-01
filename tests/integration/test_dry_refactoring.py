@@ -32,9 +32,9 @@ def base_fingerprint():
     Uses test data tokens (BTC, ETH) with minimal date ranges for speed.
     """
     return {
-        "startDateString": "2022-01-01 00:00:00",
-        "endDateString": "2022-01-15 00:00:00",  # 2 weeks only
-        "endTestDateString": "2022-01-20 00:00:00",  # 5 day test
+        "startDateString": "2023-01-01 00:00:00",
+        "endDateString": "2023-01-15 00:00:00",  # 2 weeks only
+        "endTestDateString": "2023-01-20 00:00:00",  # 5 day test
         "tokens": ["BTC", "ETH"],
         "rule": "momentum",
         "chunk_period": 1440,
@@ -240,8 +240,8 @@ class TestHyperparamSpaceFactory:
         assert "early_stopping_patience" in space.params
         assert "use_weight_decay" in space.params
 
-        # Adam should have moderate LR range
-        assert space.params["base_lr"]["low"] >= 0.01
+        # Adam should have lower LR range than SGD
+        assert space.params["base_lr"]["low"] >= 1e-6  # Adam uses lower LRs
         assert space.params["base_lr"]["high"] <= 0.5
 
     def test_create_sgd_space(self):

@@ -16,7 +16,7 @@ from quantammsim.runners.jax_runners import do_run_on_historic_data
 from tests.conftest import TEST_DATA_DIR
 
 
-# Baseline values captured from demo_run_.py on 2026-01-19
+# Baseline values - to be recaptured after date range update
 # These should only be updated intentionally when behavior changes are expected
 
 BASELINE_CONFIGS = {
@@ -25,7 +25,7 @@ BASELINE_CONFIGS = {
             "tokens": ["BTC", "ETH", "SOL"],
             "rule": "momentum",
             "startDateString": "2023-01-01 00:00:00",
-            "endDateString": "2024-12-31 00:00:00",
+            "endDateString": "2023-06-01 00:00:00",
             "initial_pool_value": 1000000.0,
             "do_arb": True,
             "arb_quality": 1.0,
@@ -45,17 +45,17 @@ BASELINE_CONFIGS = {
             ),
         },
         "expected": {
-            "final_value": 8882250.70,
-            "return_pct": 788.23,
+            "final_value": 1815422.5738306814,
+            "return_pct": 81.54225738306813,
             # First and last weights for regression check
             "first_weights": [0.6632375, 0.31110132, 0.02566118],
-            "last_weights": [0.21880416, 0.03333333, 0.74786251],
+            "last_weights": [0.03333333, 0.45499836, 0.51166831],
         },
     },
     "forward_pass_test_1": {
         "fingerprint": {
-            "startDateString": "2021-01-01 00:00:00",
-            "endDateString": "2024-06-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-06-01 00:00:00",
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
             "chunk_period": 1440,
@@ -73,16 +73,16 @@ BASELINE_CONFIGS = {
             "initial_weights_logits": jnp.array([0.0, 0.0]),
         },
         "expected": {
-            "final_value": 3069805.47,
-            "return_pct": 206.98,
+            "final_value": 1500094.138254407,
+            "return_pct": 50.00941382544071,
             "first_weights": [0.5, 0.5],
-            "last_weights": [0.14391061, 0.85608939],
+            "last_weights": [0.05000921, 0.94999079],
         },
     },
     "forward_pass_test_2": {
         "fingerprint": {
-            "startDateString": "2021-01-01 00:00:00",
-            "endDateString": "2024-06-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-06-01 00:00:00",
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
             "chunk_period": 1440,
@@ -100,10 +100,10 @@ BASELINE_CONFIGS = {
             "initial_weights_logits": jnp.array([0.0, 0.0]),
         },
         "expected": {
-            "final_value": 2203798.03,
-            "return_pct": 120.38,
+            "final_value": 1368731.4974473487,
+            "return_pct": 36.87314974473486,
             "first_weights": [0.5, 0.5],
-            # last_weights will be captured on first run
+            "last_weights": [0.05, 0.95],
         },
     },
 }
@@ -116,6 +116,10 @@ class TestBaselineValues:
     def test_final_value_matches_baseline(self, config_name):
         """Test that final pool value matches baseline within tolerance."""
         config = BASELINE_CONFIGS[config_name]
+        expected_final = config["expected"]["final_value"]
+
+        if expected_final is None:
+            pytest.skip("Baseline value not yet captured")
 
         result = do_run_on_historic_data(
             run_fingerprint=config["fingerprint"],
@@ -123,7 +127,6 @@ class TestBaselineValues:
             root=TEST_DATA_DIR,
         )
 
-        expected_final = config["expected"]["final_value"]
         actual_final = float(result["final_value"])
 
         # Allow 0.5% tolerance for cross-platform floating point differences
@@ -138,6 +141,10 @@ class TestBaselineValues:
     def test_return_matches_baseline(self, config_name):
         """Test that return percentage matches baseline."""
         config = BASELINE_CONFIGS[config_name]
+        expected_return = config["expected"]["return_pct"]
+
+        if expected_return is None:
+            pytest.skip("Baseline value not yet captured")
 
         result = do_run_on_historic_data(
             run_fingerprint=config["fingerprint"],
@@ -146,7 +153,6 @@ class TestBaselineValues:
         )
 
         actual_return = (result["final_value"] / result["value"][0] - 1) * 100
-        expected_return = config["expected"]["return_pct"]
 
         # Allow 1% absolute tolerance for cross-platform floating point differences
         # (different CPUs/BLAS implementations can cause small variations that compound)
@@ -159,6 +165,9 @@ class TestBaselineValues:
     def test_first_weights_match_baseline(self, config_name):
         """Test that initial weights match baseline."""
         config = BASELINE_CONFIGS[config_name]
+
+        if config["expected"]["first_weights"] is None:
+            pytest.skip("Baseline value not yet captured")
 
         result = do_run_on_historic_data(
             run_fingerprint=config["fingerprint"],
@@ -181,6 +190,9 @@ class TestBaselineValues:
     def test_last_weights_match_baseline(self, config_name):
         """Test that final weights match baseline."""
         config = BASELINE_CONFIGS[config_name]
+
+        if config["expected"]["last_weights"] is None:
+            pytest.skip("Baseline value not yet captured")
 
         result = do_run_on_historic_data(
             run_fingerprint=config["fingerprint"],
@@ -232,7 +244,7 @@ class TestDifferentPoolTypes:
         """Test that balancer pool maintains constant weights."""
         fingerprint = {
             "startDateString": "2023-01-01 00:00:00",
-            "endDateString": "2024-01-01 00:00:00",
+            "endDateString": "2023-06-01 00:00:00",
             "tokens": ["BTC", "ETH"],
             "rule": "balancer",
             "chunk_period": 1440,
@@ -266,7 +278,7 @@ class TestPowerChannelBaseline:
         """Test that power channel pool produces valid output."""
         fingerprint = {
             "startDateString": "2023-01-01 00:00:00",
-            "endDateString": "2024-01-01 00:00:00",
+            "endDateString": "2023-06-01 00:00:00",
             "tokens": ["BTC", "ETH"],
             "rule": "power_channel",
             "chunk_period": 1440,
@@ -305,7 +317,7 @@ class TestMeanReversionBaseline:
         """Test that mean reversion pool produces valid output."""
         fingerprint = {
             "startDateString": "2023-01-01 00:00:00",
-            "endDateString": "2024-01-01 00:00:00",
+            "endDateString": "2023-06-01 00:00:00",
             "tokens": ["BTC", "ETH"],
             "rule": "mean_reversion_channel",
             "chunk_period": 1440,

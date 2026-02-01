@@ -23,8 +23,8 @@ class TestWeightCalculationTiming:
     @pytest.fixture
     def base_fingerprint(self):
         return {
-            "startDateString": "2023-06-01 00:00:00",
-            "endDateString": "2023-12-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-06-01 00:00:00",
             "tokens": ["BTC", "ETH"],
             "chunk_period": 1440,
             "weight_interpolation_period": 1440,
@@ -111,9 +111,9 @@ class TestWeightCalculationTiming:
     def test_three_asset_timing_comparison(self):
         """Compare timing with 3 assets."""
         base_fingerprint = {
-            "startDateString": "2023-06-01 00:00:00",
-            "endDateString": "2023-12-01 00:00:00",
-            "tokens": ["BTC", "ETH", "SOL"],
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-06-01 00:00:00",
+            "tokens": ["BTC", "ETH", "USDC"],
             "rule": "momentum",
             "chunk_period": 1440,
             "weight_interpolation_period": 1440,
@@ -146,8 +146,8 @@ class TestWeightCalculationTiming:
     def test_shorter_bout_timing(self):
         """Compare timing with shorter bout (1 month)."""
         base_fingerprint = {
-            "startDateString": "2023-06-01 00:00:00",
-            "endDateString": "2023-07-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-03-01 00:00:00",
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
             "chunk_period": 1440,
@@ -181,8 +181,8 @@ class TestWeightCalculationTiming:
     def test_hourly_chunk_timing(self):
         """Compare timing with hourly chunks (more iterations)."""
         base_fingerprint = {
-            "startDateString": "2023-06-01 00:00:00",
-            "endDateString": "2023-07-01 00:00:00",  # 1 month with hourly = ~720 chunks
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-03-01 00:00:00",  # 1 month with hourly = ~720 chunks
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
             "chunk_period": 60,  # Hourly
@@ -224,8 +224,8 @@ class TestJITCompilationTiming:
     def test_first_run_vs_subsequent(self):
         """Measure JIT compilation overhead."""
         fingerprint = {
-            "startDateString": "2023-06-01 00:00:00",
-            "endDateString": "2023-07-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-03-01 00:00:00",
             "tokens": ["BTC", "ETH"],
             "rule": "momentum",
             "chunk_period": 1440,

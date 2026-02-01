@@ -1,7 +1,7 @@
 run_fingerprint_defaults = {
     "freq": "minute",
-    "startDateString": "2021-02-03 00:00:00",
-    "endDateString": "2022-06-03 00:00:00",
+    "startDateString": "2023-01-01 00:00:00",
+    "endDateString": "2023-06-01 00:00:00",
     "endTestDateString": None,
     "tokens": ["BTC", "ETH", "USDC"],
     "rule": "mean_reversion_channel",

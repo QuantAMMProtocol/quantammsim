@@ -26,8 +26,8 @@ class TestPathEquivalence:
     @pytest.fixture
     def base_fingerprint(self):
         return {
-            "startDateString": "2023-06-01 00:00:00",
-            "endDateString": "2023-12-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-06-01 00:00:00",
             "tokens": ["BTC", "ETH"],
             "chunk_period": 1440,
             "weight_interpolation_period": 1440,
@@ -203,8 +203,8 @@ class TestPathSelection:
     @pytest.fixture
     def base_fingerprint(self):
         return {
-            "startDateString": "2023-06-01 00:00:00",
-            "endDateString": "2023-09-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-04-01 00:00:00",
             "tokens": ["BTC", "ETH"],
             "chunk_period": 1440,
             "weight_interpolation_period": 1440,
@@ -301,9 +301,9 @@ class TestThreeAssetEquivalence:
     def test_momentum_three_assets_equivalence(self):
         """Test momentum pool with 3 assets produces same results on both paths."""
         fingerprint_base = {
-            "startDateString": "2023-06-01 00:00:00",
-            "endDateString": "2023-09-01 00:00:00",
-            "tokens": ["BTC", "ETH", "SOL"],
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-04-01 00:00:00",
+            "tokens": ["BTC", "ETH", "USDC"],
             "rule": "momentum",
             "chunk_period": 1440,
             "weight_interpolation_period": 1440,

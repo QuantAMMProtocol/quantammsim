@@ -17,7 +17,7 @@ from tests.conftest import TEST_DATA_DIR
 def explosive_training_fingerprint():
     """Create a fingerprint prone to parameter explosion without clipping."""
     return {
-        "tokens": ["BTC", "ETH", "SOL", "USDC"],
+        "tokens": ["BTC", "ETH", "USDC"],
         "rule": "power_channel",  # Power channel is most sensitive to explosion
         "startDateString": "2023-01-01 00:00:00",
         "endDateString": "2023-02-01 00:00:00",

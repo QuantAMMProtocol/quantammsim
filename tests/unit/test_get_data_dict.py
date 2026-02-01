@@ -634,8 +634,8 @@ class TestEndToEndPreSlicing:
     def base_fingerprint(self):
         fp = copy.deepcopy(run_fingerprint_defaults)
         fp["chunk_period"] = 1440  # Daily for faster tests
-        fp["startDateString"] = "2022-01-01 00:00:00"
-        fp["endDateString"] = "2022-03-01 00:00:00"  # 2 months
+        fp["startDateString"] = "2023-01-01 00:00:00"
+        fp["endDateString"] = "2023-03-01 00:00:00"  # 2 months
         fp["tokens"] = ["BTC", "ETH"]
         fp["rule"] = "momentum"
         return fp
@@ -872,8 +872,8 @@ class TestDoRunOnHistoricDataPreSlicing:
         fp = copy.deepcopy(run_fingerprint_defaults)
         fp["chunk_period"] = 1440  # Daily for faster tests
         fp["weight_interpolation_period"] = 1440
-        fp["startDateString"] = "2022-01-01 00:00:00"
-        fp["endDateString"] = "2022-03-01 00:00:00"  # 2 months
+        fp["startDateString"] = "2023-01-01 00:00:00"
+        fp["endDateString"] = "2023-03-01 00:00:00"  # 2 months
         fp["tokens"] = ["BTC", "ETH"]
         fp["rule"] = "momentum"
         fp["fees"] = 0.0

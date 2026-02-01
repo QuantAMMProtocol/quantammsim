@@ -49,15 +49,11 @@ from .multi_period_sgd import (
 )
 
 from .robust_walk_forward import (
-    robust_walk_forward_training,
-    RobustTrainingResult,
-    CycleResult,
     WalkForwardCycle,
     compute_empirical_rademacher,
     compute_rademacher_haircut,
     compute_walk_forward_efficiency,
-    CheckpointTracker,
-    compare_approaches,
+    generate_walk_forward_cycles,
 )
 
 from .training_evaluator import (
@@ -100,16 +96,12 @@ __all__ = [
     "MultiPeriodResult",
     "PeriodSpec",
     "generate_period_specs",
-    # Robust walk-forward
-    "robust_walk_forward_training",
-    "RobustTrainingResult",
-    "CycleResult",
+    # Robust walk-forward utilities
     "WalkForwardCycle",
     "compute_empirical_rademacher",
     "compute_rademacher_haircut",
     "compute_walk_forward_efficiency",
-    "CheckpointTracker",
-    "compare_approaches",
+    "generate_walk_forward_cycles",
     # Training evaluator (meta-runner)
     "TrainingEvaluator",
     "EvaluationResult",

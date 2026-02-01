@@ -1271,8 +1271,23 @@ def train_on_historic_data(
             # Add initial_weights_logits if not present (required by forward pass)
             if "initial_weights_logits" not in best_params:
                 best_params["initial_weights_logits"] = jnp.zeros(n_assets)
+
+            if return_training_metadata:
+                # Return (params, metadata) tuple like gradient descent does
+                metadata = {
+                    "method": "optuna",
+                    "n_trials": len(completed_trials),
+                    "best_value": float(best_trial.value) if best_trial.value is not None else None,
+                    "validation_value": best_trial.user_attrs.get("validation_value"),
+                    "validation_sharpe": best_trial.user_attrs.get("validation_sharpe"),
+                    "train_value": best_trial.user_attrs.get("train_value"),
+                    "train_sharpe": best_trial.user_attrs.get("train_sharpe"),
+                }
+                return best_params, metadata
             return best_params
         else:
+            if return_training_metadata:
+                return None, {"method": "optuna", "n_trials": 0, "error": "No trials completed"}
             return None
     else:
         raise NotImplementedError
