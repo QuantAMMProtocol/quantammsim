@@ -134,7 +134,8 @@ class HyperparamSpace:
     - softmin_temperature: only sampled when aggregation="softmin"
     - weight_decay: only sampled when use_weight_decay=True (and triggers adamw)
     - lr_decay_ratio: only sampled when lr_schedule_type != "constant"
-    - warmup_steps: only sampled when lr_schedule_type == "warmup_cosine"
+    - warmup_fraction: only sampled when lr_schedule_type == "warmup_cosine"
+      (converted to warmup_steps = warmup_fraction * n_iterations)
 
     Note on bout_offset:
     - bout_offset is in MINUTES, always multiples of 1440 (whole days)
@@ -167,7 +168,7 @@ class HyperparamSpace:
         optimizer : str
             Optimizer type: "adam", "adamw", or "sgd". Affects learning rate ranges.
         include_lr_schedule : bool
-            Include lr_schedule_type and warmup_steps (conditional).
+            Include lr_schedule_type and warmup_fraction (conditional).
         include_early_stopping : bool
             Include early_stopping_patience.
         include_weight_decay : bool
@@ -245,9 +246,10 @@ class HyperparamSpace:
                 "low": 10, "high": 10000, "log": True,
                 "conditional_on": "lr_schedule_type", "conditional_value_not": "constant"
             }
-            # Only warmup_cosine uses warmup_steps
-            params["warmup_steps"] = {
-                "low": 10, "high": 500, "log": True, "type": "int",
+            # Only warmup_cosine uses warmup_fraction (converted to warmup_steps later)
+            # Sample as fraction of n_iterations to avoid warmup_steps > n_iterations
+            params["warmup_fraction"] = {
+                "low": 0.05, "high": 0.3, "log": False,
                 "conditional_on": "lr_schedule_type", "conditional_value": "warmup_cosine"
             }
 
@@ -476,7 +478,7 @@ def create_objective(
         opt_settings_keys = [
             "base_lr", "batch_size", "n_iterations",
             "clip_norm", "n_cycles", "lr_schedule_type", "lr_decay_ratio",
-            "warmup_steps", "early_stopping_patience", "noise_scale",
+            "early_stopping_patience", "noise_scale",
         ]
 
         # Parameters that go directly in run_fingerprint (not optimisation_settings)
@@ -502,6 +504,10 @@ def create_objective(
             elif key == "bout_offset":
                 # Legacy: direct minutes value
                 fp["bout_offset"] = value
+            elif key == "warmup_fraction":
+                # Convert warmup_fraction to warmup_steps based on n_iterations
+                n_iterations = suggested.get("n_iterations", fp["optimisation_settings"].get("n_iterations", 1000))
+                fp["optimisation_settings"]["warmup_steps"] = int(value * n_iterations)
             # Skip control params that aren't real hyperparams (handled above)
             elif key in ["use_weight_decay", "weight_decay", "use_early_stopping",
                          "val_fraction", "training_objective"]:

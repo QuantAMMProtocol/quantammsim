@@ -102,7 +102,7 @@ class TestHyperparamSpace:
         assert space_365.params["bout_offset_days"]["high"] == int(365 * 0.9)
 
     def test_lr_schedule_params_included(self):
-        """lr_schedule_type and warmup_steps should be in default spaces."""
+        """lr_schedule_type and warmup_fraction should be in default spaces."""
         space = HyperparamSpace.default_sgd_space()
 
         assert "lr_schedule_type" in space.params
@@ -112,8 +112,9 @@ class TestHyperparamSpace:
         assert "warmup_cosine" in space.params["lr_schedule_type"]["choices"]
         assert "exponential" in space.params["lr_schedule_type"]["choices"]
 
-        assert "warmup_steps" in space.params
-        assert space.params["warmup_steps"]["type"] == "int"
+        assert "warmup_fraction" in space.params
+        assert space.params["warmup_fraction"]["low"] == 0.05
+        assert space.params["warmup_fraction"]["high"] == 0.3
 
     def test_early_stopping_patience_included(self):
         """early_stopping_patience should be in default spaces."""
@@ -152,7 +153,7 @@ class TestHyperparamSpace:
         )
 
         assert "lr_schedule_type" not in space.params
-        assert "warmup_steps" not in space.params
+        assert "warmup_fraction" not in space.params
         assert "early_stopping_patience" not in space.params
         assert "use_weight_decay" not in space.params
         assert "weight_decay" not in space.params
@@ -180,15 +181,15 @@ class TestConditionalSampling:
         assert space.params["softmin_temperature"]["conditional_on"] == "aggregation"
         assert space.params["softmin_temperature"]["conditional_value"] == "softmin"
 
-    def test_warmup_steps_is_conditional_on_lr_schedule(self):
-        """warmup_steps should only be sampled when lr_schedule_type == 'warmup_cosine'."""
+    def test_warmup_fraction_is_conditional_on_lr_schedule(self):
+        """warmup_fraction should only be sampled when lr_schedule_type == 'warmup_cosine'."""
         space = HyperparamSpace.default_sgd_space()
 
         assert "lr_schedule_type" in space.params
-        assert "warmup_steps" in space.params
-        assert space.params["warmup_steps"]["conditional_on"] == "lr_schedule_type"
-        # warmup_steps only makes sense for warmup_cosine schedule
-        assert space.params["warmup_steps"]["conditional_value"] == "warmup_cosine"
+        assert "warmup_fraction" in space.params
+        assert space.params["warmup_fraction"]["conditional_on"] == "lr_schedule_type"
+        # warmup_fraction only makes sense for warmup_cosine schedule
+        assert space.params["warmup_fraction"]["conditional_value"] == "warmup_cosine"
 
     def test_suggest_excludes_weight_decay_when_disabled(self):
         """When use_weight_decay=False, weight_decay should not be in suggested."""
@@ -266,11 +267,11 @@ class TestConditionalSampling:
         assert 0.1 <= suggested["softmin_temperature"] <= 10.0
 
     def test_suggest_excludes_warmup_when_lr_schedule_constant(self):
-        """warmup_steps should not be suggested when lr_schedule_type != 'warmup_cosine'."""
+        """warmup_fraction should not be suggested when lr_schedule_type != 'warmup_cosine'."""
         space = HyperparamSpace(params={
             "lr_schedule_type": {"choices": ["constant"]},  # Force constant
-            "warmup_steps": {
-                "low": 5, "high": 100, "log": False, "type": "int",
+            "warmup_fraction": {
+                "low": 0.05, "high": 0.3, "log": False,
                 "conditional_on": "lr_schedule_type", "conditional_value": "warmup_cosine"
             },
         })
@@ -280,14 +281,14 @@ class TestConditionalSampling:
         suggested = space.suggest(trial)
 
         assert suggested["lr_schedule_type"] == "constant"
-        assert "warmup_steps" not in suggested
+        assert "warmup_fraction" not in suggested
 
-    def test_suggest_includes_warmup_when_lr_schedule_not_constant(self):
-        """warmup_steps should be suggested when lr_schedule_type == 'warmup_cosine'."""
+    def test_suggest_includes_warmup_when_lr_schedule_warmup_cosine(self):
+        """warmup_fraction should be suggested when lr_schedule_type == 'warmup_cosine'."""
         space = HyperparamSpace(params={
             "lr_schedule_type": {"choices": ["warmup_cosine"]},  # Force warmup_cosine
-            "warmup_steps": {
-                "low": 5, "high": 100, "log": False, "type": "int",
+            "warmup_fraction": {
+                "low": 0.05, "high": 0.3, "log": False,
                 "conditional_on": "lr_schedule_type", "conditional_value": "warmup_cosine"
             },
         })
@@ -297,8 +298,8 @@ class TestConditionalSampling:
         suggested = space.suggest(trial)
 
         assert suggested["lr_schedule_type"] == "warmup_cosine"
-        assert "warmup_steps" in suggested
-        assert 5 <= suggested["warmup_steps"] <= 100
+        assert "warmup_fraction" in suggested
+        assert 0.05 <= suggested["warmup_fraction"] <= 0.3
 
     def test_suggest_returns_dict_with_all_params(self):
         """suggest() should return values for all parameters."""

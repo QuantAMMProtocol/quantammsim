@@ -583,6 +583,8 @@ def _create_lr_schedule(settings):
         return optax.constant_schedule(base_lr)
 
     elif schedule_type == "cosine":
+        if n_iterations <= 0:
+            raise ValueError(f"cosine schedule requires positive n_iterations, got {n_iterations}")
         return optax.cosine_decay_schedule(
             init_value=base_lr,
             decay_steps=n_iterations,  # Use n_iterations
@@ -590,6 +592,8 @@ def _create_lr_schedule(settings):
         )
 
     elif schedule_type == "exponential":
+        if n_iterations <= 0:
+            raise ValueError(f"exponential schedule requires positive n_iterations, got {n_iterations}")
         # Decay from base_lr to min_lr over n_iterations steps.
         # Formula: LR(step) = base_lr * decay_rate^step
         # At step=n_iterations: min_lr = base_lr * decay_rate^n_iterations
@@ -602,12 +606,19 @@ def _create_lr_schedule(settings):
         )
 
     elif schedule_type == "warmup_cosine":
+        if n_iterations <= 0:
+            raise ValueError(f"warmup_cosine schedule requires positive n_iterations, got {n_iterations}")
         warmup_steps = settings["warmup_steps"]
+        if warmup_steps >= n_iterations:
+            raise ValueError(
+                f"warmup_steps ({warmup_steps}) must be less than n_iterations ({n_iterations}). "
+                f"Use warmup_fraction in HyperparamSpace to avoid this."
+            )
         return optax.warmup_cosine_decay_schedule(
             init_value=min_lr,
             peak_value=base_lr,
             warmup_steps=warmup_steps,
-            decay_steps=n_iterations,  # Use n_iterations
+            decay_steps=n_iterations,
             end_value=min_lr,
         )
 
