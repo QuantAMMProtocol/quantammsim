@@ -76,6 +76,8 @@ def train_on_historic_data(
     verbose=True,
     run_location=None,
     return_training_metadata=False,
+    warm_start_params=None,
+    warm_start_weights=None,
 ):
     """
     Train a model on historical price data using JAX.
@@ -102,6 +104,13 @@ def train_on_historic_data(
     return_training_metadata : bool, optional
         If True, return (params, metadata) tuple where metadata contains training info
         including checkpoint_returns for Rademacher complexity calculation (default is False).
+    warm_start_params : dict, optional
+        Parameters from a previous training cycle to use as initialization instead of
+        random initialization. Used for walk-forward analysis warm-starting.
+    warm_start_weights : array-like, optional
+        Final weights from a previous cycle to use as initial weights. Shape should be
+        (n_assets,). The pool starts with fresh initial_pool_value but distributed
+        according to these weights (simulating continuous operation).
 
     Returns:
     --------
@@ -278,10 +287,84 @@ def train_on_historic_data(
     assert pool.is_trainable(), "The selected pool must be trainable for this operation"
 
     if not loaded:
-        params = pool.init_parameters(
-            initial_params, run_fingerprint, n_tokens, n_parameter_sets
-        )
-        offset = 0
+        # Check if we should warm-start from previous cycle params
+        if warm_start_params is not None:
+            # Use warm_start_params as initialization for strategy parameters
+            # (lamb, k, etc.). Pool starts with fresh initial_pool_value but
+            # distributed according to warm_start_weights if provided.
+            params = {}
+            for key, value in warm_start_params.items():
+                if key == "subsidary_params":
+                    params[key] = value if value is not None else []
+                    continue
+                # Skip initial_reserves - we compute fresh reserves below
+                if key == "initial_reserves":
+                    continue
+                if hasattr(value, 'copy'):
+                    params[key] = jnp.array(value.copy())
+                else:
+                    params[key] = jnp.array(value) if not isinstance(value, (list, type(None))) else value
+
+            # Ensure params have correct shape for n_parameter_sets
+            # warm_start_params are single param set (shape: (n_assets,) or scalar)
+            # need to expand to (n_parameter_sets, ...) format
+            # Step 1: Stack to (n_parameter_sets, ...) shape
+            for key, value in list(params.items()):
+                if key == "subsidary_params" or value is None:
+                    continue
+                if hasattr(value, 'shape'):
+                    params[key] = np.stack([np.array(value)] * n_parameter_sets, axis=0)
+
+            # Step 2: Add noise using existing pool method (reuse single source of truth)
+            noise_scale = run_fingerprint["optimisation_settings"].get("noise_scale", 0.1)
+            params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale)
+
+            # Initialize reserves with fresh initial_pool_value
+            # If warm_start_weights provided, distribute according to those weights
+            # Otherwise use equal weights
+            initial_pool_value = run_fingerprint["initial_pool_value"]
+            start_prices = data_dict["prices"][data_dict["start_idx"]]
+            n_assets_local = len(start_prices)
+
+            if warm_start_weights is not None:
+                # Validate warm_start_weights before using
+                weights = jnp.array(warm_start_weights)
+                weights_sum = jnp.sum(weights)
+
+                if jnp.any(jnp.isnan(weights)):
+                    if verbose:
+                        print("Warning: warm_start_weights contains NaN, falling back to equal weights")
+                    warm_start_weights = None
+                elif weights_sum <= 0:
+                    if verbose:
+                        print("Warning: warm_start_weights sum <= 0, falling back to equal weights")
+                    warm_start_weights = None
+
+            if warm_start_weights is not None:
+                # Use previous cycle's ending weights to distribute fresh pool value
+                weights = jnp.array(warm_start_weights)
+                # Normalize weights to sum to 1 (safety check)
+                weights = weights / (jnp.sum(weights) + 1e-10)
+                # Compute reserves: value_per_asset = weight * total_value, reserves = value / price
+                value_per_asset = weights * initial_pool_value
+                fresh_reserves = value_per_asset / start_prices
+                if verbose:
+                    print("Warm-starting from previous cycle (params + weights, fresh pool value)")
+            else:
+                # Equal weight initial reserves
+                value_per_asset = initial_pool_value / n_assets_local
+                fresh_reserves = value_per_asset / start_prices
+                if verbose:
+                    print("Warm-starting from previous cycle parameters (fresh pool value)")
+
+            params["initial_reserves"] = jnp.stack([fresh_reserves] * n_parameter_sets, axis=0)
+
+            offset = 0
+        else:
+            params = pool.init_parameters(
+                initial_params, run_fingerprint, n_tokens, n_parameter_sets
+            )
+            offset = 0
     else:
         if verbose:
             print("Using Loaded Params?: ", loaded)
@@ -885,6 +968,12 @@ def train_on_historic_data(
         #     - Keys: "sharpe", "calmar", "sterling", "ulcer", "returns_over_uniform_hodl", etc.
         #   best_param_idx: index of best param set (from validation if val_fraction > 0)
         #
+        # Extract final pool state (reserves/weights) at end of test period for warm-starting
+        # continuous_outputs shape: (n_parameter_sets, time_steps, ...)
+        best_idx = best_val_params_idx if val_fraction > 0 else best_train_params_idx
+        final_reserves_all = continuous_outputs["reserves"][:, -1, :]  # (n_param_sets, n_assets)
+        final_weights_all = continuous_outputs["weights"][:, -1, :]  # (n_param_sets, n_assets)
+
         training_metadata = {
             "epochs_trained": i + 1,  # Actual iterations completed
             "final_objective": float(np.array(objective_value).mean()),
@@ -893,7 +982,11 @@ def train_on_historic_data(
             # Continuous test metrics - proper OOS from continuous forward pass
             "final_continuous_test_metrics": continuous_test_metrics_list if continuous_test_metrics_list else None,
             # Which param set was selected as best (for extracting correct metrics)
-            "best_param_idx": best_val_params_idx if val_fraction > 0 else best_train_params_idx,
+            "best_param_idx": best_idx,
+            # Final pool state at end of test period (for warm-starting next cycle)
+            # These are for the BEST param set only (strategy params are in returned params)
+            "final_reserves": np.array(final_reserves_all[best_idx]),
+            "final_weights": np.array(final_weights_all[best_idx]),
             # Provenance: full fingerprint and output file path for debugging/linking
             "run_location": run_location,
             "run_fingerprint": deepcopy(run_fingerprint),

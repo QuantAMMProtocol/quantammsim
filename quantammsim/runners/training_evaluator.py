@@ -201,11 +201,21 @@ class TrainerWrapper:
         run_fingerprint: dict,
         n_assets: int,
         warm_start_params: Optional[Dict] = None,
+        warm_start_weights: Optional[Any] = None,
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
         test_end_date: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Train and return (params, metadata)."""
+        """Train and return (params, metadata).
+
+        Parameters
+        ----------
+        warm_start_params : dict, optional
+            Strategy parameters from previous cycle to use as initialization.
+        warm_start_weights : array-like, optional
+            Final weights from previous cycle. Pool starts with fresh initial_pool_value
+            but distributed according to these weights (simulating continuous operation).
+        """
         raise NotImplementedError
 
 
@@ -230,6 +240,7 @@ class FunctionWrapper(TrainerWrapper):
         run_fingerprint: dict,
         n_assets: int,
         warm_start_params: Optional[Dict] = None,
+        warm_start_weights: Optional[Any] = None,
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
         test_end_date: Optional[str] = None,
@@ -242,6 +253,7 @@ class FunctionWrapper(TrainerWrapper):
             run_fingerprint=run_fingerprint,
             n_assets=n_assets,
             warm_start_params=warm_start_params,
+            warm_start_weights=warm_start_weights,
         )
 
 
@@ -278,6 +290,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
         run_fingerprint: dict,
         n_assets: int,
         warm_start_params: Optional[Dict] = None,
+        warm_start_weights: Optional[Any] = None,
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
         test_end_date: Optional[str] = None,
@@ -293,6 +306,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
             return self._run_train_on_historic_data(
                 data_dict, train_start_idx, train_end_idx,
                 pool, run_fingerprint, n_assets, warm_start_params,
+                warm_start_weights,
                 train_start_date, train_end_date, test_end_date,
             )
         elif self.runner_name == "multi_period_sgd":
@@ -313,6 +327,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
         run_fingerprint: dict,
         n_assets: int,
         warm_start_params: Optional[Dict],
+        warm_start_weights: Optional[Any],
         train_start_date: Optional[str],
         train_end_date: Optional[str],
         test_end_date: Optional[str] = None,
@@ -358,6 +373,8 @@ class ExistingRunnerWrapper(TrainerWrapper):
             return_training_metadata=True,  # Always get metadata for OOS metrics
             force_init=True,  # Don't load/restart previous runs
             root=self.root,
+            warm_start_params=warm_start_params,
+            warm_start_weights=warm_start_weights,
         )
 
         # Unpack (params, metadata) tuple - both SGD and optuna return this format
@@ -436,11 +453,12 @@ class RandomBaselineWrapper(TrainerWrapper):
         run_fingerprint: dict,
         n_assets: int,
         warm_start_params: Optional[Dict] = None,
+        warm_start_weights: Optional[Any] = None,
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
         test_end_date: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Return random parameters (ignores date strings)."""
+        """Return random parameters (ignores warm-start and date strings)."""
         rng = np.random.RandomState(self.seed + self._call_count)
         self._call_count += 1
 
@@ -486,6 +504,13 @@ class TrainingEvaluator:
 
     Wraps any trainer and runs walk-forward evaluation to assess
     effectiveness using WFE and Rademacher metrics.
+
+    Early Pruning
+    -------------
+    Cycles are pruned if the OOS value of the training metric (run_fingerprint["return_val"])
+    is NaN, None, or non-positive. This assumes higher values are better, which holds for
+    sharpe, returns, and returns_over_hodl. For metrics where lower is better (e.g. ulcer),
+    early pruning may incorrectly terminate valid runs.
     """
 
     def __init__(
@@ -732,6 +757,7 @@ class TrainingEvaluator:
         # Run evaluation
         cycle_results = []
         prev_params = None
+        prev_weights = None  # Track final weights for warm-starting next cycle
         all_checkpoint_returns = []  # For aggregate Rademacher
 
         for cycle in cycles:
@@ -739,6 +765,7 @@ class TrainingEvaluator:
                 print(f"\n--- Cycle {cycle.cycle_number} ---")
 
             # Train - pass test_end_date so runner computes proper OOS metrics
+            # Pass warm_start_weights for initial weight distribution (fresh pool value)
             params, metadata = self.trainer.train(
                 data_dict=data_dict,
                 train_start_idx=cycle.train_start_idx,
@@ -747,6 +774,7 @@ class TrainingEvaluator:
                 run_fingerprint=run_fingerprint,
                 n_assets=n_assets,
                 warm_start_params=prev_params,
+                warm_start_weights=prev_weights,
                 train_start_date=cycle.train_start_date,
                 train_end_date=cycle.train_end_date,
                 test_end_date=cycle.test_end_date,
@@ -861,6 +889,24 @@ class TrainingEvaluator:
 
             cycle_results.append(cycle_eval)
             prev_params = params
+            prev_weights = metadata.get("final_weights")  # Capture for warm-starting next cycle
+
+            # Early pruning: check the metric we're actually training on
+            # Assumes positive values are desirable - valid for sharpe, returns, returns_over_hodl
+            # NOTE: If training on metrics where lower is better (e.g. ulcer), disable early pruning
+            training_metric = run_fingerprint.get("return_val", "sharpe")
+            oos_objective = oos_metrics.get(training_metric)
+
+            # Prune if objective is NaN, None, or non-positive
+            should_prune = (
+                oos_objective is None
+                or (isinstance(oos_objective, float) and np.isnan(oos_objective))
+                or oos_objective <= 0
+            )
+            if should_prune:
+                if self.verbose:
+                    print(f"  PRUNING: Non-positive OOS {training_metric}={oos_objective}")
+                break
 
             if self.verbose:
                 print(f"  IS:  sharpe={is_metrics['sharpe']:.4f}")

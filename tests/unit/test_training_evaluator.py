@@ -35,12 +35,14 @@ class TestFunctionWrapper:
         call_log = []
 
         def mock_trainer(data_dict, train_start_idx, train_end_idx, pool,
-                         run_fingerprint, n_assets, warm_start_params=None):
+                         run_fingerprint, n_assets, warm_start_params=None,
+                         warm_start_weights=None):
             call_log.append({
                 "train_start_idx": train_start_idx,
                 "train_end_idx": train_end_idx,
                 "n_assets": n_assets,
                 "warm_start": warm_start_params,
+                "warm_start_weights": warm_start_weights,
             })
             return {"param": 1.0}, {"epochs_trained": 100}
 
@@ -54,6 +56,7 @@ class TestFunctionWrapper:
             run_fingerprint={},
             n_assets=2,
             warm_start_params={"old_param": 0.5},
+            warm_start_weights=np.array([0.6, 0.4]),
         )
 
         assert len(call_log) == 1
@@ -61,6 +64,7 @@ class TestFunctionWrapper:
         assert call_log[0]["train_end_idx"] == 50
         assert call_log[0]["n_assets"] == 2
         assert call_log[0]["warm_start"] == {"old_param": 0.5}
+        assert call_log[0]["warm_start_weights"] is not None
         assert params == {"param": 1.0}
         assert metadata["epochs_trained"] == 100
 
@@ -356,6 +360,530 @@ class TestCompareTrainers:
 # Test Edge Cases
 # =============================================================================
 
+class TestWarmStartFunctionality:
+    """Tests for warm-start functionality between walk-forward cycles."""
+
+    def test_warm_start_params_and_weights_passed_to_trainer(self):
+        """warm_start_params and warm_start_weights should be passed to the trainer function."""
+        call_log = []
+
+        def mock_trainer(data_dict, train_start_idx, train_end_idx, pool,
+                         run_fingerprint, n_assets, warm_start_params=None,
+                         warm_start_weights=None):
+            call_log.append({
+                "warm_start_params": warm_start_params,
+                "warm_start_weights": warm_start_weights,
+            })
+            return {"param": 1.0}, {"epochs_trained": 10, "final_weights": np.array([0.6, 0.4])}
+
+        wrapper = FunctionWrapper(mock_trainer, name="test")
+
+        # First call without warm start
+        wrapper.train({}, 0, 100, None, {}, 2)
+        assert call_log[0]["warm_start_params"] is None
+        assert call_log[0]["warm_start_weights"] is None
+
+        # Second call with warm start
+        warm_params = {"logit_lamb": np.array([0.5, 0.5])}
+        warm_weights = np.array([0.6, 0.4])
+        wrapper.train({}, 100, 200, None, {}, 2,
+                     warm_start_params=warm_params,
+                     warm_start_weights=warm_weights)
+        assert call_log[1]["warm_start_params"] == warm_params
+        assert np.allclose(call_log[1]["warm_start_weights"], warm_weights)
+
+    def test_metadata_contains_final_weights_for_warm_starting(self):
+        """Training metadata should contain final_weights for warm-starting next cycle."""
+        # Create a mock trainer that returns metadata with final weights
+        def mock_trainer(data_dict, train_start_idx, train_end_idx, pool,
+                         run_fingerprint, n_assets, warm_start_params=None,
+                         warm_start_weights=None):
+            params = {"logit_lamb": np.array([0.5, 0.5])}
+            metadata = {
+                "epochs_trained": 10,
+                "final_objective": 0.5,
+                "best_param_idx": 0,
+                "final_weights": np.array([0.6, 0.4]),
+            }
+            return params, metadata
+
+        wrapper = FunctionWrapper(mock_trainer, name="test")
+        params, metadata = wrapper.train({}, 0, 100, None, {}, 2)
+
+        # Check metadata contains warm-start info
+        assert "final_weights" in metadata
+        assert metadata["final_weights"] is not None
+
+    def test_existing_runner_wrapper_passes_warm_start_weights(self):
+        """ExistingRunnerWrapper should pass warm_start_weights to train_on_historic_data."""
+        from quantammsim.runners import jax_runners
+
+        original_train = jax_runners.train_on_historic_data
+        captured_args = {}
+
+        def capture_train(run_fingerprint, *args, **kwargs):
+            captured_args["warm_start_params"] = kwargs.get("warm_start_params")
+            captured_args["warm_start_weights"] = kwargs.get("warm_start_weights")
+            # Return mock result
+            params = {}
+            metadata = {
+                "epochs_trained": 3,
+                "final_objective": 0.5,
+                "best_param_idx": 0,
+                "final_train_metrics": [{"sharpe": 0.5, "returns_over_uniform_hodl": 0.01}],
+                "final_continuous_test_metrics": [{"sharpe": 0.4, "returns_over_uniform_hodl": 0.005}],
+                "final_weights": np.array([0.6, 0.4]),
+            }
+            return params, metadata
+
+        jax_runners.train_on_historic_data = capture_train
+
+        try:
+            wrapper = ExistingRunnerWrapper("train_on_historic_data", {"max_iterations": 3})
+
+            warm_weights = np.array([0.6, 0.4])
+            warm_params = {"logit_lamb": np.array([0.5, 0.5])}
+
+            wrapper.train(
+                data_dict={},
+                train_start_idx=0,
+                train_end_idx=100,
+                pool=None,
+                run_fingerprint={
+                    "tokens": ["BTC", "ETH"],
+                    "optimisation_settings": {"n_iterations": 10},
+                },
+                n_assets=2,
+                warm_start_params=warm_params,
+                warm_start_weights=warm_weights,
+            )
+
+            # Verify warm-start state was passed correctly
+            assert captured_args["warm_start_params"] == warm_params
+            assert np.allclose(captured_args["warm_start_weights"], warm_weights)
+
+        finally:
+            jax_runners.train_on_historic_data = original_train
+
+    def test_warm_start_none_when_not_provided(self):
+        """warm_start_weights should be None when not provided."""
+        from quantammsim.runners import jax_runners
+
+        original_train = jax_runners.train_on_historic_data
+        captured_args = {}
+
+        def capture_train(run_fingerprint, *args, **kwargs):
+            captured_args["warm_start_params"] = kwargs.get("warm_start_params")
+            captured_args["warm_start_weights"] = kwargs.get("warm_start_weights")
+            params = {}
+            metadata = {"epochs_trained": 3, "final_objective": 0.5, "best_param_idx": 0}
+            return params, metadata
+
+        jax_runners.train_on_historic_data = capture_train
+
+        try:
+            wrapper = ExistingRunnerWrapper("train_on_historic_data", {"max_iterations": 3})
+
+            # Call without warm_start_weights
+            wrapper.train(
+                data_dict={},
+                train_start_idx=0,
+                train_end_idx=100,
+                pool=None,
+                run_fingerprint={
+                    "tokens": ["BTC", "ETH"],
+                    "optimisation_settings": {"n_iterations": 10},
+                },
+                n_assets=2,
+                warm_start_params=None,
+                warm_start_weights=None,
+            )
+
+            # All warm-start args should be None
+            assert captured_args["warm_start_params"] is None
+            assert captured_args["warm_start_weights"] is None
+
+        finally:
+            jax_runners.train_on_historic_data = original_train
+
+
+class TestEarlyPruning:
+    """Tests for early pruning when OOS metrics are negative."""
+
+    def test_prunes_when_oos_metrics_negative(self):
+        """Evaluation should stop early if OOS sharpe and returns_over_hodl are both negative."""
+        call_count = [0]
+
+        def bad_trainer(data_dict, train_start_idx, train_end_idx, pool,
+                        run_fingerprint, n_assets, warm_start_params=None,
+                        warm_start_weights=None):
+            call_count[0] += 1
+            params = pool.init_parameters(
+                {
+                    "initial_memory_length": run_fingerprint["initial_memory_length"],
+                    "initial_memory_length_delta": run_fingerprint.get("initial_memory_length_delta", 0.0),
+                    "initial_k_per_day": run_fingerprint["initial_k_per_day"],
+                    "initial_weights_logits": run_fingerprint["initial_weights_logits"],
+                    "initial_log_amplitude": run_fingerprint["initial_log_amplitude"],
+                    "initial_raw_width": run_fingerprint["initial_raw_width"],
+                    "initial_raw_exponents": run_fingerprint["initial_raw_exponents"],
+                    "initial_pre_exp_scaling": run_fingerprint["initial_pre_exp_scaling"],
+                },
+                run_fingerprint,
+                n_assets,
+                1,
+            )
+            params = {
+                k: jnp.squeeze(v, axis=0) if hasattr(v, 'shape') and len(v.shape) > 1 else v
+                for k, v in params.items()
+            }
+            # Return negative OOS metrics to trigger pruning
+            metadata = {
+                "epochs_trained": 10,
+                "best_param_idx": 0,
+                "final_train_metrics": [{"sharpe": 0.5, "returns_over_uniform_hodl": 0.01}],
+                "final_continuous_test_metrics": [{"sharpe": -0.5, "returns_over_uniform_hodl": -0.02}],
+                "final_weights": np.array([0.5, 0.5]),
+            }
+            return params, metadata
+
+        evaluator = TrainingEvaluator.from_function(
+            bad_trainer,
+            name="bad_trainer",
+            n_cycles=3,
+            verbose=False,
+            root=TEST_DATA_DIR,
+        )
+
+        run_fp = {
+            "tokens": ["BTC", "ETH"],
+            "rule": "momentum",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
+            "chunk_period": 1440,
+            "bout_offset": 10080,
+            "weight_interpolation_period": 1440,
+            "optimisation_settings": {
+                "base_lr": 0.01,
+                "training_data_kind": "historic",
+                "force_scalar": False,
+            },
+            "initial_memory_length": 10.0,
+            "initial_memory_length_delta": 0.0,
+            "initial_k_per_day": 1.0,
+            "initial_weights_logits": 0.0,
+            "initial_log_amplitude": -5.0,
+            "initial_raw_width": 0.0,
+            "initial_raw_exponents": 0.0,
+            "initial_pre_exp_scaling": 0.001,
+            "maximum_change": 0.001,
+            "initial_pool_value": 1000000.0,
+            "fees": 0.003,
+            "arb_fees": 0.0,
+            "gas_cost": 0.0,
+            "arb_frequency": 1,
+            "do_arb": True,
+            "arb_quality": 1.0,
+            "do_trades": False,
+            "noise_trader_ratio": 0.0,
+            "minimum_weight": 0.03,
+            "max_memory_days": 30,
+            "subsidary_pools": [],
+            "weight_interpolation_method": "linear",
+            "use_pre_exp_scaling": True,
+            "use_alt_lamb": False,
+            "numeraire": None,
+        }
+
+        result = evaluator.evaluate(run_fp)
+
+        # Should have stopped after first cycle due to negative OOS metrics
+        assert call_count[0] == 1, f"Expected 1 cycle (pruned), got {call_count[0]}"
+        assert len(result.cycles) == 1, f"Expected 1 cycle result, got {len(result.cycles)}"
+
+    def test_continues_when_oos_sharpe_positive(self):
+        """Evaluation should continue if OOS sharpe is positive (even if returns_over_hodl negative)."""
+        call_count = [0]
+
+        def ok_trainer(data_dict, train_start_idx, train_end_idx, pool,
+                       run_fingerprint, n_assets, warm_start_params=None,
+                       warm_start_weights=None):
+            call_count[0] += 1
+            params = pool.init_parameters(
+                {
+                    "initial_memory_length": run_fingerprint["initial_memory_length"],
+                    "initial_memory_length_delta": run_fingerprint.get("initial_memory_length_delta", 0.0),
+                    "initial_k_per_day": run_fingerprint["initial_k_per_day"],
+                    "initial_weights_logits": run_fingerprint["initial_weights_logits"],
+                    "initial_log_amplitude": run_fingerprint["initial_log_amplitude"],
+                    "initial_raw_width": run_fingerprint["initial_raw_width"],
+                    "initial_raw_exponents": run_fingerprint["initial_raw_exponents"],
+                    "initial_pre_exp_scaling": run_fingerprint["initial_pre_exp_scaling"],
+                },
+                run_fingerprint,
+                n_assets,
+                1,
+            )
+            params = {
+                k: jnp.squeeze(v, axis=0) if hasattr(v, 'shape') and len(v.shape) > 1 else v
+                for k, v in params.items()
+            }
+            # Positive sharpe, negative returns_over_hodl - should NOT prune
+            metadata = {
+                "epochs_trained": 10,
+                "best_param_idx": 0,
+                "final_train_metrics": [{"sharpe": 0.5, "returns_over_uniform_hodl": 0.01}],
+                "final_continuous_test_metrics": [{"sharpe": 0.1, "returns_over_uniform_hodl": -0.01}],
+                "final_weights": np.array([0.5, 0.5]),
+            }
+            return params, metadata
+
+        evaluator = TrainingEvaluator.from_function(
+            ok_trainer,
+            name="ok_trainer",
+            n_cycles=2,
+            verbose=False,
+            root=TEST_DATA_DIR,
+        )
+
+        run_fp = {
+            "tokens": ["BTC", "ETH"],
+            "rule": "momentum",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
+            "chunk_period": 1440,
+            "bout_offset": 10080,
+            "weight_interpolation_period": 1440,
+            "optimisation_settings": {
+                "base_lr": 0.01,
+                "training_data_kind": "historic",
+                "force_scalar": False,
+            },
+            "initial_memory_length": 10.0,
+            "initial_memory_length_delta": 0.0,
+            "initial_k_per_day": 1.0,
+            "initial_weights_logits": 0.0,
+            "initial_log_amplitude": -5.0,
+            "initial_raw_width": 0.0,
+            "initial_raw_exponents": 0.0,
+            "initial_pre_exp_scaling": 0.001,
+            "maximum_change": 0.001,
+            "initial_pool_value": 1000000.0,
+            "fees": 0.003,
+            "arb_fees": 0.0,
+            "gas_cost": 0.0,
+            "arb_frequency": 1,
+            "do_arb": True,
+            "arb_quality": 1.0,
+            "do_trades": False,
+            "noise_trader_ratio": 0.0,
+            "minimum_weight": 0.03,
+            "max_memory_days": 30,
+            "subsidary_pools": [],
+            "weight_interpolation_method": "linear",
+            "use_pre_exp_scaling": True,
+            "use_alt_lamb": False,
+            "numeraire": None,
+        }
+
+        result = evaluator.evaluate(run_fp)
+
+        # Should have completed all 2 cycles (not pruned)
+        assert call_count[0] == 2, f"Expected 2 cycles, got {call_count[0]}"
+        assert len(result.cycles) == 2, f"Expected 2 cycle results, got {len(result.cycles)}"
+
+    def test_prunes_when_oos_metric_is_nan(self):
+        """Evaluation should prune if OOS training metric is NaN."""
+        call_count = [0]
+
+        def nan_trainer(data_dict, train_start_idx, train_end_idx, pool,
+                        run_fingerprint, n_assets, warm_start_params=None,
+                        warm_start_weights=None):
+            call_count[0] += 1
+            params = pool.init_parameters(
+                {
+                    "initial_memory_length": run_fingerprint["initial_memory_length"],
+                    "initial_memory_length_delta": run_fingerprint.get("initial_memory_length_delta", 0.0),
+                    "initial_k_per_day": run_fingerprint["initial_k_per_day"],
+                    "initial_weights_logits": run_fingerprint["initial_weights_logits"],
+                    "initial_log_amplitude": run_fingerprint["initial_log_amplitude"],
+                    "initial_raw_width": run_fingerprint["initial_raw_width"],
+                    "initial_raw_exponents": run_fingerprint["initial_raw_exponents"],
+                    "initial_pre_exp_scaling": run_fingerprint["initial_pre_exp_scaling"],
+                },
+                run_fingerprint,
+                n_assets,
+                1,
+            )
+            params = {
+                k: jnp.squeeze(v, axis=0) if hasattr(v, 'shape') and len(v.shape) > 1 else v
+                for k, v in params.items()
+            }
+            # Return NaN for the training metric (returns_over_uniform_hodl) to trigger pruning
+            # Keep sharpe finite for WFE aggregation
+            metadata = {
+                "epochs_trained": 10,
+                "best_param_idx": 0,
+                "final_train_metrics": [{"sharpe": 0.5, "returns_over_uniform_hodl": 0.01, "return": 0.01}],
+                "final_continuous_test_metrics": [{"sharpe": 0.3, "returns_over_uniform_hodl": float('nan'), "return": 0.01}],
+                "final_weights": np.array([0.5, 0.5]),
+            }
+            return params, metadata
+
+        evaluator = TrainingEvaluator.from_function(
+            nan_trainer,
+            name="nan_trainer",
+            n_cycles=3,
+            verbose=False,
+            root=TEST_DATA_DIR,
+        )
+
+        run_fp = {
+            "tokens": ["BTC", "ETH"],
+            "rule": "momentum",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
+            "chunk_period": 1440,
+            "bout_offset": 10080,
+            "weight_interpolation_period": 1440,
+            "return_val": "returns_over_uniform_hodl",  # Training metric with NaN value
+            "optimisation_settings": {
+                "base_lr": 0.01,
+                "training_data_kind": "historic",
+                "force_scalar": False,
+            },
+            "initial_memory_length": 10.0,
+            "initial_memory_length_delta": 0.0,
+            "initial_k_per_day": 1.0,
+            "initial_weights_logits": 0.0,
+            "initial_log_amplitude": -5.0,
+            "initial_raw_width": 0.0,
+            "initial_raw_exponents": 0.0,
+            "initial_pre_exp_scaling": 0.001,
+            "maximum_change": 0.001,
+            "initial_pool_value": 1000000.0,
+            "fees": 0.003,
+            "arb_fees": 0.0,
+            "gas_cost": 0.0,
+            "arb_frequency": 1,
+            "do_arb": True,
+            "arb_quality": 1.0,
+            "do_trades": False,
+            "noise_trader_ratio": 0.0,
+            "minimum_weight": 0.03,
+            "max_memory_days": 30,
+            "subsidary_pools": [],
+            "weight_interpolation_method": "linear",
+            "use_pre_exp_scaling": True,
+            "use_alt_lamb": False,
+            "numeraire": None,
+        }
+
+        result = evaluator.evaluate(run_fp)
+
+        # Should have stopped after first cycle due to NaN OOS metric
+        assert call_count[0] == 1, f"Expected 1 cycle (pruned), got {call_count[0]}"
+        assert len(result.cycles) == 1, f"Expected 1 cycle result, got {len(result.cycles)}"
+
+    def test_prunes_when_oos_metric_missing(self):
+        """Evaluation should prune if OOS training metric is missing from results."""
+        call_count = [0]
+
+        def missing_metric_trainer(data_dict, train_start_idx, train_end_idx, pool,
+                                   run_fingerprint, n_assets, warm_start_params=None,
+                                   warm_start_weights=None):
+            call_count[0] += 1
+            params = pool.init_parameters(
+                {
+                    "initial_memory_length": run_fingerprint["initial_memory_length"],
+                    "initial_memory_length_delta": run_fingerprint.get("initial_memory_length_delta", 0.0),
+                    "initial_k_per_day": run_fingerprint["initial_k_per_day"],
+                    "initial_weights_logits": run_fingerprint["initial_weights_logits"],
+                    "initial_log_amplitude": run_fingerprint["initial_log_amplitude"],
+                    "initial_raw_width": run_fingerprint["initial_raw_width"],
+                    "initial_raw_exponents": run_fingerprint["initial_raw_exponents"],
+                    "initial_pre_exp_scaling": run_fingerprint["initial_pre_exp_scaling"],
+                },
+                run_fingerprint,
+                n_assets,
+                1,
+            )
+            params = {
+                k: jnp.squeeze(v, axis=0) if hasattr(v, 'shape') and len(v.shape) > 1 else v
+                for k, v in params.items()
+            }
+            # Return metrics without the training metric (custom_metric missing)
+            # Use a custom metric that doesn't exist to test missing metric pruning
+            # Keep sharpe for aggregation to work, but training objective is custom_metric
+            metadata = {
+                "epochs_trained": 10,
+                "best_param_idx": 0,
+                "final_train_metrics": [{"sharpe": 0.5, "returns_over_uniform_hodl": 0.01, "return": 0.01}],
+                "final_continuous_test_metrics": [{"sharpe": 0.5, "returns_over_uniform_hodl": 0.01, "return": 0.01}],  # No custom_metric
+                "final_weights": np.array([0.5, 0.5]),
+            }
+            return params, metadata
+
+        evaluator = TrainingEvaluator.from_function(
+            missing_metric_trainer,
+            name="missing_metric_trainer",
+            n_cycles=3,
+            verbose=False,
+            root=TEST_DATA_DIR,
+        )
+
+        run_fp = {
+            "tokens": ["BTC", "ETH"],
+            "rule": "momentum",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
+            "chunk_period": 1440,
+            "bout_offset": 10080,
+            "weight_interpolation_period": 1440,
+            "return_val": "custom_metric",  # Training metric that won't be in results
+            "optimisation_settings": {
+                "base_lr": 0.01,
+                "training_data_kind": "historic",
+                "force_scalar": False,
+            },
+            "initial_memory_length": 10.0,
+            "initial_memory_length_delta": 0.0,
+            "initial_k_per_day": 1.0,
+            "initial_weights_logits": 0.0,
+            "initial_log_amplitude": -5.0,
+            "initial_raw_width": 0.0,
+            "initial_raw_exponents": 0.0,
+            "initial_pre_exp_scaling": 0.001,
+            "maximum_change": 0.001,
+            "initial_pool_value": 1000000.0,
+            "fees": 0.003,
+            "arb_fees": 0.0,
+            "gas_cost": 0.0,
+            "arb_frequency": 1,
+            "do_arb": True,
+            "arb_quality": 1.0,
+            "do_trades": False,
+            "noise_trader_ratio": 0.0,
+            "minimum_weight": 0.03,
+            "max_memory_days": 30,
+            "subsidary_pools": [],
+            "weight_interpolation_method": "linear",
+            "use_pre_exp_scaling": True,
+            "use_alt_lamb": False,
+            "numeraire": None,
+        }
+
+        result = evaluator.evaluate(run_fp)
+
+        # Should have stopped after first cycle due to missing OOS metric
+        assert call_count[0] == 1, f"Expected 1 cycle (pruned), got {call_count[0]}"
+        assert len(result.cycles) == 1, f"Expected 1 cycle result, got {len(result.cycles)}"
+
+
 class TestEdgeCases:
     """Tests for edge cases and error handling."""
 
@@ -513,11 +1041,13 @@ class TestEvaluateIntegration:
         train_calls = []
 
         def custom_trainer(data_dict, train_start_idx, train_end_idx, pool,
-                          run_fingerprint, n_assets, warm_start_params=None):
+                          run_fingerprint, n_assets, warm_start_params=None,
+                          warm_start_weights=None):
             train_calls.append({
                 "start": train_start_idx,
                 "end": train_end_idx,
                 "warm_start": warm_start_params is not None,
+                "warm_start_weights": warm_start_weights is not None,
             })
             # Return valid params using pool's initialization
             params = pool.init_parameters(
@@ -1434,7 +1964,7 @@ class TestRademacherE2E:
         """Factory for trainers with configurable checkpoint characteristics."""
         def trainer(
             data_dict, train_start_idx, train_end_idx, pool, run_fingerprint,
-            n_assets, warm_start_params=None,
+            n_assets, warm_start_params=None, warm_start_weights=None,
         ):
             params = pool.init_parameters(
                 {
@@ -1505,7 +2035,7 @@ class TestRademacherE2E:
 
         def trainer_without_checkpoints(
             data_dict, train_start_idx, train_end_idx, pool, run_fingerprint,
-            n_assets, warm_start_params=None,
+            n_assets, warm_start_params=None, warm_start_weights=None,
         ):
             params = pool.init_parameters(
                 {
