@@ -949,6 +949,7 @@ class TestHyperparamTunerRealE2E:
             }),
             verbose=False,
             root=TEST_DATA_DIR,
+            enable_pruning=False,  # Disable pruning - test data produces negative sharpe
         )
 
         result = tuner.tune(real_fingerprint)
@@ -1018,8 +1019,8 @@ class TestNaNCycleDetection:
             "subsidary_pools": [],
         }
 
-    def test_nan_cycle_fails_trial(self, base_fingerprint):
-        """When a cycle produces NaN metrics, the trial should FAIL (not complete)."""
+    def test_nan_cycle_prunes_trial(self, base_fingerprint):
+        """When a cycle produces NaN metrics, the trial should be PRUNED (not complete)."""
         def mock_evaluate_iter_with_nan(self, fp):
             """Mock evaluate_iter that produces NaN on first cycle."""
             # Yield a cycle with NaN metrics
@@ -1028,12 +1029,12 @@ class TestNaNCycleDetection:
                 is_sharpe=float("nan"),  # NaN in-sample sharpe
                 is_returns_over_hodl=0.1,
                 oos_sharpe=float("nan"),  # NaN out-of-sample sharpe
-                oos_returns_over_hodl=float("nan"),  # NaN returns
+                oos_returns_over_hodl=float("nan"),  # NaN returns - triggers pruning
                 walk_forward_efficiency=float("nan"),
                 is_oos_gap=float("nan"),
             )
             yield cycle
-            # Should never reach here due to NaN detection
+            # Should never reach here due to NaN detection/pruning
             return EvaluationResult(
                 trainer_name="test",
                 trainer_config={},
@@ -1057,14 +1058,14 @@ class TestNaNCycleDetection:
 
             result = tuner.tune(base_fingerprint)
 
-            # Trial should FAIL, not complete
+            # Trial should be PRUNED due to NaN oos_returns_over_hodl
             assert result.n_completed == 0, \
-                f"Trial with NaN should fail, not complete. Got n_completed={result.n_completed}"
-            assert result.n_failed == 1, \
-                f"Trial with NaN should be marked as failed. Got n_failed={result.n_failed}"
+                f"Trial with NaN should be pruned, not complete. Got n_completed={result.n_completed}"
+            assert result.n_pruned == 1, \
+                f"Trial with NaN should be marked as pruned. Got n_pruned={result.n_pruned}"
 
     def test_nan_cycle_prevents_intermediate_value_propagation(self, base_fingerprint):
-        """NaN detection should fail trial early, not propagate stale values.
+        """NaN detection should prune trial early, not propagate stale values.
 
         This tests the bug where NaN cycles caused intermediate values to repeat
         (propagating the previous good value instead of detecting the problem).
@@ -1089,7 +1090,7 @@ class TestNaNCycleDetection:
                 is_sharpe=float("nan"),
                 is_returns_over_hodl=float("nan"),
                 oos_sharpe=float("nan"),  # Training collapsed
-                oos_returns_over_hodl=float("nan"),
+                oos_returns_over_hodl=float("nan"),  # NaN triggers pruning
                 walk_forward_efficiency=float("nan"),
                 is_oos_gap=float("nan"),
             )
@@ -1119,12 +1120,12 @@ class TestNaNCycleDetection:
 
             result = tuner.tune(base_fingerprint)
 
-            # Trial should FAIL when second cycle produces NaN
+            # Trial should be PRUNED when second cycle produces NaN
             # NOT complete with the first cycle's 0.8 sharpe value propagated
             assert result.n_completed == 0, \
-                f"NaN in second cycle should fail trial, not complete. Got n_completed={result.n_completed}"
-            assert result.n_failed == 1, \
-                f"Trial should be marked as failed. Got n_failed={result.n_failed}"
+                f"NaN in second cycle should prune trial, not complete. Got n_completed={result.n_completed}"
+            assert result.n_pruned == 1, \
+                f"Trial should be marked as pruned. Got n_pruned={result.n_pruned}"
 
 
 if __name__ == "__main__":

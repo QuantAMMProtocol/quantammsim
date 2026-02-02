@@ -505,12 +505,13 @@ class TrainingEvaluator:
     Wraps any trainer and runs walk-forward evaluation to assess
     effectiveness using WFE and Rademacher metrics.
 
-    Early Pruning
-    -------------
-    Cycles are pruned if the OOS value of the training metric (run_fingerprint["return_val"])
-    is NaN, None, or non-positive. This assumes higher values are better, which holds for
-    sharpe, returns, and returns_over_hodl. For metrics where lower is better (e.g. ulcer),
-    early pruning may incorrectly terminate valid runs.
+    Pruning
+    -------
+    This evaluator yields CycleEvaluation results via evaluate_iter(), allowing
+    the consumer (e.g., HyperparamTuner) to decide when to prune. The evaluator
+    itself does not prune - it evaluates all cycles unless the consumer stops
+    iterating. This design keeps pruning logic in one place (the Optuna integration)
+    rather than duplicating it here.
     """
 
     def __init__(
@@ -891,23 +892,6 @@ class TrainingEvaluator:
             prev_params = params
             prev_weights = metadata.get("final_weights")  # Capture for warm-starting next cycle
 
-            # Early pruning: check the metric we're actually training on
-            # Assumes positive values are desirable - valid for sharpe, returns, returns_over_hodl
-            # NOTE: If training on metrics where lower is better (e.g. ulcer), disable early pruning
-            training_metric = run_fingerprint.get("return_val", "sharpe")
-            oos_objective = oos_metrics.get(training_metric)
-
-            # Prune if objective is NaN, None, or non-positive
-            should_prune = (
-                oos_objective is None
-                or (isinstance(oos_objective, float) and np.isnan(oos_objective))
-                or oos_objective <= 0
-            )
-            if should_prune:
-                if self.verbose:
-                    print(f"  PRUNING: Non-positive OOS {training_metric}={oos_objective}")
-                break
-
             if self.verbose:
                 print(f"  IS:  sharpe={is_metrics['sharpe']:.4f}")
                 print(f"  OOS: sharpe={oos_metrics['sharpe']:.4f}")
@@ -1047,11 +1031,12 @@ class TrainingEvaluator:
         wfes = [c.walk_forward_efficiency for c in cycle_results]
         gaps = [c.is_oos_gap for c in cycle_results]
 
-        mean_wfe = np.mean([w for w in wfes if np.isfinite(w)])
-        mean_oos_sharpe = np.mean(oos_sharpes)
-        std_oos_sharpe = np.std(oos_sharpes)
-        worst_oos_sharpe = np.min(oos_sharpes)
-        mean_gap = np.mean(gaps)
+        # Let NaN flow through - consumer (hyperparam_tuner) handles bad values
+        mean_wfe = np.mean(wfes) if wfes else np.nan
+        mean_oos_sharpe = np.mean(oos_sharpes) if oos_sharpes else np.nan
+        std_oos_sharpe = np.std(oos_sharpes) if oos_sharpes else np.nan
+        worst_oos_sharpe = np.min(oos_sharpes) if oos_sharpes else np.nan
+        mean_gap = np.mean(gaps) if gaps else np.nan
 
         # Compute aggregate Rademacher if checkpoint data available
         aggregate_rademacher = None

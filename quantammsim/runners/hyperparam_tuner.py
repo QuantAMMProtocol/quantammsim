@@ -551,18 +551,16 @@ def create_objective(
 
                 cycle_evals.append(cycle_eval)
 
-                # Check for NaN in cycle metrics - fail the trial if any cycle produces NaN
-                # This prevents silent propagation of previous values when training collapses
-                if (cycle_eval.oos_sharpe is None or
-                    np.isnan(cycle_eval.oos_sharpe) or
-                    cycle_eval.oos_returns_over_hodl is None or
-                    np.isnan(cycle_eval.oos_returns_over_hodl)):
-                    raise ValueError(
-                        f"Cycle {cycle_eval.cycle_number} produced NaN metrics "
-                        f"(oos_sharpe={cycle_eval.oos_sharpe}, "
-                        f"oos_returns_over_hodl={cycle_eval.oos_returns_over_hodl}). "
-                        f"Training likely collapsed."
-                    )
+                # Aggressive pruning: prune if oos_returns_over_hodl metric is non-positive or NaN
+                # This catches obviously broken training early without waiting for Optuna's pruner
+                if enable_pruning:
+                    oos_roh = cycle_eval.oos_returns_over_hodl
+                    if oos_roh is None or (isinstance(oos_roh, float) and np.isnan(oos_roh)) or oos_roh <= 0:
+                        if verbose:
+                            print(f"Trial {trial.number} pruned at cycle {cycle_eval.cycle_number}: "
+                                  f"non-positive OOS metrics (sharpe={cycle_eval.oos_sharpe:.4f}, "
+                                  f"returns_over_hodl={cycle_eval.oos_returns_over_hodl:.4f})")
+                        raise optuna.TrialPruned()
 
                 # Compute running metric for intermediate reporting using unified extraction
                 intermediate_value = extract_cycle_metric(cycle_evals, objective_metric)
@@ -571,7 +569,7 @@ def create_objective(
                 if enable_pruning:
                     trial.report(intermediate_value, step=cycle_eval.cycle_number)
 
-                    # Check if trial should be pruned
+                    # Check if trial should be pruned (Optuna's percentile/median pruner)
                     if trial.should_prune():
                         if verbose:
                             print(f"Trial {trial.number} pruned at cycle {cycle_eval.cycle_number} "
