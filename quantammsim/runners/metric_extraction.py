@@ -146,6 +146,10 @@ def extract_cycle_metric(cycle_evals: List[Any], metric_spec: str) -> float:
         result = float("-inf")
     else:
         result = aggregator(values)
+        # Handle NaN from aggregation (e.g., if any value was NaN)
+        # NaN causes issues with SQLite storage (becomes NULL) and Optuna comparisons
+        if np.isnan(result):
+            result = float("-inf")
 
     return -result if negate else result
 

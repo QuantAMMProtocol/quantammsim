@@ -551,29 +551,30 @@ def create_objective(
 
                 cycle_evals.append(cycle_eval)
 
-                # Aggressive pruning: prune if oos_returns_over_hodl metric is non-positive or NaN
-                # This catches obviously broken training early without waiting for Optuna's pruner
+                # Compute running metric for intermediate reporting using unified extraction
+                # Ensure Python float (not np.float64) for Optuna storage compatibility
+                intermediate_value = float(extract_cycle_metric(cycle_evals, objective_metric))
+
+                # Report intermediate value BEFORE pruning checks
+                # This ensures all pruned trials have their intermediate values stored for analysis
                 if enable_pruning:
+                    trial.report(intermediate_value, step=cycle_eval.cycle_number)
+
+                    # Aggressive pruning: prune if oos_returns_over_hodl is non-positive or NaN
+                    # This catches obviously broken training early without waiting for Optuna's pruner
                     oos_roh = cycle_eval.oos_returns_over_hodl
                     if oos_roh is None or (isinstance(oos_roh, float) and np.isnan(oos_roh)) or oos_roh <= 0:
                         if verbose:
                             print(f"Trial {trial.number} pruned at cycle {cycle_eval.cycle_number}: "
                                   f"non-positive OOS metrics (sharpe={cycle_eval.oos_sharpe:.4f}, "
-                                  f"returns_over_hodl={cycle_eval.oos_returns_over_hodl:.4f})")
+                                  f"returns_over_hodl={oos_roh}, intermediate={intermediate_value:.4f})")
                         raise optuna.TrialPruned()
-
-                # Compute running metric for intermediate reporting using unified extraction
-                intermediate_value = extract_cycle_metric(cycle_evals, objective_metric)
-
-                # Report intermediate value for pruning
-                if enable_pruning:
-                    trial.report(intermediate_value, step=cycle_eval.cycle_number)
 
                     # Check if trial should be pruned (Optuna's percentile/median pruner)
                     if trial.should_prune():
                         if verbose:
                             print(f"Trial {trial.number} pruned at cycle {cycle_eval.cycle_number} "
-                                  f"(intermediate={intermediate_value:.4f})")
+                                  f"by Optuna pruner (intermediate={intermediate_value:.4f})")
                         raise optuna.TrialPruned()
 
         except optuna.TrialPruned:
@@ -640,19 +641,30 @@ def create_objective(
                 "run_fingerprint": c.run_fingerprint,
             })
 
-        trial.set_user_attr("evaluation_result", {
-            "mean_oos_sharpe": result.mean_oos_sharpe,
-            "mean_wfe": result.mean_wfe,
-            "worst_oos_sharpe": result.worst_oos_sharpe,
-            "mean_is_oos_gap": result.mean_is_oos_gap,
-            "aggregate_rademacher": result.aggregate_rademacher,
-            "adjusted_mean_oos_sharpe": result.adjusted_mean_oos_sharpe,
-            "is_effective": result.is_effective,
-            "cycles": per_cycle_metrics,
-        })
+        try:
+            trial.set_user_attr("evaluation_result", {
+                "mean_oos_sharpe": result.mean_oos_sharpe,
+                "mean_wfe": result.mean_wfe,
+                "worst_oos_sharpe": result.worst_oos_sharpe,
+                "mean_is_oos_gap": result.mean_is_oos_gap,
+                "aggregate_rademacher": result.aggregate_rademacher,
+                "adjusted_mean_oos_sharpe": result.adjusted_mean_oos_sharpe,
+                "is_effective": result.is_effective,
+                "cycles": per_cycle_metrics,
+            })
+        except Exception as e:
+            if verbose:
+                print(f"Warning: Failed to store evaluation_result for trial {trial.number}: {e}")
 
         # Return requested metric using unified extraction from cycles
-        return extract_cycle_metric(result.cycles, objective_metric)
+        # Ensure Python float (not np.float64) for Optuna storage compatibility
+        final_value = extract_cycle_metric(result.cycles, objective_metric)
+        final_value = float(final_value)  # Convert np.float64 -> Python float
+
+        if verbose:
+            print(f"Trial {trial.number} returning final value: {final_value}")
+
+        return final_value
 
     return objective
 
