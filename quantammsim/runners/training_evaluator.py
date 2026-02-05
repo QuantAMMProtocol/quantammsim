@@ -424,9 +424,41 @@ class ExistingRunnerWrapper(TrainerWrapper):
         )
 
         params = result.best_params
+
+        # Construct metrics in the format expected by training_evaluator
+        # Use mean metrics across periods for "train" and last period for "test"
+        train_metrics = {
+            "sharpe": result.mean_sharpe,
+            "returns_over_uniform_hodl": result.mean_returns_over_hodl,
+            "return": np.mean(result.period_returns) if result.period_returns else 0.0,
+        }
+
+        # Use last period as "test" (most recent/OOS-like)
+        test_metrics = {
+            "sharpe": result.period_sharpes[-1] if result.period_sharpes else result.mean_sharpe,
+            "returns_over_uniform_hodl": result.period_returns_over_hodl[-1] if result.period_returns_over_hodl else result.mean_returns_over_hodl,
+            "return": result.period_returns[-1] if result.period_returns else 0.0,
+        }
+
         metadata = {
             "epochs_trained": result.epochs_trained,
             "final_objective": result.final_objective,
+            # New format fields
+            "best_train_metrics": [train_metrics],
+            "best_continuous_test_metrics": [test_metrics],
+            "best_param_idx": 0,
+            "best_final_weights": None,
+            "best_final_reserves": None,
+            # Legacy fields for backward compat
+            "final_train_metrics": [train_metrics],
+            "final_continuous_test_metrics": [test_metrics],
+            "final_weights": None,
+            "final_reserves": None,
+            # Multi-period specific info
+            "n_periods": summary.get("n_periods"),
+            "aggregation": summary.get("aggregation"),
+            "period_sharpes": result.period_sharpes,
+            "worst_sharpe": result.worst_sharpe,
         }
 
         return params, metadata
@@ -490,8 +522,97 @@ class RandomBaselineWrapper(TrainerWrapper):
             for k, v in params.items()
         }
 
-        metadata = {"epochs_trained": 0, "final_objective": 0.0}
+        # Compute metrics for random params (required by TrainingEvaluator)
+        # This ensures RandomBaselineWrapper follows the same contract as real trainers
+        train_metrics, test_metrics = self._compute_metrics(
+            params, data_dict, train_start_idx, train_end_idx,
+            pool, run_fingerprint, n_assets
+        )
+
+        metadata = {
+            "method": "random_baseline",
+            "epochs_trained": 0,
+            "final_objective": 0.0,
+            # New format fields
+            "best_train_metrics": [train_metrics],
+            "best_continuous_test_metrics": [test_metrics],
+            "best_param_idx": 0,
+            "best_final_weights": None,
+            "best_final_reserves": None,
+            # Legacy fields for backward compat
+            "final_train_metrics": [train_metrics],
+            "final_continuous_test_metrics": [test_metrics],
+            "final_weights": None,
+            "final_reserves": None,
+        }
         return params, metadata
+
+    def _compute_metrics(
+        self,
+        params: Dict[str, Any],
+        data_dict: dict,
+        train_start_idx: int,
+        train_end_idx: int,
+        pool: Any,
+        run_fingerprint: dict,
+        n_assets: int,
+    ) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """Compute train and test metrics for random params."""
+        from jax import jit
+        from functools import partial as Partial
+        from quantammsim.core_simulator.forward_pass import forward_pass_nograd
+        from quantammsim.runners.jax_runner_utils import Hashabledict, create_static_dict
+        from quantammsim.runners.jax_runners import get_sig_variations
+        from quantammsim.utils.post_train_analysis import calculate_period_metrics, calculate_continuous_test_metrics
+
+        all_sig_variations = get_sig_variations(n_assets)
+
+        # Get test period info from run_fingerprint
+        test_fraction = run_fingerprint.get("test_fraction", 0.2)
+        train_bout_length = train_end_idx - train_start_idx
+        test_bout_length = int(train_bout_length * test_fraction / (1 - test_fraction))
+
+        # Create continuous forward pass covering train + test
+        continuous_bout_length = train_bout_length + test_bout_length
+        static_dict = create_static_dict(
+            run_fingerprint,
+            continuous_bout_length,
+            all_sig_variations,
+            overrides={
+                "n_assets": n_assets,
+                "return_val": "reserves_and_values",
+                "training_data_kind": run_fingerprint.get("optimisation_settings", {}).get("training_data_kind", "historic_with_noise"),
+            }
+        )
+
+        eval_fn = jit(Partial(
+            forward_pass_nograd,
+            prices=data_dict["prices"],
+            static_dict=Hashabledict(static_dict),
+            pool=pool,
+        ))
+
+        output = eval_fn(params, (train_start_idx, 0))
+
+        # Training metrics
+        train_dict = {
+            "value": output["value"][:train_bout_length],
+            "reserves": output["reserves"][:train_bout_length],
+        }
+        train_prices = data_dict["prices"][train_start_idx:train_start_idx + train_bout_length]
+        train_metrics = calculate_period_metrics(train_dict, train_prices)
+
+        # Continuous test metrics
+        continuous_dict = {
+            "value": output["value"],
+            "reserves": output["reserves"],
+        }
+        continuous_prices = data_dict["prices"][train_start_idx:train_start_idx + continuous_bout_length]
+        test_metrics = calculate_continuous_test_metrics(
+            continuous_dict, train_bout_length, test_bout_length, continuous_prices
+        )
+
+        return train_metrics, test_metrics
 
 
 # =============================================================================
@@ -781,41 +902,63 @@ class TrainingEvaluator:
                 test_end_date=cycle.test_end_date,
             )
 
+            # Handle training failure (e.g., all inner Optuna trials failed)
+            if params is None:
+                error_msg = metadata.get("error", "Training returned None params") if metadata else "Training returned None params"
+                raise ValueError(f"Training failed for cycle {cycle.cycle_number}: {error_msg}")
+
             # Get metrics from runner's training metadata (computed by train_on_historic_data)
             # This keeps all metric logic in the runner, not duplicated here
             #
-            # Structure from jax_runners.py:
-            #   final_train_metrics[param_idx]: dict with sharpe, calmar, etc. (IS metrics)
-            #   final_continuous_test_metrics[param_idx]: dict with continuous_test_sharpe, etc.
+            # Structure from jax_runners.py (new format):
+            #   best_train_metrics[param_idx]: dict with sharpe, calmar, etc. (IS metrics)
+            #   best_continuous_test_metrics[param_idx]: dict with OOS metrics
             #     - OOS metrics from continuous forward pass (train→test seamlessly)
             #   best_param_idx: index of best param set
+            #   best_final_weights: weights at end of training for warm-starting
+            #
+            # Legacy fields (deprecated, for backward compat):
+            #   final_train_metrics, final_continuous_test_metrics, final_weights
             #
             best_idx = metadata.get("best_param_idx", 0)
-            final_train = metadata.get("final_train_metrics")
-            final_oos = metadata.get("final_continuous_test_metrics")
 
-            # Fallback: compute metrics directly if not provided in metadata
-            # This supports trainers like RandomBaselineWrapper that don't compute metrics
-            if final_train is None or (isinstance(final_train, list) and len(final_train) <= best_idx):
-                if self.verbose:
-                    print(f"  Computing metrics directly (not provided in metadata)")
-                is_metrics = self._evaluate_params(
-                    params, data_dict,
-                    cycle.train_start_idx, cycle.train_end_idx,
-                    pool, n_assets, run_fingerprint,
-                )
-            else:
-                is_metrics = final_train[best_idx]
+            # Use new field names, falling back to legacy for backward compatibility
+            best_train = metadata.get("best_train_metrics") or metadata.get("final_train_metrics")
+            best_oos = metadata.get("best_continuous_test_metrics") or metadata.get("final_continuous_test_metrics")
 
-            if final_oos is None or (isinstance(final_oos, list) and len(final_oos) <= best_idx):
-                oos_metrics = self._evaluate_params(
-                    params, data_dict,
-                    cycle.test_start_idx, cycle.test_end_idx,
-                    pool, n_assets, run_fingerprint,
+            # Validate that metrics are provided - no silent fallback
+            if best_train is None:
+                raise ValueError(
+                    f"Training metadata missing 'best_train_metrics' for cycle {cycle.cycle_number}. "
+                    f"Ensure trainer returns proper metadata with metrics. "
+                    f"Available keys: {list(metadata.keys()) if metadata else 'None'}"
                 )
-            else:
-                # OOS metrics from calculate_continuous_test_metrics (already unprefixed)
-                oos_metrics = final_oos[best_idx]
+
+            if not isinstance(best_train, list) or len(best_train) <= best_idx:
+                raise ValueError(
+                    f"Invalid best_train_metrics for cycle {cycle.cycle_number}: "
+                    f"expected list with at least {best_idx + 1} elements, "
+                    f"got {type(best_train).__name__} with {len(best_train) if isinstance(best_train, list) else 'N/A'} elements"
+                )
+
+            is_metrics = best_train[best_idx]
+
+            if best_oos is None:
+                raise ValueError(
+                    f"Training metadata missing 'best_continuous_test_metrics' for cycle {cycle.cycle_number}. "
+                    f"Ensure trainer returns proper metadata with test metrics. "
+                    f"Available keys: {list(metadata.keys()) if metadata else 'None'}"
+                )
+
+            if not isinstance(best_oos, list) or len(best_oos) <= best_idx:
+                raise ValueError(
+                    f"Invalid best_continuous_test_metrics for cycle {cycle.cycle_number}: "
+                    f"expected list with at least {best_idx + 1} elements, "
+                    f"got {type(best_oos).__name__} with {len(best_oos) if isinstance(best_oos, list) else 'N/A'} elements"
+                )
+
+            # OOS metrics from calculate_continuous_test_metrics (already unprefixed)
+            oos_metrics = best_oos[best_idx]
 
             # Compute WFE using configured metric (default: sharpe per Pardo)
             is_wfe_metric = is_metrics.get(self.wfe_metric, is_metrics["sharpe"])
@@ -890,7 +1033,9 @@ class TrainingEvaluator:
 
             cycle_results.append(cycle_eval)
             prev_params = params
-            prev_weights = metadata.get("final_weights")  # Capture for warm-starting next cycle
+            # Capture weights for warm-starting next cycle (new field, fallback to legacy)
+            best_weights = metadata.get("best_final_weights")
+            prev_weights = best_weights if best_weights is not None else metadata.get("final_weights")
 
             if self.verbose:
                 print(f"  IS:  sharpe={is_metrics['sharpe']:.4f}")
@@ -977,48 +1122,6 @@ class TrainingEvaluator:
             if cycle.test_end_idx <= cycle.test_start_idx:
                 cycle.test_end_idx = min(cycle.test_start_idx + 1, max_idx)
 
-    def _evaluate_params(
-        self,
-        params: Dict[str, Any],
-        data_dict: dict,
-        start_idx: int,
-        end_idx: int,
-        pool: Any,
-        n_assets: int,
-        run_fingerprint: dict,
-    ) -> Dict[str, float]:
-        """Evaluate params on a data window."""
-        bout_length = end_idx - start_idx
-
-        all_sig_variations = get_sig_variations(n_assets)
-
-        static_dict = create_static_dict(
-            run_fingerprint,
-            bout_length,
-            all_sig_variations,
-            overrides={
-                "n_assets": n_assets,
-                "return_val": "reserves_and_values",
-                "training_data_kind": run_fingerprint["optimisation_settings"]["training_data_kind"],
-            }
-        )
-
-        eval_fn = jit(Partial(
-            forward_pass_nograd,
-            prices=data_dict["prices"],
-            static_dict=Hashabledict(static_dict),
-            pool=pool,
-        ))
-
-        output = eval_fn(params, (start_idx, 0))
-        prices = data_dict["prices"][start_idx:end_idx]
-
-        metrics = calculate_period_metrics(
-            {"value": output["value"], "reserves": output["reserves"]},
-            prices
-        )
-
-        return metrics
 
     def _aggregate_results(
         self,

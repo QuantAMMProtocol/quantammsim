@@ -55,6 +55,8 @@ from quantammsim.runners.jax_runner_utils import (
     create_trial_params,
     create_static_dict,
     get_sig_variations,
+    BestParamsTracker,
+    SELECTION_METHODS,
 )
 
 from quantammsim.pools.creator import create_pool
@@ -179,9 +181,8 @@ def train_on_historic_data(
 
     max_memory_days = run_fingerprint["max_memory_days"]
 
-    if price_data is None:
-        if verbose:
-            print("loading data")
+    if price_data is None and verbose:
+        print(f"[Data] Loading {run_fingerprint['optimisation_settings']['training_data_kind']} data...")
     data_dict = get_data_dict(
         unique_tokens,
         run_fingerprint,
@@ -197,7 +198,6 @@ def train_on_historic_data(
         do_test_period=True,
     )
     max_memory_days = data_dict["max_memory_days"]
-    print("max_memory_days: ", max_memory_days)
 
     # Validation holdout setup
     # If val_fraction > 0, carve out validation window from end of training
@@ -244,11 +244,12 @@ def train_on_historic_data(
             )
 
         if verbose:
-            print(f"Validation holdout: {val_fraction*100:.1f}% ({val_length} steps)")
-            print(f"  Original training length: {original_bout_length} steps")
-            print(f"  Effective training length: {effective_train_length} steps")
-            print(f"  Validation length: {val_length} steps")
-            print(f"  Training bout_length_window: {bout_length_window} steps")
+            # Convert steps to days for readability (assuming minute data)
+            steps_per_day = 1440
+            print(f"[Setup] Validation holdout: {val_fraction*100:.0f}%")
+            print(f"  Train: {effective_train_length:,} steps (~{effective_train_length/steps_per_day:.1f} days)")
+            print(f"  Val:   {val_length:,} steps (~{val_length/steps_per_day:.1f} days)")
+            print(f"  Test:  {data_dict.get('bout_length_test', 0):,} steps (~{data_dict.get('bout_length_test', 0)/steps_per_day:.1f} days)")
     else:
         # No validation holdout - use full training window
         # Early stopping will use test data (not recommended but backwards compatible)
@@ -272,13 +273,13 @@ def train_on_historic_data(
 
     # Check for cached results (skip if force_init=True)
     if not force_init and os.path.isfile(run_location):
-        print("Loading from: ", run_location)
-        print("found file")
+        if verbose:
+            print(f"[Cache] Loading cached results from: {run_location}")
         params, step = retrieve_best(run_location, "best_train_objective", False, None)
         loaded = True
     else:
-        if force_init and os.path.isfile(run_location):
-            print(f"force_init=True, ignoring cached file: {run_location}")
+        if force_init and os.path.isfile(run_location) and verbose:
+            print(f"[Cache] force_init=True, ignoring cached file")
         loaded = False
     # Create pool
     pool = create_pool(rule)
@@ -333,11 +334,11 @@ def train_on_historic_data(
 
                 if jnp.any(jnp.isnan(weights)):
                     if verbose:
-                        print("Warning: warm_start_weights contains NaN, falling back to equal weights")
+                        print("[Warm-start] Warning: weights contain NaN, using equal weights")
                     warm_start_weights = None
                 elif weights_sum <= 0:
                     if verbose:
-                        print("Warning: warm_start_weights sum <= 0, falling back to equal weights")
+                        print("[Warm-start] Warning: weights sum <= 0, using equal weights")
                     warm_start_weights = None
 
             if warm_start_weights is not None:
@@ -349,13 +350,14 @@ def train_on_historic_data(
                 value_per_asset = weights * initial_pool_value
                 fresh_reserves = value_per_asset / start_prices
                 if verbose:
-                    print("Warm-starting from previous cycle (params + weights, fresh pool value)")
+                    weights_str = ", ".join([f"{w:.2%}" for w in np.array(weights)])
+                    print(f"[Warm-start] Using previous params + weights [{weights_str}]")
             else:
                 # Equal weight initial reserves
                 value_per_asset = initial_pool_value / n_assets_local
                 fresh_reserves = value_per_asset / start_prices
                 if verbose:
-                    print("Warm-starting from previous cycle parameters (fresh pool value)")
+                    print(f"[Warm-start] Using previous params with equal weights")
 
             params["initial_reserves"] = jnp.stack([fresh_reserves] * n_parameter_sets, axis=0)
 
@@ -366,13 +368,9 @@ def train_on_historic_data(
             )
             offset = 0
     else:
-        if verbose:
-            print("Using Loaded Params?: ", loaded)
         offset = step + 1
         if verbose:
-            print("loaded params ", params)
-            print("starting at step ", offset)
-        best_train_objective = np.array(params["objective"])
+            print(f"[Cache] Resuming from step {offset}")
         for key in ["step", "test_objective", "train_objective", "hessian_trace", "local_learning_rate", "iterations_since_improvement", "objective", "continuous_test_metrics", "validation_metrics"]:
             if key in params:
                 params.pop(key)
@@ -415,27 +413,9 @@ def train_on_historic_data(
         pool=pool,
     )
 
-    base_static_dict_test = base_static_dict.copy()
-    base_static_dict_test["bout_length"] = data_dict["bout_length_test"]
-    partial_forward_pass_nograd_batch_test = Partial(
-        forward_pass_nograd,
-        prices=data_dict["prices"],
-        static_dict=Hashabledict(base_static_dict_test),
-        pool=pool,
-    )
-
-    # Validation forward pass (if using validation holdout)
-    if val_fraction > 0:
-        val_static_dict = base_static_dict.copy()
-        val_static_dict["bout_length"] = val_length
-        val_static_dict["return_val"] = "reserves_and_values"
-        partial_forward_pass_nograd_batch_val = Partial(
-            forward_pass_nograd,
-            static_dict=Hashabledict(val_static_dict),
-            pool=pool,
-        )
-    else:
-        partial_forward_pass_nograd_batch_val = None
+    # Note: Validation and test metrics are now computed by slicing from the continuous
+    # forward pass (which covers train + validation + test) rather than running separate
+    # passes. This ensures metrics reflect continuous simulation state.
 
     returns_train_static_dict = base_static_dict.copy()
     returns_train_static_dict["return_val"] = "returns"
@@ -443,15 +423,6 @@ def train_on_historic_data(
     partial_forward_pass_nograd_batch_returns_train = Partial(
         forward_pass_nograd,
         static_dict=Hashabledict(returns_train_static_dict),
-        pool=pool,
-    )
-
-    returns_test_static_dict = base_static_dict.copy()
-    returns_test_static_dict["return_val"] = "returns"
-    returns_test_static_dict["bout_length"] = data_dict["bout_length_test"]
-    partial_forward_pass_nograd_batch_returns_test = Partial(
-        forward_pass_nograd,
-        static_dict=Hashabledict(returns_test_static_dict),
         pool=pool,
     )
 
@@ -474,12 +445,6 @@ def train_on_historic_data(
             in_axes=nograd_in_axes,
         )
     )
-    partial_forward_pass_nograd_returns_test = jit(
-        vmap(
-            partial_forward_pass_nograd_batch_returns_test,
-            in_axes=nograd_in_axes,
-        )
-    )
     partial_forward_pass_nograd_continuous = jit(
         vmap(
             partial_forward_pass_nograd_batch_continuous,
@@ -487,24 +452,10 @@ def train_on_historic_data(
         )
     )
 
-    # Vmapped validation forward pass (if using validation holdout)
-    if val_fraction > 0:
-        partial_forward_pass_nograd_val = jit(
-            vmap(
-                partial_forward_pass_nograd_batch_val,
-                in_axes=nograd_in_axes,
-            )
-        )
-    else:
-        partial_forward_pass_nograd_val = None
-
     partial_fixed_training_step = Partial(
         partial_training_step, start_index=(data_dict["start_idx"], 0)
     )
 
-    best_train_objective = -100.0
-    best_train_params_idx = 0  # Track which param set is best
-    best_train_params = deepcopy(params)  # Initialize to starting params
     local_learning_rate = run_fingerprint["optimisation_settings"]["base_lr"]
     iterations_since_improvement = 0
 
@@ -542,17 +493,20 @@ def train_on_historic_data(
 
     # Early stopping state (only used when use_early_stopping=True)
     # Early stopping only controls WHEN to stop, not WHAT params to return.
-    # Final param selection uses best_val_params (if val_fraction > 0) or best_train_params.
+    # Final param selection is handled by BestParamsTracker.
     best_early_stopping_metric = float("inf") if metric_direction == -1 else -float("inf")
     iterations_since_early_stopping_improvement = 0
     use_validation_for_early_stopping = val_fraction > 0
     warned_about_nan = False  # Track if we've already warned about NaN metrics
 
-    # Validation-based param selection (independent of early stopping)
-    # Tracked whenever val_fraction > 0, used for final param selection
-    best_val_metric = float("inf") if metric_direction == -1 else -float("inf")
-    best_val_params = deepcopy(params)  # Params when validation was best
-    best_val_params_idx = 0  # Which param set was best on validation
+    # Initialize BestParamsTracker for unified param selection
+    # Selection method depends on whether validation is enabled
+    tracker_selection_method = "best_val" if val_fraction > 0 else "best_train"
+    params_tracker = BestParamsTracker(
+        selection_method=tracker_selection_method,
+        metric=selection_metric,
+        min_threshold=0.0,
+    )
 
     # SWA settings
     use_swa = run_fingerprint["optimisation_settings"].get("use_swa", False)
@@ -628,7 +582,6 @@ def train_on_historic_data(
 
         paramSteps = []
         trainingSteps = []
-        testSteps = []
         continuousTestSteps = []
         validationSteps = []  # Collect validation metrics when val_fraction > 0
         objectiveSteps = []
@@ -680,7 +633,6 @@ def train_on_historic_data(
             # Process each parameter set individually
             # (metric functions expect single parameter set, not batched)
             train_metrics_list = []
-            test_metrics_list = []
             continuous_test_metrics_list = []
 
             for param_idx in range(n_parameter_sets):
@@ -696,25 +648,16 @@ def train_on_historic_data(
                 }
                 train_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"]]
 
-                # Slice test period (starts after original training + validation period)
-                # Use original_bout_length since test period comes after both train and validation
-                test_dict = {
-                    "value": param_value[original_bout_length:],
-                    "reserves": param_reserves[original_bout_length:],
-                }
-                test_prices = data_dict["prices"][data_dict["start_idx"] + original_bout_length:data_dict["start_idx"] + original_bout_length + data_dict["bout_length_test"]]
-
                 # Create continuous dict for test metrics
+                # continuous_test_metrics computes metrics on test slice from continuous simulation
                 param_continuous_dict = {
                     "value": param_value,
                     "reserves": param_reserves,
                 }
                 continuous_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + original_bout_length + data_dict["bout_length_test"]]
 
-                # Calculate comprehensive metrics
-                # Note: train_metrics use effective training length, test_metrics use full original length as boundary
+                # Calculate metrics
                 train_metrics = calculate_period_metrics(train_dict, train_prices)
-                test_metrics = calculate_period_metrics(test_dict, test_prices)
                 continuous_test_metrics = calculate_continuous_test_metrics(
                     param_continuous_dict,
                     original_bout_length,  # Use original length as train/test boundary
@@ -723,92 +666,69 @@ def train_on_historic_data(
                 )
 
                 train_metrics_list.append(train_metrics)
-                test_metrics_list.append(test_metrics)
                 continuous_test_metrics_list.append(continuous_test_metrics)
 
-            paramSteps.append(deepcopy(params))
-            trainingSteps.append(train_metrics_list)
-            testSteps.append(test_metrics_list)
-            continuousTestSteps.append(continuous_test_metrics_list)
-            objectiveSteps.append(np.array(objective_value.copy()))
-            learningRateSteps.append(deepcopy(local_learning_rate))
-            interationsSinceImprovementSteps.append(iterations_since_improvement)
-            stepSteps.append(step)
-
-            # Use nanmax to find best objective among non-NaN param sets
-            # Some param sets may produce NaN (training collapsed) while others succeed
-            objective_arr = np.array(objective_value)
-            valid_mask = ~np.isnan(objective_arr)
-            if valid_mask.any():
-                current_best = np.nanmax(objective_arr)
-                if current_best > best_train_objective:
-                    best_train_params_idx = int(np.nanargmax(objective_arr))
-                    best_train_objective = current_best
-                    best_train_params = deepcopy(params)
-                    iterations_since_improvement = 0
-                else:
-                    iterations_since_improvement += 1
+            # Compute validation metrics if val_fraction > 0 (for early stopping and saving)
+            if val_fraction > 0:
+                val_metrics_list = []
+                for param_idx in range(n_parameter_sets):
+                    # Validation period: from effective_train_length to original_bout_length
+                    val_dict = {
+                        "value": continuous_outputs["value"][param_idx, data_dict["bout_length"]:original_bout_length],
+                        "reserves": continuous_outputs["reserves"][param_idx, data_dict["bout_length"]:original_bout_length, :],
+                    }
+                    val_prices = data_dict["prices"][
+                        data_dict["start_idx"] + data_dict["bout_length"]:
+                        data_dict["start_idx"] + original_bout_length
+                    ]
+                    val_metrics = calculate_period_metrics(val_dict, val_prices)
+                    val_metrics_list.append(val_metrics)
+                # Collect validation metrics for saving
+                validationSteps.append(val_metrics_list)
+                # Compute current_val_metric for early stopping
+                val_metrics_per_set = np.array([
+                    t.get(selection_metric, np.nan) for t in val_metrics_list
+                ])
+                current_val_metric = np.nanmean(val_metrics_per_set)
             else:
-                # All param sets produced NaN - no improvement possible
+                val_metrics_list = None
+                current_val_metric = None
+
+            # Update BestParamsTracker - handles both best_train and best_val selection
+            tracker_improved = params_tracker.update(
+                iteration=step,
+                params=params,
+                continuous_outputs=continuous_outputs,
+                train_metrics_list=train_metrics_list,
+                val_metrics_list=val_metrics_list,
+                continuous_test_metrics_list=continuous_test_metrics_list,
+            )
+
+            # Track iterations since improvement for learning rate decay
+            # This uses the tracker's improvement signal
+            if tracker_improved:
+                iterations_since_improvement = 0
+            else:
                 iterations_since_improvement += 1
+
             if iterations_since_improvement > max_iterations_with_no_improvement:
                 local_learning_rate = local_learning_rate * decay_lr_ratio
                 iterations_since_improvement = 0
                 if local_learning_rate < min_lr:
                     local_learning_rate = min_lr
 
-            # Compute validation metrics whenever val_fraction > 0 (for logging/saving)
-            # Used for: (1) param selection, (2) early stopping if enabled
-            if val_fraction > 0:
-                val_outputs = partial_forward_pass_nograd_val(
-                    params,
-                    (val_start_idx, 0),
-                    data_dict["prices"],
-                )
-                val_metrics_list = []
-                for param_idx in range(n_parameter_sets):
-                    val_dict = {
-                        "value": val_outputs["value"][param_idx],
-                        "reserves": val_outputs["reserves"][param_idx],
-                    }
-                    val_prices = data_dict["prices"][val_start_idx:val_start_idx + val_length]
-                    val_metrics = calculate_period_metrics(val_dict, val_prices)
-                    val_metrics_list.append(val_metrics)
-                # Collect validation metrics for saving
-                validationSteps.append(val_metrics_list)
-
-                # Track best validation performance (independent of early stopping)
-                # This is used for param selection at the end
-                # Use nanmean to ignore NaN param sets - some may fail while others succeed
-                val_metrics_per_set = np.array([
-                    t.get(selection_metric, np.nan) for t in val_metrics_list
-                ])
-                current_val_metric = np.nanmean(val_metrics_per_set)
-
-                # Check if we have any valid (non-NaN) metrics
-                valid_mask = ~np.isnan(val_metrics_per_set)
-                has_valid_metrics = np.any(valid_mask)
-
-                val_metric_improved = (
-                    has_valid_metrics and
-                    not np.isnan(current_val_metric) and
-                    (current_val_metric * metric_direction) > (best_val_metric * metric_direction)
-                )
-                if val_metric_improved:
-                    best_val_metric = current_val_metric
-                    best_val_params = deepcopy(params)
-                    # Track which param set was best on validation at this moment
-                    # Use nanargmax/nanargmin to select best non-NaN param set
-                    if metric_direction == -1:
-                        best_val_params_idx = int(np.nanargmin(val_metrics_per_set))
-                    else:
-                        best_val_params_idx = int(np.nanargmax(val_metrics_per_set))
-            else:
-                val_metrics_list = None
+            # Save step data for checkpointing
+            paramSteps.append(deepcopy(params))
+            trainingSteps.append(train_metrics_list)
+            continuousTestSteps.append(continuous_test_metrics_list)
+            objectiveSteps.append(np.array(objective_value.copy()))
+            learningRateSteps.append(deepcopy(local_learning_rate))
+            interationsSinceImprovementSteps.append(iterations_since_improvement)
+            stepSteps.append(step)
 
             # Early stopping based on validation or test metrics
             # Note: Early stopping only controls WHEN to stop training.
-            # Final param selection uses best_val_params (if val_fraction > 0) or best_train_params.
+            # Final param selection is handled by params_tracker.
             if use_early_stopping:
                 if use_validation_for_early_stopping and val_metrics_list:
                     # Reuse current_val_metric computed above (same value)
@@ -824,16 +744,16 @@ def train_on_historic_data(
                             UserWarning
                         )
                         warned_about_nan = True
-                elif test_metrics_list:
-                    # Fallback to test metrics (not recommended - causes data leakage)
+                elif continuous_test_metrics_list:
+                    # Fallback to continuous test metrics (not recommended - causes data leakage)
                     # Note: When using test metrics for early stopping, param SELECTION still uses
                     # training-best (since val_fraction=0). This is intentional - we don't want to
                     # select params based on test performance, only use it as a stopping heuristic.
                     # Use nanmean to ignore NaN param sets
                     current_early_stopping_metric = np.nanmean([
-                        t.get(selection_metric, np.nan) for t in test_metrics_list
+                        t.get(selection_metric, np.nan) for t in continuous_test_metrics_list
                     ])
-                    metric_source = "test"
+                    metric_source = "continuous_test"
                 else:
                     current_early_stopping_metric = -float("inf")
                     metric_source = "none"
@@ -848,9 +768,9 @@ def train_on_historic_data(
 
                 if iterations_since_early_stopping_improvement >= early_stopping_patience:
                     if verbose:
-                        print(f"Early stopping at iteration {step}: no {metric_source} improvement for {early_stopping_patience} iterations")
-                        print(f"Best {metric_source} {selection_metric}: {best_early_stopping_metric:.4f}")
-                    # Just break - param selection happens at the end using best_val_params or best_train_params
+                        print(f"\n[Early stopping] No {metric_source} {selection_metric} improvement for {early_stopping_patience} iterations")
+                        print(f"  Stopped at iteration {step}, best {selection_metric}={best_early_stopping_metric:+.4f}")
+                    # Just break - param selection happens at the end using params_tracker
                     break
 
             # SWA: collect parameters after swa_start_frac of training
@@ -899,43 +819,34 @@ def train_on_historic_data(
 
             if step % iterations_per_print == 0:
                 if verbose:
-                    print(step, "Objective: ", objective_value)
-                    print(
-                        step,
-                        "train_metrics",
-                        (
-                            [
-                                (
-                                    t["returns_over_uniform_hodl"],
-                                    t["sharpe"],
-                                )
-                                for t in train_metrics_list
-                            ]
-                            if train_metrics_list
-                            else None
-                        ),
-                    )
-                    print(step, "test_metrics", (
-                            [
-                                (t["returns_over_uniform_hodl"], t["sharpe"])
-                                for t in continuous_test_metrics_list
-                            ]
-                            if continuous_test_metrics_list
-                            else None
-                        ),
-                    )
-                    # Print validation metrics if using validation holdout
+                    # Format metrics for display
+                    obj_val = float(np.mean(objective_value)) if hasattr(objective_value, '__len__') else float(objective_value)
+                    print(f"\n[Iter {step}] objective={obj_val:.4f}")
+
+                    # Training metrics (in-sample)
+                    if train_metrics_list:
+                        train_sharpes = [t.get("sharpe", np.nan) for t in train_metrics_list]
+                        train_rohs = [t.get("returns_over_uniform_hodl", np.nan) for t in train_metrics_list]
+                        print(f"  Train (IS):  sharpe={np.nanmean(train_sharpes):+.4f}  ret_over_hodl={np.nanmean(train_rohs):+.4f}")
+
+                    # Validation metrics (if using validation holdout)
                     if val_fraction > 0 and val_metrics_list:
                         val_sharpe = np.nanmean([t.get("sharpe", np.nan) for t in val_metrics_list])
-                        print(step, "val_metrics", f"sharpe={val_sharpe:.4f}")
+                        val_roh = np.nanmean([t.get("returns_over_uniform_hodl", np.nan) for t in val_metrics_list])
+                        print(f"  Val:         sharpe={val_sharpe:+.4f}  ret_over_hodl={val_roh:+.4f}")
                         if use_early_stopping:
-                            print(step, f"  early_stop_{selection_metric}", f"{current_early_stopping_metric:.4f}",
-                                  f"(best: {best_early_stopping_metric:.4f}, patience: {iterations_since_early_stopping_improvement}/{early_stopping_patience})")
-                    # print(step, "local_learning_rate", local_learning_rate)
+                            print(f"  Early stop:  {selection_metric}={current_early_stopping_metric:+.4f} "
+                                  f"(best={best_early_stopping_metric:+.4f}, wait={iterations_since_early_stopping_improvement}/{early_stopping_patience})")
+
+                    # Continuous test metrics (out-of-sample, from continuous forward pass)
+                    if continuous_test_metrics_list:
+                        test_sharpes = [t.get("sharpe", np.nan) for t in continuous_test_metrics_list]
+                        test_rohs = [t.get("returns_over_uniform_hodl", np.nan) for t in continuous_test_metrics_list]
+                        print(f"  Test (OOS):  sharpe={np.nanmean(test_sharpes):+.4f}  ret_over_hodl={np.nanmean(test_rohs):+.4f}")
                 save_multi_params(
                     deepcopy(run_fingerprint),
                     paramSteps,
-                    testSteps,
+                    continuousTestSteps,  # Used as test_objective for backward compat
                     trainingSteps,
                     objectiveSteps,
                     learningRateSteps,
@@ -948,122 +859,135 @@ def train_on_historic_data(
 
                 paramSteps = []
                 trainingSteps = []
-                testSteps = []
                 continuousTestSteps = []
                 validationSteps = []
                 objectiveSteps = []
                 learningRateSteps = []
                 interationsSinceImprovementSteps = []
                 stepSteps = []
+        # Get results from tracker (includes both last and best state)
+        tracker_results = params_tracker.get_results(n_parameter_sets, original_bout_length)
+
         if verbose:
-            print("final objective value: ", objective_value)
+            obj_val = float(np.mean(objective_value)) if hasattr(objective_value, '__len__') else float(objective_value)
+            print(f"\n{'='*60}")
+            print(f"TRAINING COMPLETE - {i + 1} iterations")
+            print(f"{'='*60}")
+            print(f"Final objective: {obj_val:.4f}")
+            print(f"Selection: method={tracker_results['selection_method']}, metric={tracker_results['selection_metric']}")
 
         # Build training metadata for analysis and evaluation
-        # Include final metrics for the best param set (used by training_evaluator)
-        #
-        # Structure:
-        #   final_train_metrics[param_idx]: dict from calculate_period_metrics (IS metrics)
-        #   final_continuous_test_metrics[param_idx]: dict from calculate_continuous_test_metrics
-        #     - OOS metrics from continuous forward pass (train→test seamlessly)
-        #     - Keys: "sharpe", "calmar", "sterling", "ulcer", "returns_over_uniform_hodl", etc.
-        #   best_param_idx: index of best param set (from validation if val_fraction > 0)
-        #
-        # Extract final pool state (reserves/weights) at end of test period for warm-starting
-        # continuous_outputs shape: (n_parameter_sets, time_steps, ...)
-        best_idx = best_val_params_idx if val_fraction > 0 else best_train_params_idx
-        final_reserves_all = continuous_outputs["reserves"][:, -1, :]  # (n_param_sets, n_assets)
-        final_weights_all = continuous_outputs["weights"][:, -1, :]  # (n_param_sets, n_assets)
-
+        # Includes both "last" (final iteration) and "best" (by selection method) results
         training_metadata = {
+            "method": "gradient_descent",
             "epochs_trained": i + 1,  # Actual iterations completed
             "final_objective": float(np.array(objective_value).mean()),
-            # Final metrics from last iteration for each param set
-            "final_train_metrics": train_metrics_list if train_metrics_list else None,
-            # Continuous test metrics - proper OOS from continuous forward pass
-            "final_continuous_test_metrics": continuous_test_metrics_list if continuous_test_metrics_list else None,
-            # Which param set was selected as best (for extracting correct metrics)
-            "best_param_idx": best_idx,
-            # Final pool state at end of test period (for warm-starting next cycle)
-            # These are for the BEST param set only (strategy params are in returned params)
-            "final_reserves": np.array(final_reserves_all[best_idx]),
-            "final_weights": np.array(final_weights_all[best_idx]),
-            # Provenance: full fingerprint and output file path for debugging/linking
+
+            # Last iteration metrics (for all param sets)
+            "last_train_metrics": tracker_results["last_train_metrics"],
+            "last_continuous_test_metrics": tracker_results["last_continuous_test_metrics"],
+            "last_val_metrics": tracker_results["last_val_metrics"],
+            "last_param_idx": tracker_results["last_param_idx"],
+            "last_final_reserves": tracker_results["last_final_reserves"][tracker_results["last_param_idx"]] if tracker_results["last_final_reserves"] is not None else None,
+            "last_final_weights": tracker_results["last_final_weights"][tracker_results["last_param_idx"]] if tracker_results["last_final_weights"] is not None else None,
+
+            # Best iteration metrics (by selection method)
+            "best_train_metrics": tracker_results["best_train_metrics"],
+            "best_continuous_test_metrics": tracker_results["best_continuous_test_metrics"],
+            "best_val_metrics": tracker_results["best_val_metrics"],
+            "best_param_idx": tracker_results["best_param_idx"],
+            "best_iteration": tracker_results["best_iteration"],
+            "best_metric_value": tracker_results["best_metric_value"],
+            "best_final_reserves": tracker_results["best_final_reserves"][tracker_results["best_param_idx"]] if tracker_results["best_final_reserves"] is not None else None,
+            "best_final_weights": tracker_results["best_final_weights"][tracker_results["best_param_idx"]] if tracker_results["best_final_weights"] is not None else None,
+
+            # Selection info
+            "selection_method": tracker_results["selection_method"],
+            "selection_metric": tracker_results["selection_metric"],
+
+            # Legacy field names (for backward compatibility)
+            # TODO: Deprecate these in favor of best_* fields
+            "final_train_metrics": tracker_results["best_train_metrics"],
+            "final_continuous_test_metrics": tracker_results["best_continuous_test_metrics"],
+            "final_weights": tracker_results["best_final_weights"][tracker_results["best_param_idx"]] if tracker_results["best_final_weights"] is not None else None,
+            "final_reserves": tracker_results["best_final_reserves"][tracker_results["best_param_idx"]] if tracker_results["best_final_reserves"] is not None else None,
+
+            # Provenance
             "run_location": run_location,
             "run_fingerprint": deepcopy(run_fingerprint),
         }
+
         if track_checkpoints and checkpoint_returns_list:
-            # Stack checkpoint returns: shape (n_checkpoints, T-1)
             training_metadata["checkpoint_returns"] = np.stack(checkpoint_returns_list, axis=0)
         else:
             training_metadata["checkpoint_returns"] = None
 
-        # Helper to select best param set when n_parameter_sets > 1
-        def _select_best_param_set(params_dict, idx, n_param_sets):
-            """Select best param set, reducing shape from (n_param_sets, ...) to (...)."""
-            if n_param_sets == 1:
-                # Already single param set, just squeeze
-                selected = {}
-                for k, v in params_dict.items():
-                    if k == "subsidary_params":
-                        selected[k] = v
-                    elif hasattr(v, 'shape') and len(v.shape) >= 1 and v.shape[0] == 1:
-                        selected[k] = jnp.squeeze(v, axis=0)
-                    else:
-                        selected[k] = v
-                return selected
-            else:
-                # Select the param set at idx
-                selected = {}
-                for k, v in params_dict.items():
-                    if k == "subsidary_params":
-                        selected[k] = v
-                    elif hasattr(v, 'shape') and len(v.shape) >= 1 and v.shape[0] == n_param_sets:
-                        selected[k] = v[idx]
-                    else:
-                        selected[k] = v
-                return selected
-
-        # Helper to return params with optional metadata
-        def _return_result(result_params):
-            if return_training_metadata:
-                return result_params, training_metadata
-            return result_params
-
-        # Return best params based on what metric we're optimizing for
-        # Priority: validation available > SWA > training-objective-best
-        if val_fraction > 0:
-            # Validation data available - use validation-best params
-            # best_val_params: params from when mean validation metric was best
-            # best_val_params_idx: which param set was best on validation at that moment
-            if verbose:
-                print(f"Returning validation-best params (best {selection_metric}: {best_val_metric:.4f}, param set {best_val_params_idx})")
-            selected_params = _select_best_param_set(best_val_params, best_val_params_idx, n_parameter_sets)
-            return _return_result(selected_params)
-
         # SWA: Stochastic Weight Averaging (only if no validation data)
         # SWA averages params across TIME (different training iterations), not across param sets.
         # After SWA averaging, we still have n_parameter_sets param sets - we then select the
-        # best one based on training objective.
-        if use_swa and len(swa_params_list) > 0:
+        # best one based on the tracker's best_param_idx.
+        if use_swa and len(swa_params_list) > 0 and val_fraction == 0:
             if verbose:
                 print(f"Applying SWA: averaging {len(swa_params_list)} parameter snapshots across time")
             swa_params = {}
             for key in swa_params_list[0].keys():
                 if key == "subsidary_params":
-                    # Don't average subsidiary params
                     swa_params[key] = swa_params_list[-1][key]
                 else:
-                    # Stack snapshots and average along time axis (axis=0)
-                    # Each snapshot has shape (n_parameter_sets, ...), result keeps same shape
                     stacked = jnp.stack([p[key] for p in swa_params_list], axis=0)
                     swa_params[key] = jnp.mean(stacked, axis=0)
-            # Select param set with best training objective
-            selected_params = _select_best_param_set(swa_params, best_train_params_idx, n_parameter_sets)
-            return _return_result(selected_params)
+            # Select param set using tracker's best_param_idx
+            selected_params = params_tracker.select_param_set(swa_params, tracker_results["best_param_idx"], n_parameter_sets)
+            if return_training_metadata:
+                return selected_params, training_metadata
+            return selected_params
 
-        # Otherwise return training-objective-best params (with best idx selected)
-        selected_params = _select_best_param_set(best_train_params, best_train_params_idx, n_parameter_sets)
-        return _return_result(selected_params)
+        # Return best params from tracker
+        best_params = tracker_results["best_params"]
+        best_idx = tracker_results["best_param_idx"]
+
+        if verbose:
+            # Print best iteration results
+            print(f"\nBest iteration: {tracker_results['best_iteration']} (param_set={best_idx})")
+            print(f"  Selection {tracker_results['selection_metric']}: {tracker_results['best_metric_value']:+.4f}")
+
+            # Best train metrics
+            if tracker_results["best_train_metrics"]:
+                best_train = tracker_results["best_train_metrics"][best_idx]
+                print(f"  Train (IS):  sharpe={best_train.get('sharpe', np.nan):+.4f}  "
+                      f"ret_over_hodl={best_train.get('returns_over_uniform_hodl', np.nan):+.4f}")
+
+            # Best validation metrics (if used)
+            if tracker_results["best_val_metrics"] and tracker_results["best_val_metrics"][best_idx]:
+                best_val = tracker_results["best_val_metrics"][best_idx]
+                print(f"  Val:         sharpe={best_val.get('sharpe', np.nan):+.4f}  "
+                      f"ret_over_hodl={best_val.get('returns_over_uniform_hodl', np.nan):+.4f}")
+
+            # Best continuous test metrics (OOS)
+            if tracker_results["best_continuous_test_metrics"]:
+                best_test = tracker_results["best_continuous_test_metrics"][best_idx]
+                print(f"  Test (OOS):  sharpe={best_test.get('sharpe', np.nan):+.4f}  "
+                      f"ret_over_hodl={best_test.get('returns_over_uniform_hodl', np.nan):+.4f}")
+
+            # Compare with last iteration if different
+            if tracker_results["best_iteration"] != i:
+                print(f"\nLast iteration: {i}")
+                if tracker_results["last_train_metrics"]:
+                    last_train = tracker_results["last_train_metrics"][tracker_results["last_param_idx"]]
+                    print(f"  Train (IS):  sharpe={last_train.get('sharpe', np.nan):+.4f}  "
+                          f"ret_over_hodl={last_train.get('returns_over_uniform_hodl', np.nan):+.4f}")
+                if tracker_results["last_continuous_test_metrics"]:
+                    last_test = tracker_results["last_continuous_test_metrics"][tracker_results["last_param_idx"]]
+                    print(f"  Test (OOS):  sharpe={last_test.get('sharpe', np.nan):+.4f}  "
+                          f"ret_over_hodl={last_test.get('returns_over_uniform_hodl', np.nan):+.4f}")
+
+            print(f"{'='*60}")
+
+        selected_params = params_tracker.select_param_set(best_params, best_idx, n_parameter_sets)
+
+        if return_training_metadata:
+            return selected_params, training_metadata
+        return selected_params
     elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
 
         n_evaluation_points = 20
@@ -1105,6 +1029,18 @@ def train_on_historic_data(
             Partial(
                 forward_pass_nograd,
                 static_dict=Hashabledict(reserves_values_test_static_dict),
+                pool=pool,
+            )
+        )
+
+        # Continuous forward pass covering train + test for proper continuous metrics
+        continuous_optuna_static_dict = base_static_dict.copy()
+        continuous_optuna_static_dict["return_val"] = "reserves_and_values"
+        continuous_optuna_static_dict["bout_length"] = data_dict["bout_length"] + data_dict["bout_length_test"]
+        partial_forward_pass_continuous_optuna = jit(
+            Partial(
+                forward_pass_nograd,
+                static_dict=Hashabledict(continuous_optuna_static_dict),
                 pool=pool,
             )
         )
@@ -1154,7 +1090,7 @@ def train_on_historic_data(
                         param_config[param_key]["scalar"] = True
 
                 trial_params = create_trial_params(
-                    trial, {}, params, run_fingerprint, n_assets, expand_around=expand_around
+                    trial, param_config, params, run_fingerprint, n_assets, expand_around=expand_around
                 )
                 # Training evaluation
                 train_outputs = partial_forward_pass_nograd_batch_reserves_values_train(
@@ -1185,6 +1121,7 @@ def train_on_historic_data(
                     train_outputs["reserves"],
                     train_outputs["prices"],
                     train_outputs["value"],
+                    initial_reserves=train_outputs["reserves"][0],
                 )
 
                 train_sharpe = _calculate_return_value(
@@ -1206,40 +1143,46 @@ def train_on_historic_data(
                     initial_reserves=train_outputs["reserves"][0],
                 )
 
-                # Validation (test period) evaluation
-                validation_outputs = (
-                    partial_forward_pass_nograd_batch_reserves_values_test(
-                        trial_params,
-                        (data_dict["start_idx_test"], 0),
-                        data_dict["prices"],
-                    )
+                # Test period evaluation using continuous forward pass
+                # This ensures test metrics reflect continuous simulation from training
+                continuous_outputs = partial_forward_pass_continuous_optuna(
+                    trial_params,
+                    (data_dict["start_idx"], 0),
+                    data_dict["prices"],
                 )
+
+                # Slice test period from continuous pass (after training period)
+                train_length = data_dict["bout_length"]
+                test_reserves = continuous_outputs["reserves"][train_length:]
+                test_value = continuous_outputs["value"][train_length:]
+                test_prices = continuous_outputs["prices"][train_length:]
 
                 validation_value = _calculate_return_value(
                     run_fingerprint["return_val"],
-                    validation_outputs["reserves"],
-                    validation_outputs["prices"],
-                    validation_outputs["value"],
+                    test_reserves,
+                    test_prices,
+                    test_value,
+                    initial_reserves=test_reserves[0],
                 )
 
                 validation_sharpe = _calculate_return_value(
                     "sharpe",
-                    validation_outputs["reserves"],
-                    validation_outputs["prices"],
-                    validation_outputs["value"],
+                    test_reserves,
+                    test_prices,
+                    test_value,
                 )
 
                 validation_return = (
-                    validation_outputs["value"][-1] / validation_outputs["value"][0]
+                    test_value[-1] / test_value[0]
                     - 1.0
                 )
 
                 validation_returns_over_hodl = _calculate_return_value(
                     "returns_over_hodl",
-                    validation_outputs["reserves"],
-                    validation_outputs["prices"],
-                    validation_outputs["value"],
-                    initial_reserves=validation_outputs["reserves"][0],
+                    test_reserves,
+                    test_prices,
+                    test_value,
+                    initial_reserves=test_reserves[0],
                 )
                 # Log both training and validation metrics
                 # optuna_manager.logger.info(f"Trial {trial.number}:")
@@ -1309,7 +1252,9 @@ def train_on_historic_data(
                     return mean_train_value  # Optimize on training value
 
             except Exception as e:
+                import traceback
                 optuna_manager.logger.error(f"Trial {trial.number} failed: {str(e)}")
+                optuna_manager.logger.error(f"Full traceback:\n{traceback.format_exc()}")
                 raise e
 
         # Run optimization
@@ -1333,54 +1278,214 @@ def train_on_historic_data(
                 print(f"Saved SGD-compatible results to: {sgd_format_path}")
 
         if verbose:
+            n_total = len(optuna_manager.study.trials)
+            n_completed = len(completed_trials)
+            n_pruned = len([t for t in optuna_manager.study.trials if t.state == optuna.trial.TrialState.PRUNED])
+            n_failed = n_total - n_completed - n_pruned
+
+            print(f"\n{'='*60}")
+            print(f"OPTUNA OPTIMIZATION COMPLETE")
+            print(f"{'='*60}")
+            print(f"Trials: {n_completed} completed, {n_pruned} pruned, {n_failed} failed (of {n_total} total)")
+
             if not completed_trials:
-                print("WARNING: No trials completed successfully!")
-                print(f"  Total trials attempted: {len(optuna_manager.study.trials)}")
-            elif run_fingerprint["optimisation_settings"]["optuna_settings"][
-                "multi_objective"
-            ]:
-                print("Best trials:")
-                print(f"  Training Value: {optuna_manager.study.best_trials}")
-                print(
-                    f"  Validation Value: {[trial.user_attrs['validation_value'] for trial in optuna_manager.study.best_trials]}"
-                )
-                print(
-                    f"  Params: {[trial.params for trial in optuna_manager.study.best_trials]}"
-                )
+                print("\nWARNING: No trials completed successfully!")
+            elif run_fingerprint["optimisation_settings"]["optuna_settings"]["multi_objective"]:
+                print(f"\nPareto front ({len(optuna_manager.study.best_trials)} trials):")
+                for i, trial in enumerate(optuna_manager.study.best_trials[:5]):  # Show top 5
+                    train_val = trial.values[0] if trial.values else 0
+                    test_val = trial.user_attrs.get('validation_value', 0)
+                    print(f"  [{i+1}] Train={train_val:+.4f}  Test={test_val:+.4f}  (trial #{trial.number})")
+                if len(optuna_manager.study.best_trials) > 5:
+                    print(f"  ... and {len(optuna_manager.study.best_trials) - 5} more")
             else:
-                print("Best trial:")
-                print(f"  Training Value: {optuna_manager.study.best_value}")
-                print(
-                    f"  Validation Value: {optuna_manager.study.best_trial.user_attrs['validation_value']}"
-                )
-                print(f"  Params: {optuna_manager.study.best_params}")
+                best = optuna_manager.study.best_trial
+                train_sharpe = best.user_attrs.get('train_sharpe', best.value)
+                test_sharpe = best.user_attrs.get('validation_value', 0)
+                train_roh = best.user_attrs.get('train_returns_over_hodl', 0)
+                print(f"\nBest trial: #{best.number}")
+                print(f"  Train (IS):  sharpe={train_sharpe:+.4f}  ret_over_hodl={train_roh:+.4f}")
+                print(f"  Test (OOS):  sharpe={test_sharpe:+.4f}")
+            print(f"{'='*60}")
 
         if completed_trials:
             # Convert best trial params to dict format like gradient descent returns
             from quantammsim.core_simulator.result_exporter import _optuna_params_to_arrays
             best_trial = optuna_manager.study.best_trial
+            last_trial = completed_trials[-1]  # Most recent trial
+
             best_params = _optuna_params_to_arrays(best_trial.params, n_assets)
             best_params["subsidary_params"] = []
-            # Add initial_weights_logits if not present (required by forward pass)
             if "initial_weights_logits" not in best_params:
                 best_params["initial_weights_logits"] = jnp.zeros(n_assets)
 
+            last_params = _optuna_params_to_arrays(last_trial.params, n_assets)
+            last_params["subsidary_params"] = []
+            if "initial_weights_logits" not in last_params:
+                last_params["initial_weights_logits"] = jnp.zeros(n_assets)
+
             if return_training_metadata:
-                # Return (params, metadata) tuple like gradient descent does
+                # Run continuous forward passes for both best and last trials
+                best_continuous_outputs = partial_forward_pass_continuous_optuna(
+                    best_params,
+                    (data_dict["start_idx"], 0),
+                    data_dict["prices"],
+                )
+                last_continuous_outputs = partial_forward_pass_continuous_optuna(
+                    last_params,
+                    (data_dict["start_idx"], 0),
+                    data_dict["prices"],
+                )
+
+                # Extract final state at end of TRAINING period (for warm-starting)
+                # Use bout_length - 1 to get state at end of training
+                train_length = data_dict["bout_length"]
+                best_final_reserves = np.array(best_continuous_outputs["reserves"][train_length - 1])
+                best_final_weights = np.array(best_continuous_outputs["weights"][train_length - 1])
+                last_final_reserves = np.array(last_continuous_outputs["reserves"][train_length - 1])
+                last_final_weights = np.array(last_continuous_outputs["weights"][train_length - 1])
+
+                # Build train metrics for best trial
+                best_train_metrics = {
+                    "sharpe": float(best_trial.user_attrs.get("train_sharpe", 0)),
+                    "returns": float(best_trial.user_attrs.get("train_return", 0)),
+                    "returns_over_hodl": float(best_trial.user_attrs.get("train_returns_over_hodl", 0)),
+                    run_fingerprint["return_val"]: float(best_trial.user_attrs.get("train_value", 0)),
+                }
+
+                # Build train metrics for last trial
+                last_train_metrics = {
+                    "sharpe": float(last_trial.user_attrs.get("train_sharpe", 0)),
+                    "returns": float(last_trial.user_attrs.get("train_return", 0)),
+                    "returns_over_hodl": float(last_trial.user_attrs.get("train_returns_over_hodl", 0)),
+                    run_fingerprint["return_val"]: float(last_trial.user_attrs.get("train_value", 0)),
+                }
+
+                # Compute continuous_test_metrics for best trial
+                continuous_prices = data_dict["prices"][
+                    data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"] + data_dict["bout_length_test"]
+                ]
+                best_continuous_dict = {
+                    "value": best_continuous_outputs["value"],
+                    "reserves": best_continuous_outputs["reserves"],
+                }
+                best_continuous_test_metrics = calculate_continuous_test_metrics(
+                    best_continuous_dict,
+                    data_dict["bout_length"],
+                    data_dict["bout_length_test"],
+                    continuous_prices
+                )
+
+                # Compute continuous_test_metrics for last trial
+                last_continuous_dict = {
+                    "value": last_continuous_outputs["value"],
+                    "reserves": last_continuous_outputs["reserves"],
+                }
+                last_continuous_test_metrics = calculate_continuous_test_metrics(
+                    last_continuous_dict,
+                    data_dict["bout_length"],
+                    data_dict["bout_length_test"],
+                    continuous_prices
+                )
+
+                # Return unified metadata matching gradient_descent format
                 metadata = {
                     "method": "optuna",
+                    "epochs_trained": len(completed_trials),
+
+                    # Last trial metrics
+                    "last_train_metrics": [last_train_metrics],
+                    "last_continuous_test_metrics": [last_continuous_test_metrics],
+                    "last_val_metrics": None,  # Optuna doesn't have validation holdout
+                    "last_param_idx": 0,
+                    "last_final_reserves": last_final_reserves,
+                    "last_final_weights": last_final_weights,
+
+                    # Best trial metrics
+                    "best_train_metrics": [best_train_metrics],
+                    "best_continuous_test_metrics": [best_continuous_test_metrics],
+                    "best_val_metrics": None,  # Optuna doesn't have validation holdout
+                    "best_param_idx": 0,
+                    "best_iteration": best_trial.number,
+                    "best_metric_value": float(best_trial.value) if best_trial.value is not None else 0.0,
+                    "best_final_reserves": best_final_reserves,
+                    "best_final_weights": best_final_weights,
+
+                    # Selection info
+                    "selection_method": "best_train",  # Optuna optimizes on training objective
+                    "selection_metric": run_fingerprint["return_val"],
+
+                    # Legacy fields (for backward compat)
+                    "final_train_metrics": [best_train_metrics],
+                    "final_continuous_test_metrics": [best_continuous_test_metrics],
+                    "final_objective": float(best_trial.value) if best_trial.value is not None else 0.0,
+                    "final_weights": best_final_weights,
+                    "final_reserves": best_final_reserves,
+
+                    # Provenance
+                    "run_location": run_location,
+                    "run_fingerprint": deepcopy(run_fingerprint),
+                    "checkpoint_returns": None,
+
+                    # Optuna-specific extras
                     "n_trials": len(completed_trials),
                     "best_value": float(best_trial.value) if best_trial.value is not None else None,
-                    "validation_value": best_trial.user_attrs.get("validation_value"),
-                    "validation_sharpe": best_trial.user_attrs.get("validation_sharpe"),
-                    "train_value": best_trial.user_attrs.get("train_value"),
-                    "train_sharpe": best_trial.user_attrs.get("train_sharpe"),
                 }
+
+                if verbose:
+                    # Print continuous test metrics (computed from actual forward pass)
+                    print(f"\nContinuous test metrics (from forward pass):")
+                    print(f"  Best trial #{best_trial.number}:")
+                    print(f"    Train (IS):  sharpe={best_train_metrics.get('sharpe', 0):+.4f}  "
+                          f"ret_over_hodl={best_train_metrics.get('returns_over_hodl', 0):+.4f}")
+                    print(f"    Test (OOS):  sharpe={best_continuous_test_metrics.get('sharpe', 0):+.4f}  "
+                          f"ret_over_hodl={best_continuous_test_metrics.get('returns_over_uniform_hodl', 0):+.4f}")
+                    if best_trial.number != last_trial.number:
+                        print(f"  Last trial #{last_trial.number}:")
+                        print(f"    Train (IS):  sharpe={last_train_metrics.get('sharpe', 0):+.4f}  "
+                              f"ret_over_hodl={last_train_metrics.get('returns_over_hodl', 0):+.4f}")
+                        print(f"    Test (OOS):  sharpe={last_continuous_test_metrics.get('sharpe', 0):+.4f}  "
+                              f"ret_over_hodl={last_continuous_test_metrics.get('returns_over_uniform_hodl', 0):+.4f}")
+
                 return best_params, metadata
             return best_params
         else:
             if return_training_metadata:
-                return None, {"method": "optuna", "n_trials": 0, "error": "No trials completed"}
+                return None, {
+                    "method": "optuna",
+                    "n_trials": 0,
+                    "error": "No trials completed",
+                    "epochs_trained": 0,
+
+                    # Last trial metrics (none available)
+                    "last_train_metrics": None,
+                    "last_continuous_test_metrics": None,
+                    "last_final_reserves": None,
+                    "last_final_weights": None,
+
+                    # Best trial metrics (none available)
+                    "best_train_metrics": None,
+                    "best_continuous_test_metrics": None,
+                    "best_final_reserves": None,
+                    "best_final_weights": None,
+
+                    # Selection info
+                    "selection_method": "best_train",
+                    "selection_metric": run_fingerprint.get("return_val", "sharpe"),
+                    "best_param_idx": 0,
+
+                    # Legacy fields (for backward compat)
+                    "final_objective": float("-inf"),
+                    "final_train_metrics": None,
+                    "final_continuous_test_metrics": None,
+                    "final_reserves": None,
+                    "final_weights": None,
+
+                    # Provenance
+                    "run_location": run_location,
+                    "run_fingerprint": deepcopy(run_fingerprint),
+                    "checkpoint_returns": None,
+                }
             return None
     else:
         raise NotImplementedError

@@ -448,19 +448,27 @@ def create_objective(
             # Ensure no weight decay is applied
             fp["optimisation_settings"]["weight_decay"] = 0.0
 
-        # Handle early_stopping conditional logic:
-        # If use_early_stopping=False, disable early stopping entirely
+        # Handle val_fraction and early_stopping
+        # For Optuna: val_fraction always applies (controls validation holdout)
+        # For SGD: val_fraction is tied to early_stopping
+        is_optuna = fp["optimisation_settings"].get("method") == "optuna"
         use_early_stopping = suggested.get("use_early_stopping", True)
-        fp["optimisation_settings"]["early_stopping"] = use_early_stopping
-        if use_early_stopping:
-            # Apply val_fraction if provided
+
+        if is_optuna:
+            # Optuna always uses val_fraction (not tied to early_stopping)
             if "val_fraction" in suggested:
                 fp["optimisation_settings"]["val_fraction"] = suggested["val_fraction"]
         else:
-            # Set a very high patience so it effectively never triggers
-            fp["optimisation_settings"]["early_stopping_patience"] = 999999
-            # Set val_fraction to 0 when early stopping is disabled
-            fp["optimisation_settings"]["val_fraction"] = 0.0
+            # SGD: val_fraction tied to early_stopping
+            fp["optimisation_settings"]["early_stopping"] = use_early_stopping
+            if use_early_stopping:
+                if "val_fraction" in suggested:
+                    fp["optimisation_settings"]["val_fraction"] = suggested["val_fraction"]
+            else:
+                # Set a very high patience so it effectively never triggers
+                fp["optimisation_settings"]["early_stopping_patience"] = 999999
+                # Set val_fraction to 0 when early stopping is disabled
+                fp["optimisation_settings"]["val_fraction"] = 0.0
 
         # Handle training_objective: controls BOTH return_val AND early_stopping_metric
         training_obj = suggested.get("training_objective", "returns_over_uniform_hodl")
@@ -490,6 +498,7 @@ def create_objective(
             "initial_pre_exp_scaling",
             # Strategy constraints
             "maximum_change",
+            "minimum_weight",
         ]
 
         for key, value in suggested.items():
@@ -508,6 +517,19 @@ def create_objective(
                 # Convert warmup_fraction to warmup_steps based on n_iterations
                 n_iterations = suggested.get("n_iterations", fp["optimisation_settings"].get("n_iterations", 1000))
                 fp["optimisation_settings"]["warmup_steps"] = int(value * n_iterations)
+            # Inner Optuna settings (for method="optuna")
+            elif key == "optuna_overfitting_penalty":
+                if "optuna_settings" not in fp["optimisation_settings"]:
+                    fp["optimisation_settings"]["optuna_settings"] = {}
+                fp["optimisation_settings"]["optuna_settings"]["overfitting_penalty"] = value
+            elif key == "optuna_n_startup_trials":
+                if "optuna_settings" not in fp["optimisation_settings"]:
+                    fp["optimisation_settings"]["optuna_settings"] = {}
+                fp["optimisation_settings"]["optuna_settings"]["n_startup_trials"] = int(value)
+            elif key == "optuna_n_trials":
+                if "optuna_settings" not in fp["optimisation_settings"]:
+                    fp["optimisation_settings"]["optuna_settings"] = {}
+                fp["optimisation_settings"]["optuna_settings"]["n_trials"] = int(value)
             # Skip control params that aren't real hyperparams (handled above)
             elif key in ["use_weight_decay", "weight_decay", "use_early_stopping",
                          "val_fraction", "training_objective"]:

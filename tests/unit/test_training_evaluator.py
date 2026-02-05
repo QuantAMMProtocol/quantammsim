@@ -23,6 +23,58 @@ from quantammsim.runners.training_evaluator import (
 from tests.conftest import TEST_DATA_DIR
 
 
+def create_mock_metadata(
+    epochs_trained: int = 10,
+    sharpe: float = 0.5,
+    returns_over_uniform_hodl: float = 0.1,
+    checkpoint_returns: np.ndarray = None,
+    **extra_fields
+) -> dict:
+    """Create mock training metadata in the new format.
+
+    This helper ensures all test mocks provide metadata that matches
+    what train_on_historic_data returns.
+    """
+    mock_metrics = {
+        "sharpe": sharpe,
+        "jax_sharpe": sharpe * 0.9,
+        "return": returns_over_uniform_hodl * 0.8,
+        "returns_over_hodl": returns_over_uniform_hodl * 0.9,
+        "returns_over_uniform_hodl": returns_over_uniform_hodl,
+        "annualised_returns": returns_over_uniform_hodl * 12,
+        "annualised_returns_over_hodl": returns_over_uniform_hodl * 11,
+        "annualised_returns_over_uniform_hodl": returns_over_uniform_hodl * 10,
+        "ulcer": 0.05,
+        "calmar": sharpe * 0.5,
+        "sterling": sharpe * 0.4,
+    }
+
+    metadata = {
+        "method": "mock",
+        "epochs_trained": epochs_trained,
+        "final_objective": sharpe,
+
+        # New format fields
+        "best_train_metrics": [mock_metrics],
+        "best_continuous_test_metrics": [mock_metrics],
+        "best_param_idx": 0,
+        "best_final_weights": None,
+        "best_final_reserves": None,
+
+        # Legacy fields for backward compat
+        "final_train_metrics": [mock_metrics],
+        "final_continuous_test_metrics": [mock_metrics],
+        "final_weights": None,
+        "final_reserves": None,
+    }
+
+    if checkpoint_returns is not None:
+        metadata["checkpoint_returns"] = checkpoint_returns
+
+    metadata.update(extra_fields)
+    return metadata
+
+
 # =============================================================================
 # Test TrainerWrapper Classes
 # =============================================================================
@@ -44,7 +96,7 @@ class TestFunctionWrapper:
                 "warm_start": warm_start_params,
                 "warm_start_weights": warm_start_weights,
             })
-            return {"param": 1.0}, {"epochs_trained": 100}
+            return {"param": 1.0}, create_mock_metadata(epochs_trained=100)
 
         wrapper = FunctionWrapper(mock_trainer, name="test_trainer")
 
@@ -83,7 +135,15 @@ class TestFunctionWrapper:
 class TestRandomBaselineWrapper:
     """Tests for RandomBaselineWrapper."""
 
-    def test_returns_params_and_metadata(self):
+    @pytest.fixture
+    def mock_metrics(self):
+        """Mock metrics for unit tests that don't need real forward passes."""
+        return (
+            {"sharpe": 0.5, "returns_over_uniform_hodl": 0.01},
+            {"sharpe": 0.4, "returns_over_uniform_hodl": 0.005},
+        )
+
+    def test_returns_params_and_metadata(self, mock_metrics):
         """RandomBaselineWrapper should return valid params and metadata."""
         wrapper = RandomBaselineWrapper(seed=42)
 
@@ -105,21 +165,23 @@ class TestRandomBaselineWrapper:
             "initial_pre_exp_scaling": 0.001,
         }
 
-        params, metadata = wrapper.train(
-            data_dict={},
-            train_start_idx=0,
-            train_end_idx=100,
-            pool=mock_pool,
-            run_fingerprint=run_fp,
-            n_assets=2,
-        )
+        # Mock _compute_metrics to avoid needing real data
+        with patch.object(wrapper, '_compute_metrics', return_value=mock_metrics):
+            params, metadata = wrapper.train(
+                data_dict={},
+                train_start_idx=0,
+                train_end_idx=100,
+                pool=mock_pool,
+                run_fingerprint=run_fp,
+                n_assets=2,
+            )
 
         assert "memory_length" in params
         assert "k_per_day" in params
         assert metadata["epochs_trained"] == 0
         assert metadata["final_objective"] == 0.0
 
-    def test_different_seeds_different_params(self):
+    def test_different_seeds_different_params(self, mock_metrics):
         """Different seeds should produce different random params."""
         mock_pool = Mock()
         mock_pool.init_parameters.return_value = {
@@ -140,13 +202,16 @@ class TestRandomBaselineWrapper:
         wrapper1 = RandomBaselineWrapper(seed=42)
         wrapper2 = RandomBaselineWrapper(seed=123)
 
-        params1, _ = wrapper1.train({}, 0, 100, mock_pool, run_fp, 2)
-        params2, _ = wrapper2.train({}, 0, 100, mock_pool, run_fp, 2)
+        # Mock _compute_metrics to avoid needing real data
+        with patch.object(wrapper1, '_compute_metrics', return_value=mock_metrics):
+            params1, _ = wrapper1.train({}, 0, 100, mock_pool, run_fp, 2)
+        with patch.object(wrapper2, '_compute_metrics', return_value=mock_metrics):
+            params2, _ = wrapper2.train({}, 0, 100, mock_pool, run_fp, 2)
 
         # Different seeds should give different noise
         assert not np.allclose(params1["memory_length"], params2["memory_length"])
 
-    def test_call_count_increments(self):
+    def test_call_count_increments(self, mock_metrics):
         """Each call should use a different seed offset."""
         wrapper = RandomBaselineWrapper(seed=42)
 
@@ -166,8 +231,10 @@ class TestRandomBaselineWrapper:
             "initial_pre_exp_scaling": 0.001,
         }
 
-        params1, _ = wrapper.train({}, 0, 100, mock_pool, run_fp, 2)
-        params2, _ = wrapper.train({}, 0, 100, mock_pool, run_fp, 2)
+        # Mock _compute_metrics to avoid needing real data
+        with patch.object(wrapper, '_compute_metrics', return_value=mock_metrics):
+            params1, _ = wrapper.train({}, 0, 100, mock_pool, run_fp, 2)
+            params2, _ = wrapper.train({}, 0, 100, mock_pool, run_fp, 2)
 
         # Sequential calls should have different noise
         assert not np.allclose(params1["memory_length"], params2["memory_length"])
@@ -374,7 +441,12 @@ class TestWarmStartFunctionality:
                 "warm_start_params": warm_start_params,
                 "warm_start_weights": warm_start_weights,
             })
-            return {"param": 1.0}, {"epochs_trained": 10, "final_weights": np.array([0.6, 0.4])}
+            weights = np.array([0.6, 0.4])
+            metadata = create_mock_metadata(epochs_trained=10)
+            # Add weights for warm-starting (both new and legacy fields)
+            metadata["best_final_weights"] = weights
+            metadata["final_weights"] = weights
+            return {"param": 1.0}, metadata
 
         wrapper = FunctionWrapper(mock_trainer, name="test")
 
@@ -399,19 +471,19 @@ class TestWarmStartFunctionality:
                          run_fingerprint, n_assets, warm_start_params=None,
                          warm_start_weights=None):
             params = {"logit_lamb": np.array([0.5, 0.5])}
-            metadata = {
-                "epochs_trained": 10,
-                "final_objective": 0.5,
-                "best_param_idx": 0,
-                "final_weights": np.array([0.6, 0.4]),
-            }
+            weights = np.array([0.6, 0.4])
+            metadata = create_mock_metadata(epochs_trained=10)
+            metadata["best_final_weights"] = weights
+            metadata["final_weights"] = weights  # Legacy field
             return params, metadata
 
         wrapper = FunctionWrapper(mock_trainer, name="test")
         params, metadata = wrapper.train({}, 0, 100, None, {}, 2)
 
-        # Check metadata contains warm-start info
-        assert "final_weights" in metadata
+        # Check metadata contains warm-start info (both new and legacy)
+        assert "best_final_weights" in metadata
+        assert metadata["best_final_weights"] is not None
+        assert "final_weights" in metadata  # Legacy
         assert metadata["final_weights"] is not None
 
     def test_existing_runner_wrapper_passes_warm_start_weights(self):
@@ -426,14 +498,10 @@ class TestWarmStartFunctionality:
             captured_args["warm_start_weights"] = kwargs.get("warm_start_weights")
             # Return mock result
             params = {}
-            metadata = {
-                "epochs_trained": 3,
-                "final_objective": 0.5,
-                "best_param_idx": 0,
-                "final_train_metrics": [{"sharpe": 0.5, "returns_over_uniform_hodl": 0.01}],
-                "final_continuous_test_metrics": [{"sharpe": 0.4, "returns_over_uniform_hodl": 0.005}],
-                "final_weights": np.array([0.6, 0.4]),
-            }
+            weights = np.array([0.6, 0.4])
+            metadata = create_mock_metadata(epochs_trained=3, sharpe=0.5, returns_over_uniform_hodl=0.01)
+            metadata["best_final_weights"] = weights
+            metadata["final_weights"] = weights  # Legacy
             return params, metadata
 
         jax_runners.train_on_historic_data = capture_train
@@ -476,7 +544,7 @@ class TestWarmStartFunctionality:
             captured_args["warm_start_params"] = kwargs.get("warm_start_params")
             captured_args["warm_start_weights"] = kwargs.get("warm_start_weights")
             params = {}
-            metadata = {"epochs_trained": 3, "final_objective": 0.5, "best_param_idx": 0}
+            metadata = create_mock_metadata(epochs_trained=3, sharpe=0.5, returns_over_uniform_hodl=0.01)
             return params, metadata
 
         jax_runners.train_on_historic_data = capture_train
@@ -699,7 +767,7 @@ class TestEvaluateIntegration:
                     squeezed[k] = jnp.squeeze(v, axis=0)
                 else:
                     squeezed[k] = v
-            return squeezed, {"epochs_trained": 10}
+            return squeezed, create_mock_metadata(epochs_trained=10)
 
         evaluator = TrainingEvaluator.from_function(
             custom_trainer,
@@ -763,167 +831,6 @@ class TestEvaluateIntegration:
 
         assert len(result_expanding.cycles) == 1
         assert len(result_rolling.cycles) == 1
-
-
-class TestEvaluateParams:
-    """Test _evaluate_params method directly using real data."""
-
-    @pytest.fixture
-    def setup_for_eval_real(self):
-        """Set up pool and data for evaluation tests using real data."""
-        from quantammsim.pools.creator import create_pool
-        from quantammsim.utils.data_processing.historic_data_utils import get_data_dict
-        from quantammsim.runners.jax_runner_utils import get_unique_tokens
-
-        run_fp = {
-            "tokens": ["BTC", "ETH"],
-            "rule": "momentum",
-            "startDateString": "2023-01-01 00:00:00",
-            "endDateString": "2023-01-20 00:00:00",
-            "chunk_period": 1440,
-            "weight_interpolation_period": 1440,
-            "maximum_change": 0.001,
-            "initial_pool_value": 1000000.0,
-            "fees": 0.003,
-            "arb_fees": 0.0,
-            "gas_cost": 0.0,
-            "arb_frequency": 1,
-            "do_arb": True,
-            "arb_quality": 1.0,
-            "do_trades": False,
-            "noise_trader_ratio": 0.0,
-            "minimum_weight": 0.03,
-            "weight_interpolation_method": "linear",
-            "use_pre_exp_scaling": True,
-            "use_alt_lamb": False,
-            "numeraire": None,
-            "max_memory_days": 30,
-            "initial_memory_length": 10.0,
-            "initial_memory_length_delta": 0.0,
-            "initial_k_per_day": 1.0,
-            "initial_weights_logits": 0.0,
-            "initial_log_amplitude": -5.0,
-            "initial_raw_width": 0.0,
-            "initial_raw_exponents": 0.0,
-            "initial_pre_exp_scaling": 0.001,
-            "subsidary_pools": [],
-            "ste_max_change": False,
-            "ste_min_max_weight": False,
-            "optimisation_settings": {
-                "force_scalar": False,
-                "training_data_kind": "historic",
-            },
-        }
-
-        unique_tokens = get_unique_tokens(run_fp)
-        n_assets = len(unique_tokens)
-
-        data_dict = get_data_dict(
-            unique_tokens,
-            run_fp,
-            data_kind="historic",
-            max_memory_days=run_fp["max_memory_days"],
-            start_date_string=run_fp["startDateString"],
-            end_time_string=run_fp["endDateString"],
-            do_test_period=False,
-            root=TEST_DATA_DIR,
-        )
-
-        pool = create_pool("momentum")
-
-        params = pool.init_parameters(
-            {
-                "initial_memory_length": run_fp["initial_memory_length"],
-                "initial_memory_length_delta": run_fp["initial_memory_length_delta"],
-                "initial_k_per_day": run_fp["initial_k_per_day"],
-                "initial_weights_logits": run_fp["initial_weights_logits"],
-                "initial_log_amplitude": run_fp["initial_log_amplitude"],
-                "initial_raw_width": run_fp["initial_raw_width"],
-                "initial_raw_exponents": run_fp["initial_raw_exponents"],
-                "initial_pre_exp_scaling": run_fp["initial_pre_exp_scaling"],
-            },
-            run_fp,
-            n_assets,
-            1,
-        )
-        # Handle both arrays and non-arrays when squeezing
-        squeezed = {}
-        for k, v in params.items():
-            if hasattr(v, 'shape') and len(v.shape) > 1:
-                squeezed[k] = jnp.squeeze(v, axis=0)
-            else:
-                squeezed[k] = v
-        params = squeezed
-
-        return {
-            "data_dict": data_dict,
-            "pool": pool,
-            "params": params,
-            "run_fp": run_fp,
-            "n_assets": n_assets,
-        }
-
-    @pytest.mark.slow
-    @pytest.mark.integration
-    def test_evaluate_params_returns_metrics(self, setup_for_eval_real):
-        """_evaluate_params should return valid metrics dict."""
-        evaluator = TrainingEvaluator.random_baseline(verbose=False)
-
-        # Use indices that are within bounds with sufficient margin
-        data_dict = setup_for_eval_real["data_dict"]
-        available_length = data_dict["end_idx"] - data_dict["start_idx"]
-        # Use a reasonably sized window in the middle of the data
-        start_idx = data_dict["start_idx"] + available_length // 4
-        end_idx = start_idx + available_length // 3
-
-        metrics = evaluator._evaluate_params(
-            params=setup_for_eval_real["params"],
-            data_dict=setup_for_eval_real["data_dict"],
-            start_idx=start_idx,
-            end_idx=end_idx,
-            pool=setup_for_eval_real["pool"],
-            n_assets=setup_for_eval_real["n_assets"],
-            run_fingerprint=setup_for_eval_real["run_fp"],
-        )
-
-        assert "sharpe" in metrics
-        assert "returns_over_uniform_hodl" in metrics
-        # Sharpe can be NaN for very short periods or constant returns
-        # Just check that the metrics exist and are either finite or NaN
-        assert isinstance(metrics["sharpe"], (float, np.floating, jnp.floating))
-        assert isinstance(metrics["returns_over_uniform_hodl"], (float, np.floating, jnp.floating))
-
-    @pytest.mark.slow
-    @pytest.mark.integration
-    def test_evaluate_params_different_windows(self, setup_for_eval_real):
-        """Different time windows should give different metrics."""
-        evaluator = TrainingEvaluator.random_baseline(verbose=False)
-
-        start_idx = setup_for_eval_real["data_dict"]["start_idx"] + 100
-
-        metrics1 = evaluator._evaluate_params(
-            params=setup_for_eval_real["params"],
-            data_dict=setup_for_eval_real["data_dict"],
-            start_idx=start_idx,
-            end_idx=start_idx + 30,
-            pool=setup_for_eval_real["pool"],
-            n_assets=setup_for_eval_real["n_assets"],
-            run_fingerprint=setup_for_eval_real["run_fp"],
-        )
-
-        metrics2 = evaluator._evaluate_params(
-            params=setup_for_eval_real["params"],
-            data_dict=setup_for_eval_real["data_dict"],
-            start_idx=start_idx + 40,
-            end_idx=start_idx + 70,
-            pool=setup_for_eval_real["pool"],
-            n_assets=setup_for_eval_real["n_assets"],
-            run_fingerprint=setup_for_eval_real["run_fp"],
-        )
-
-        # Different windows should generally give different results
-        assert metrics1["sharpe"] != metrics2["sharpe"] or \
-               metrics1["returns_over_uniform_hodl"] != metrics2["returns_over_uniform_hodl"]
 
 
 class TestComputeCycleIndices:
@@ -1248,13 +1155,7 @@ class TestExistingRunnerWrapperE2E:
                 else:
                     squeezed_params[k] = v
             # Return (params, metadata) tuple as train_on_historic_data does
-            metadata = {
-                "epochs_trained": 3,
-                "final_objective": 0.5,
-                "best_param_idx": 0,
-                "final_train_metrics": [{"sharpe": 0.5, "returns_over_uniform_hodl": 0.01}],
-                "final_continuous_test_metrics": [{"sharpe": 0.4, "returns_over_uniform_hodl": 0.005}],
-            }
+            metadata = create_mock_metadata(epochs_trained=3, sharpe=0.5, returns_over_uniform_hodl=0.01)
             return squeezed_params, metadata
 
         jax_runners.train_on_historic_data = patched_train
@@ -1299,13 +1200,7 @@ class TestExistingRunnerWrapperE2E:
             captured_fp["test_end"] = run_fingerprint["endTestDateString"]
             # Return (params, metadata) tuple as train_on_historic_data does
             params = {}
-            metadata = {
-                "epochs_trained": 3,
-                "final_objective": 0.5,
-                "best_param_idx": 0,
-                "final_train_metrics": [{"sharpe": 0.5, "returns_over_uniform_hodl": 0.01}],
-                "final_continuous_test_metrics": [{"sharpe": 0.4, "returns_over_uniform_hodl": 0.005}],
-            }
+            metadata = create_mock_metadata(epochs_trained=3, sharpe=0.5, returns_over_uniform_hodl=0.01)
             return params, metadata
 
         jax_runners.train_on_historic_data = capture_train
@@ -1462,7 +1357,9 @@ class TestMultiPeriodSGDWrapperE2E:
                 final_objective=0.55,
                 best_params=squeezed,
             )
-            summary = {"n_periods": 2}
+            # Use create_mock_metadata to get proper format
+            summary = create_mock_metadata(epochs_trained=5, sharpe=0.55, returns_over_uniform_hodl=0.015)
+            summary["n_periods"] = 2
             return result, summary
 
         multi_period_sgd.multi_period_sgd_training = patched_train
@@ -1617,10 +1514,10 @@ class TestRademacherE2E:
             rng = np.random.RandomState(seed)
             checkpoint_returns = rng.randn(n_checkpoints, T) * return_variance
 
-            metadata = {
-                "epochs_trained": n_checkpoints * 10,
-                "checkpoint_returns": checkpoint_returns,
-            }
+            metadata = create_mock_metadata(
+                epochs_trained=n_checkpoints * 10,
+                checkpoint_returns=checkpoint_returns,
+            )
             return params, metadata
         return trainer
 
@@ -1683,8 +1580,7 @@ class TestRademacherE2E:
                 k: jnp.squeeze(v, axis=0) if hasattr(v, 'shape') and len(v.shape) > 1 else v
                 for k, v in params.items()
             }
-            metadata = {"epochs_trained": 50}
-            return params, metadata
+            return params, create_mock_metadata(epochs_trained=50)
 
         evaluator = TrainingEvaluator.from_function(
             trainer_without_checkpoints,
@@ -1958,13 +1854,7 @@ class TestForceInit:
             })
             # Return mock result
             params = {}
-            metadata = {
-                "epochs_trained": 3,
-                "final_objective": 0.5,
-                "best_param_idx": 0,
-                "final_train_metrics": [{"sharpe": 0.5, "returns_over_uniform_hodl": 0.01}],
-                "final_continuous_test_metrics": [{"sharpe": 0.4, "returns_over_uniform_hodl": 0.005}],
-            }
+            metadata = create_mock_metadata(epochs_trained=3, sharpe=0.5, returns_over_uniform_hodl=0.01)
             return params, metadata
 
         jax_runners.train_on_historic_data = patched_train

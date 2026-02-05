@@ -31,7 +31,8 @@ from optuna.visualization import plot_optimization_history, plot_param_importanc
 import numpy as np
 
 
-from typing import Dict, Any, Generic, TypeVar
+from typing import Dict, Any, Generic, TypeVar, List, Optional, Tuple
+from copy import deepcopy
 T = TypeVar('T')      # Declare type variable
 
 def create_trial_params(
@@ -73,6 +74,10 @@ def create_trial_params(
         If parameter shapes are invalid or required config is missing
     """
     trial_params = {}
+    # Copy subsidary_params if present (required by forward pass)
+    if "subsidary_params" in params:
+        trial_params["subsidary_params"] = params["subsidary_params"]
+
     for key, value in params.items():
         if key == "subsidary_params":
             continue
@@ -1709,3 +1714,365 @@ def auto_configure_memory_params(
         verbose=verbose,
     )
     return apply_memory_allocation(run_fingerprint, allocation)
+
+
+# =============================================================================
+# Best Params Selection and Tracking
+# =============================================================================
+
+# Valid selection methods - must match load_manually methods where applicable
+SELECTION_METHODS = [
+    "last",                    # Always return last iteration/trial
+    "best_train",              # Best training metric
+    "best_val",                # Best validation metric (requires val_fraction > 0)
+    "best_continuous_test",    # Best continuous test metric (NOT RECOMMENDED - data leakage)
+    "best_train_min_test",     # Best train meeting test threshold
+]
+
+
+def compute_selection_metric(
+    train_metrics: List[Dict],
+    val_metrics: Optional[List[Dict]] = None,
+    continuous_test_metrics: Optional[List[Dict]] = None,
+    method: str = "best_val",
+    metric: str = "sharpe",
+    min_threshold: float = 0.0,
+) -> Tuple[float, int]:
+    """
+    Compute selection metric value for a single iteration/trial.
+
+    This is the shared core logic used by both BestParamsTracker (during training)
+    and load_manually (post-training). Returns a value for comparison and the
+    index of the best param set.
+
+    Parameters
+    ----------
+    train_metrics : list of dict
+        Training metrics for each param set. Each dict has keys like "sharpe",
+        "returns_over_uniform_hodl", etc.
+    val_metrics : list of dict, optional
+        Validation metrics for each param set. Required if method="best_val".
+    continuous_test_metrics : list of dict, optional
+        Continuous test metrics for each param set.
+    method : str
+        Selection method. One of SELECTION_METHODS.
+    metric : str
+        Which metric to use for comparison (e.g., "sharpe", "returns_over_uniform_hodl").
+    min_threshold : float
+        Minimum threshold for "best_train_min_test" method.
+
+    Returns
+    -------
+    tuple of (float, int)
+        (selection_value, best_param_idx) - value for comparison and index of best param set.
+        Higher selection_value is always better.
+    """
+    if method not in SELECTION_METHODS:
+        raise ValueError(f"Unknown selection method: {method}. Must be one of {SELECTION_METHODS}")
+
+    if method == "last":
+        # "Last" always wins - return high value, first param set
+        return float("inf"), 0
+
+    elif method == "best_train":
+        if not train_metrics:
+            return -float("inf"), 0
+        metrics_per_set = np.array([m.get(metric, np.nan) for m in train_metrics])
+        valid_mask = ~np.isnan(metrics_per_set)
+        if not valid_mask.any():
+            return -float("inf"), 0
+        best_idx = int(np.nanargmax(metrics_per_set))
+        # Use nanmean across param sets for selection value (matches SGD behavior)
+        return float(np.nanmean(metrics_per_set)), best_idx
+
+    elif method == "best_val":
+        if not val_metrics:
+            raise ValueError("best_val method requires val_metrics (set val_fraction > 0)")
+        metrics_per_set = np.array([m.get(metric, np.nan) for m in val_metrics])
+        valid_mask = ~np.isnan(metrics_per_set)
+        if not valid_mask.any():
+            return -float("inf"), 0
+        best_idx = int(np.nanargmax(metrics_per_set))
+        # Use nanmean across param sets for selection value
+        return float(np.nanmean(metrics_per_set)), best_idx
+
+    elif method == "best_continuous_test":
+        # NOT RECOMMENDED - causes data leakage
+        if not continuous_test_metrics:
+            return -float("inf"), 0
+        metrics_per_set = np.array([m.get(metric, np.nan) for m in continuous_test_metrics])
+        valid_mask = ~np.isnan(metrics_per_set)
+        if not valid_mask.any():
+            return -float("inf"), 0
+        best_idx = int(np.nanargmax(metrics_per_set))
+        return float(np.nanmean(metrics_per_set)), best_idx
+
+    elif method == "best_train_min_test":
+        # Best training metric that meets minimum test threshold
+        if not train_metrics:
+            return -float("inf"), 0
+
+        train_per_set = np.array([m.get(metric, np.nan) for m in train_metrics])
+
+        if continuous_test_metrics:
+            test_per_set = np.array([m.get(metric, np.nan) for m in continuous_test_metrics])
+        else:
+            # No test metrics - fall back to best_train
+            best_idx = int(np.nanargmax(train_per_set))
+            return float(np.nanmean(train_per_set)), best_idx
+
+        best_val = -float("inf")
+        best_idx = 0
+        for i, (train_v, test_v) in enumerate(zip(train_per_set, test_per_set)):
+            if not np.isnan(test_v) and test_v >= min_threshold:
+                if not np.isnan(train_v) and train_v > best_val:
+                    best_val = train_v
+                    best_idx = i
+
+        if best_val == -float("inf"):
+            # No param set met threshold - fall back to best train
+            best_idx = int(np.nanargmax(train_per_set))
+            return float(np.nanmean(train_per_set)), best_idx
+
+        return best_val, best_idx
+
+    else:
+        raise ValueError(f"Unknown selection method: {method}")
+
+
+class BestParamsTracker:
+    """
+    Unified tracking of params across training iterations/trials.
+
+    Tracks both "last" (most recent iteration) and "best" (by selection method)
+    params along with their associated metrics and continuous outputs.
+
+    Used by both SGD and Optuna paths to ensure consistent param selection logic.
+
+    Parameters
+    ----------
+    selection_method : str
+        Method for selecting best params. One of SELECTION_METHODS.
+    metric : str
+        Which metric to use for selection (e.g., "sharpe", "returns_over_uniform_hodl").
+    min_threshold : float
+        Minimum threshold for "best_train_min_test" method.
+
+    Attributes
+    ----------
+    last_* : Various
+        State from the most recent update() call.
+    best_* : Various
+        State from when selection metric was highest.
+    """
+
+    def __init__(
+        self,
+        selection_method: str = "best_val",
+        metric: str = "sharpe",
+        min_threshold: float = 0.0,
+    ):
+        if selection_method not in SELECTION_METHODS:
+            raise ValueError(f"Unknown selection method: {selection_method}. Must be one of {SELECTION_METHODS}")
+
+        self.selection_method = selection_method
+        self.metric = metric
+        self.min_threshold = min_threshold
+
+        # "Last" state - always most recent iteration
+        self.last_iteration = 0
+        self.last_params = None
+        self.last_param_idx = 0
+        self.last_train_metrics = None
+        self.last_val_metrics = None
+        self.last_continuous_test_metrics = None
+        self.last_continuous_outputs = None  # {"reserves": ..., "weights": ...}
+
+        # "Best" state - based on selection_method
+        self.best_iteration = 0
+        self.best_params = None
+        self.best_param_idx = 0
+        self.best_train_metrics = None
+        self.best_val_metrics = None
+        self.best_continuous_test_metrics = None
+        self.best_continuous_outputs = None
+        self.best_metric_value = -float("inf")
+
+    def update(
+        self,
+        iteration: int,
+        params: Dict,
+        continuous_outputs: Dict,
+        train_metrics_list: List[Dict],
+        val_metrics_list: Optional[List[Dict]] = None,
+        continuous_test_metrics_list: Optional[List[Dict]] = None,
+    ) -> bool:
+        """
+        Update tracker with current iteration's state.
+
+        Parameters
+        ----------
+        iteration : int
+            Current iteration/trial number.
+        params : dict
+            Current parameters (batched over param sets).
+        continuous_outputs : dict
+            Output from continuous forward pass. Must have "reserves" and "weights"
+            with shape (n_param_sets, time_steps, ...).
+        train_metrics_list : list of dict
+            Training metrics for each param set.
+        val_metrics_list : list of dict, optional
+            Validation metrics for each param set.
+        continuous_test_metrics_list : list of dict, optional
+            Continuous test metrics for each param set.
+
+        Returns
+        -------
+        bool
+            True if this iteration improved the best metric, False otherwise.
+        """
+        # Always update "last" state
+        self.last_iteration = iteration
+        self.last_params = deepcopy(params)
+        self.last_train_metrics = train_metrics_list
+        self.last_val_metrics = val_metrics_list
+        self.last_continuous_test_metrics = continuous_test_metrics_list
+        self.last_continuous_outputs = {
+            "reserves": np.array(continuous_outputs["reserves"]),
+            "weights": np.array(continuous_outputs["weights"]),
+        }
+
+        # Compute selection value and param_idx
+        selection_value, param_idx = compute_selection_metric(
+            train_metrics_list,
+            val_metrics_list,
+            continuous_test_metrics_list,
+            method=self.selection_method,
+            metric=self.metric,
+            min_threshold=self.min_threshold,
+        )
+        self.last_param_idx = param_idx
+
+        # Update "best" if improved
+        if selection_value > self.best_metric_value:
+            self.best_metric_value = selection_value
+            self.best_iteration = iteration
+            self.best_param_idx = param_idx
+            self.best_params = deepcopy(params)
+            self.best_train_metrics = train_metrics_list
+            self.best_val_metrics = val_metrics_list
+            self.best_continuous_test_metrics = continuous_test_metrics_list
+            self.best_continuous_outputs = {
+                "reserves": np.array(continuous_outputs["reserves"]),
+                "weights": np.array(continuous_outputs["weights"]),
+            }
+            return True
+
+        return False
+
+    def select_param_set(self, params_dict: Dict, idx: int, n_param_sets: int) -> Dict:
+        """
+        Extract single param set from batched params.
+
+        Parameters
+        ----------
+        params_dict : dict
+            Batched parameters with shape (n_param_sets, ...) for each key.
+        idx : int
+            Index of param set to extract.
+        n_param_sets : int
+            Total number of param sets.
+
+        Returns
+        -------
+        dict
+            Parameters for single param set with shape (...) for each key.
+        """
+        if n_param_sets == 1:
+            # Already single param set, just squeeze
+            selected = {}
+            for k, v in params_dict.items():
+                if k == "subsidary_params":
+                    selected[k] = v
+                elif hasattr(v, 'shape') and len(v.shape) >= 1 and v.shape[0] == 1:
+                    selected[k] = np.squeeze(v, axis=0) if isinstance(v, np.ndarray) else v[0]
+                else:
+                    selected[k] = v
+            return selected
+        else:
+            # Select the param set at idx
+            selected = {}
+            for k, v in params_dict.items():
+                if k == "subsidary_params":
+                    selected[k] = v
+                elif hasattr(v, 'shape') and len(v.shape) >= 1 and v.shape[0] == n_param_sets:
+                    selected[k] = v[idx]
+                else:
+                    selected[k] = v
+            return selected
+
+    def get_results(self, n_param_sets: int, train_bout_length: int) -> Dict:
+        """
+        Get comprehensive results with both last and best state.
+
+        Parameters
+        ----------
+        n_param_sets : int
+            Number of parameter sets (for extracting correct shapes).
+        train_bout_length : int
+            Length of training period. Used to extract final reserves/weights
+            at end of training (not end of test) for warm-starting.
+
+        Returns
+        -------
+        dict
+            Comprehensive results including:
+            - last_* fields: State from most recent iteration
+            - best_* fields: State from when selection metric was best
+            - Selection metadata
+        """
+        # Extract final state at end of training period (for warm-starting next cycle)
+        # continuous_outputs has shape (n_param_sets, total_time_steps, ...)
+        # where total_time_steps = train + val + test
+        # We want the state at train_bout_length (end of training)
+
+        last_final_reserves = None
+        last_final_weights = None
+        best_final_reserves = None
+        best_final_weights = None
+
+        if self.last_continuous_outputs is not None:
+            # Index at train_bout_length gives state at END of training period
+            last_final_reserves = self.last_continuous_outputs["reserves"][:, train_bout_length - 1, :]
+            last_final_weights = self.last_continuous_outputs["weights"][:, train_bout_length - 1, :]
+
+        if self.best_continuous_outputs is not None:
+            best_final_reserves = self.best_continuous_outputs["reserves"][:, train_bout_length - 1, :]
+            best_final_weights = self.best_continuous_outputs["weights"][:, train_bout_length - 1, :]
+
+        return {
+            # Last iteration results
+            "last_iteration": self.last_iteration,
+            "last_params": self.last_params,
+            "last_param_idx": self.last_param_idx,
+            "last_train_metrics": self.last_train_metrics,
+            "last_val_metrics": self.last_val_metrics,
+            "last_continuous_test_metrics": self.last_continuous_test_metrics,
+            "last_final_reserves": last_final_reserves,
+            "last_final_weights": last_final_weights,
+
+            # Best iteration results
+            "best_iteration": self.best_iteration,
+            "best_params": self.best_params,
+            "best_param_idx": self.best_param_idx,
+            "best_metric_value": self.best_metric_value,
+            "best_train_metrics": self.best_train_metrics,
+            "best_val_metrics": self.best_val_metrics,
+            "best_continuous_test_metrics": self.best_continuous_test_metrics,
+            "best_final_reserves": best_final_reserves,
+            "best_final_weights": best_final_weights,
+
+            # Selection info
+            "selection_method": self.selection_method,
+            "selection_metric": self.metric,
+        }
