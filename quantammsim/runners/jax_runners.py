@@ -313,8 +313,14 @@ def train_on_historic_data(
             for key, value in list(params.items()):
                 if key == "subsidary_params" or value is None:
                     continue
-                if hasattr(value, 'shape'):
-                    params[key] = np.stack([np.array(value)] * n_parameter_sets, axis=0)
+                # Convert to array if not already (handles scalars from optuna make_scalar=True)
+                arr_value = np.array(value)
+                if arr_value.ndim == 0:
+                    # Scalar: expand to (n_parameter_sets, 1)
+                    params[key] = np.stack([arr_value.reshape(1)] * n_parameter_sets, axis=0)
+                else:
+                    # Array: expand to (n_parameter_sets, ...)
+                    params[key] = np.stack([arr_value] * n_parameter_sets, axis=0)
 
             # Step 2: Add noise using existing pool method (reuse single source of truth)
             noise_scale = run_fingerprint["optimisation_settings"].get("noise_scale", 0.1)
@@ -588,6 +594,14 @@ def train_on_historic_data(
         learningRateSteps = []
         interationsSinceImprovementSteps = []
         stepSteps = []
+
+        train_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"]]
+        continuous_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + original_bout_length + data_dict["bout_length_test"]]
+        val_prices = data_dict["prices"][
+            data_dict["start_idx"] + data_dict["bout_length"]:
+            data_dict["start_idx"] + original_bout_length
+        ]
+
         for i in range(run_fingerprint["optimisation_settings"]["n_iterations"] + 1):
             step = i + offset
             start_indexes, random_key = get_indices(
@@ -646,7 +660,6 @@ def train_on_historic_data(
                     "value": param_value[:data_dict["bout_length"]],
                     "reserves": param_reserves[:data_dict["bout_length"]],
                 }
-                train_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"]]
 
                 # Create continuous dict for test metrics
                 # continuous_test_metrics computes metrics on test slice from continuous simulation
@@ -654,7 +667,6 @@ def train_on_historic_data(
                     "value": param_value,
                     "reserves": param_reserves,
                 }
-                continuous_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + original_bout_length + data_dict["bout_length_test"]]
 
                 # Calculate metrics
                 train_metrics = calculate_period_metrics(train_dict, train_prices)
@@ -677,10 +689,7 @@ def train_on_historic_data(
                         "value": continuous_outputs["value"][param_idx, data_dict["bout_length"]:original_bout_length],
                         "reserves": continuous_outputs["reserves"][param_idx, data_dict["bout_length"]:original_bout_length, :],
                     }
-                    val_prices = data_dict["prices"][
-                        data_dict["start_idx"] + data_dict["bout_length"]:
-                        data_dict["start_idx"] + original_bout_length
-                    ]
+
                     val_metrics = calculate_period_metrics(val_dict, val_prices)
                     val_metrics_list.append(val_metrics)
                 # Collect validation metrics for saving
@@ -1036,7 +1045,7 @@ def train_on_historic_data(
         # Continuous forward pass covering train + test for proper continuous metrics
         continuous_optuna_static_dict = base_static_dict.copy()
         continuous_optuna_static_dict["return_val"] = "reserves_and_values"
-        continuous_optuna_static_dict["bout_length"] = data_dict["bout_length"] + data_dict["bout_length_test"]
+        continuous_optuna_static_dict["bout_length"] = original_bout_length + data_dict["bout_length_test"]
         partial_forward_pass_continuous_optuna = jit(
             Partial(
                 forward_pass_nograd,
@@ -1143,6 +1152,14 @@ def train_on_historic_data(
                     initial_reserves=train_outputs["reserves"][0],
                 )
 
+                train_returns_over_uniform_hodl = _calculate_return_value(
+                    "returns_over_uniform_hodl",
+                    train_outputs["reserves"],
+                    train_outputs["prices"],
+                    train_outputs["value"],
+                    initial_reserves=train_outputs["reserves"][0],
+                )
+
                 # Test period evaluation using continuous forward pass
                 # This ensures test metrics reflect continuous simulation from training
                 continuous_outputs = partial_forward_pass_continuous_optuna(
@@ -1151,39 +1168,72 @@ def train_on_historic_data(
                     data_dict["prices"],
                 )
 
-                # Slice test period from continuous pass (after training period)
+                # Calculate continuous test metrics first (always needed)
+                continuous_prices = data_dict["prices"][
+                    data_dict["start_idx"]:data_dict["start_idx"] + original_bout_length + data_dict["bout_length_test"]
+                ]
+                continuous_test_dict = {
+                    "value": continuous_outputs["value"],
+                    "reserves": continuous_outputs["reserves"],
+                }
+                continuous_test_metrics = calculate_continuous_test_metrics(
+                    continuous_test_dict,
+                    original_bout_length,
+                    data_dict["bout_length_test"],
+                    continuous_prices,
+                )
+
+                # Calculate validation metrics
                 train_length = data_dict["bout_length"]
-                test_reserves = continuous_outputs["reserves"][train_length:]
-                test_value = continuous_outputs["value"][train_length:]
-                test_prices = continuous_outputs["prices"][train_length:]
+                if val_fraction > 0:
+                    # Validation period exists between train and test
+                    validation_reserves = continuous_outputs["reserves"][train_length:original_bout_length]
+                    validation_value_arr = continuous_outputs["value"][train_length:original_bout_length]
+                    validation_prices = continuous_outputs["prices"][train_length:original_bout_length]
 
-                validation_value = _calculate_return_value(
-                    run_fingerprint["return_val"],
-                    test_reserves,
-                    test_prices,
-                    test_value,
-                    initial_reserves=test_reserves[0],
-                )
+                    validation_value = _calculate_return_value(
+                        run_fingerprint["return_val"],
+                        validation_reserves,
+                        validation_prices,
+                        validation_value_arr,
+                        initial_reserves=validation_reserves[0],
+                    )
 
-                validation_sharpe = _calculate_return_value(
-                    "sharpe",
-                    test_reserves,
-                    test_prices,
-                    test_value,
-                )
+                    validation_sharpe = _calculate_return_value(
+                        "sharpe",
+                        validation_reserves,
+                        validation_prices,
+                        validation_value_arr,
+                    )
 
-                validation_return = (
-                    test_value[-1] / test_value[0]
-                    - 1.0
-                )
+                    validation_return = (
+                        validation_value_arr[-1] / validation_value_arr[0]
+                        - 1.0
+                    )
 
-                validation_returns_over_hodl = _calculate_return_value(
-                    "returns_over_hodl",
-                    test_reserves,
-                    test_prices,
-                    test_value,
-                    initial_reserves=test_reserves[0],
-                )
+                    validation_returns_over_hodl = _calculate_return_value(
+                        "returns_over_hodl",
+                        validation_reserves,
+                        validation_prices,
+                        validation_value_arr,
+                        initial_reserves=validation_reserves[0],
+                    )
+
+                    validation_returns_over_uniform_hodl = _calculate_return_value(
+                        "returns_over_uniform_hodl",
+                        validation_reserves,
+                        validation_prices,
+                        validation_value_arr,
+                        initial_reserves=validation_reserves[0],
+                    )
+                else:
+                    # No validation period - use continuous test metrics
+                    validation_value = continuous_test_metrics.get(run_fingerprint["return_val"], continuous_test_metrics["sharpe"])
+                    validation_sharpe = continuous_test_metrics["sharpe"]
+                    validation_return = continuous_test_metrics["return"]
+                    validation_returns_over_hodl = continuous_test_metrics["returns_over_hodl"]
+                    validation_returns_over_uniform_hodl = continuous_test_metrics["returns_over_uniform_hodl"]
+
                 # Log both training and validation metrics
                 # optuna_manager.logger.info(f"Trial {trial.number}:")
                 optuna_manager.logger.info(
@@ -1222,14 +1272,21 @@ def train_on_historic_data(
                 trial.set_user_attr(
                     "validation_returns_over_hodl", validation_returns_over_hodl
                 )
+                trial.set_user_attr("validation_returns_over_uniform_hodl", validation_returns_over_uniform_hodl)
                 trial.set_user_attr("validation_sharpe", validation_sharpe)
                 trial.set_user_attr("validation_return", validation_return)
                 trial.set_user_attr("train_value", train_value)
                 trial.set_user_attr("train_returns_over_hodl", train_returns_over_hodl)
+                trial.set_user_attr("train_returns_over_uniform_hodl", train_returns_over_uniform_hodl)
                 trial.set_user_attr("train_sharpe", train_sharpe)
                 trial.set_user_attr("train_return", train_return)
                 trial.set_user_attr("train_objectives", train_objectives)
                 trial.set_user_attr("mean_train_value", mean_train_value)
+                # Store continuous test metrics (same ones as train/val)
+                trial.set_user_attr("continuous_test_sharpe", continuous_test_metrics["sharpe"])
+                trial.set_user_attr("continuous_test_return", continuous_test_metrics["return"])
+                trial.set_user_attr("continuous_test_returns_over_hodl", continuous_test_metrics["returns_over_hodl"])
+                trial.set_user_attr("continuous_test_returns_over_uniform_hodl", continuous_test_metrics["returns_over_uniform_hodl"])
 
                 if run_fingerprint["optimisation_settings"]["optuna_settings"][
                     "multi_objective"
@@ -1350,6 +1407,7 @@ def train_on_historic_data(
                     "sharpe": float(best_trial.user_attrs.get("train_sharpe", 0)),
                     "returns": float(best_trial.user_attrs.get("train_return", 0)),
                     "returns_over_hodl": float(best_trial.user_attrs.get("train_returns_over_hodl", 0)),
+                    "returns_over_uniform_hodl": float(best_trial.user_attrs.get("train_returns_over_uniform_hodl", 0)),
                     run_fingerprint["return_val"]: float(best_trial.user_attrs.get("train_value", 0)),
                 }
 
@@ -1358,12 +1416,13 @@ def train_on_historic_data(
                     "sharpe": float(last_trial.user_attrs.get("train_sharpe", 0)),
                     "returns": float(last_trial.user_attrs.get("train_return", 0)),
                     "returns_over_hodl": float(last_trial.user_attrs.get("train_returns_over_hodl", 0)),
+                    "returns_over_uniform_hodl": float(last_trial.user_attrs.get("train_returns_over_uniform_hodl", 0)),
                     run_fingerprint["return_val"]: float(last_trial.user_attrs.get("train_value", 0)),
                 }
 
                 # Compute continuous_test_metrics for best trial
                 continuous_prices = data_dict["prices"][
-                    data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"] + data_dict["bout_length_test"]
+                    data_dict["start_idx"]:data_dict["start_idx"] + original_bout_length + data_dict["bout_length_test"]
                 ]
                 best_continuous_dict = {
                     "value": best_continuous_outputs["value"],
@@ -1371,7 +1430,7 @@ def train_on_historic_data(
                 }
                 best_continuous_test_metrics = calculate_continuous_test_metrics(
                     best_continuous_dict,
-                    data_dict["bout_length"],
+                    original_bout_length,
                     data_dict["bout_length_test"],
                     continuous_prices
                 )
@@ -1383,7 +1442,7 @@ def train_on_historic_data(
                 }
                 last_continuous_test_metrics = calculate_continuous_test_metrics(
                     last_continuous_dict,
-                    data_dict["bout_length"],
+                    original_bout_length,
                     data_dict["bout_length_test"],
                     continuous_prices
                 )

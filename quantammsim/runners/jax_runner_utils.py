@@ -464,9 +464,11 @@ class OptunaManager:
                 for attr in [
                     "validation_value",
                     "validation_returns_over_hodl",
+                    "validation_returns_over_uniform_hodl",
                     "validation_sharpe",
                     "validation_return",
                     "train_returns_over_hodl",
+                    "train_returns_over_uniform_hodl",
                     "train_sharpe",
                     "train_return",
                 ]:
