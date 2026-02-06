@@ -225,32 +225,23 @@ class AbstractPool(ABC):
                         )
             elif noise in ("sobol", "lhs", "centered_lhs"):
                 from scipy.stats import norm
-                from quantammsim.hooks.ensemble_averaging_hook import generate_ensemble_samples
+                from quantammsim.utils.sampling import generate_param_space_samples
 
-                # Count total dimensions across trainable param arrays
-                trainable_keys = [
-                    k for k in params.keys()
-                    if k != "subsidary_params" and k != "initial_weights_logits"
-                ]
-                dims_per_key = {k: params[k][0].size for k in trainable_keys}
-                total_dims = sum(dims_per_key.values())
-
-                # Generate (n_parameter_sets - 1) low-discrepancy samples in [0, 1]^d
                 n_new = n_parameter_sets - 1
-                samples = generate_ensemble_samples(n_new, total_dims, method=noise, seed=0)
+                samples, trainable_keys, dim_map = generate_param_space_samples(
+                    params, n_new, method=noise, seed=0,
+                )
 
                 # Transform [0,1] → normal offsets, clip to avoid inf at boundaries
                 samples = np.clip(samples, 1e-6, 1.0 - 1e-6)
                 normal_offsets = norm.ppf(samples) * noise_scale
 
                 # Distribute offsets back to each param array
-                col = 0
                 for key in trainable_keys:
-                    d = dims_per_key[key]
+                    start_col, n_dims, shape_per_sample = dim_map[key]
                     shape = params[key][1:].shape
-                    offsets = normal_offsets[:, col:col + d].reshape(shape)
+                    offsets = normal_offsets[:, start_col:start_col + n_dims].reshape(shape)
                     params[key][1:] = params[key][1:] + offsets
-                    col += d
 
         for key in params.keys():
             if key != "subsidary_params":
