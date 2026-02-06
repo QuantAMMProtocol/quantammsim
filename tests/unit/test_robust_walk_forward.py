@@ -8,6 +8,7 @@ Tests:
 4. Cycle generation
 """
 
+import inspect
 import pytest
 import numpy as np
 from quantammsim.runners.robust_walk_forward import (
@@ -15,6 +16,7 @@ from quantammsim.runners.robust_walk_forward import (
     compute_rademacher_haircut,
     compute_walk_forward_efficiency,
     generate_walk_forward_cycles,
+    datetime_to_timestamp,
     WalkForwardCycle,
 )
 
@@ -209,6 +211,161 @@ class TestCycleGeneration:
         # Training start should move forward
         train_starts = [c.train_start_date for c in cycles]
         assert len(set(train_starts)) == len(train_starts)  # All different
+
+
+class TestConsistentTestPeriods:
+    """Tests for consistent test period lengths in walk-forward cycles."""
+
+    def test_all_test_periods_equal_length(self):
+        """All test periods should have equal length."""
+        cycles = generate_walk_forward_cycles(
+            "2021-01-01 00:00:00",
+            "2025-01-01 00:00:00",
+            n_cycles=4,
+        )
+
+        test_lengths = []
+        for cycle in cycles:
+            start_ts = datetime_to_timestamp(cycle.test_start_date)
+            end_ts = datetime_to_timestamp(cycle.test_end_date)
+            test_lengths.append(end_ts - start_ts)
+
+        # All test periods should be equal (within 2 day tolerance for rounding)
+        for length in test_lengths:
+            assert abs(length - test_lengths[0]) < 86400 * 2, \
+                f"Test periods not equal: {[l/86400 for l in test_lengths]} days"
+
+    def test_all_train_periods_equal_length_rolling(self):
+        """Rolling window should have equal training periods."""
+        cycles = generate_walk_forward_cycles(
+            "2021-01-01 00:00:00",
+            "2025-01-01 00:00:00",
+            n_cycles=4,
+            keep_fixed_start=False,
+        )
+
+        train_lengths = []
+        for cycle in cycles:
+            start_ts = datetime_to_timestamp(cycle.train_start_date)
+            end_ts = datetime_to_timestamp(cycle.train_end_date)
+            train_lengths.append(end_ts - start_ts)
+
+        # All training periods should be equal for rolling window
+        for length in train_lengths:
+            assert abs(length - train_lengths[0]) < 86400 * 2
+
+    def test_cycles_span_full_period(self):
+        """Cycles should span from start_date to end_date exactly."""
+        start = "2021-01-01 00:00:00"
+        end = "2025-01-01 00:00:00"
+
+        cycles = generate_walk_forward_cycles(start, end, n_cycles=4)
+
+        # First training should start at start_date (within rounding)
+        first_train_start = datetime_to_timestamp(cycles[0].train_start_date)
+        expected_start = datetime_to_timestamp(start)
+        assert abs(first_train_start - expected_start) < 86400 * 2
+
+        # Last test should end at end_date (within rounding)
+        last_test_end = datetime_to_timestamp(cycles[-1].test_end_date)
+        expected_end = datetime_to_timestamp(end)
+        assert abs(last_test_end - expected_end) < 86400 * 2
+
+    def test_n_cycles_creates_correct_segment_count(self):
+        """n_cycles should create n_cycles + 1 equal segments."""
+        cycles = generate_walk_forward_cycles(
+            "2020-01-01 00:00:00",
+            "2024-01-01 00:00:00",  # 4 years = 1461 days
+            n_cycles=4,
+        )
+
+        # 4 cycles = 5 segments
+        # Each segment is 1461 / 5 = 292.2 days
+        expected_segment_days = 1461 / 5
+
+        # Check first test period length
+        test_start = datetime_to_timestamp(cycles[0].test_start_date)
+        test_end = datetime_to_timestamp(cycles[0].test_end_date)
+        actual_days = (test_end - test_start) / 86400
+
+        assert abs(actual_days - expected_segment_days) < 5, \
+            f"Expected ~{expected_segment_days:.0f} days, got {actual_days:.0f}"
+
+    def test_test_periods_are_contiguous(self):
+        """Test periods should be contiguous (no gaps or overlaps)."""
+        cycles = generate_walk_forward_cycles(
+            "2021-01-01 00:00:00",
+            "2025-01-01 00:00:00",
+            n_cycles=4,
+        )
+
+        for i in range(len(cycles) - 1):
+            current_test_end = cycles[i].test_end_date
+            next_test_start = cycles[i + 1].test_start_date
+            assert current_test_end == next_test_start, \
+                f"Gap between cycle {i} test end and cycle {i+1} test start"
+
+    def test_train_test_boundary_correct(self):
+        """Each cycle's test should start where training ends."""
+        cycles = generate_walk_forward_cycles(
+            "2021-01-01 00:00:00",
+            "2025-01-01 00:00:00",
+            n_cycles=4,
+        )
+
+        for cycle in cycles:
+            assert cycle.test_start_date == cycle.train_end_date, \
+                f"Cycle {cycle.cycle_number}: test_start != train_end"
+
+    def test_single_cycle(self):
+        """Single cycle should work correctly (2 equal segments)."""
+        cycles = generate_walk_forward_cycles(
+            "2022-01-01 00:00:00",
+            "2024-01-01 00:00:00",  # 2 years
+            n_cycles=1,
+        )
+
+        assert len(cycles) == 1
+
+        # Should have 2 segments, each ~1 year
+        train_start = datetime_to_timestamp(cycles[0].train_start_date)
+        train_end = datetime_to_timestamp(cycles[0].train_end_date)
+        test_end = datetime_to_timestamp(cycles[0].test_end_date)
+
+        train_days = (train_end - train_start) / 86400
+        test_days = (test_end - train_end) / 86400
+
+        assert abs(train_days - 365) < 5, f"Train should be ~365 days, got {train_days}"
+        assert abs(test_days - 365) < 5, f"Test should be ~365 days, got {test_days}"
+
+    def test_many_cycles(self):
+        """Many cycles should all have consistent lengths."""
+        cycles = generate_walk_forward_cycles(
+            "2020-01-01 00:00:00",
+            "2025-01-01 00:00:00",  # 5 years
+            n_cycles=10,
+        )
+
+        assert len(cycles) == 10
+
+        # 11 segments over 5 years = ~166 days each
+        test_lengths = []
+        for cycle in cycles:
+            start_ts = datetime_to_timestamp(cycle.test_start_date)
+            end_ts = datetime_to_timestamp(cycle.test_end_date)
+            test_lengths.append((end_ts - start_ts) / 86400)
+
+        mean_length = sum(test_lengths) / len(test_lengths)
+        for length in test_lengths:
+            assert abs(length - mean_length) < 3, \
+                f"Test period {length:.0f} days differs from mean {mean_length:.0f}"
+
+    def test_no_test_fraction_parameter(self):
+        """Function should not accept test_fraction parameter (removed)."""
+        sig = inspect.signature(generate_walk_forward_cycles)
+        param_names = list(sig.parameters.keys())
+        assert "test_fraction" not in param_names, \
+            "test_fraction parameter should be removed"
 
 
 class TestSoftminGradientFlow:
