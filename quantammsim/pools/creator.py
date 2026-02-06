@@ -10,6 +10,7 @@ from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
 from quantammsim.pools.G3M.quantamm.mean_reversion_channel_pool import (
     MeanReversionChannelPool,
 )
+from quantammsim.pools.G3M.quantamm.triple_threat_mean_reversion_channel_pool import TripleThreatMeanReversionChannelPool
 from quantammsim.pools.G3M.quantamm.difference_momentum_pool import DifferenceMomentumPool
 from quantammsim.pools.G3M.quantamm.index_market_cap_pool import IndexMarketCapPool
 from quantammsim.pools.G3M.quantamm.hodling_index_pool import HodlingIndexPool
@@ -23,6 +24,8 @@ from quantammsim.hooks.versus_rebalancing import (
     CalculateLossVersusRebalancing,
     CalculateRebalancingVersusRebalancing,
 )
+from quantammsim.hooks.bounded_weights_hook import BoundedWeightsHook
+from quantammsim.hooks.ensemble_averaging_hook import EnsembleAveragingHook
 
 # Create a type variable bound to AbstractPool
 P = TypeVar("P", bound=AbstractPool)
@@ -121,11 +124,11 @@ def create_pool(rule):
     >>> pool = create_pool("balancer")  # Creates a BalancerPool pool instance
     >>> pool = create_pool("momentum")  # Creates a MomentumPool pool instance
     """
-    # Split rule into hook_type and base_rule if double hyphen exists
-    hook_type = None
-    base_rule = rule
-    if "__" in rule:
-        hook_type, base_rule = rule.split("__")
+    # Split rule into hook_types and base_rule
+    # Supports multiple hooks: "ensemble__bounded__momentum" -> hooks=[ensemble, bounded], base=momentum
+    parts = rule.split("__")
+    base_rule = parts[-1]
+    hook_types = parts[:-1] if len(parts) > 1 else []
 
     # Create base pool instance
     if base_rule == "balancer":
@@ -138,6 +141,8 @@ def create_pool(rule):
         base_pool = PowerChannelPool()
     elif base_rule == "mean_reversion_channel":
         base_pool = MeanReversionChannelPool()
+    elif base_rule == "triple_threat_mean_reversion_channel":
+        base_pool = TripleThreatMeanReversionChannelPool()
     elif base_rule == "difference_momentum":
         base_pool = DifferenceMomentumPool()
     elif base_rule == "index_market_cap":
@@ -157,16 +162,21 @@ def create_pool(rule):
     else:
         raise NotImplementedError(f"Unknown base pool type: {base_rule}")
 
-    # Apply hook if specified
-    if hook_type == "lvr":
-        return create_hooked_pool_instance(
-            base_pool.__class__, CalculateLossVersusRebalancing
-        )
-    elif hook_type == "rvr":
-        return create_hooked_pool_instance(
-            base_pool.__class__, CalculateRebalancingVersusRebalancing
-        )
-    elif hook_type is not None:
-        raise NotImplementedError(f"Unknown hook type: {hook_type}")
+    # Map hook names to classes
+    hook_map = {
+        "lvr": CalculateLossVersusRebalancing,
+        "rvr": CalculateRebalancingVersusRebalancing,
+        "bounded": BoundedWeightsHook,
+        "ensemble": EnsembleAveragingHook,
+    }
+
+    # Apply hooks if specified
+    if hook_types:
+        hooks = []
+        for hook_type in hook_types:
+            if hook_type not in hook_map:
+                raise NotImplementedError(f"Unknown hook type: {hook_type}")
+            hooks.append(hook_map[hook_type])
+        return create_hooked_pool_instance(base_pool.__class__, *hooks)
 
     return base_pool

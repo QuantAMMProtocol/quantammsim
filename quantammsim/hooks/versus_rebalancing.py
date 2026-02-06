@@ -19,6 +19,8 @@ from quantammsim.pools.base_pool import AbstractPool
 
 
 config.update("jax_enable_x64", True)
+
+
 @jit
 def calc_rvr_trade_cost(
     trade,
@@ -74,7 +76,7 @@ def _jax_calc_rvr_scan_function(
     Parameters
     ----------
     carry_list : list
-        List containing the previous weights, prices, and reserves.
+        List containing the previous weights, prices, reserves, and LP supply.
     input_list : list
         List containing:
         weights : jnp.ndarray
@@ -86,7 +88,9 @@ def _jax_calc_rvr_scan_function(
         cex_volumes: jnp.ndarray
             Array containing each assets volume over time on an external CEX.
         cex_spread: jnp.ndarray
-            Array containing each assets volume over time on an external CEX.
+            Array containing each assets spread over time on an external CEX.
+        lp_supply: jnp.ndarray
+            Array containing LP token supply over time.
     cex_tau : float
         Transaction fee rate on an external CEX.
     grinold_alpha : float
@@ -94,7 +98,7 @@ def _jax_calc_rvr_scan_function(
     Returns
     -------
     list
-        Updated list containing the new weights, prices, and reserves.
+        Updated list containing the new weights, prices, reserves, and LP supply.
     jnp.ndarray
         Array of new reserves.
     """
@@ -102,15 +106,33 @@ def _jax_calc_rvr_scan_function(
     # carry_list[0] is previous weights
     prev_weights = carry_list[0]
 
+    # carry_list[1] is previous prices
+    prev_prices = carry_list[1]
+
     # carry_list[2] is previous reserves
     prev_reserves = carry_list[2]
 
-    # weights_and_prices are the weigthts and prices, in that order
+    # carry_list[3] is previous lp_supply
+    prev_lp_supply = carry_list[3]
+
+    # input_list[0] is weights
     weights = input_list[0]
+    # input_list[1] is prices
     prices = input_list[1]
+    # input_list[2] is volatilities
     volatilities = input_list[2]
+    # input_list[3] is cex_volumes
     cex_volumes = input_list[3]
+    # input_list[4] is cex_spread
     cex_spread = input_list[4]
+    # input_list[5] is lp_supply
+    lp_supply = input_list[5]
+
+    # Handle LP supply changes
+    lp_supply_change = lp_supply != prev_lp_supply
+    prev_reserves = jnp.where(
+        lp_supply_change, prev_reserves * lp_supply / prev_lp_supply, prev_reserves
+    )
 
     # First calculate change in reserves from new prices
     temp_price_value = jnp.sum(prev_reserves * prices)
@@ -187,6 +209,7 @@ def _jax_calc_rvr_scan_function(
         weights,
         prices,
         new_reserves,
+        lp_supply,
     ], new_reserves
 
 
@@ -199,6 +222,7 @@ def _jax_calc_rvr_reserve_change(
     cex_volumes,
     cex_spread,
     gamma=0.998,
+    lp_supply_array=None,
 ):
     """
     Calculate traditional reserve changes considering transaction fees.
@@ -216,8 +240,16 @@ def _jax_calc_rvr_reserve_change(
         Two-dimensional array of asset weights over time.
     prices : jnp.ndarray
         Two-dimensional array of asset prices over time.
+    volatilities : jnp.ndarray
+        Array containing each assets volatility (std of log returns) over time.
+    cex_volumes : jnp.ndarray
+        Array containing each assets volume over time on an external CEX.
+    cex_spread : jnp.ndarray
+        Array containing each assets spread over time on an external CEX.
     gamma : float, optional
         1 minus the transaction fee rate, by default 0.998.
+    lp_supply_array : jnp.ndarray, optional
+        Array of LP token supply over time, by default None.
 
     Returns
     -------
@@ -233,11 +265,19 @@ def _jax_calc_rvr_reserve_change(
     # So, for first weight, we have initial reserves, weights and
     # prices, so the change is 1
 
+    if lp_supply_array is None:
+        lp_supply_array = jnp.array(1.0)
+    lp_supply_array = jnp.where(
+        lp_supply_array.size == 1,
+        jnp.full(weights.shape[0], lp_supply_array),
+        lp_supply_array,
+    )
+
     scan_fn = Partial(
         _jax_calc_rvr_scan_function, cex_tau=1.0 - gamma, grinold_alpha=0.5
     )
 
-    carry_list_init = [weights[0], prices[0], initial_reserves]
+    carry_list_init = [weights[0], prices[0], initial_reserves, lp_supply_array[0]]
     carry_list_end, reserves = scan(
         scan_fn,
         carry_list_init,
@@ -247,6 +287,7 @@ def _jax_calc_rvr_reserve_change(
             volatilities,
             cex_volumes,
             cex_spread,
+            lp_supply_array,
         ],
     )
     return reserves, carry_list_init, carry_list_end
@@ -263,16 +304,16 @@ def _jax_calc_lvr_reserve_change_scan_function(carry_list, weights_and_prices, t
     Parameters
     ----------
     carry_list : list
-        List containing the previous weights, prices, and reserves.
+        List containing the previous weights, prices, reserves, and LP supply.
     weights_and_prices : jnp.ndarray
-        Array containing the current weights and prices.
+        Array containing the current weights, prices, and LP supply.
     tau : float
         Transaction fee rate.
 
     Returns
     -------
     list
-        Updated list containing the new weights, prices, and reserves.
+        Updated list containing the new weights, prices, reserves, and LP supply.
     jnp.ndarray
         Array of new reserves.
     """
@@ -280,12 +321,27 @@ def _jax_calc_lvr_reserve_change_scan_function(carry_list, weights_and_prices, t
     # carry_list[0] is previous weights
     prev_weights = carry_list[0]
 
+    # carry_list[1] is previous prices
+    prev_prices = carry_list[1]
+
     # carry_list[2] is previous reserves
     prev_reserves = carry_list[2]
 
-    # weights_and_prices are the weigthts and prices, in that order
+    # carry_list[3] is previous lp_supply
+    prev_lp_supply = carry_list[3]
+
+    # weights_and_prices[0] is weights
     weights = weights_and_prices[0]
+    # weights_and_prices[1] is prices
     prices = weights_and_prices[1]
+    # weights_and_prices[2] is lp_supply
+    lp_supply = weights_and_prices[2]
+
+    # Handle LP supply changes
+    lp_supply_change = lp_supply != prev_lp_supply
+    prev_reserves = jnp.where(
+        lp_supply_change, prev_reserves * lp_supply / prev_lp_supply, prev_reserves
+    )
 
     # First calculate change in reserves from new prices
     temp_price_value = jnp.sum(prev_reserves * prices)
@@ -341,11 +397,14 @@ def _jax_calc_lvr_reserve_change_scan_function(carry_list, weights_and_prices, t
         weights,
         prices,
         new_reserves,
+        lp_supply,
     ], new_reserves
 
 
 @jit
-def _jax_calc_lvr_reserve_change(initial_reserves, weights, prices, gamma=0.998):
+def _jax_calc_lvr_reserve_change(
+    initial_reserves, weights, prices, gamma=0.998, lp_supply_array=None
+):
     """
     Calculate traditional reserve changes considering transaction fees.
 
@@ -364,6 +423,8 @@ def _jax_calc_lvr_reserve_change(initial_reserves, weights, prices, gamma=0.998)
         Two-dimensional array of asset prices over time.
     gamma : float, optional
         1 minus the transaction fee rate, by default 0.998.
+    lp_supply_array : jnp.ndarray, optional
+        Array of LP token supply over time, by default None.
 
     Returns
     -------
@@ -379,10 +440,18 @@ def _jax_calc_lvr_reserve_change(initial_reserves, weights, prices, gamma=0.998)
     # So, for first weight, we have initial reserves, weights and
     # prices, so the change is 1
 
+    if lp_supply_array is None:
+        lp_supply_array = jnp.array(1.0)
+    lp_supply_array = jnp.where(
+        lp_supply_array.size == 1,
+        jnp.full(weights.shape[0], lp_supply_array),
+        lp_supply_array,
+    )
+
     scan_fn = Partial(_jax_calc_lvr_reserve_change_scan_function, tau=1.0 - gamma)
 
-    carry_list_init = [weights[0], prices[0], initial_reserves]
-    _, reserves = scan(scan_fn, carry_list_init, [weights, prices])
+    carry_list_init = [weights[0], prices[0], initial_reserves, lp_supply_array[0]]
+    _, reserves = scan(scan_fn, carry_list_init, [weights, prices, lp_supply_array])
     return reserves
 
 
@@ -521,25 +590,28 @@ class CalculateRebalancingVersusRebalancing(ABC):
             end_time_test_string=run_fingerprint["endTestDateString"],
             max_mc_version=None,
             return_slippage=True,
+            do_test_period=True,
         )
 
-        volatilities = data_dict["annualised_daily_volatility"][
-            data_dict["start_idx"] : data_dict["start_idx"]
-            + data_dict["bout_length"]
-            - 1
-        ]
-        cex_volumes = data_dict["daily_volume"][
-            data_dict["start_idx"] : data_dict["start_idx"]
-            + data_dict["bout_length"]
-            - 1
-        ]
-        cex_spread = data_dict["spread"][
-            data_dict["start_idx"] : data_dict["start_idx"]
-            + data_dict["bout_length"]
-            - 1
-        ]
-
         n_assets = run_fingerprint["n_assets"]
+
+        volatilities = dynamic_slice(
+            data_dict["annualised_daily_volatility"],
+            start_index,
+            (run_fingerprint["bout_length"] - 1, n_assets),
+        )
+
+        cex_volumes = dynamic_slice(
+            data_dict["daily_volume"],
+            start_index,
+            (run_fingerprint["bout_length"] - 1, n_assets),
+        )
+
+        cex_spread = dynamic_slice(
+            data_dict["spread"],
+            start_index,
+            (run_fingerprint["bout_length"] - 1, n_assets),
+        )
 
         if self.weights_needs_original_methods():
             original_pool_class = self.get_original_pool_class()
@@ -584,8 +656,8 @@ class CalculateRebalancingVersusRebalancing(ABC):
         """
         Calculate reserves with dynamic inputs.
 
-        This method is intended to calculate the reserves for RVR pools using 
-        dynamic inputs provided through *args and **kwargs. However, it is 
+        This method is intended to calculate the reserves for RVR pools using
+        dynamic inputs provided through *args and **kwargs. However, it is
         currently not implemented and will raise a NotImplementedError if called.
 
         Args:

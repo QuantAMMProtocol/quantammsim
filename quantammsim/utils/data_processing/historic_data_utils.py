@@ -6,9 +6,6 @@ import pyarrow as pa
 import matplotlib.pyplot as plt
 import dask.dataframe as dd
 
-# from numba import jit
-# from numba import float64
-# from numba import int64
 from Historic_Crypto import Cryptocurrencies, HistoricalData
 from datetime import datetime, timezone
 from importlib import resources as impresources
@@ -29,6 +26,9 @@ from quantammsim.utils.data_processing.amalgamated_data_utils import (
 )
 from quantammsim.utils.data_processing.cmc_data_utils import (
     fill_missing_rows_with_cmc_historical_data,
+)
+from quantammsim.utils.data_processing.st0x_data_utils import (
+    fill_missing_rows_with_st0x_historical_data,
 )
 from quantammsim.utils.data_processing.aerodrome_data_utils import (
     fill_missing_rows_with_aerodrome_data,
@@ -94,6 +94,7 @@ def start_and_end_calcs(
     else:
         start_idx = 0
         end_idx = len(prices)
+        remainder_idx = 0  # No alignment needed when no dates provided
 
     bout_length = end_idx - start_idx
     return (
@@ -534,36 +535,6 @@ def update_historic_data_old(token, root):
     plt.savefig(final_plot_filename)
     csvData = csvData.sort_values(by="unix", ascending=True)
 
-    # usdtData = pd.read_csv(
-    #     root + "USDT_USD.csv",
-    #     dtype={
-    #         "unix": float,
-    #         "date": "string",
-    #         "symbol": "string",
-    #         "open": float,
-    #         "high": float,
-    #         "low": float,
-    #         "close": float,
-    #         "Volume USD": float,
-    #         "Volume " + token: float,
-    #         "tradecount": float,
-    #     },
-    # )
-
-    # usdtData = usdtData.set_index("unix")
-    # usdtToken = token + "/USDT"
-    # for index, row in csvData.iterrows():
-    #    try:
-    #        if(usdtToken == row["symbol"]):
-    #            usdtRow = usdtData.iloc[usdtData.index.get_loc(row["unix"])]
-    #            csvData.at[index, "close"] = row["close"] * usdtRow["close"]
-    #            csvData.at[index, "open"] = row["open"] * usdtRow["open"]
-    #            csvData.at[index, "low"] = row["low"] * usdtRow["low"]
-    #            csvData.at[index, "high"] = row["high"] * usdtRow["high"]
-    #            csvData.at[index, "symbol"] = token + "/USD"
-    #    except  Exception as e:
-    #        print(e)
-
     csvData["unix"] = csvData["unix"].astype(int)
     cols = csvData.columns.tolist()
     cols.remove("unix")
@@ -759,10 +730,7 @@ def get_binance_vision_data(token, numeraire, root):
     result_df = result_df.sort_values("unix").reset_index(drop=True)
     
     return result_df
-    
-    # except Exception as e:
-    #     print(f"Failed to get Binance vision data for {token}: {str(e)}")
-    #     return None
+
 
 def update_historic_data(token, root):
     """Update historic data for a given token, handling reruns gracefully.
@@ -903,8 +871,15 @@ def update_historic_data(token, root):
         )
         if filled_cmc_unix_values:
             filled_timestamps["CMC_Historical"] = filled_cmc_unix_values
+    if token in ["TSLA", "JNJ"]:
+        print("Filling remaining gaps with st0x historical data")
+        concated_df, filled_st0x_unix_values = fill_missing_rows_with_st0x_historical_data(
+            concated_df.copy(), root + "st0x_data/", token
+        )
+        if filled_st0x_unix_values:
+            filled_timestamps["ST0X_Historical"] = filled_st0x_unix_values
     # if ticker is in a harcoded dict, load from parquet
-
+        
     assets = [
         {"pair_id": 3010484, "token": "PEPE"},
         {"pair_id": 1497, "token": "BAL"},
@@ -951,23 +926,12 @@ def update_historic_data(token, root):
         raise Exception(
             f"Invalid unix timestamp difference found at index {first_invalid} ({invalid_time}). All differences should be 60000ms (1 minute)."
         )
-    # concated_df.to_csv(minutePath, index=False)
     # Create visualization of the data sources
     print(f"Creating visualizations for {token}")
     plot_exchange_data(concated_df.set_index("unix"), token, minutePath[:-4] + ".png")
 
     plt.figure(figsize=(14, 7))
 
-    # Plot original Binance data
-    # plt.plot(
-    #     pd.to_datetime(concated_df["unix"], unit="ms"),
-    #     concated_df["close"],
-    #     label="Binance Minute Data",
-    #     linestyle="None",
-    #     marker="o",
-    #     markersize=0.5,
-    #     color="yellow",
-    # )
 
     # Plot filled data from each source
     colors = {
@@ -1114,7 +1078,6 @@ def get_historic_parquet_data(
     list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
 ):
     firstTicker = list_of_tickers[0]
-    # print('cwd: ', os.getcwd())
     filename = firstTicker + "_USD.parquet"
     renamedCols = [col + "_" + firstTicker for col in cols]
     baseCols = [col for col in cols]
@@ -1133,7 +1096,6 @@ def get_historic_parquet_data(
         for ticker in list_of_tickers[1:]:
             renamedCols = [col + "_" + ticker for col in cols]
             baseCols = [col for col in cols]
-            # path = root + ticker + "_USD.csv"
             filename = ticker + "_USD.parquet"
             if root is not None:
                 inp_file = Path(root) / filename
@@ -1166,7 +1128,6 @@ def get_historic_csv_data(
     else:
         inp_file = impresources.files(data) / filename
     with inp_file.open("rt") as f:
-        # path = root + firstTicker + "_USD.csv"
         csvData = pd.read_csv(
             f,
             dtype={
@@ -1338,6 +1299,7 @@ def get_data_dict(
     return_supply=False,
     price_data=None,
     do_test_period=False,
+    preslice_burnin=True,
 ):
 
     if return_slippage:
@@ -1370,22 +1332,7 @@ def get_data_dict(
             items=["close_" + ticker for ticker in list_of_tickers]
         ).to_numpy()
         
-        # if return_slippage:
-        #     spread = np.array(
-        #         [
-        #             edge(
-        #                 open=price_data["open_" + ticker],
-        #                 high=price_data["high_" + ticker],
-        #                 low=price_data["low_" + ticker],
-        #                 close=price_data["close_" + ticker],
-        #                 sign=False,
-        #             )
-        #             for ticker in list_of_tickers
-        #         ]
-        #     ).clip(min=0.0)
-        #     # set spread of USD asset to 0
-        #     idx = list_of_tickers.index("DAI")
-        #     spread[idx] = 0.0
+
     elif data_kind == "mc":
         if price_data is None:
             mc_tokens = [
@@ -1464,6 +1411,48 @@ def get_data_dict(
     if start_idx / 1440 < max_memory_days:
         max_memory_days = start_idx / 1440 - 1.0
 
+    # Pre-slice optimization: remove excess data before the burn-in period and after training
+    # This reduces memory usage by keeping only:
+    # - max_memory_days worth of burn-in data before start_idx
+    # - the full training period (start_idx to end_idx)
+    # - when do_test_period=True, also includes test period (no back trim)
+    # Controlled by preslice_burnin parameter (default True)
+    # Disabled when using slippage/gas/supply features (they use original arrays)
+    if preslice_burnin and not (return_slippage or return_gas_prices or return_supply):
+        # Round up max_memory_days to ensure sufficient burn-in, then convert to minutes
+        burn_in_days = int(np.ceil(max_memory_days))
+        burn_in_minutes = burn_in_days * 1440  # Always aligned to day boundaries
+
+        # Calculate minimum required start index (aligned down to day boundary)
+        min_required_idx = max(0, start_idx - burn_in_minutes)
+        min_required_idx = (min_required_idx // 1440) * 1440
+
+        # Calculate maximum required end index (aligned up to day boundary)
+        # Add one extra chunk (day) because gradient/ewma calculations return n_chunks-1 elements,
+        # so we need one extra day of data for the slicing to work correctly
+        max_required_idx = ((end_idx + 1439) // 1440) * 1440 + 1440  # +1440 for extra day
+        max_required_idx = min(max_required_idx, len(prices_rebased))
+
+        # Only slice if there's data to remove
+        needs_front_trim = min_required_idx > 0
+        # When do_test_period=True, don't trim the back - we need data for the test period
+        # The continuous forward pass needs prices covering both training and test
+        needs_back_trim = (not do_test_period) and (max_required_idx < len(prices_rebased))
+        if needs_back_trim is False:
+            max_required_idx = len(prices_rebased)
+        if needs_front_trim or needs_back_trim:
+            # Pre-slice arrays
+            prices_rebased = prices_rebased[min_required_idx:max_required_idx]
+            unix_values_rebased = unix_values_rebased[min_required_idx:max_required_idx]
+            if oracle_values_rebased is not None:
+                oracle_values_rebased = oracle_values_rebased[min_required_idx:max_required_idx]
+
+            # Adjust indices to reflect new array positions (only affected by front trim)
+            if needs_front_trim:
+                start_idx = start_idx - min_required_idx
+                end_idx = end_idx - min_required_idx
+            # Note: bout_length is unchanged (still end_idx - start_idx)
+
     if data_kind == "step":
         # Create test pattern: all tokens = 1.0, except first token steps to 10.0 halfway
         # Useful for testing/visualizing strategy responses to sharp price movements
@@ -1472,8 +1461,11 @@ def get_data_dict(
         prices_rebased[mid_point:, 0] = 10.0  # Step up first token halfway through bout
         if return_slippage or return_gas_prices or return_supply:
             print("Warning: Using step data with slippage/gas/supply may not be meaningful")
-    # n_chunks = (len(prices) - remainder_idx) / chunk_period
-    n_chunks = int((len(prices) - remainder_idx) / 1440) * 1440 / chunk_period
+    # n_chunks calculation: use prices_rebased which has been trimmed by remainder_idx
+    # and potentially pre-sliced. This ensures day-aligned chunking.
+    # Note: len(prices_rebased) == len(prices) - remainder_idx before pre-slicing,
+    # but after pre-slicing it's shorter, so we must use prices_rebased directly.
+    n_chunks = int(len(prices_rebased) / 1440) * 1440 / chunk_period
     # check that we can cleanly divide data into 'chunk_period' units
     # if not, we will remove off the last little bit of the dataset.
     # (note that this doesn't interefere with the above burnin manipulations
@@ -1517,11 +1509,7 @@ def get_data_dict(
                     price_data_filtered.copy(), ticker
                 )
             )
-            # per_ticker_daily_volume = calculate_daily_volume_from_minute_data(
-            #     price_data_filtered, ticker
-            # )
             annualised_daily_volatility.append(per_ticker_annualised_daily_volatility)
-            # daily_volume.append(per_ticker_daily_volume)
             daily_OHLC_data = resample_minute_level_OHLC_data_to_daily(
                 price_data_filtered.copy(), ticker
             )
@@ -1531,11 +1519,6 @@ def get_data_dict(
         annualised_daily_volatility = np.repeat(
             np.array(annualised_daily_volatility).T, 1440, axis=0
         )
-        # set spread of USD asset to 0
-        # idx = list_of_tickers.index("DAI")
-        # spread[idx, :] = 0.0
-    # if return_slippage:
-    # spread_rebased = spread[remainder_idx:]
     if return_supply:
         print("Loading market cap data for supply calculation")
         supply_data = []
@@ -1570,18 +1553,12 @@ def get_data_dict(
 
             supply_data.append(aligned_supply["circulating_supply"].values)
 
-    # prices_rebased = prices_rebased[: round(n_chunks * chunk_period)]
-    # unix_values_rebased = unix_values_rebased[: round(n_chunks * chunk_period)]
-
-    # if return_slippage:
-    #     spread_rebased = spread[: int(n_chunks) * chunk_period]
     if return_gas_prices:
         if root is not None:
             inp_file = Path(root) / "export-AvgGasPrice.csv"
         else:
             inp_file = impresources.files(data) / "export-AvgGasPrice.csv"
         with inp_file.open("rt") as f:
-            # path = root + firstTicker + "_USD.csv"
             gas_prices = (
                 pd.read_csv(f)
                 .filter(items=["UnixTimeStamp", "Value (Wei)"])
@@ -1640,6 +1617,10 @@ def get_data_dict(
                 start_date=startDateTest,
                 end_date=endDateTest,
             )
+
+            # Preslice test prices to only include the test period (remove data after test end)
+            price_values_test = price_values_test[:end_idx_test]
+            unix_values_test = unix_values_test[:end_idx_test]
 
             data_dict["prices_test"] = price_values_test
             data_dict["start_idx_test"] = start_idx_test

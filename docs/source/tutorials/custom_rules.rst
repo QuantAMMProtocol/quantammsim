@@ -3,10 +3,20 @@ Implementing a Custom QuantAMM Strategy
 
 When designing a QuantAMM strategy, an *update rule*, you're essentially creating a function that maps market observations to weight changes. Key considerations:
 
-Weight Calculation
-~~~~~~~~~~~~~~~~~~
+Weight Calculation Paths
+~~~~~~~~~~~~~~~~~~~~~~~~
 
-The core of any update rule is the logic that converts market observations into desired weight changes.
+There are two approaches to implementing weight calculation in a custom strategy:
+
+1. **Vectorized Path** - Compute all weight changes at once using convolution operations (faster, good for simulation)
+2. **Scan Path** - Compute weight changes sequentially, one step at a time (matches on-chain execution)
+
+You can implement one or both paths. See :doc:`../user_guide/weight_calculation_paths` for detailed information.
+
+Vectorized Implementation
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The vectorized approach computes all weight outputs at once. This is typically faster for simulation and training.
 
 .. code-block:: python
 
@@ -18,20 +28,89 @@ The core of any update rule is the logic that converts market observations into 
 
     class MyCustomRule(TFMMBasePool):
         @partial(jit, static_argnums=(2))
-        def calculate_raw_weights_outputs(
+        def calculate_rule_outputs(
             self,
             params: Dict[str, Any],
             run_fingerprint: Dict[str, Any],
             prices: jnp.ndarray,
             additional_oracle_input: Optional[jnp.ndarray] = None,
         ) -> jnp.ndarray:
-            # Your weight calculation logic here
+            # Your vectorized weight calculation logic here
+            # Returns weight changes for all time steps at once
+            ...
 
+Scan-Based Implementation
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The scan-based approach processes prices one at a time, maintaining state between steps.
+This mirrors how weights are computed on-chain and is useful for verifying production behavior.
+
+.. code-block:: python
+
+    class MyCustomRule(TFMMBasePool):
+        def get_initial_rule_state(
+            self,
+            initial_price: jnp.ndarray,
+            params: Dict[str, Any],
+            run_fingerprint: Dict[str, Any],
+        ) -> Dict[str, jnp.ndarray]:
+            """Initialize the estimator carry state from the first price."""
+            # Return initial state dictionary
+            return {
+                "ewma": initial_price,
+                # ... other state variables
+            }
+
+        def calculate_rule_output_step(
+            self,
+            carry: Dict[str, jnp.ndarray],
+            price: jnp.ndarray,
+            params: Dict[str, Any],
+            run_fingerprint: Dict[str, Any],
+        ) -> tuple:
+            """Single-step weight update.
+
+            Returns:
+                (new_carry, rule_output) tuple
+            """
+            # Update state and compute weight change for this step
+            new_carry = {
+                "ewma": ...,  # Updated state
+            }
+            rule_output = ...  # Weight change for this step
+            return new_carry, rule_output
+
+Implementing Both Paths
+~~~~~~~~~~~~~~~~~~~~~~~
+
+For maximum flexibility, implement both paths. They should produce numerically equivalent results:
+
+.. code-block:: python
+
+    class MyCustomRule(TFMMBasePool):
+        # Vectorized path
+        def calculate_rule_outputs(self, params, run_fingerprint, prices, ...):
+            ...
+
+        # Scan path
+        def get_initial_rule_state(self, initial_price, params, run_fingerprint):
+            ...
+
+        def calculate_rule_output_step(self, carry, price, params, run_fingerprint):
+            ...
+
+    # Check which paths are supported
+    pool = MyCustomRule()
+    print(pool.supports_vectorized_path())  # True
+    print(pool.supports_scan_path())        # True
+
+Creating a Custom Rule
+~~~~~~~~~~~~~~~~~~~~~~
 
 To create a custom update rule:
 
 1. Inherit from :class:`~quantammsim.pools.TFMMBasePool`
-2. Implement method :meth:`~quantammsim.pools.TFMMBasePool.calculate_raw_weights_outputs`
+2. Implement **either** the vectorized path (``calculate_rule_outputs``) **or** the scan path (``get_initial_rule_state`` + ``calculate_rule_output_step``), or both
 3. (Optional) Provide the logic for any custom parameters in the pool's helper function :meth:`~quantammsim.pools.AbstractPool.init_base_parameters`
 4. Register the pool with JAX as a pytree node using :func:`~jax.tree_util.register_pytree_node` (see note in :doc:`../tutorials/custom_pools`)
 

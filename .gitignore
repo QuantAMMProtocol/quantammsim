@@ -28,6 +28,14 @@ Thumbs.db
 #ignore data files
 *.png
 *.parquet
+*.json
+*.txt
+*.msgpack
+*.html
+
+# Exception: allow test data files (tracked via Git LFS)
+!tests/data/*.parquet
+!tests/data/*.csv
 
 # ignore compiled files
 *.com
@@ -139,6 +147,8 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+*.html
+*.doctree
 
 # PyBuilder
 .pybuilder/

@@ -533,11 +533,24 @@ def create_opt_state_in_axes_dict(opt_state):
     return tree_map(_create_axes_for_leaf, opt_state)
 
 
-def _create_base_optimizer(optimizer_type, learning_rate):
-    """Create a base optimizer with the given learning rate."""
-    # note that learning_rate can be a float or a schedule
+def _create_base_optimizer(optimizer_type, learning_rate, weight_decay=0.0):
+    """Create a base optimizer with the given learning rate.
+
+    Parameters
+    ----------
+    optimizer_type : str
+        One of "adam", "adamw", or "sgd"
+    learning_rate : float or optax schedule
+        Learning rate or schedule
+    weight_decay : float
+        Weight decay coefficient for adamw (default 0.0)
+    """
     if optimizer_type == "adam":
         return optax.adam(learning_rate=learning_rate)
+    elif optimizer_type == "adamw":
+        # AdamW applies weight decay directly to weights, not through gradients
+        # This is more principled than L2 reg with Adam
+        return optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
     elif optimizer_type == "sgd":
         return optax.sgd(learning_rate=learning_rate)
     else:
@@ -545,16 +558,33 @@ def _create_base_optimizer(optimizer_type, learning_rate):
 
 
 def _create_lr_schedule(settings):
-    """Create a learning rate schedule based on settings."""
+    """Create a learning rate schedule based on settings.
+
+    Supports two ways to specify the minimum LR for decay schedules:
+    - lr_decay_ratio: min_lr = base_lr / lr_decay_ratio (preferred, scale-invariant)
+    - min_lr: absolute minimum LR (fallback for backwards compatibility)
+
+    If both are provided, lr_decay_ratio takes precedence.
+    """
     base_lr = settings.get("base_lr", 0.001)
-    min_lr = settings.get("min_lr", 1e-6)
     n_iterations = settings.get("n_iterations", 1000)
     schedule_type = settings.get("lr_schedule_type", "constant")
+
+    # Compute min_lr: prefer lr_decay_ratio if provided, else use min_lr directly
+    if "lr_decay_ratio" in settings:
+        min_lr = base_lr / settings["lr_decay_ratio"]
+    else:
+        min_lr = settings.get("min_lr", 1e-6)
+        # Safety check: ensure min_lr < base_lr for decay schedules
+        if schedule_type != "constant" and min_lr >= base_lr:
+            min_lr = base_lr / 100  # Fallback to 100:1 ratio
 
     if schedule_type == "constant":
         return optax.constant_schedule(base_lr)
 
     elif schedule_type == "cosine":
+        if n_iterations <= 0:
+            raise ValueError(f"cosine schedule requires positive n_iterations, got {n_iterations}")
         return optax.cosine_decay_schedule(
             init_value=base_lr,
             decay_steps=n_iterations,  # Use n_iterations
@@ -562,24 +592,33 @@ def _create_lr_schedule(settings):
         )
 
     elif schedule_type == "exponential":
-        # Calculate decay_rate from decay_lr_ratio
-        # If we want to decay from base_lr to min_lr over n_iterations steps
-        # with exponential decay, we need to solve: min_lr = base_lr * (decay_rate)^n_iterations
+        if n_iterations <= 0:
+            raise ValueError(f"exponential schedule requires positive n_iterations, got {n_iterations}")
+        # Decay from base_lr to min_lr over n_iterations steps.
+        # Formula: LR(step) = base_lr * decay_rate^step
+        # At step=n_iterations: min_lr = base_lr * decay_rate^n_iterations
         # So: decay_rate = (min_lr / base_lr)^(1/n_iterations)
         decay_rate = (min_lr / base_lr) ** (1.0 / n_iterations)
         return optax.exponential_decay(
-            init_value=base_lr, 
-            transition_steps=n_iterations,  # Use n_iterations
+            init_value=base_lr,
+            transition_steps=1,  # Apply decay at every step
             decay_rate=decay_rate
         )
 
     elif schedule_type == "warmup_cosine":
+        if n_iterations <= 0:
+            raise ValueError(f"warmup_cosine schedule requires positive n_iterations, got {n_iterations}")
         warmup_steps = settings["warmup_steps"]
+        if warmup_steps >= n_iterations:
+            raise ValueError(
+                f"warmup_steps ({warmup_steps}) must be less than n_iterations ({n_iterations}). "
+                f"Use warmup_fraction in HyperparamSpace to avoid this."
+            )
         return optax.warmup_cosine_decay_schedule(
             init_value=min_lr,
             peak_value=base_lr,
             warmup_steps=warmup_steps,
-            decay_steps=n_iterations,  # Use n_iterations
+            decay_steps=n_iterations,
             end_value=min_lr,
         )
 
@@ -589,10 +628,10 @@ def _create_lr_schedule(settings):
 
 def create_optimizer_chain(run_fingerprint):
     settings = run_fingerprint["optimisation_settings"]
-    base_lr = settings["base_lr"]
+    weight_decay = settings.get("weight_decay", 0.0)  # Default to no weight decay
 
-    # Create base optimizer with lr=base_lr (will be scaled by schedule)
-    base_optimizer = _create_base_optimizer(settings["optimiser"], base_lr)
+    # Create base optimizer with lr=1.0 - the schedule will control the actual LR
+    base_optimizer = _create_base_optimizer(settings["optimiser"], 1.0, weight_decay)
 
     # Create vanilla LR schedule
     lr_schedule = _create_lr_schedule(settings)
@@ -602,9 +641,14 @@ def create_optimizer_chain(run_fingerprint):
 
     # Add plateau reduction if enabled
     if settings["use_plateau_decay"]:
+        # Use atol (absolute tolerance) instead of default rtol (relative tolerance)
+        # because we pass -objective_value (negative values) for maximization.
+        # rtol compares value < best * (1 - rtol) which misbehaves for negative values.
         plateau_reduction = optax.contrib.reduce_on_plateau(
             factor=settings["decay_lr_ratio"],
             patience=settings["decay_lr_plateau"],
+            rtol=0.0,
+            atol=1e-4,
         )
         optimizer_chain = optax.chain(optimizer_chain, plateau_reduction)
 

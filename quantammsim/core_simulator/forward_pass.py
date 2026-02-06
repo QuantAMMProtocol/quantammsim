@@ -198,7 +198,7 @@ def _calculate_sterling_ratio(
         denominator = -avg_drawdown
 
     # Handle zero/positive drawdown case
-    sterling = jnp.where(denominator >= 0, jnp.inf, annualized_return / denominator)
+    sterling = jnp.where(denominator <= 0, jnp.inf, annualized_return / denominator)
 
     return sterling
 
@@ -288,9 +288,35 @@ def _calculate_return_value(
         * (daily_returns.mean() / daily_returns.std()),
         "daily_log_sharpe": lambda: _daily_log_sharpe(value_over_time),
         "returns": lambda: value_over_time[-1] / value_over_time[0] - 1.0,
+        "annualised_returns": lambda: (
+            (value_over_time[-1] / value_over_time[0])
+            ** (365 * 24 * 60 / (value_over_time.shape[0] - 1))
+            - 1.0
+        ),
         "returns_over_hodl": lambda: (
             value_over_time[-1]
             / (stop_gradient(initial_reserves) * local_prices[-1]).sum()
+            - 1.0
+        ),
+        "annualised_returns_over_hodl": lambda: (
+            (
+                value_over_time[-1]
+                / (stop_gradient(initial_reserves) * local_prices[-1]).sum()
+            )
+            ** (365 * 24 * 60 / (value_over_time.shape[0] - 1))
+            - 1.0
+        ),
+        "returns_over_uniform_hodl": lambda: (
+            value_over_time[-1]
+            / (stop_gradient((initial_reserves * local_prices[0]).sum()/(reserves.shape[1]*local_prices[0])) * local_prices[-1]).sum()
+            - 1.0
+        ),
+        "annualised_returns_over_uniform_hodl": lambda: (
+            (
+                value_over_time[-1]
+                / (stop_gradient((initial_reserves * local_prices[0]).sum()/(reserves.shape[1]*local_prices[0])) * local_prices[-1]).sum()
+            )
+            ** (365 * 24 * 60 / (value_over_time.shape[0] - 1))
             - 1.0
         ),
         "greatest_draw_down": lambda: jnp.min(value_over_time - value_over_time[0])
@@ -578,19 +604,38 @@ def forward_pass(
     local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
     value_over_time = jnp.sum(jnp.multiply(reserves, local_prices), axis=-1)
     if return_val == "reserves_and_values":
-        return {
+        return_dict = {
             "final_reserves": reserves[-1],
             "final_value": (reserves[-1] * local_prices[-1]).sum(),
             "value": value_over_time,
             "prices": local_prices,
             "reserves": reserves,
-            # "weights": pool.calculate_weights(
-            #     params, static_dict, prices, start_index, additional_oracle_input=None
-            # ),
-            # "raw_weight_outputs": pool.calculate_raw_weights_outputs(
-            #     params, static_dict, prices, additional_oracle_input=None
-            # ),
+            "weights": pool.calculate_weights(
+                params, static_dict, prices, start_index, additional_oracle_input=None
+            ),
+            "rule_outputs": pool.calculate_rule_outputs(
+                params, static_dict, prices, additional_oracle_input=None
+            ) if hasattr(pool, "calculate_rule_outputs") else None,
         }
+        if hasattr(pool, "calculate_readouts"):
+            return_dict.update({
+                "readouts": pool.calculate_readouts(
+                    params, static_dict, prices, start_index, additional_oracle_input=None
+                )
+            })
+        # if static_dict.get("calculate_final_weights", True):
+        #     return_dict.update(
+        #         {
+        #             "final_weights": pool.calculate_final_weights(
+        #                 params,
+        #                 static_dict,
+        #                 prices,
+        #                 start_index,
+        #                 additional_oracle_input=None,
+        #             )
+        #         }
+        #     )
+        return return_dict
     return _calculate_return_value(
         return_val,
         reserves,

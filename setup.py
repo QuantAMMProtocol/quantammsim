@@ -26,7 +26,7 @@ setup(
         "dask",
         "jsonpickle",
         "flask_cors",
-        "optax"
+        "optax",
     ],
     extras_require={
         "dev": [

@@ -40,7 +40,7 @@ Here's how to create and simulate a basic CoW pool:
     # Configure the simulation
     run_fingerprint = {
         'tokens': ['ETH', 'USDC'],
-        'pool_type': 'cow',
+        'rule': 'cow',
         'initial_pool_value': 1000000.0,  # $1M initial pool value
         'fees': 0.001,                    # 0.1% fee per trade
         'gas_cost': 0.0001,               # Minimum profit threshold for arbitrage

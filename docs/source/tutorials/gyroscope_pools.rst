@@ -42,7 +42,7 @@ Here's how to create and simulate a basic Gyroscope pool:
 
     run_fingerprint = {
         'tokens': ['ETH', 'USDC'],
-        'pool_type': 'gyroscope',
+        'rule': 'gyroscope',
         'initial_pool_value': 1000000.0,  # $1M initial pool value
         'alpha': 1500.0,                  # Lower price bound
         'beta': 4500.0,                   # Upper price bound

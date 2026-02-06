@@ -31,18 +31,23 @@ from quantammsim.core_simulator.param_utils import (
     inverse_squareplus_np,
     get_raw_value,
     get_log_amplitude,
+    jax_memory_days_to_lamb,
 )
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
     calc_gradients,
     calc_k,
     squareplus,
 )
+from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives import (
+    _jax_gradient_scan_function,
+)
+from quantammsim.core_simulator.param_schema import ParamSpec, OptunaRange
 
 from typing import Dict, Any, Optional
 from functools import partial
 import numpy as np
 
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_themselves_weights
 # as this is False for momentum pools --- the strategy outputs weight _changes_
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weight_changes,
@@ -125,7 +130,7 @@ class MeanReversionChannelPool(MomentumPool):
 
     Methods
     -------
-    calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
+    calculate_rule_outputs(params, run_fingerprint, prices, additional_oracle_input)
         Calculate the raw weight outputs based on mean reversion channel signals.
 
     Notes
@@ -135,6 +140,68 @@ class MeanReversionChannelPool(MomentumPool):
     The class provides methods to calculate raw weight outputs based on these signals and refine them
     into final asset weights, taking into account various parameters and constraints defined in the pool setup.
     """
+
+    # Pool-owned parameter schema for MeanReversionChannel
+    # Uses sp_* (squareplus-transformed) params
+    #
+    # Internal param mappings:
+    #   sp_k: squareplus(sp_k) = k -> k_per_day
+    #   logit_lamb: logit(lamb) -> memory_length
+    #   sp_exponents: squareplus(sp_exponents) = exponents, typically 1-4
+    #   sp_pre_exp_scaling: squareplus(sp_pre_exp_scaling) = scaling
+    #   sp_amplitude: squareplus(sp_amplitude) = amplitude
+    #   sp_width: squareplus(sp_width) = width (channel width)
+    PARAM_SCHEMA = {
+        # sp_k: squareplus transformed
+        "sp_k": ParamSpec(
+            initial=19.5,  # squareplus(19.5) ≈ 20
+            optuna=OptunaRange(low=-1.0, high=100.0, log_scale=False, scalar=False),
+            description="Squareplus-space k factor",
+        ),
+        "logit_lamb": ParamSpec(
+            initial=4.0,
+            optuna=OptunaRange(low=-4.0, high=8.0, log_scale=False, scalar=False),
+            description="Logit of decay parameter lambda (memory length)",
+        ),
+        "logit_delta_lamb": ParamSpec(
+            initial=0.0,
+            optuna=OptunaRange(low=-5.0, high=5.0, log_scale=False, scalar=False),
+            description="Delta in logit space for alternative lambda",
+        ),
+        # Power channel parameters (squareplus transformed)
+        "sp_exponents": ParamSpec(
+            initial=0.0,  # squareplus(0) ≈ 1.0
+            optuna=OptunaRange(low=-2.0, high=4.0, log_scale=False, scalar=False),
+            description="Squareplus-space exponents (gives 0.3-5)",
+        ),
+        "sp_pre_exp_scaling": ParamSpec(
+            initial=-1.0,  # squareplus(-1) ≈ 0.38
+            optuna=OptunaRange(low=-3.0, high=2.0, log_scale=False, scalar=False),
+            description="Squareplus-space pre-exp scaling (gives 0.09-2.4)",
+        ),
+        # Mean reversion channel specific (squareplus transformed)
+        "sp_amplitude": ParamSpec(
+            initial=0.0,  # squareplus(0) ≈ 1.0
+            optuna=OptunaRange(low=-3.0, high=4.0, log_scale=False, scalar=False),
+            description="Squareplus-space amplitude (gives 0.09-5)",
+        ),
+        "sp_width": ParamSpec(
+            initial=0.0,  # squareplus(0) ≈ 1.0
+            optuna=OptunaRange(low=-3.0, high=3.0, log_scale=False, scalar=False),
+            description="Squareplus-space channel width (gives 0.09-3.3)",
+        ),
+        "initial_weights_logits": ParamSpec(
+            initial=1.0,
+            optuna=OptunaRange(low=-10, high=10, log_scale=False, scalar=False),
+            description="Logit-space initial portfolio weights",
+            trainable=False,
+        ),
+    }
+
+    @classmethod
+    def get_param_schema(cls) -> dict:
+        """Get the full parameter schema for MeanReversionChannelPool."""
+        return cls.PARAM_SCHEMA
 
     def __init__(self):
         """
@@ -147,7 +214,7 @@ class MeanReversionChannelPool(MomentumPool):
         super().__init__()
 
     @partial(jit, static_argnums=(2))
-    def calculate_raw_weights_outputs(
+    def calculate_rule_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -188,8 +255,12 @@ class MeanReversionChannelPool(MomentumPool):
         The raw weight outputs are not the final weights, but rather the changes
         to be applied to the previous weights. These will be refined in subsequent steps.
         """
+
         use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-        if use_pre_exp_scaling and params.get("logit_pre_exp_scaling") is not None:
+        # pre_exp_scaling: prefer sp_ (squareplus), fall back to logit_ (sigmoid), then raw_ (2^x)
+        if use_pre_exp_scaling and params.get("sp_pre_exp_scaling") is not None:
+            pre_exp_scaling = squareplus(params.get("sp_pre_exp_scaling"))
+        elif use_pre_exp_scaling and params.get("logit_pre_exp_scaling") is not None:
             logit_pre_exp_scaling = params.get("logit_pre_exp_scaling")
             pre_exp_scaling = jnp.exp(logit_pre_exp_scaling) / (
                 1 + jnp.exp(logit_pre_exp_scaling)
@@ -203,7 +274,11 @@ class MeanReversionChannelPool(MomentumPool):
             run_fingerprint["chunk_period"],
             run_fingerprint["max_memory_days"],
         )
-        k = calc_k(params, memory_days)
+        # k: prefer sp_k (squareplus), fall back to log_k (2^x)
+        if params.get("sp_k") is not None:
+            k = squareplus(params.get("sp_k")) * memory_days
+        else:
+            k = calc_k(params, memory_days)
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
         gradients = calc_gradients(
             params,
@@ -214,10 +289,22 @@ class MeanReversionChannelPool(MomentumPool):
             cap_lamb=True,
         )
 
-        exponents = squareplus(params.get("raw_exponents"))
-        amplitude = (2 ** params.get("log_amplitude")) * memory_days
-        width = 2 ** params.get("raw_width")
-        raw_weight_outputs = _jax_mean_reversion_channel_weight_update(
+        # exponents: prefer sp_exponents, fall back to raw_exponents (both use squareplus)
+        if params.get("sp_exponents") is not None:
+            exponents = squareplus(params.get("sp_exponents"))
+        else:
+            exponents = squareplus(params.get("raw_exponents"))
+        # amplitude: prefer sp_amplitude (squareplus), fall back to log_amplitude (2^x)
+        if params.get("sp_amplitude") is not None:
+            amplitude = squareplus(params.get("sp_amplitude")) * memory_days
+        else:
+            amplitude = (2 ** params.get("log_amplitude")) * memory_days
+        # width: prefer sp_width (squareplus), fall back to raw_width (2^x)
+        if params.get("sp_width") is not None:
+            width = squareplus(params.get("sp_width"))
+        else:
+            width = 2 ** params.get("raw_width")
+        rule_outputs = _jax_mean_reversion_channel_weight_update(
             gradients,
             k,
             width,
@@ -226,7 +313,114 @@ class MeanReversionChannelPool(MomentumPool):
             pre_exp_scaling=pre_exp_scaling,
         )
 
-        return raw_weight_outputs
+        return rule_outputs
+
+    def calculate_rule_output_step(
+        self,
+        carry: Dict[str, jnp.ndarray],
+        price: jnp.ndarray,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+    ) -> tuple:
+        """
+        Calculate a single step of mean reversion channel weight update.
+
+        This mirrors the production implementation where we:
+        1. Update the gradient estimator state (ewma, running_a)
+        2. Compute the gradient from the updated state
+        3. Apply the mean reversion channel weight update formula
+
+        Parameters
+        ----------
+        carry : Dict[str, jnp.ndarray]
+            Current state with 'ewma' and 'running_a'
+        price : jnp.ndarray
+            Current price observation (shape: n_assets,)
+        params : Dict[str, Any]
+            Pool parameters (logit_lamb, sp_k, sp_amplitude, sp_width, sp_exponents, etc.)
+        run_fingerprint : Dict[str, Any]
+            Simulation settings (chunk_period, max_memory_days, use_pre_exp_scaling, etc.)
+
+        Returns
+        -------
+        tuple
+            (new_carry, rule_output)
+        """
+        # Compute lambda with max_memory_days capping
+        lamb = calc_lamb(params)
+        max_lamb = jax_memory_days_to_lamb(
+            run_fingerprint["max_memory_days"], run_fingerprint["chunk_period"]
+        )
+        lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+
+        # Get estimator constants (inherited from MomentumPool)
+        G_inf, saturated_b = self._get_estimator_constants(lamb)
+
+        # Use the estimator primitive for gradient calculation
+        carry_list = [carry["ewma"], carry["running_a"]]
+        new_carry_list, gradient = _jax_gradient_scan_function(
+            carry_list, price, G_inf, lamb, saturated_b
+        )
+
+        # Compute memory days and k for weight update
+        memory_days = lamb_to_memory_days_clipped(
+            lamb, run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"]
+        )
+
+        # k: prefer sp_k (squareplus), fall back to log_k (2^x)
+        if params.get("sp_k") is not None:
+            k = squareplus(params.get("sp_k")) * memory_days
+        else:
+            k = calc_k(params, memory_days)
+
+        # pre_exp_scaling: prefer sp_ (squareplus), fall back to logit_ (sigmoid), then raw_ (2^x)
+        use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
+        if use_pre_exp_scaling and params.get("sp_pre_exp_scaling") is not None:
+            pre_exp_scaling = squareplus(params.get("sp_pre_exp_scaling"))
+        elif use_pre_exp_scaling and params.get("logit_pre_exp_scaling") is not None:
+            logit_pre_exp_scaling = params.get("logit_pre_exp_scaling")
+            pre_exp_scaling = jnp.exp(logit_pre_exp_scaling) / (
+                1 + jnp.exp(logit_pre_exp_scaling)
+            )
+        elif use_pre_exp_scaling and params.get("raw_pre_exp_scaling") is not None:
+            pre_exp_scaling = 2 ** params.get("raw_pre_exp_scaling")
+        else:
+            pre_exp_scaling = 0.5
+
+        # exponents: prefer sp_exponents, fall back to raw_exponents (both use squareplus)
+        if params.get("sp_exponents") is not None:
+            exponents = squareplus(params.get("sp_exponents"))
+        else:
+            exponents = squareplus(params.get("raw_exponents"))
+
+        # amplitude: prefer sp_amplitude (squareplus), fall back to log_amplitude (2^x)
+        if params.get("sp_amplitude") is not None:
+            amplitude = squareplus(params.get("sp_amplitude")) * memory_days
+        else:
+            amplitude = (2 ** params.get("log_amplitude")) * memory_days
+
+        # width: prefer sp_width (squareplus), fall back to raw_width (2^x)
+        if params.get("sp_width") is not None:
+            width = squareplus(params.get("sp_width"))
+        else:
+            width = 2 ** params.get("raw_width")
+
+        # Apply mean reversion channel weight update
+        rule_output = _jax_mean_reversion_channel_weight_update(
+            gradient,
+            k,
+            width,
+            amplitude,
+            exponents,
+            pre_exp_scaling=pre_exp_scaling,
+        )
+
+        new_carry = {
+            "ewma": new_carry_list[0],
+            "running_a": new_carry_list[1],
+        }
+
+        return new_carry, rule_output
 
     def init_base_parameters(
         self,
@@ -237,10 +431,10 @@ class MeanReversionChannelPool(MomentumPool):
         noise: str = "gaussian",
     ) -> Dict[str, Any]:
         """
-        Initialize parameters for a power channel pool.
+        Initialize parameters for a mean reversion channel pool.
 
-        This method sets up the initial parameters for the power channel pool strategy, including
-        weights, memory length (lambda), the update agressiveness (k) and the exponents.
+        This method sets up the initial parameters for the mean reversion channel pool strategy, including
+        weights, memory length (lambda), the update aggressiveness (k) and the exponents.
 
 
         Parameters
@@ -274,7 +468,7 @@ class MeanReversionChannelPool(MomentumPool):
         any necessary transformations (e.g., logit transformations for lambda).
         """
 
-        np.random.seed(0)
+        # np.random.seed(0)
 
         # We need to initialise the weights for each parameter set
         # If a vector is provided in the inital values dict, we use
@@ -311,7 +505,8 @@ class MeanReversionChannelPool(MomentumPool):
         initial_weights_logits = process_initial_values(
             initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets, force_scalar=False
         )
-        log_k = np.log2(
+        # sp_k: use inverse_squareplus to get param that squareplus maps to initial_k_per_day
+        sp_k = inverse_squareplus_np(
             process_initial_values(
                 initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets, force_scalar=run_fingerprint["optimisation_settings"]["force_scalar"]
             )
@@ -348,47 +543,53 @@ class MeanReversionChannelPool(MomentumPool):
                 [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
             )
 
-        raw_pre_exp_scaling_np = np.log2(
+        # sp_pre_exp_scaling: use inverse_squareplus to get param that squareplus maps to initial_pre_exp_scaling
+        sp_pre_exp_scaling_np = inverse_squareplus_np(
             initial_values_dict["initial_pre_exp_scaling"]
         )
         if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            raw_pre_exp_scaling = np.array([[raw_pre_exp_scaling_np]] * n_parameter_sets)
+            sp_pre_exp_scaling = np.array([[sp_pre_exp_scaling_np]] * n_parameter_sets)
         else:
-            raw_pre_exp_scaling = np.array(
-                [[raw_pre_exp_scaling_np] * n_assets] * n_parameter_sets
+            sp_pre_exp_scaling = np.array(
+                [[sp_pre_exp_scaling_np] * n_assets] * n_parameter_sets
             )
 
+        # sp_amplitude: use inverse_squareplus to get param that squareplus maps to 2^initial_log_amplitude
+        # (maintaining same initial effective amplitude value)
         if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            log_amplitude = np.array([[initial_values_dict["initial_log_amplitude"]]] * n_parameter_sets)
+            sp_amplitude = np.array([[inverse_squareplus_np(2 ** initial_values_dict["initial_log_amplitude"])]] * n_parameter_sets)
         else:
-            log_amplitude = np.array(
-                [[initial_values_dict["initial_log_amplitude"]] * n_assets]
+            sp_amplitude = np.array(
+                [[inverse_squareplus_np(2 ** initial_values_dict["initial_log_amplitude"])] * n_assets]
                 * n_parameter_sets
             )
 
+        # sp_width: use inverse_squareplus to get param that squareplus maps to 2^initial_raw_width
+        # (maintaining same initial effective width value)
         if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            raw_width = np.array([[initial_values_dict["initial_raw_width"]]] * n_parameter_sets)
+            sp_width = np.array([[inverse_squareplus_np(2 ** initial_values_dict["initial_raw_width"])]] * n_parameter_sets)
         else:
-            raw_width = np.array(
-                [[initial_values_dict["initial_raw_width"]] * n_assets] * n_parameter_sets
+            sp_width = np.array(
+                [[inverse_squareplus_np(2 ** initial_values_dict["initial_raw_width"])] * n_assets] * n_parameter_sets
             )
 
+        # sp_exponents: the initial_raw_exponents value is already in the right form for squareplus
         if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            raw_exponents = np.array([[initial_values_dict["initial_raw_exponents"]]] * n_parameter_sets)
+            sp_exponents = np.array([[initial_values_dict["initial_raw_exponents"]]] * n_parameter_sets)
         else:
-            raw_exponents = np.array(
+            sp_exponents = np.array(
                 [[initial_values_dict["initial_raw_exponents"]] * n_assets]
                 * n_parameter_sets
             )
         params = {
-            "log_k": log_k,
+            "sp_k": sp_k,
             "logit_lamb": logit_lamb,
             "logit_delta_lamb": logit_delta_lamb,
             "initial_weights_logits": initial_weights_logits,
-            "log_amplitude": log_amplitude,
-            "raw_width": raw_width,
-            "raw_exponents": raw_exponents,
-            "raw_pre_exp_scaling": raw_pre_exp_scaling,
+            "sp_amplitude": sp_amplitude,
+            "sp_width": sp_width,
+            "sp_exponents": sp_exponents,
+            "sp_pre_exp_scaling": sp_pre_exp_scaling,
             "subsidary_params": [],
         }
 
@@ -413,33 +614,38 @@ class MeanReversionChannelPool(MomentumPool):
             if urp.name == "amplitude":
                 amplitude_values = urp.value
             elif urp.name == "exponent":
-                raw_exponents = [float(inverse_squareplus_np(val)) for val in urp.value]
-                if len(raw_exponents) != len(run_fingerprint["tokens"]):
-                    raw_exponents = [raw_exponents[0]] * len(run_fingerprint["tokens"])
-                result["raw_exponents"] = np.array(raw_exponents)
+                # Use inverse_squareplus to get sp_exponents param
+                sp_exponents = [float(inverse_squareplus_np(val)) for val in urp.value]
+                if len(sp_exponents) != len(run_fingerprint["tokens"]):
+                    sp_exponents = [sp_exponents[0]] * len(run_fingerprint["tokens"])
+                result["sp_exponents"] = np.array(sp_exponents)
             elif urp.name == "width":
-                raw_width = [float(get_raw_value(val)) for val in urp.value]
-                result["raw_width"] = np.array(raw_width)
-                if len(raw_width) != len(run_fingerprint["tokens"]):
-                    raw_width = [raw_width[0]] * len(run_fingerprint["tokens"])
-                result["raw_width"] = np.array(raw_width)
+                # Use inverse_squareplus to get sp_width param
+                sp_width = [float(inverse_squareplus_np(val)) for val in urp.value]
+                if len(sp_width) != len(run_fingerprint["tokens"]):
+                    sp_width = [sp_width[0]] * len(run_fingerprint["tokens"])
+                result["sp_width"] = np.array(sp_width)
             elif urp.name == "pre_exp_scaling":
-                raw_pre_exp_scaling = [float(get_raw_value(val)) for val in urp.value]
-                if len(raw_pre_exp_scaling) != len(run_fingerprint["tokens"]):
-                    raw_pre_exp_scaling = [raw_pre_exp_scaling[0]] * len(run_fingerprint["tokens"])
-                result["raw_pre_exp_scaling"] = np.array(raw_pre_exp_scaling)
+                # Use inverse_squareplus to get sp_pre_exp_scaling param
+                sp_pre_exp_scaling = [float(inverse_squareplus_np(val)) for val in urp.value]
+                if len(sp_pre_exp_scaling) != len(run_fingerprint["tokens"]):
+                    sp_pre_exp_scaling = [sp_pre_exp_scaling[0]] * len(run_fingerprint["tokens"])
+                result["sp_pre_exp_scaling"] = np.array(sp_pre_exp_scaling)
 
-        # Process amplitude last
+        # Process amplitude last - use inverse_squareplus to get sp_amplitude param
         if amplitude_values is not None:
             if memory_days is None:
                 raise ValueError("memory_days parameter is required for amplitude calculation")
-            log_amplitude = [
-                get_log_amplitude(float(amp), float(mem)) 
+            # amplitude_values are the actual amplitude values (before dividing by memory_days)
+            # sp_amplitude should be inverse_squareplus of (amplitude / memory_days) since
+            # effective amplitude = squareplus(sp_amplitude) * memory_days
+            sp_amplitude = [
+                float(inverse_squareplus_np(float(amp) / float(mem)))
                 for amp, mem in zip(amplitude_values, memory_days)
             ]
-            if len(log_amplitude) != len(run_fingerprint["tokens"]):
-                log_amplitude = [log_amplitude[0]] * len(run_fingerprint["tokens"])
-            result["log_amplitude"] = np.array(log_amplitude)
+            if len(sp_amplitude) != len(run_fingerprint["tokens"]):
+                sp_amplitude = [sp_amplitude[0]] * len(run_fingerprint["tokens"])
+            result["sp_amplitude"] = np.array(sp_amplitude)
         return result
 
 tree_util.register_pytree_node(

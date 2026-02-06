@@ -41,7 +41,7 @@ from importlib import resources as impresources
 from quantammsim import data
 from pathlib import Path
 from copy import deepcopy
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_weights
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weights,
 )

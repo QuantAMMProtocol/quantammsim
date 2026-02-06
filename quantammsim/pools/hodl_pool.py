@@ -130,6 +130,7 @@ class HODLPool(AbstractPool):
         arb_thresh_array: jnp.ndarray,
         arb_fees_array: jnp.ndarray,
         trade_array: jnp.ndarray,
+        lp_supply_array: jnp.ndarray = None,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         # hodl means no activity, so reserves are just the initial reserves

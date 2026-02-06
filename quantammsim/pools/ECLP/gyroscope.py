@@ -319,6 +319,7 @@ class GyroscopePool(AbstractPool):
         arb_thresh_array: jnp.ndarray,
         arb_fees_array: jnp.ndarray,
         trade_array: jnp.ndarray,
+        lp_supply_array: jnp.ndarray = None,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         # Gyroscope ECLP pools are only defined for 2 assets
@@ -563,8 +564,8 @@ class GyroscopePool(AbstractPool):
         self,
         prices: jnp.ndarray,
         run_fingerprint: Dict[str, Any],
-    ) -> Tuple[jnp.ndarray, Optional[jnp.ndarray], bool]:
-        """Reorders prices and reserves to ensure numeraire token is in second position for ECLP calculations.
+    ) -> Tuple[jnp.ndarray, bool]:
+        """Reorders prices to ensure numeraire token is in second position for ECLP calculations.
 
         In ECLP pools, the order of assets matters because parameters (alpha, beta) define the price
         range of the first asset in terms of the second (numeraire) asset.
@@ -572,36 +573,23 @@ class GyroscopePool(AbstractPool):
         Parameters
         ----------
         prices : jnp.ndarray
-            - Array of prices with shape (..., n_assets) where n_assets=2
-            - For multi-timestep inputs, leading dimensions can vary
-        reserves : jnp.ndarray, optional
-            - Array of reserves with shape (..., n_assets)
-            - Can be None if only reordering prices
+            Array of prices with shape (..., n_assets) where n_assets=2.
+            For multi-timestep inputs, leading dimensions can vary.
         run_fingerprint : Dict[str, Any]
-            - Must contain "token_list" (List[str]) and "numeraire" (str)
-            - token_list assumed to be in alphabetical order
+            Must contain "tokens" (List[str]) and "numeraire" (str).
+            tokens assumed to be in alphabetical order.
 
         Returns
         -------
         tuple
             - jnp.ndarray: Reordered prices (same shape as input)
-            - jnp.ndarray or None: Reordered reserves if provided
             - bool: Whether a swap was performed (True if numeraire was in first position)
-
-        Raises
-        ------
-        KeyError
-            If required keys missing from run_fingerprint
-        ValueError
-            If prices or reserves last dimension != 2
 
         Notes
         -----
-        The swap operation uses jnp.flip along the last axis and is transparent to core ECLP
-        calculations which assume numeraire is always in second position. The function assumes
-        tokens in token_list are in alphabetical order. The swap operation uses jnp.flip along
-        the last axis for efficiency. This reordering is transparent to the core ECLP calculations
-        which assume the numeraire is always in the second position.
+        The swap operation uses jnp.flip along the last axis for efficiency.
+        This reordering is transparent to the core ECLP calculations which
+        assume the numeraire is always in the second position.
         """
         # Get token tickers in current order
         tokens = sorted(run_fingerprint["tokens"])
