@@ -84,11 +84,9 @@ from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 
 TOKENS = ["ETH", "USDC"]
 
-# Date ranges with explicit holdout
 START_DATE = "2021-01-01 00:00:00"
-END_DATE = "2024-06-01 00:00:00"
-END_TEST_DATE = "2025-01-01 00:00:00"  # WFA ends here (no peeking!)
-FINAL_HOLDOUT_END = "2026-01-01 00:00:00"  # True OOS - only for final validation
+WFA_END_DATE = "2025-01-01 00:00:00"        # End of walk-forward analysis
+HOLDOUT_END_DATE = "2026-01-01 00:00:00"    # End of true holdout
 
 RULE = "mean_reversion_channel"
 INITIAL_POOL_VALUE = 1_000_000.0
@@ -194,8 +192,9 @@ def create_base_fingerprint() -> dict:
     fp["tokens"] = TOKENS
     fp["rule"] = RULE
     fp["startDateString"] = START_DATE
-    fp["endDateString"] = END_DATE
-    fp["endTestDateString"] = END_TEST_DATE
+    fp["endDateString"] = WFA_END_DATE  # Per-cycle adapter overwrites this; set to WFA end as safe default
+    fp["endTestDateString"] = WFA_END_DATE
+    fp["holdoutEndDateString"] = HOLDOUT_END_DATE
 
     fp["freq"] = "minute"
     fp["chunk_period"] = 1440
@@ -296,7 +295,7 @@ def run_tuning(
 
     STUDY_DIR.mkdir(parents=True, exist_ok=True)
 
-    training_days = 365 * 3.5
+    training_days = 365 * 4  # START_DATE to WFA_END_DATE = 4 years
     cycle_days = int(training_days / n_wfa_cycles)
 
     base_fp = create_base_fingerprint()
@@ -317,8 +316,8 @@ def run_tuning(
     print("=" * 70)
     print(f"Basket: {TOKENS}")
     print(f"Strategy: {RULE}")
-    print(f"Tuning period: {START_DATE} to {END_DATE}")
-    print(f"FINAL HOLDOUT (untouched): {END_DATE} to {FINAL_HOLDOUT_END}")
+    print(f"WFA period: {START_DATE} to {WFA_END_DATE}")
+    print(f"FINAL HOLDOUT (untouched): {WFA_END_DATE} to {HOLDOUT_END_DATE}")
     print(f"Objective: {objective}")
     print(f"Pruner: {pruner}")
     print(f"Conservative: {conservative}")
@@ -373,8 +372,8 @@ def save_results(result, stability: Dict[str, Any], pruner: str):
         "pruner": pruner,
         "basket": TOKENS,
         "rule": RULE,
-        "training_period": {"start": START_DATE, "end": END_DATE},
-        "final_holdout_end": FINAL_HOLDOUT_END,
+        "training_period": {"start": START_DATE, "end": WFA_END_DATE},
+        "holdout_end": HOLDOUT_END_DATE,
         "best_params": result.best_params,
         "best_value": result.best_value,
         "tuning_summary": {
@@ -383,7 +382,7 @@ def save_results(result, stability: Dict[str, Any], pruner: str):
         },
         "stability_analysis": stability,
         "next_steps": [
-            "1. Validate on final holdout (2024 H2 - 2025)",
+            "1. Validate on final holdout (2025 - 2026)",
             "2. Review stability - fix unstable params if any",
             "3. Run on additional asset pairs to check transferability",
             "4. Paper trade before production",
