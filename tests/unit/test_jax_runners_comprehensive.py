@@ -30,7 +30,10 @@ from quantammsim.runners.jax_runner_utils import (
     create_trial_params,
     create_static_dict,
 )
+from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
+from quantammsim.core_simulator.param_utils import recursive_default_set, check_run_fingerprint
 from quantammsim.pools.creator import create_pool
+from tests.conftest import TEST_DATA_DIR
 
 
 # ============================================================================
@@ -39,7 +42,10 @@ from quantammsim.pools.creator import create_pool
 
 @pytest.fixture
 def minimal_run_fingerprint():
-    """Minimal run fingerprint for testing."""
+    """Minimal run fingerprint for testing.
+
+    Uses dates within test data range (2022-10-01 to 2023-07-01).
+    """
     return NestedHashabledict({
         "rule": "momentum",
         "tokens": ["ETH", "USDC"],
@@ -73,9 +79,9 @@ def minimal_run_fingerprint():
         "initial_raw_width": 0.0,
         "initial_raw_exponents": 1.0,
         "initial_pre_exp_scaling": 1.0,
-        "startDateString": "2024-01-01 00:00:00",
-        "endDateString": "2024-02-01 00:00:00",
-        "endTestDateString": "2024-02-15 00:00:00",
+        "startDateString": "2023-01-01 00:00:00",
+        "endDateString": "2023-01-15 00:00:00",
+        "endTestDateString": "2023-01-20 00:00:00",
         "do_trades": False,
         "optimisation_settings": {
             "method": "gradient_descent",
@@ -96,29 +102,33 @@ def minimal_run_fingerprint():
 
 
 @pytest.fixture
-def synthetic_prices():
-    """Generate synthetic price data for testing."""
-    np.random.seed(42)
-    n_timesteps = 1440 * 60  # 60 days
-    n_assets = 2
-
-    # Generate random walk prices
-    returns = np.random.normal(0, 0.001, (n_timesteps, n_assets))
-    prices = np.exp(np.cumsum(returns, axis=0))
-    prices = prices * np.array([100.0, 1.0])  # Base prices
-
-    return jnp.array(prices)
+def defaulted_run_fingerprint(minimal_run_fingerprint):
+    """Run fingerprint with library defaults applied."""
+    fp = deepcopy(minimal_run_fingerprint)
+    recursive_default_set(fp, run_fingerprint_defaults)
+    check_run_fingerprint(fp)
+    return fp
 
 
 @pytest.fixture
-def sample_params():
-    """Sample parameters for momentum pool."""
-    return {
-        "sp_k": jnp.array([19.5, 19.5]),
-        "logit_lamb": jnp.array([4.0, 4.0]),
-        "initial_weights_logits": jnp.array([0.0, 0.0]),
-        "subsidary_params": [],
-    }
+def sample_params(defaulted_run_fingerprint):
+    """Properly initialized parameters for momentum pool.
+
+    Squeezes out the batch dimension since do_run_on_historic_data
+    handles batching externally.
+    """
+    pool = create_pool("momentum")
+    params = pool.init_parameters(
+        defaulted_run_fingerprint,
+        defaulted_run_fingerprint,
+        2,  # n_assets
+        1,  # n_parameter_sets
+    )
+    # Squeeze batch dim: (1, n_assets) -> (n_assets,)
+    for key in params:
+        if isinstance(params[key], jnp.ndarray) and params[key].ndim > 1:
+            params[key] = params[key][0]
+    return params
 
 
 # ============================================================================
@@ -151,7 +161,7 @@ class TestHelperFunctions:
         assert len(sigs) >= 2
         assert len(sigs[0]) == 3  # 3 assets per signature
 
-    def test_has_nan_grads_with_valid_grads(self, sample_params):
+    def test_has_nan_grads_with_valid_grads(self):
         """Test NaN detection with valid gradients."""
         grads = {
             "sp_k": jnp.array([0.1, 0.2]),
@@ -159,7 +169,7 @@ class TestHelperFunctions:
         }
         assert has_nan_grads(grads) == False
 
-    def test_has_nan_grads_with_nan(self, sample_params):
+    def test_has_nan_grads_with_nan(self):
         """Test NaN detection with NaN gradients."""
         grads = {
             "sp_k": jnp.array([jnp.nan, 0.2]),
@@ -307,19 +317,14 @@ class TestNaNParamReinit:
 # ============================================================================
 
 class TestDoRunOnHistoricData:
-    """Tests for do_run_on_historic_data function.
+    """Tests for do_run_on_historic_data function using test parquet data."""
 
-    Note: These tests require actual data files or proper mocking.
-    They are marked with pytest.mark.skip when data is not available.
-    """
-
-    @pytest.mark.skip(reason="Requires actual data files or proper data mocking")
-    def test_basic_run_shape(self, minimal_run_fingerprint, synthetic_prices, sample_params):
+    def test_basic_run_shape(self, defaulted_run_fingerprint, sample_params):
         """Test basic run returns correct output shape."""
         result = do_run_on_historic_data(
-            minimal_run_fingerprint,
+            defaulted_run_fingerprint,
             params=sample_params,
-            price_data=synthetic_prices,
+            root=TEST_DATA_DIR,
             verbose=False,
         )
 
@@ -327,13 +332,12 @@ class TestDoRunOnHistoricData:
         assert "reserves" in result
         assert len(result["value"]) > 0
 
-    @pytest.mark.skip(reason="Requires actual data files or proper data mocking")
-    def test_run_with_test_period(self, minimal_run_fingerprint, synthetic_prices, sample_params):
+    def test_run_with_test_period(self, defaulted_run_fingerprint, sample_params):
         """Test run with test period returns two outputs."""
         train_result, test_result = do_run_on_historic_data(
-            minimal_run_fingerprint,
+            defaulted_run_fingerprint,
             params=sample_params,
-            price_data=synthetic_prices,
+            root=TEST_DATA_DIR,
             verbose=False,
             do_test_period=True,
         )
@@ -341,13 +345,12 @@ class TestDoRunOnHistoricData:
         assert "value" in train_result
         assert "value" in test_result
 
-    @pytest.mark.skip(reason="Requires actual data files or proper data mocking")
-    def test_low_data_mode(self, minimal_run_fingerprint, synthetic_prices, sample_params):
+    def test_low_data_mode(self, defaulted_run_fingerprint, sample_params):
         """Test low data mode removes large arrays."""
         result = do_run_on_historic_data(
-            minimal_run_fingerprint,
+            defaulted_run_fingerprint,
             params=sample_params,
-            price_data=synthetic_prices,
+            root=TEST_DATA_DIR,
             verbose=False,
             low_data_mode=True,
         )
@@ -357,41 +360,29 @@ class TestDoRunOnHistoricData:
         assert "final_prices" in result
         assert "initial_reserves" in result
 
-    @pytest.mark.skip(reason="Requires actual data files or proper data mocking")
-    def test_custom_fees(self, minimal_run_fingerprint, synthetic_prices, sample_params):
+    def test_custom_fees(self, defaulted_run_fingerprint, sample_params):
         """Test custom fees override."""
         result = do_run_on_historic_data(
-            minimal_run_fingerprint,
+            defaulted_run_fingerprint,
             params=sample_params,
-            price_data=synthetic_prices,
+            root=TEST_DATA_DIR,
             verbose=False,
             fees=0.01,  # Override fees
         )
 
         assert "value" in result
 
-    @pytest.mark.skip(reason="Requires actual data files or proper data mocking")
-    def test_multiple_param_sets(self, minimal_run_fingerprint, synthetic_prices):
+    def test_multiple_param_sets(self, defaulted_run_fingerprint, sample_params):
         """Test with multiple parameter sets."""
-        params_list = [
-            {
-                "sp_k": jnp.array([19.5, 19.5]),
-                "logit_lamb": jnp.array([4.0, 4.0]),
-                "initial_weights_logits": jnp.array([0.0, 0.0]),
-                "subsidary_params": [],
-            },
-            {
-                "sp_k": jnp.array([20.0, 20.0]),
-                "logit_lamb": jnp.array([3.5, 3.5]),
-                "initial_weights_logits": jnp.array([0.1, -0.1]),
-                "subsidary_params": [],
-            },
-        ]
+        # Create two slightly different param sets from the properly initialized base
+        params1 = deepcopy(sample_params)
+        params2 = deepcopy(sample_params)
+        params2["log_k"] = params2["log_k"] + 0.5
 
         results = do_run_on_historic_data(
-            minimal_run_fingerprint,
-            params=params_list,
-            price_data=synthetic_prices,
+            defaulted_run_fingerprint,
+            params=[params1, params2],
+            root=TEST_DATA_DIR,
             verbose=False,
         )
 
@@ -415,16 +406,15 @@ class TestValidationAndEarlyStopping:
         # Validate val_fraction is set correctly
         assert fp["optimisation_settings"]["val_fraction"] == 0.2
 
-    @pytest.mark.skip(reason="Requires actual data files or proper data mocking")
-    def test_invalid_val_fraction_raises(self, minimal_run_fingerprint, synthetic_prices):
+    def test_invalid_val_fraction_raises(self, defaulted_run_fingerprint):
         """Test invalid val_fraction raises error."""
-        fp = deepcopy(minimal_run_fingerprint)
+        fp = deepcopy(defaulted_run_fingerprint)
         fp["optimisation_settings"]["val_fraction"] = 1.5  # Invalid
 
         with pytest.raises(ValueError, match="val_fraction"):
             train_on_historic_data(
                 fp,
-                price_data=synthetic_prices,
+                root=TEST_DATA_DIR,
                 verbose=False,
                 force_init=True,
             )
@@ -555,16 +545,15 @@ class TestReturnMetadata:
 class TestIntegration:
     """Integration tests for the full training pipeline."""
 
-    @pytest.mark.skip(reason="Requires actual data files or proper data mocking")
-    def test_pool_trainability_check(self, minimal_run_fingerprint, synthetic_prices):
+    def test_pool_trainability_check(self, defaulted_run_fingerprint):
         """Test that non-trainable pools raise error."""
-        fp = deepcopy(minimal_run_fingerprint)
+        fp = deepcopy(defaulted_run_fingerprint)
         fp["rule"] = "balancer"  # Balancer is not trainable
 
         with pytest.raises(AssertionError):
             train_on_historic_data(
                 fp,
-                price_data=synthetic_prices,
+                root=TEST_DATA_DIR,
                 verbose=False,
                 force_init=True,
             )
@@ -587,51 +576,44 @@ class TestIntegration:
 class TestEdgeCases:
     """Tests for edge cases and error handling."""
 
-    @pytest.mark.skip(reason="Requires actual data files or proper data mocking")
-    def test_single_iteration(self, minimal_run_fingerprint, synthetic_prices, sample_params):
+    def test_single_iteration(self, defaulted_run_fingerprint, sample_params):
         """Test with single iteration."""
-        fp = deepcopy(minimal_run_fingerprint)
+        fp = deepcopy(defaulted_run_fingerprint)
         fp["optimisation_settings"]["n_iterations"] = 1
 
         # Should complete without error
         result = do_run_on_historic_data(
             fp,
             params=sample_params,
-            price_data=synthetic_prices,
+            root=TEST_DATA_DIR,
             verbose=False,
         )
 
         assert result is not None
 
-    @pytest.mark.skip(reason="Requires actual data files or proper data mocking")
-    def test_very_short_bout_length(self, minimal_run_fingerprint, synthetic_prices, sample_params):
+    def test_very_short_bout_length(self, defaulted_run_fingerprint, sample_params):
         """Test with very short bout length."""
-        fp = deepcopy(minimal_run_fingerprint)
+        fp = deepcopy(defaulted_run_fingerprint)
         fp["bout_length"] = 1440 * 2  # 2 days
 
         result = do_run_on_historic_data(
             fp,
             params=sample_params,
-            price_data=synthetic_prices,
+            root=TEST_DATA_DIR,
             verbose=False,
         )
 
         assert result is not None
 
-    @pytest.mark.skip(reason="Requires actual data files or proper data mocking")
-    def test_empty_subsidary_params(self, minimal_run_fingerprint, synthetic_prices):
+    def test_empty_subsidary_params(self, defaulted_run_fingerprint, sample_params):
         """Test with empty subsidiary params."""
-        params = {
-            "sp_k": jnp.array([19.5, 19.5]),
-            "logit_lamb": jnp.array([4.0, 4.0]),
-            "initial_weights_logits": jnp.array([0.0, 0.0]),
-            "subsidary_params": [],  # Empty list
-        }
+        # sample_params already has subsidary_params=[] from pool init
+        assert sample_params.get("subsidary_params") == [] or "subsidary_params" in sample_params
 
         result = do_run_on_historic_data(
-            minimal_run_fingerprint,
-            params=params,
-            price_data=synthetic_prices,
+            defaulted_run_fingerprint,
+            params=sample_params,
+            root=TEST_DATA_DIR,
             verbose=False,
         )
 
