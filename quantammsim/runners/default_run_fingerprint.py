@@ -78,6 +78,7 @@ run_fingerprint_defaults = {
     "maximum_change": 3e-4,
     "chunk_period": 1440,
     "weight_interpolation_period": 1440,
+    "turnover_penalty": 0.0,
     "return_val": "daily_log_sharpe",
     "initial_pool_value": 1000000.0,
     "fees": 0.0,

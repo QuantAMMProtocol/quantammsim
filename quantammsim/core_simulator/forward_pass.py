@@ -636,13 +636,19 @@ def forward_pass(
         #         }
         #     )
         return return_dict
-    return _calculate_return_value(
+    base_metric = _calculate_return_value(
         return_val,
         reserves,
         local_prices,
         value_over_time,
         initial_reserves=reserves[0],
     )
+    turnover_penalty = static_dict.get("turnover_penalty", 0.0)
+    if turnover_penalty > 0.0:
+        implied_weights = (reserves * local_prices) / value_over_time[:, jnp.newaxis]
+        turnover = jnp.mean(jnp.sum(jnp.abs(jnp.diff(implied_weights, axis=0)), axis=-1))
+        return base_metric - turnover_penalty * turnover
+    return base_metric
 
 
 @partial(jit, static_argnums=(7, 8))

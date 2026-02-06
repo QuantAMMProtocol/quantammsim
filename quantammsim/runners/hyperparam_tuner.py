@@ -293,6 +293,10 @@ class HyperparamSpace:
         # Default is 3e-4, range from very constrained (1e-5) to effectively unconstrained (2.0)
         params["maximum_change"] = {"low": 1e-5, "high": 2.0, "log": True}
 
+        # turnover_penalty: penalize weight turnover in loss function
+        # Higher values discourage frequent rebalancing, improving out-of-sample robustness
+        params["turnover_penalty"] = {"low": 1e-4, "high": 1.0, "log": True}
+
         return cls(params=params)
 
     @classmethod
@@ -501,6 +505,8 @@ def create_objective(
             # Strategy constraints
             "maximum_change",
             "minimum_weight",
+            # Training loss modifiers
+            "turnover_penalty",
         ]
 
         for key, value in suggested.items():
