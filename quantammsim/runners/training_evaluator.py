@@ -132,6 +132,8 @@ class CycleEvaluation:
     oos_ulcer: Optional[float] = None
     is_returns: Optional[float] = None
     oos_returns: Optional[float] = None
+    is_daily_log_sharpe: Optional[float] = None
+    oos_daily_log_sharpe: Optional[float] = None
     # Trained strategy parameters for this cycle
     trained_params: Optional[Dict[str, Any]] = None
     # Cycle date ranges
@@ -1020,6 +1022,8 @@ class TrainingEvaluator:
                 oos_ulcer=oos_metrics.get("ulcer"),
                 is_returns=is_metrics.get("return"),
                 oos_returns=oos_metrics.get("return"),
+                is_daily_log_sharpe=is_metrics.get("daily_log_sharpe"),
+                oos_daily_log_sharpe=oos_metrics.get("daily_log_sharpe"),
                 # Trained strategy params and dates
                 trained_params=serializable_params,
                 train_start_date=cycle.train_start_date,

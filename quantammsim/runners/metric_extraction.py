@@ -38,6 +38,8 @@ CYCLE_METRICS: Dict[str, str] = {
     "is_returns": "is_returns",
     "oos_returns_over_hodl": "oos_returns_over_hodl",
     "is_returns_over_hodl": "is_returns_over_hodl",
+    "oos_daily_log_sharpe": "oos_daily_log_sharpe",
+    "is_daily_log_sharpe": "is_daily_log_sharpe",
 }
 
 # Aggregation functions
