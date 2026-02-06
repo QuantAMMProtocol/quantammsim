@@ -70,6 +70,13 @@ def calculate_period_metrics(results_dict, prices=None):
     )
     daily_sharpe = jnp.sqrt(365) * (daily_returns.mean() / daily_returns.std())
 
+    daily_log_sharpe = _calculate_return_value(
+        "daily_log_sharpe",
+        results_dict["reserves"],
+        price_data,
+        results_dict["value"],
+    )
+
     ulcer_index = _calculate_return_value(
         "ulcer",
         results_dict["reserves"],
@@ -94,6 +101,7 @@ def calculate_period_metrics(results_dict, prices=None):
     return {
         "sharpe": float(daily_sharpe),
         "jax_sharpe": float(sharpe),
+        "daily_log_sharpe": float(daily_log_sharpe),
         "return": float(returns),
         "returns_over_hodl": float(returns_over_hodl),
         "returns_over_uniform_hodl": float(returns_over_uniform_hodl),

@@ -369,8 +369,12 @@ def train_on_historic_data(
 
             offset = 0
         else:
+            parameter_init_method = run_fingerprint["optimisation_settings"].get(
+                "parameter_init_method", "gaussian"
+            )
             params = pool.init_parameters(
-                initial_params, run_fingerprint, n_tokens, n_parameter_sets
+                initial_params, run_fingerprint, n_tokens, n_parameter_sets,
+                noise=parameter_init_method,
             )
             offset = 0
     else:
@@ -487,8 +491,8 @@ def train_on_historic_data(
     # All metrics are normalized so higher = better (see forward_pass.py _calculate_* functions)
     # These must match keys returned by calculate_period_metrics in post_train_analysis.py
     valid_metrics = [
-        "sharpe", "return", "returns_over_hodl", "returns_over_uniform_hodl",
-        "calmar", "sterling", "ulcer",
+        "sharpe", "daily_log_sharpe", "return", "returns_over_hodl",
+        "returns_over_uniform_hodl", "calmar", "sterling", "ulcer",
     ]
     if (use_early_stopping or val_fraction > 0) and selection_metric not in valid_metrics:
         raise ValueError(

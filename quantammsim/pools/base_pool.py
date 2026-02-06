@@ -223,6 +223,26 @@ class AbstractPool(ABC):
                         params[key][1:] = params[key][1:] + noise_scale * np.random.randn(
                             *params[key][1:].shape
                         )
+            elif noise in ("sobol", "lhs", "centered_lhs"):
+                from scipy.stats import norm
+                from quantammsim.utils.sampling import generate_param_space_samples
+
+                n_new = n_parameter_sets - 1
+                samples, trainable_keys, dim_map = generate_param_space_samples(
+                    params, n_new, method=noise, seed=0,
+                )
+
+                # Transform [0,1] → normal offsets, clip to avoid inf at boundaries
+                samples = np.clip(samples, 1e-6, 1.0 - 1e-6)
+                normal_offsets = norm.ppf(samples) * noise_scale
+
+                # Distribute offsets back to each param array
+                for key in trainable_keys:
+                    start_col, n_dims, shape_per_sample = dim_map[key]
+                    shape = params[key][1:].shape
+                    offsets = normal_offsets[:, start_col:start_col + n_dims].reshape(shape)
+                    params[key][1:] = params[key][1:] + offsets
+
         for key in params.keys():
             if key != "subsidary_params":
                 params[key] = jnp.array(params[key])

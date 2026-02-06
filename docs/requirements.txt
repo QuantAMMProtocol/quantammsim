@@ -1,10 +1,2 @@
 sphinx
 sphinx-rtd-theme
-jax
-jaxlib
-numpy
-pandas
-flask
-flask-jwt-extended
-flask-cors
-

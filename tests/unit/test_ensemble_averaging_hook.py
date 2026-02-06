@@ -632,7 +632,7 @@ class TestEnsembleStructuredInitialization:
         base_run_fingerprint["n_ensemble_members"] = 4
         base_run_fingerprint["ensemble_init_method"] = "invalid_method"
 
-        with pytest.raises(ValueError, match="Unknown ensemble init method"):
+        with pytest.raises(ValueError, match="Unknown sampling method"):
             pool.init_base_parameters(
                 initial_values,
                 base_run_fingerprint,

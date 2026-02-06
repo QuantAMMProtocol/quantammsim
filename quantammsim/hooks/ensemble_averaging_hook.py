@@ -57,191 +57,7 @@ import jax.numpy as jnp
 from jax import vmap
 
 from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
-
-
-# =============================================================================
-# Ensemble initialization sampling methods
-# =============================================================================
-
-def _latin_hypercube_samples(n_samples: int, n_dims: int, seed: int = 0) -> np.ndarray:
-    """
-    Generate Latin Hypercube samples in [0, 1]^n_dims.
-
-    LHS ensures that each dimension is evenly partitioned and each partition
-    contains exactly one sample. This gives better coverage than random sampling.
-
-    Parameters
-    ----------
-    n_samples : int
-        Number of samples to generate
-    n_dims : int
-        Number of dimensions
-    seed : int
-        Random seed for reproducibility
-
-    Returns
-    -------
-    np.ndarray
-        Shape (n_samples, n_dims) with values in [0, 1]
-    """
-    rng = np.random.default_rng(seed)
-
-    # Create intervals
-    samples = np.zeros((n_samples, n_dims))
-    for dim in range(n_dims):
-        # Create evenly spaced intervals and shuffle
-        intervals = np.arange(n_samples)
-        rng.shuffle(intervals)
-        # Random point within each interval
-        samples[:, dim] = (intervals + rng.random(n_samples)) / n_samples
-
-    return samples
-
-
-def _centered_lhs_samples(n_samples: int, n_dims: int, seed: int = 0) -> np.ndarray:
-    """
-    Generate centered Latin Hypercube samples in [0, 1]^n_dims.
-
-    Like LHS, but samples are centered in each stratum rather than random.
-    This gives more uniform coverage.
-
-    Parameters
-    ----------
-    n_samples : int
-        Number of samples to generate
-    n_dims : int
-        Number of dimensions
-    seed : int
-        Random seed for reproducibility
-
-    Returns
-    -------
-    np.ndarray
-        Shape (n_samples, n_dims) with values in [0, 1]
-    """
-    rng = np.random.default_rng(seed)
-
-    samples = np.zeros((n_samples, n_dims))
-    for dim in range(n_dims):
-        intervals = np.arange(n_samples)
-        rng.shuffle(intervals)
-        # Center of each interval
-        samples[:, dim] = (intervals + 0.5) / n_samples
-
-    return samples
-
-
-def _sobol_samples(n_samples: int, n_dims: int, seed: int = 0) -> np.ndarray:
-    """
-    Generate Sobol quasi-random samples in [0, 1]^n_dims.
-
-    Sobol sequences are low-discrepancy sequences that fill space more
-    uniformly than random or LHS sampling.
-
-    Parameters
-    ----------
-    n_samples : int
-        Number of samples to generate
-    n_dims : int
-        Number of dimensions
-    seed : int
-        Random seed (used to scramble sequence)
-
-    Returns
-    -------
-    np.ndarray
-        Shape (n_samples, n_dims) with values in [0, 1]
-    """
-    try:
-        from scipy.stats import qmc
-        sampler = qmc.Sobol(d=n_dims, scramble=True, seed=seed)
-        # Skip the first sample (often at origin)
-        samples = sampler.random(n_samples + 1)[1:]
-        return samples
-    except ImportError:
-        # Fallback to LHS if scipy not available
-        print("Warning: scipy.stats.qmc not available, falling back to LHS")
-        return _latin_hypercube_samples(n_samples, n_dims, seed)
-
-
-def _grid_samples(n_samples: int, n_dims: int, seed: int = 0) -> np.ndarray:
-    """
-    Generate grid samples in [0, 1]^n_dims.
-
-    Creates a regular grid with approximately n_samples points. For small
-    ensembles, this gives deterministic, evenly-spaced coverage.
-
-    Parameters
-    ----------
-    n_samples : int
-        Approximate number of samples (actual may differ due to grid constraints)
-    n_dims : int
-        Number of dimensions
-    seed : int
-        Not used, included for API consistency
-
-    Returns
-    -------
-    np.ndarray
-        Shape (actual_samples, n_dims) with values in [0, 1]
-    """
-    # Calculate points per dimension to get approximately n_samples
-    points_per_dim = max(2, int(np.ceil(n_samples ** (1.0 / n_dims))))
-
-    # Create grid
-    coords = [np.linspace(0.1, 0.9, points_per_dim) for _ in range(n_dims)]
-    grid = np.meshgrid(*coords, indexing='ij')
-    samples = np.stack([g.flatten() for g in grid], axis=-1)
-
-    # If we have more samples than needed, subsample
-    if len(samples) > n_samples:
-        rng = np.random.default_rng(seed)
-        indices = rng.choice(len(samples), n_samples, replace=False)
-        samples = samples[indices]
-
-    return samples
-
-
-def generate_ensemble_samples(
-    n_samples: int,
-    n_dims: int,
-    method: str = "lhs",
-    seed: int = 0,
-) -> np.ndarray:
-    """
-    Generate samples for ensemble initialization.
-
-    Parameters
-    ----------
-    n_samples : int
-        Number of ensemble members
-    n_dims : int
-        Number of parameter dimensions
-    method : str
-        Sampling method: "gaussian", "lhs", "centered_lhs", "sobol", "grid"
-    seed : int
-        Random seed
-
-    Returns
-    -------
-    np.ndarray
-        Shape (n_samples, n_dims) with values in [0, 1] for structured methods,
-        or standard normal for "gaussian"
-    """
-    if method == "gaussian":
-        rng = np.random.default_rng(seed)
-        return rng.standard_normal((n_samples, n_dims))
-    elif method == "lhs":
-        return _latin_hypercube_samples(n_samples, n_dims, seed)
-    elif method == "centered_lhs":
-        return _centered_lhs_samples(n_samples, n_dims, seed)
-    elif method == "sobol":
-        return _sobol_samples(n_samples, n_dims, seed)
-    elif method == "grid":
-        return _grid_samples(n_samples, n_dims, seed)
-    else:
-        raise ValueError(f"Unknown ensemble init method: {method}. "
-                        f"Choose from: gaussian, lhs, centered_lhs, sobol, grid")
+from quantammsim.utils.sampling import generate_ensemble_samples, generate_param_space_samples
 
 
 class EnsembleAveragingHook:
@@ -346,7 +162,7 @@ class EnsembleAveragingHook:
                 noise=noise,
             )
         else:
-            # Structured sampling approach
+            # Structured sampling approach using shared utility
             # 1. Get base params without noise (single set)
             base_params = super().init_base_parameters(
                 initial_values_dict,
@@ -366,72 +182,46 @@ class EnsembleAveragingHook:
                     has_schema = False
                     param_schema = {}
 
-            # 3. Identify ensembled parameters and count dimensions
-            ensembled_keys = []
-            total_dims = 0
-            param_dim_info = {}  # key -> (start_idx, n_dims, shape_after_first, optuna_range)
-
-            for k, v in base_params.items():
-                if k in ("subsidary_params", "initial_weights_logits"):
-                    continue
-                if hasattr(v, "shape") and len(v.shape) > 0:
-                    # v has shape (1, ...) from n_parameter_sets=1
-                    shape_after_first = v.shape[1:]
-                    n_dims = int(np.prod(shape_after_first)) if shape_after_first else 1
-
-                    # Try to get optuna range from schema
-                    optuna_range = None
-                    if has_schema:
-                        # Map param key to schema key (e.g., "log_k" -> "k_per_day")
-                        schema_key = self._param_key_to_schema_key(k)
-                        if schema_key in param_schema and param_schema[schema_key].optuna:
-                            optuna_range = param_schema[schema_key].optuna
-
-                    param_dim_info[k] = (total_dims, n_dims, shape_after_first, optuna_range)
-                    total_dims += n_dims
-                    ensembled_keys.append(k)
-
-            # 4. Generate structured samples for ALL parameter sets and ensemble members
-            # Shape: (n_parameter_sets * n_ensemble_members, total_dims) in [0, 1]
+            # 3. Generate structured samples via shared utility
             total_samples = n_parameter_sets * n_ensemble_members
-            samples = generate_ensemble_samples(
-                total_samples, total_dims, ensemble_init_method, ensemble_init_seed
+            samples, ensembled_keys, dim_map = generate_param_space_samples(
+                base_params, total_samples, ensemble_init_method, ensemble_init_seed,
             )
 
-            # 5. Build params dict with ensemble dimension
+            # 4. Build params dict with ensemble dimension
             params = {}
             for k, v in base_params.items():
                 if k == "subsidary_params":
                     params[k] = v
                 elif k == "initial_weights_logits":
                     # Shared across members, just tile for n_parameter_sets
-                    # v has shape (1, n_assets), tile to (n_parameter_sets, n_assets)
                     params[k] = jnp.tile(v, (n_parameter_sets, 1))
-                elif k in param_dim_info:
-                    start_idx, n_dims, shape_after, optuna_range = param_dim_info[k]
+                elif k in dim_map:
+                    start_col, n_dims, shape_after = dim_map[k]
                     base_val = v[0]  # Remove the (1,) prefix, get base value
+                    param_samples = samples[:, start_col:start_col + n_dims]
 
-                    # Get samples for this parameter
-                    param_samples = samples[:, start_idx:start_idx + n_dims]
+                    # Try schema-based range sampling if available
+                    optuna_range = None
+                    if has_schema:
+                        schema_key = self._param_key_to_schema_key(k)
+                        if schema_key in param_schema and param_schema[schema_key].optuna:
+                            optuna_range = param_schema[schema_key].optuna
 
                     if optuna_range is not None:
-                        # Use schema-based range sampling (samples directly map to [low, high])
+                        # Schema-based: samples map directly to [low, high]
                         all_vals = sample_in_range(param_samples, optuna_range)
                     else:
                         # Fallback: multiplicative offset around base value
-                        # Map [0, 1] to multipliers [1-scale, 1+scale]
                         multipliers = (1 - ensemble_init_scale) + param_samples * 2 * ensemble_init_scale
                         all_vals = base_val * multipliers
 
-                    # Reshape to match parameter shape
                     if shape_after:
                         all_vals = all_vals.reshape((total_samples,) + shape_after)
 
-                    # Reshape to (n_parameter_sets, n_ensemble_members, ...)
                     final_shape = (n_parameter_sets, n_ensemble_members) + shape_after
                     params[k] = jnp.array(all_vals.reshape(final_shape))
                 else:
-                    # Scalar or other - just keep as is
                     params[k] = v
 
             return params
