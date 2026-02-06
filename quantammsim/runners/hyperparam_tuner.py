@@ -226,7 +226,7 @@ class HyperparamSpace:
             bout_offset_low = min(7, max_bout_days)  # Use 7 or max if max is smaller
             params = {
                 "base_lr": lr_range,
-                "batch_size": {"low": 1, "high": 64, "log": True, "type": "int"},
+                "batch_size": {"low": 2, "high": 64, "log": True, "type": "int"},
                 "n_iterations": {"low": 50, "high": 5000, "log": True, "type": "int"},
                 "bout_offset_days": {"low": bout_offset_low, "high": max_bout_days, "log": True, "type": "int"},
                 "clip_norm": {"low": 0.5, "high": 50.0, "log": True},

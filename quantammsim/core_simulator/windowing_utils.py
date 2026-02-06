@@ -85,6 +85,15 @@ def get_indices(
             start_index
             + random.choice(subkey, range_, shape=sample_shape, replace=False)
         )
+    elif sample_method == "stratified":
+        # Use float boundaries so the last segment extends to the full range
+        seg_boundaries = jnp.linspace(0, range_, batch_size + 1).astype(jnp.int64)
+        seg_starts = seg_boundaries[:-1]
+        seg_sizes = seg_boundaries[1:] - seg_starts
+        offsets = random.randint(subkey, shape=sample_shape, minval=0, maxval=jnp.maximum(seg_sizes, 1))
+        start_indexes = start_indexes.at[:, 0].set(
+            start_index + seg_starts + offsets
+        )
     else:
         raise NotImplementedError
     if training_data_kind == "mc":
