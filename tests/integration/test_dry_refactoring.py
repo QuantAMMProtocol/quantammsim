@@ -452,6 +452,7 @@ class TestOuterHyperparamTuner:
                 n_wfa_cycles=1,
                 objective_metric="mean_oos_sharpe",
                 verbose=False,
+                enable_pruning=False,
             )
 
             # Run one trial

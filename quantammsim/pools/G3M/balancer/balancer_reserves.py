@@ -67,7 +67,7 @@ _jax_calc_balancer_reserve_ratios = jit(
 )
 
 
-@partial(jit, static_argnums=(6,))
+@partial(jit, static_argnums=(5,))
 def _jax_calc_balancer_reserves_with_fees_scan_function_using_precalcs(
     carry_list,
     prices_and_precalcs,
@@ -286,7 +286,7 @@ def _jax_calc_balancer_reserves_with_fees_using_precalcs(
     return reserves
 
 
-@partial(jit, static_argnums=(6,7,8))
+@partial(jit, static_argnums=(6, 7, 8))
 def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using_precalcs(
     carry_list,
     input_list,

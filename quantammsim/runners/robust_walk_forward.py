@@ -213,27 +213,25 @@ def generate_walk_forward_cycles(
     start_date: str,
     end_date: str,
     n_cycles: int,
-    keep_fixed_start: bool = False,  # Rolling window by default (consistent bout_offset meaning)
-    test_fraction: float = 0.25,
+    keep_fixed_start: bool = False,
 ) -> List[WalkForwardCycle]:
     """
-    Generate walk-forward cycle specifications.
+    Generate walk-forward cycle specifications with equal-length test periods.
+
+    Divides [start_date, end_date] into (n_cycles + 1) equal segments.
+    Each cycle trains on segment i and tests on segment i+1.
 
     Parameters
     ----------
     start_date : str
         Start date (format: "YYYY-MM-DD HH:MM:SS")
     end_date : str
-        End date
+        End date of walk-forward analysis (end of final test period)
     n_cycles : int
         Number of training/test cycles
     keep_fixed_start : bool
-        If True, training starts from beginning (expanding window).
+        If True, training always starts from start_date (expanding window).
         If False (default), training window rolls forward (rolling window).
-        Rolling window is preferred when tuning bout_offset, as it keeps
-        training duration consistent across cycles.
-    test_fraction : float
-        Fraction of each cycle's period to use for testing (Pardo: 25-35%)
 
     Returns
     -------
@@ -242,12 +240,10 @@ def generate_walk_forward_cycles(
     start_ts = datetime_to_timestamp(start_date)
     end_ts = datetime_to_timestamp(end_date)
 
-    # Create n_cycles + 1 boundary points
-    times = np.linspace(start_ts, end_ts, n_cycles + 1)
-    cycle_length = times[1] - times[0]
-
-    # Add one more boundary for final test period
-    times = np.append(times, times[-1] + cycle_length * test_fraction)
+    # Create n_cycles + 1 segment boundaries
+    # n_cycles + 1 segments means n_cycles + 2 boundary points
+    n_segments = n_cycles + 1
+    times = np.linspace(start_ts, end_ts, n_segments + 1)
 
     # Round to midnight
     times = times - (times % (24 * 60 * 60))
@@ -261,7 +257,7 @@ def generate_walk_forward_cycles(
 
         train_end = times[i + 1]
         test_start = times[i + 1]
-        test_end = times[i + 2] if i + 2 < len(times) else times[-1]
+        test_end = times[i + 2]
 
         cycles.append(WalkForwardCycle(
             cycle_number=i,
