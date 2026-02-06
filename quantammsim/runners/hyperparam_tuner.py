@@ -226,7 +226,7 @@ class HyperparamSpace:
             bout_offset_low = min(7, max_bout_days)  # Use 7 or max if max is smaller
             params = {
                 "base_lr": lr_range,
-                "batch_size": {"low": 2, "high": 64, "log": True, "type": "int"},
+                "batch_size": {"low": 8, "high": 64, "log": True, "type": "int"},
                 "n_iterations": {"low": 50, "high": 5000, "log": True, "type": "int"},
                 "bout_offset_days": {"low": bout_offset_low, "high": max_bout_days, "log": True, "type": "int"},
                 "clip_norm": {"low": 0.5, "high": 50.0, "log": True},
@@ -300,6 +300,14 @@ class HyperparamSpace:
         # price_noise_sigma: multiplicative noise on prices during training
         # Acts as data augmentation to improve out-of-sample robustness
         params["price_noise_sigma"] = {"low": 0.0001, "high": 0.01, "log": True}
+
+        # sample_method: how training windows are sampled
+        # "uniform" = random, "stratified" = one sample per time segment (better coverage)
+        params["sample_method"] = {"choices": ["uniform", "stratified"]}
+
+        # parameter_init_method: how parameter sets 1+ are initialized
+        # "gaussian" = random noise, "sobol"/"lhs" = low-discrepancy (better coverage)
+        params["parameter_init_method"] = {"choices": ["gaussian", "sobol", "lhs"]}
 
         return cls(params=params)
 
@@ -497,6 +505,7 @@ def create_objective(
             "base_lr", "batch_size", "n_iterations",
             "clip_norm", "n_cycles", "lr_schedule_type", "lr_decay_ratio",
             "early_stopping_patience", "noise_scale",
+            "sample_method", "parameter_init_method",
         ]
 
         # Parameters that go directly in run_fingerprint (not optimisation_settings)
@@ -633,6 +642,7 @@ def create_objective(
             # Metrics we MINIMIZE (lower is better): is_oos_gap
             maximize_metrics = [
                 "mean_oos_sharpe", "worst_oos_sharpe",
+                "mean_oos_daily_log_sharpe", "worst_oos_daily_log_sharpe",
                 "mean_wfe", "worst_wfe",
                 "adjusted_mean_oos_sharpe",
                 "mean_oos_calmar", "worst_oos_calmar",
@@ -668,6 +678,8 @@ def create_objective(
                 "oos_ulcer": c.oos_ulcer,
                 "is_returns_over_hodl": c.is_returns_over_hodl,
                 "oos_returns_over_hodl": c.oos_returns_over_hodl,
+                "is_daily_log_sharpe": c.is_daily_log_sharpe,
+                "oos_daily_log_sharpe": c.oos_daily_log_sharpe,
                 "wfe": c.walk_forward_efficiency,
                 "is_oos_gap": c.is_oos_gap,
                 # Trained strategy parameters

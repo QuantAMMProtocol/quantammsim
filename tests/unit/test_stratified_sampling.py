@@ -97,11 +97,11 @@ def test_uniform_unchanged():
 
 
 def test_batch_size_floor_in_tuner():
-    """Tuner search space has batch_size low=2."""
+    """Tuner search space has batch_size low=8."""
     from quantammsim.runners.hyperparam_tuner import HyperparamSpace
 
     space = HyperparamSpace.create()
     assert "batch_size" in space.params
-    assert space.params["batch_size"]["low"] == 2, (
-        f"Expected batch_size low=2, got {space.params['batch_size']['low']}"
+    assert space.params["batch_size"]["low"] == 8, (
+        f"Expected batch_size low=8, got {space.params['batch_size']['low']}"
     )
