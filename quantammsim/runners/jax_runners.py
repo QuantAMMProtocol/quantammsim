@@ -369,8 +369,12 @@ def train_on_historic_data(
 
             offset = 0
         else:
+            parameter_init_method = run_fingerprint["optimisation_settings"].get(
+                "parameter_init_method", "gaussian"
+            )
             params = pool.init_parameters(
-                initial_params, run_fingerprint, n_tokens, n_parameter_sets
+                initial_params, run_fingerprint, n_tokens, n_parameter_sets,
+                noise=parameter_init_method,
             )
             offset = 0
     else:

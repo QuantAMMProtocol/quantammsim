@@ -22,6 +22,7 @@ run_fingerprint_defaults = {
         # Larger values = more diverse initialization = better exploration but more variance.
         # Only effective when n_parameter_sets > 1.
         "noise_scale": 0.1,
+        "parameter_init_method": "gaussian",  # "gaussian", "sobol", "lhs", "centered_lhs"
         "training_data_kind": "historic",
         "max_mc_version": 9,
         "include_flipped_training_data": False,
