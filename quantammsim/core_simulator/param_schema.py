@@ -1,12 +1,31 @@
-"""
-Parameter schema utilities for pool-owned parameter definitions.
+"""Parameter schema utilities for pool-owned parameter definitions.
 
-This module provides the infrastructure for pools to define their own parameters,
-including default values and Optuna search ranges. This eliminates the need for
-scattered parameter definitions across run_fingerprint_defaults and separate
-optuna_settings.
+This module provides the infrastructure for pools to declare their own parameters
+— including default values, Optuna search ranges, and metadata — in a single
+location (the pool class's ``PARAM_SCHEMA`` dict). This eliminates the need for
+scattered parameter definitions across ``run_fingerprint_defaults``, separate
+``optuna_settings`` dicts, and ad-hoc initialization code.
 
-Example usage in a pool class:
+The schema system supports a three-level priority for parameter resolution:
+
+1. ``initial_values_dict`` (user-provided at runtime — highest priority)
+2. ``run_fingerprint`` (experiment configuration)
+3. ``PARAM_SCHEMA`` default (pool class definition — lowest priority)
+
+Key classes:
+
+- :class:`OptunaRange`: Defines search bounds and scale for hyperparameter tuning.
+- :class:`ParamSpec`: Full specification for a single parameter (default, tuning range,
+  transform, trainability).
+- :data:`COMMON_PARAM_SCHEMA`: Shared parameter definitions used across multiple pool types.
+
+Key functions:
+
+- :func:`get_param_value`: Resolves a parameter value through the priority chain.
+- :func:`get_optuna_range`: Retrieves tuning ranges with optional run_fingerprint overrides.
+- :func:`sample_in_range`: Maps [0, 1] samples to parameter ranges (for ensemble init).
+
+Example usage in a pool class::
 
     class MomentumPool(TFMMBasePool):
         PARAM_SCHEMA = {
@@ -74,7 +93,15 @@ class ParamSpec:
     trainable: bool = True
 
 
-# Common parameter schemas shared across pools
+#: Parameter definitions shared across multiple pool types.
+#:
+#: Pool classes can merge this into their own ``PARAM_SCHEMA`` to inherit
+#: common defaults without duplication. Currently contains:
+#:
+#: - ``initial_weights_logits``: Logit-space initial portfolio weights.
+#:   These are passed through softmax to produce the initial weight vector.
+#:   Typically not trained (optimized via Optuna instead), since gradient
+#:   descent on initial weights is poorly conditioned.
 COMMON_PARAM_SCHEMA = {
     "initial_weights_logits": ParamSpec(
         initial=1.0,
