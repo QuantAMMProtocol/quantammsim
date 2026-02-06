@@ -15,6 +15,7 @@ else:
 
 
 import jax.numpy as jnp
+import jax.random
 from jax import jit, vmap, devices
 from jax.lax import stop_gradient, dynamic_slice, associative_scan
 
@@ -25,6 +26,39 @@ from functools import partial
 
 np.seterr(all="raise")
 np.seterr(under="print")
+
+
+def _apply_price_noise(prices, sigma, seed_int):
+    """Apply multiplicative log-normal noise to prices.
+
+    Uses exp(sigma * N(0,1)) multiplicative noise, which:
+    - Guarantees positive prices for any sigma
+    - Is symmetric in log-space (matches financial price dynamics)
+    - Has mean exp(sigma^2/2) ≈ 1 for small sigma
+
+    The key is derived deterministically from seed_int (typically
+    start_index[0]) so noise is reproducible per training window
+    but varies across windows.
+
+    Parameters
+    ----------
+    prices : jnp.ndarray
+        Price array of shape (T, n_assets)
+    sigma : float
+        Log-space standard deviation (0 = no noise)
+    seed_int : int or jnp.ndarray
+        Seed for JAX PRNG key
+
+    Returns
+    -------
+    jnp.ndarray
+        Noised prices, always positive (same shape as input)
+    """
+    if sigma == 0.0:
+        return prices
+    key = jax.random.PRNGKey(seed_int)
+    epsilon = jax.random.normal(key, prices.shape)
+    return prices * jnp.exp(sigma * epsilon)
 
 
 def _daily_log_sharpe(values: jnp.ndarray) -> jnp.ndarray:
@@ -602,6 +636,11 @@ def forward_pass(
             "reserves": reserves,
         }
     local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
+    price_noise_sigma = static_dict.get("price_noise_sigma", 0.0)
+    if price_noise_sigma > 0.0:
+        local_prices = _apply_price_noise(
+            local_prices, price_noise_sigma, start_index[0].astype(jnp.int32)
+        )
     value_over_time = jnp.sum(jnp.multiply(reserves, local_prices), axis=-1)
     if return_val == "reserves_and_values":
         return_dict = {

@@ -79,6 +79,7 @@ run_fingerprint_defaults = {
     "chunk_period": 1440,
     "weight_interpolation_period": 1440,
     "turnover_penalty": 0.0,
+    "price_noise_sigma": 0.0,  # Log-normal price noise during training (0 = disabled)
     "return_val": "daily_log_sharpe",
     "initial_pool_value": 1000000.0,
     "fees": 0.0,

@@ -297,6 +297,10 @@ class HyperparamSpace:
         # Higher values discourage frequent rebalancing, improving out-of-sample robustness
         params["turnover_penalty"] = {"low": 1e-4, "high": 1.0, "log": True}
 
+        # price_noise_sigma: multiplicative noise on prices during training
+        # Acts as data augmentation to improve out-of-sample robustness
+        params["price_noise_sigma"] = {"low": 0.0001, "high": 0.01, "log": True}
+
         return cls(params=params)
 
     @classmethod
@@ -507,6 +511,8 @@ def create_objective(
             "minimum_weight",
             # Training loss modifiers
             "turnover_penalty",
+            # Data augmentation
+            "price_noise_sigma",
         ]
 
         for key, value in suggested.items():
