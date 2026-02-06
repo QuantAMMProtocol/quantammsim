@@ -79,6 +79,8 @@ from quantammsim.runners.metric_extraction import extract_cycle_metric
 OUTER_TO_INNER_METRIC = {
     "mean_oos_sharpe": "sharpe",
     "worst_oos_sharpe": "sharpe",
+    "mean_oos_daily_log_sharpe": "daily_log_sharpe",
+    "worst_oos_daily_log_sharpe": "daily_log_sharpe",
     "mean_oos_calmar": "calmar",
     "worst_oos_calmar": "calmar",
     "mean_oos_sterling": "sterling",

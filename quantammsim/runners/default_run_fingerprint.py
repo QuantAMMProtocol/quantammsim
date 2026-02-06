@@ -37,7 +37,7 @@ run_fingerprint_defaults = {
         # Early stopping settings
         "early_stopping": True,  # Stop training when validation metric stops improving
         "early_stopping_patience": 200,  # Iterations without validation improvement before stopping
-        "early_stopping_metric": "sharpe",  # Metric to monitor: "sharpe", "returns", etc.
+        "early_stopping_metric": "daily_log_sharpe",  # Metric to monitor: "sharpe", "daily_log_sharpe", "returns", etc.
         # Validation holdout - fraction of training data held out for early stopping
         # If 0.0, early stopping uses test data (not recommended - data leakage)
         # If > 0.0, carves out this fraction from end of training for validation
@@ -78,7 +78,7 @@ run_fingerprint_defaults = {
     "maximum_change": 3e-4,
     "chunk_period": 1440,
     "weight_interpolation_period": 1440,
-    "return_val": "sharpe",
+    "return_val": "daily_log_sharpe",
     "initial_pool_value": 1000000.0,
     "fees": 0.0,
     "arb_fees": 0.0,
