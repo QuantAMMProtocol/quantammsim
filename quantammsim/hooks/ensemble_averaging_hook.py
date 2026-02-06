@@ -356,10 +356,20 @@ class EnsembleAveragingHook:
                 noise="none",  # No noise for base
             )
 
-            # 2. Identify ensembled parameters and count dimensions
+            # 2. Check if pool has parameter schema for range-based sampling
+            has_schema = hasattr(self, 'get_param_schema') and callable(self.get_param_schema)
+            if has_schema:
+                try:
+                    from quantammsim.core_simulator.param_schema import sample_in_range
+                    param_schema = self.get_param_schema()
+                except ImportError:
+                    has_schema = False
+                    param_schema = {}
+
+            # 3. Identify ensembled parameters and count dimensions
             ensembled_keys = []
             total_dims = 0
-            param_dim_info = {}  # key -> (start_idx, n_dims, shape_after_first)
+            param_dim_info = {}  # key -> (start_idx, n_dims, shape_after_first, optuna_range)
 
             for k, v in base_params.items():
                 if k in ("subsidary_params", "initial_weights_logits"):
@@ -368,21 +378,25 @@ class EnsembleAveragingHook:
                     # v has shape (1, ...) from n_parameter_sets=1
                     shape_after_first = v.shape[1:]
                     n_dims = int(np.prod(shape_after_first)) if shape_after_first else 1
-                    param_dim_info[k] = (total_dims, n_dims, shape_after_first)
+
+                    # Try to get optuna range from schema
+                    optuna_range = None
+                    if has_schema:
+                        # Map param key to schema key (e.g., "log_k" -> "k_per_day")
+                        schema_key = self._param_key_to_schema_key(k)
+                        if schema_key in param_schema and param_schema[schema_key].optuna:
+                            optuna_range = param_schema[schema_key].optuna
+
+                    param_dim_info[k] = (total_dims, n_dims, shape_after_first, optuna_range)
                     total_dims += n_dims
                     ensembled_keys.append(k)
 
-            # 3. Generate structured samples for ALL parameter sets and ensemble members
-            # We need different ensembles for each parameter set
+            # 4. Generate structured samples for ALL parameter sets and ensemble members
             # Shape: (n_parameter_sets * n_ensemble_members, total_dims) in [0, 1]
             total_samples = n_parameter_sets * n_ensemble_members
             samples = generate_ensemble_samples(
                 total_samples, total_dims, ensemble_init_method, ensemble_init_seed
             )
-
-            # 4. Transform samples from [0, 1] to parameter offsets
-            # Map [0, 1] -> [-scale, +scale] centered around base value
-            offsets = (samples - 0.5) * 2 * ensemble_init_scale
 
             # 5. Build params dict with ensemble dimension
             params = {}
@@ -394,24 +408,28 @@ class EnsembleAveragingHook:
                     # v has shape (1, n_assets), tile to (n_parameter_sets, n_assets)
                     params[k] = jnp.tile(v, (n_parameter_sets, 1))
                 elif k in param_dim_info:
-                    start_idx, n_dims, shape_after = param_dim_info[k]
+                    start_idx, n_dims, shape_after, optuna_range = param_dim_info[k]
                     base_val = v[0]  # Remove the (1,) prefix, get base value
 
-                    # Get offsets for this parameter
-                    param_offsets = offsets[:, start_idx:start_idx + n_dims]
-                    # Reshape to match parameter shape: (total_samples, ...) -> (total_samples, *shape_after)
-                    if shape_after:
-                        param_offsets = param_offsets.reshape(
-                            (total_samples,) + shape_after
-                        )
+                    # Get samples for this parameter
+                    param_samples = samples[:, start_idx:start_idx + n_dims]
 
-                    # Apply offsets to base value
-                    # For each sample: base_val * (1 + offset)
-                    all_vals = base_val * (1 + param_offsets)
+                    if optuna_range is not None:
+                        # Use schema-based range sampling (samples directly map to [low, high])
+                        all_vals = sample_in_range(param_samples, optuna_range)
+                    else:
+                        # Fallback: multiplicative offset around base value
+                        # Map [0, 1] to multipliers [1-scale, 1+scale]
+                        multipliers = (1 - ensemble_init_scale) + param_samples * 2 * ensemble_init_scale
+                        all_vals = base_val * multipliers
+
+                    # Reshape to match parameter shape
+                    if shape_after:
+                        all_vals = all_vals.reshape((total_samples,) + shape_after)
 
                     # Reshape to (n_parameter_sets, n_ensemble_members, ...)
                     final_shape = (n_parameter_sets, n_ensemble_members) + shape_after
-                    params[k] = all_vals.reshape(final_shape)
+                    params[k] = jnp.array(all_vals.reshape(final_shape))
                 else:
                     # Scalar or other - just keep as is
                     params[k] = v
@@ -680,6 +698,32 @@ class EnsembleAveragingHook:
         # For ensemble mode, skip readouts for now
         # This avoids shape mismatch issues in the scan function
         return None
+
+    def _param_key_to_schema_key(self, param_key: str) -> str:
+        """Map internal parameter names to schema keys.
+
+        For pools with PARAM_SCHEMA, the schema keys match the internal param names
+        (e.g., "log_k", "logit_lamb"), so this mapping is now mostly pass-through.
+
+        Parameters
+        ----------
+        param_key : str
+            Internal parameter name (e.g., "log_k", "logit_lamb")
+
+        Returns
+        -------
+        str
+            Schema key (same as input for modern schemas)
+        """
+        # Modern schemas use internal param names directly
+        # This mapping is kept for backwards compatibility with any old schemas
+        # that might use user-facing names
+        mapping = {
+            # These would only be needed if schema used user-facing names
+            # "log_k": "k_per_day",  # Now schema uses "log_k" directly
+            # "logit_lamb": "memory_length",  # Now schema uses "logit_lamb" directly
+        }
+        return mapping.get(param_key, param_key)
 
     def _tree_flatten(self):
         children = ()

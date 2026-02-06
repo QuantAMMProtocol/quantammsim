@@ -848,7 +848,7 @@ class TrainingEvaluator:
         # Generate cycles (reuse from robust_walk_forward)
         cycles = generate_walk_forward_cycles(
             start_date=run_fingerprint["startDateString"],
-            end_date=run_fingerprint["endDateString"],
+            end_date=run_fingerprint["endTestDateString"],
             n_cycles=self.n_cycles,
             keep_fixed_start=self.keep_fixed_start,
         )
