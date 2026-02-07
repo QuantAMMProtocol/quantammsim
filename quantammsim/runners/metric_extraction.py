@@ -5,22 +5,26 @@ This module provides unified metric extraction from CycleEvaluation objects,
 replacing repetitive if/elif chains with a registry-based approach.
 
 Usage:
-------
-```python
-from quantammsim.runners.metric_extraction import extract_cycle_metric
 
-# Extract aggregated metrics from cycle evaluations
-value = extract_cycle_metric(cycle_evals, "mean_oos_sharpe")
-value = extract_cycle_metric(cycle_evals, "worst_wfe")
-value = extract_cycle_metric(cycle_evals, "neg_is_oos_gap")
-```
+.. code-block:: python
+
+    from quantammsim.runners.metric_extraction import extract_cycle_metric
+
+    # Extract aggregated metrics from cycle evaluations
+    value = extract_cycle_metric(cycle_evals, "mean_oos_sharpe")
+    value = extract_cycle_metric(cycle_evals, "worst_wfe")
+    value = extract_cycle_metric(cycle_evals, "neg_is_oos_gap")
 """
 
 from typing import List, Dict, Callable, Any
 import numpy as np
 
 
-# Map metric names to CycleEvaluation attributes
+#: Registry mapping short metric names to ``CycleEvaluation`` attribute names.
+#:
+#: Keys are the tokens recognised in metric spec strings (e.g.
+#: ``"mean_oos_sharpe"`` → aggregator ``"mean"`` + metric ``"oos_sharpe"``).
+#: Values are the corresponding attribute on :class:`CycleEvaluation`.
 CYCLE_METRICS: Dict[str, str] = {
     "oos_sharpe": "oos_sharpe",
     "is_sharpe": "is_sharpe",
@@ -44,7 +48,22 @@ CYCLE_METRICS: Dict[str, str] = {
 
 # Aggregation functions
 def _mean_agg(v: List[float]) -> float:
-    """Mean aggregator that properly handles inf/nan values."""
+    """Arithmetic mean with inf/nan filtering.
+
+    Non-finite and ``None`` entries are silently dropped before averaging.
+    If *all* entries are invalid, returns ``-inf`` so that Optuna treats
+    the trial as the worst possible outcome.
+
+    Parameters
+    ----------
+    v : List[float]
+        Per-cycle metric values (may contain ``nan``, ``inf``, or ``None``).
+
+    Returns
+    -------
+    float
+        Filtered mean, or ``-inf`` if no valid values remain.
+    """
     filtered = [x for x in v if x is not None and np.isfinite(x)]
     if not filtered:
         return float("-inf")  # No valid values = worst possible result
@@ -52,13 +71,30 @@ def _mean_agg(v: List[float]) -> float:
 
 
 def _worst_agg(v: List[float]) -> float:
-    """Worst (min) aggregator that properly handles inf/nan values."""
+    """Worst-case (minimum) aggregator with inf/nan filtering.
+
+    Same filtering semantics as :func:`_mean_agg` but returns the minimum
+    of the valid values.  Used for ``"worst_"`` metric prefixes (e.g.
+    ``"worst_oos_sharpe"``).
+
+    Parameters
+    ----------
+    v : List[float]
+        Per-cycle metric values.
+
+    Returns
+    -------
+    float
+        Minimum of valid values, or ``-inf`` if none remain.
+    """
     filtered = [x for x in v if x is not None and np.isfinite(x)]
     if not filtered:
         return float("-inf")  # No valid values = worst possible result
     return float(np.min(filtered))
 
 
+#: Aggregation functions keyed by the prefix used in metric spec strings.
+#: E.g. ``"mean_oos_sharpe"`` dispatches to ``AGGREGATORS["mean"]``.
 AGGREGATORS: Dict[str, Callable[[List[float]], float]] = {
     "mean": _mean_agg,
     "worst": _worst_agg,

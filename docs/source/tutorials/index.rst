@@ -17,3 +17,6 @@ These tutorials will help you get started with quantammsim.
    custom_pools
    training_pipeline
    tuning
+   walk_forward_analysis
+   ensemble_training
+   hyperparameter_tuning

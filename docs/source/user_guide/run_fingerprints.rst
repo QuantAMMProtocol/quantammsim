@@ -36,20 +36,31 @@ The ``rule`` parameter accepts the following values:
 * ``momentum`` - Trend-following strategy
 * ``anti_momentum`` - Counter-trend strategy
 * ``mean_reversion_channel`` - Mean reversion with channel breakout
+* ``triple_threat_mean_reversion_channel`` - Channel mean reversion + trend + interaction
 * ``power_channel`` - Power-law weighted momentum
 * ``difference_momentum`` - Differential momentum strategy
 * ``min_variance`` - Minimum variance portfolio
 * ``index_market_cap`` - Market-cap weighted index
+* ``hodling_index_market_cap`` - Index pool with on-chain HODLing behaviour
+* ``trad_hodling_index_market_cap`` - Index pool with CEX trading costs
 
 **Hooked Pools:**
 
 Add hooks using the ``hookname__poolrule`` prefix format:
 
-* ``lvr__momentum`` - Momentum with Loss-Versus-Rebalancing tracking
-* ``rvr__balancer`` - Balancer with Rebalancing-Versus-Rebalancing tracking
-* ``bounded__momentum`` - Momentum with per-asset weight bounds
+* ``lvr__momentum`` - Loss-Versus-Rebalancing tracking
+* ``rvr__balancer`` - Rebalancing-Versus-Rebalancing tracking
+* ``bounded__momentum`` - Per-asset weight bounds
+* ``ensemble__momentum`` - Ensemble averaging over multiple parameter sets
 
-See :doc:`per_asset_bounds` for details on bounded weight pools.
+Hooks can be chained with multiple double-underscore prefixes:
+
+.. code-block:: python
+
+    # Ensemble + bounded weights + mean reversion channel
+    pool = create_pool("ensemble__bounded__mean_reversion_channel")
+
+See :doc:`hooks` for details on hooks and :doc:`per_asset_bounds` for bounded weight pools.
 
 Optimization Settings for Gradient Descent
 ------------------------------------------
@@ -279,15 +290,25 @@ The ``return_val`` parameter determines the objective function for training:
 
 .. code-block:: python
 
-    run_fingerprint["return_val"] = "sharpe"  # Default
+    run_fingerprint["return_val"] = "daily_log_sharpe"  # Default
 
-Available metrics:
+Common metrics:
 
-* ``sharpe`` - Sharpe ratio (annualized, default)
+* ``daily_log_sharpe`` - Daily log-return Sharpe ratio (**default**)
+* ``sharpe`` - Annualised Sharpe ratio
 * ``daily_sharpe`` - Daily Sharpe ratio
 * ``returns`` - Total return over simulation period
 * ``returns_over_hodl`` - Return relative to holding the initial portfolio
 * ``sortino`` - Sortino ratio (downside risk-adjusted)
+* ``calmar`` - Calmar ratio (return / max drawdown)
+* ``sterling`` - Sterling ratio (return / average drawdown)
+* ``max_drawdown`` - Maximum drawdown (negative: larger = worse)
+* ``var_5`` - 5% Value at Risk
+* ``raroc`` - Risk-Adjusted Return on Capital
+* ``rovar`` - Return on VaR
+* ``ulcer_index`` - Ulcer Index (measures drawdown duration and depth)
+
+See :doc:`metrics_reference` for the full list of ~30 available metrics with formulas.
 
 Runtime Behavior
 ----------------
@@ -452,6 +473,106 @@ Trade Simulation
 
 When ``True``, allows simulating specific trade sequences through the ``trade_array``
 input to ``calculate_reserves_with_dynamic_inputs``.
+
+Robustness and Regularisation
+-----------------------------
+
+Early Stopping
+~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    run_fingerprint["optimisation_settings"].update({
+        "early_stopping": True,              # Enable early stopping
+        "early_stopping_patience": 100,      # Epochs without improvement
+        "early_stopping_metric": "daily_log_sharpe",  # Metric to monitor
+        "val_fraction": 0.2,                 # Fraction of data for validation
+    })
+
+Stochastic Weight Averaging (SWA)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    run_fingerprint["optimisation_settings"].update({
+        "use_swa": True,                     # Enable SWA
+        "swa_start_frac": 0.75,             # Start averaging at 75% of training
+        "swa_freq": 5,                       # Average every 5 epochs
+    })
+
+Price Noise Augmentation
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    run_fingerprint.update({
+        "price_noise_sigma": 0.001,          # Log-normal noise scale
+    })
+
+Adds multiplicative log-normal noise to training prices to reduce overfitting
+to specific price paths. See :doc:`robustness_features` for the mathematical
+details.
+
+Turnover Penalty
+~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    run_fingerprint.update({
+        "turnover_penalty": 0.0,             # Penalty weight (0 = disabled)
+    })
+
+Penalises excessive weight changes during training to encourage smoother
+strategies.
+
+Data Augmentation
+~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    run_fingerprint.update({
+        "include_flipped_training_data": False,  # Flip price series
+    })
+
+When ``True``, augments the training set with time-reversed price series to
+reduce directional bias.
+
+Ensemble Training
+~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    run_fingerprint["optimisation_settings"].update({
+        "n_ensemble_members": 4,             # Number of ensemble members
+        "ensemble_init_method": "lhs",       # "lhs", "sobol", "grid", "gaussian"
+        "ensemble_init_scale": 1.0,          # Perturbation scale
+        "ensemble_init_seed": 42,            # Reproducibility seed
+    })
+
+Trains multiple parameter sets simultaneously and averages their weight outputs.
+Requires the ``ensemble`` hook (e.g. ``"ensemble__momentum"``).
+
+Weight Decay
+~~~~~~~~~~~~
+
+.. code-block:: python
+
+    run_fingerprint["optimisation_settings"].update({
+        "weight_decay": 0.0,                 # L2 regularisation strength
+    })
+
+Checkpoints
+~~~~~~~~~~~
+
+.. code-block:: python
+
+    run_fingerprint["optimisation_settings"].update({
+        "track_checkpoints": True,           # Save parameter checkpoints
+        "checkpoint_interval": 50,           # Epochs between checkpoints
+    })
+
+Checkpoint data is used for Rademacher complexity estimation during walk-forward
+evaluation.
 
 Implementation Notes
 --------------------

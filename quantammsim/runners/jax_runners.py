@@ -1,3 +1,25 @@
+"""Core training and simulation runners for quantammsim.
+
+This module provides the two primary entry points for using quantammsim:
+
+:func:`train_on_historic_data`
+    Optimise strategy parameters on historical price data using either
+    gradient descent (Adam/AdamW/SGD via Optax) or gradient-free search
+    (Optuna).  Supports ensemble training, early stopping with validation
+    holdout, warm-starting from previous walk-forward cycles, checkpointing
+    for Rademacher complexity analysis, and Stochastic Weight Averaging.
+
+:func:`do_run_on_historic_data`
+    Execute a single forward pass (simulation) with fixed parameters and
+    return the full results dict.  Used for post-training evaluation,
+    walk-forward OOS testing, and visualisation.  Supports injecting
+    real trade data, time-varying fees/gas costs, and LP supply changes.
+
+Both functions accept a ``run_fingerprint`` dict as their primary
+configuration.  See :doc:`/user_guide/run_fingerprints` for the complete
+reference of available settings.
+"""
+
 import numpy as np
 from copy import deepcopy
 
@@ -81,61 +103,73 @@ def train_on_historic_data(
     warm_start_params=None,
     warm_start_weights=None,
 ):
-    """
-    Train a model on historical price data using JAX.
+    """Optimise strategy parameters on historical price data.
 
-    This function trains a model on historical price data using JAX for optimization.
-    It supports various hyperparameters and training configurations specified in the run_fingerprint.
+    This is the primary training entry point for quantammsim.  It loads (or
+    accepts) price data, constructs the JAX computation graph, and runs either
+    gradient-based (Adam/AdamW/SGD) or gradient-free (Optuna) optimisation
+    according to ``run_fingerprint["optimisation_settings"]["method"]``.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     run_fingerprint : dict
-        A dictionary containing all the configuration settings for the training run.
+        Master configuration dict.  Key fields consumed here:
+
+        - ``tokens``, ``startDateString``, ``endDateString``,
+          ``endTestDateString`` — data selection
+        - ``rule`` — pool/strategy type (e.g. ``"momentum"``,
+          ``"mean_reversion_channel"``)
+        - ``return_val`` — objective metric (default ``"daily_log_sharpe"``)
+        - ``optimisation_settings.method`` — ``"gradient_descent"`` or
+          ``"optuna"``
+        - ``optimisation_settings.optimiser`` — ``"adam"``, ``"adamw"``,
+          or ``"sgd"``
+        - ``optimisation_settings.n_iterations`` — training epochs
+        - ``optimisation_settings.val_fraction`` — fraction of training
+          window held out for early-stopping validation (0 = disabled)
+        - ``optimisation_settings.use_swa`` — enable Stochastic Weight
+          Averaging
+        - ``optimisation_settings.track_checkpoints`` — save periodic
+          parameter snapshots for Rademacher complexity analysis
+
+        See :doc:`/user_guide/run_fingerprints` for the full reference.
     root : str, optional
-        The root directory for data and output files.
+        Root directory for data files and saved results.
     iterations_per_print : int, optional
-        The number of iterations between progress prints (default is 1).
+        Print training progress every *N* iterations (default 1).
     force_init : bool, optional
-        If True, force reinitialization of parameters (default is False).
-    price_data : array-like, optional
-        The historical price data to train on. If None, data will be loaded from a file.
+        If True, ignore cached results and re-initialise parameters.
+    price_data : array-like or DataFrame, optional
+        Pre-loaded price data.  When None, data is loaded from parquet
+        files based on ``run_fingerprint`` date/token settings.
     verbose : bool, optional
-        If True, print detailed progress information (default is True).
+        Print detailed progress information (default True).
     run_location : str, optional
-        The location of the run to load from. If None, the run will be initialized.
+        Path to a previously-saved run to resume from.  When None, a new
+        run is initialised (or auto-detected from the fingerprint hash).
     return_training_metadata : bool, optional
-        If True, return (params, metadata) tuple where metadata contains training info
-        including checkpoint_returns for Rademacher complexity calculation (default is False).
+        If True, return ``(params, metadata)`` where *metadata* contains
+        ``epochs_trained``, ``final_objective``, and ``checkpoint_returns``
+        (a ``(n_checkpoints, T-1)`` array for Rademacher complexity, or
+        None if checkpointing was disabled).
     warm_start_params : dict, optional
-        Parameters from a previous training cycle to use as initialization instead of
-        random initialization. Used for walk-forward analysis warm-starting.
+        Strategy parameters from a previous walk-forward cycle.  Each
+        value is expanded to ``(n_parameter_sets, ...)`` shape with
+        added Gaussian noise (scale controlled by
+        ``optimisation_settings.noise_scale``).
     warm_start_weights : array-like, optional
-        Final weights from a previous cycle to use as initial weights. Shape should be
-        (n_assets,). The pool starts with fresh initial_pool_value but distributed
-        according to these weights (simulating continuous operation).
+        Final portfolio weights from a previous cycle, shape
+        ``(n_assets,)``.  The pool starts with a fresh
+        ``initial_pool_value`` distributed according to these weights.
 
-    Returns:
-    --------
+    Returns
+    -------
     dict or tuple or list or None
-        - For gradient descent with return_training_metadata=False: returns the best params dict
-        - For gradient descent with return_training_metadata=True: returns (params, metadata) where
-          metadata contains 'epochs_trained', 'final_objective', and 'checkpoint_returns'
-          (checkpoint_returns is a numpy array of shape (n_checkpoints, T-1) if track_checkpoints
-          is enabled, otherwise None)
-        - For Optuna optimization: returns the best trials list, or None if no trials completed
-
-    Notes:
-    ------
-    This function performs the following steps:
-    1. Initializes or loads model parameters
-    2. Prepares the training and test data
-    3. Sets up the optimization process (SGD or Adam)
-    4. Iteratively trains the model, updating parameters and learning rate
-    5. Periodically saves the model state and prints progress
-    6. Optionally returns the final model state and performance metrics
-
-    The function uses JAX for efficient computation and supports various advanced features
-    such as custom fee structures and different training data configurations.
+        - **Gradient descent**, ``return_training_metadata=False``:
+          best params dict.
+        - **Gradient descent**, ``return_training_metadata=True``:
+          ``(params, metadata)`` tuple.
+        - **Optuna**: list of best trials, or None if none completed.
     """
 
     recursive_default_set(run_fingerprint, run_fingerprint_defaults)
@@ -1572,71 +1606,66 @@ def do_run_on_historic_data(
     low_data_mode=False,
     preslice_burnin=True,
 ):
-    """
-    Execute a simulation run on historic data using specified parameters and settings.
+    """Execute a forward-pass simulation with fixed parameters.
 
-    This function performs a simulation run on historical price data using the provided
-    run fingerprint and parameters. It supports various options including multiple parameter sets,
-    incorporating trades and fees, and running test periods.
+    Runs the full simulation pipeline — price loading, weight calculation,
+    arbitrage, and metric computation — using pre-trained (or manually
+    specified) strategy parameters.  This is the primary entry point for
+    post-training evaluation, walk-forward OOS testing, and visualisation.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     run_fingerprint : dict
-        A dictionary containing the configuration and settings for the run.
-    params : dict or list
-        The parameters for the model. Can be a single set (dict) or multiple sets (list of dicts).
+        Master configuration dict (same structure as
+        :func:`train_on_historic_data`).
+    params : dict or list of dict
+        Strategy parameters.  A single dict runs one simulation; a list
+        of dicts runs multiple parameter sets in parallel via ``vmap``.
     root : str, optional
-        The root directory for data files.
-    price_data : array-like, optional
-        Pre-loaded price data. If None, data will be loaded based on the run_fingerprint.
+        Root directory for data files.
+    price_data : array-like or DataFrame, optional
+        Pre-loaded price data.  When None, loaded from parquet files.
     verbose : bool, optional
-        Whether to print detailed output (default is True).
-    raw_trades : pd.DataFrame, optional
-        Trade data to incorporate into the simulation. Each row should contain:
-        unix timestamp of the trade (minute), token in (str), token out (str), and amount in (float).
+        Print progress information (default False).
+    raw_trades : DataFrame, optional
+        Real trade data to inject.  Columns: unix timestamp (minute),
+        token_in, token_out, amount_in.
     fees : float, optional
-        Transaction fees to apply (overrides run_fingerprint value if provided).
+        Swap fee override (e.g. 0.003 for 30 bps).
     gas_cost : float, optional
-        Gas costs for transactions (overrides run_fingerprint value if provided).
+        Gas cost override per transaction.
     arb_fees : float, optional
-        Arbitrage fees to apply (overrides run_fingerprint value if provided).
-    fees_df : pd.DataFrame, optional
-        Transaction fees to apply over time.
-        Each row should contain the unix timestamp and fee to be charged.
-    gas_cost_df : pd.DataFrame, optional
-        Gas costs for transactions over time.
-        Each row should contain the unix timestamp and gas cost.
-    arb_fees_df : pd.DataFrame, optional
-        Arbitrage fees to apply over time.
-        Each row should contain the unix timestamp and arb fee to be charged.
+        Arbitrageur fee override.
+    fees_df : DataFrame, optional
+        Time-varying swap fees (columns: unix, fee).
+    gas_cost_df : DataFrame, optional
+        Time-varying gas costs (columns: unix, gas_cost).
+    arb_fees_df : DataFrame, optional
+        Time-varying arb fees (columns: unix, arb_fee).
+    lp_supply_df : DataFrame, optional
+        Time-varying LP supply changes.
     do_test_period : bool, optional
-        Whether to run the test period (default is False).
+        If True, also run the OOS test period defined by
+        ``endDateString`` to ``endTestDateString`` (default False).
     low_data_mode : bool, optional
-        Whether to delete the prices from the output dictionary (default is False).
+        If True, drop raw price arrays from the output dict to reduce
+        memory usage (default False).
     preslice_burnin : bool, optional
-        Whether to pre-slice the data to only include max_memory_days of burn-in
-        plus the training period (default is True). Set to False to load all
-        available history (useful for testing/debugging).
+        If True, pre-slice data to ``max_memory_days`` of burn-in plus
+        the simulation period (default True).  Set False to load all
+        available history.
 
-    Returns:
-    --------
-    dict or tuple of dicts
-        If do_test_period is False:
-            A dictionary containing the results of the simulation run for the training period.
-        If do_test_period is True:
-            A tuple of two dictionaries (train_results, test_results), containing the results
-            for both the training and test periods.
+    Returns
+    -------
+    dict or tuple[dict, dict]
+        When ``do_test_period=False``: a single results dict with keys
+        including ``values``, ``reserves``, ``weights``,
+        ``coarse_weights``, ``objective``, and per-asset breakdowns.
 
-        Results include final reserves, values, weights, and other relevant metrics.
+        When ``do_test_period=True``: ``(train_results, test_results)``.
 
-    Notes:
-    ------
-    - This function is a core component of the quantamm system, integrating various aspects
-      of the simulation including data handling, parameter optimization, and result calculation.
-    - It supports both single and multi-parameter set runs, processing them in batches for efficiency.
-    - The function creates a pool object based on the specified rule in the run_fingerprint.
-    - Dynamic inputs (trades, fees, gas costs) are processed using the get_trades_and_fees function.
-    - For multiple parameter sets, the function returns lists of output dictionaries instead of single dictionaries.
+        For multiple parameter sets, each value in the dict is a list
+        (one entry per parameter set).
     """
 
     # Set default values for run_fingerprint and its optimisation_settings
@@ -1843,73 +1872,57 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     do_test_period=False,
     low_data_mode=False,
 ):
-    """
-    Execute a simulation run on historic data using specified parameters and settings, including provided coarse weights.
+    """Execute a simulation using pre-computed coarse weights.
 
-    This function performs a simulation run on historical price data using the provided
-    run fingerprint, weights and parameters. It supports various options including multiple parameter sets,
-    incorporating trades and fees, and running test periods.
+    Like :func:`do_run_on_historic_data`, but bypasses the weight-calculation
+    step entirely.  The caller provides ``coarse_weights`` directly, and
+    this function performs only fine-weight interpolation, arbitrage
+    simulation, and metric computation.
 
-    Parameters:
-    -----------
+    This is useful for replaying a trained strategy with externally-computed
+    or manually-specified weight trajectories, or for separating the weight
+    computation from the simulation for profiling or debugging.
+
+    Parameters
+    ----------
     run_fingerprint : dict
-        A dictionary containing the configuration and settings for the run.
+        Master configuration dict.
     coarse_weights : jnp.ndarray
-        Pre-computed coarse weights to use instead of calculating from params.
-        Shape should be (n_timesteps, n_assets).
-    params : dict or list, optional
-        The parameters for the model. Can be a single set (dict) or multiple sets (list of dicts).
+        Pre-computed coarse weights, shape ``(n_coarse_steps, n_assets)``.
+    params : dict or list of dict, optional
+        Strategy parameters (used only for ``initial_reserves`` and any
+        subsidiary parameters, not for weight computation).
     root : str, optional
-        The root directory for data files.
-    price_data : array-like, optional
-        Pre-loaded price data. If None, data will be loaded based on the run_fingerprint.
+        Root directory for data files.
+    price_data : array-like or DataFrame, optional
+        Pre-loaded price data.
     verbose : bool, optional
-        Whether to print detailed output (default is True).
-    raw_trades : pd.DataFrame, optional
-        Trade data to incorporate into the simulation. Each row should contain:
-        unix timestamp of the trade (minute), token in (str), token out (str), and amount in (float).
+        Print progress (default False).
+    raw_trades : DataFrame, optional
+        Real trade data to inject.
     fees : float, optional
-        Transaction fees to apply (overrides run_fingerprint value if provided).
+        Swap fee override.
     gas_cost : float, optional
-        Gas costs for transactions (overrides run_fingerprint value if provided).
+        Gas cost override.
     arb_fees : float, optional
-        Arbitrage fees to apply (overrides run_fingerprint value if provided).
-    fees_df : pd.DataFrame, optional
-        Transaction fees to apply over time.
-        Each row should contain the unix timestamp and fee to be charged.
-    gas_cost_df : pd.DataFrame, optional
-        Gas costs for transactions over time.
-        Each row should contain the unix timestamp and gas cost.
-    arb_fees_df : pd.DataFrame, optional
-        Arbitrage fees to apply over time.
-        Each row should contain the unix timestamp and arb fee to be charged.
-    lp_supply_df : pd.DataFrame, optional
-        LP supply over time.
-        Each row should contain the unix timestamp and LP supply.
+        Arbitrageur fee override.
+    fees_df : DataFrame, optional
+        Time-varying swap fees.
+    gas_cost_df : DataFrame, optional
+        Time-varying gas costs.
+    arb_fees_df : DataFrame, optional
+        Time-varying arb fees.
+    lp_supply_df : DataFrame, optional
+        Time-varying LP supply changes.
     do_test_period : bool, optional
-        Whether to run the test period (default is False).
+        Run OOS test period (default False).
     low_data_mode : bool, optional
-        Whether to delete the prices from the output dictionary (default is False).
+        Drop raw arrays from output to save memory (default False).
 
-    Returns:
-    --------
-    dict or tuple of dicts
-        If do_test_period is False:
-            A dictionary containing the results of the simulation run for the training period.
-        If do_test_period is True:
-            A tuple of two dictionaries (train_results, test_results), containing the results
-            for both the training and test periods.
-
-        Results include final reserves, values, weights, and other relevant metrics.
-
-    Notes:
-    ------
-    - This function is a core component of the quantamm system, integrating various aspects
-      of the simulation including data handling, parameter optimization, and result calculation.
-    - It supports both single and multi-parameter set runs, processing them in batches for efficiency.
-    - The function creates a pool object based on the specified rule in the run_fingerprint.
-    - Dynamic inputs (trades, fees, gas costs) are processed using the get_trades_and_fees function.
-    - For multiple parameter sets, the function returns lists of output dictionaries instead of single dictionaries.
+    Returns
+    -------
+    dict or tuple[dict, dict]
+        Same structure as :func:`do_run_on_historic_data`.
     """
     from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
         _jax_calc_coarse_weights,

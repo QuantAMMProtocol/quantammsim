@@ -44,6 +44,7 @@ Once installed, here's a basic usage example:
    tutorials/index
    user_guide/index
    api/index
+   glossary
 
 * :ref:`genindex`
 * :ref:`modindex`

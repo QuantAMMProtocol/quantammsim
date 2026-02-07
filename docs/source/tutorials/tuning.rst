@@ -77,7 +77,7 @@ Let's optimize a QuantAMMmomentum strategy for a BTC/ETH pool:
         "endDateString": "2024-03-01 00:00:00",
         "endTestDateString": "2024-04-01 00:00:00",
         "chunk_period": 60,
-        "return_val": "sharpe",
+        "return_val": "daily_log_sharpe",
         "initial_pool_value": 1000000.0
     }
 
@@ -252,7 +252,7 @@ Advanced Features
 
 .. code-block:: python
 
-    run_fingerprint["return_val"] = "sharpe"  # or "returns", "sortino" among others
+    run_fingerprint["return_val"] = "daily_log_sharpe"  # or "sharpe", "returns", "sortino" among others
 
 2. Multi-period Training (Gradient-free only):
 
@@ -302,5 +302,11 @@ Performance Considerations
 
 See Also
 --------
-* :doc:`../tutorials/quantamm_pools` for strategy details
-* `TFMM litepaper <https://quantamm.fi/research>`_ for theoretical background
+
+* :doc:`../tutorials/quantamm_pools` — Strategy details and parameters
+* :doc:`walk_forward_analysis` — Walk-forward validation for assessing robustness
+* :doc:`hyperparameter_tuning` — Automated tuning of training hyperparameters using walk-forward evaluation
+* :doc:`ensemble_training` — Ensemble training for implicit regularisation
+* :doc:`../user_guide/robustness_features` — Regularisation techniques
+* :doc:`../user_guide/metrics_reference` — Available training and evaluation metrics
+* `TFMM litepaper <https://quantamm.fi/research>`_ — Theoretical background

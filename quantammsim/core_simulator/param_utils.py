@@ -1,3 +1,38 @@
+"""Parameter utilities for strategy parameterization, serialization, and loading.
+
+This module handles the full lifecycle of strategy parameters:
+
+- **Initialization**: ``init_params`` / ``init_params_singleton`` create parameter dicts
+  from human-readable initial values (memory days, k per day) by converting to the
+  internal reparameterized form (logit_lamb, log_k, etc.).
+- **Reparameterization**: Functions like ``calc_lamb``, ``calc_alt_lamb``, ``squareplus``,
+  and their inverses convert between human-interpretable values and the unconstrained
+  spaces used for gradient-based optimization.
+- **Serialization**: ``NumpyEncoder``, ``dict_of_jnp_to_np``, ``dict_of_jnp_to_list``,
+  ``dict_of_np_to_jnp`` handle conversion between JAX arrays, NumPy arrays, and
+  JSON-serializable Python types.
+- **Loading**: ``load_or_init``, ``load``, ``load_manually``, ``retrieve_best`` load
+  saved training checkpoints with various selection strategies (best train, best test,
+  best-train-above-test-threshold, etc.).
+- **Grid generation**: ``create_product_of_linspaces``, ``generate_params_combinations``
+  produce parameter grids for heatmap evaluations.
+
+The key reparameterizations are:
+
+- **lambda (λ)**: EWMA decay factor in [0, 1], stored as ``logit_lamb = log(λ/(1-λ))``.
+  Converted to/from human-readable ``memory_days`` via cubic-root inversion.
+- **k**: Weight update aggressiveness, stored as ``log_k = log2(k / memory_days)``.
+  This decouples scale from memory length.
+- **squareplus**: Smooth, non-negative activation ``(x + sqrt(x² + 4)) / 2``,
+  an algebraic (non-transcendental) replacement for softplus. Used for exponent params.
+
+Notes
+-----
+The ``memory_days ↔ lambda`` conversion involves solving a cubic equation analytically.
+Both NumPy (``memory_days_to_lamb``) and JAX (``jax_memory_days_to_lamb``) versions
+exist; the NumPy version includes safe division guards for zero memory days, while the
+JAX version relies on ``jnp.where`` for the zero case.
+"""
 import os
 import json
 import hashlib
@@ -13,8 +48,31 @@ from quantammsim.training.hessian_trace import hessian_trace
 
 
 def squareplus(x):
-    # algebraic (so non-trancendental) replacement for softplus
-    # see https://arxiv.org/abs/2112.11687 for detail
+    """Algebraic (non-transcendental) replacement for softplus.
+
+    Computes ``(x + sqrt(x² + 4)) / 2``, which maps R → R⁺ smoothly. Unlike softplus
+    (``log(1 + exp(x))``), squareplus avoids transcendental functions and is thus
+    cheaper to differentiate through and more JIT-friendly.
+
+    Parameters
+    ----------
+    x : jnp.ndarray or float
+        Input value(s).
+
+    Returns
+    -------
+    jnp.ndarray or float
+        Non-negative output(s), always > 0.
+
+    References
+    ----------
+    Barron, J.T. (2021). "Squareplus: A Softplus-Like Algebraic Rectifier."
+    arXiv:2112.11687.
+
+    See Also
+    --------
+    inverse_squareplus : Inverse mapping R⁺ → R.
+    """
     return lax.mul(0.5, lax.add(x, lax.sqrt(lax.add(lax.square(x), 4.0))))
 
 
@@ -428,7 +486,7 @@ def lamb_to_memory_days_clipped(lamb, chunk_period, max_memory_days):
         The clipped memory value in days.
     """
     memory_days = jnp.clip(
-        lamb_to_memory_days(lamb, chunk_period), a_min=0.0, a_max=max_memory_days
+        lamb_to_memory_days(lamb, chunk_period), min=0.0, max=max_memory_days
     )
     return memory_days
 
@@ -526,71 +584,94 @@ def calc_alt_lamb(update_rule_parameter_dict):
 
 
 def inverse_squareplus(y):
-    """
-    Calculate the inverse of the squareplus function.
+    """Inverse of the squareplus activation (JAX version).
+
+    Given ``y = squareplus(x)``, recovers ``x = (y² - 1) / y``. Used to convert
+    from a desired positive parameter value back to the unconstrained raw parameter
+    for initialization.
 
     Parameters
     ----------
-    y : float or array_like
-        Input value(s).
+    y : float or jnp.ndarray
+        Positive input value(s). Must be > 0 (domain of inverse squareplus).
 
     Returns
     -------
-    float or array_like
-        The inverse squareplus of the input.
+    jnp.ndarray
+        Unconstrained value(s) that map to ``y`` under squareplus.
+
+    See Also
+    --------
+    squareplus : Forward mapping R → R⁺.
+    inverse_squareplus_np : NumPy version for non-JAX contexts.
     """
     y = jnp.asarray(y, dtype=jnp.float64)
     return lax.div(lax.sub(lax.square(y), 1.0), y)
 
 
 def inverse_squareplus_np(y):
-    """
-    Calculate the inverse of the squareplus function using numpy.
+    """Inverse of the squareplus activation (NumPy version).
+
+    Identical to ``inverse_squareplus`` but uses NumPy operations, suitable for
+    use outside JAX-traced contexts (e.g., initialization, post-processing).
 
     Parameters
     ----------
-    y : float or array_like
-        Input value(s).
+    y : float or np.ndarray
+        Positive input value(s).
 
     Returns
     -------
-    float or array_like
-        The inverse squareplus of the input.
+    float or np.ndarray
+        Unconstrained value(s) that map to ``y`` under squareplus.
+
+    See Also
+    --------
+    inverse_squareplus : JAX version.
     """
     return (y**2 - 1.0) / y
 
 def get_raw_value(value):
-    """
-    Get raw_value parameter from desired value.
+    """Convert a desired parameter value to raw (log2) space.
+
+    Many parameters (k, width, amplitude) use ``2^raw`` reparameterization so that
+    the raw parameter can take any real value while the effective value is always
+    positive. This function inverts that: ``raw = log2(value)``.
 
     Parameters
     ----------
     value : float
-        The input value.
+        Desired positive parameter value.
 
     Returns
     -------
     float
-        The log2 of the input value.
+        Log2 of the input, for use as the raw parameter.
+
+    See Also
+    --------
+    get_log_amplitude : Similar but divides by memory_days first.
     """
     return np.log2(value)
 
 
 def get_log_amplitude(amplitude, memory_days):
-    """
-    Get log_amplitude parameter from desired amplitude and memory_days.
+    """Convert desired amplitude to raw log_amplitude parameter.
+
+    The effective amplitude is ``2^log_amplitude * memory_days``, so to achieve a
+    target amplitude: ``log_amplitude = log2(amplitude / memory_days)``.
 
     Parameters
     ----------
     amplitude : float
-        The amplitude value.
+        Desired amplitude value.
     memory_days : float
-        The memory days value.
+        Memory length in days (used to decouple amplitude from memory scale).
 
     Returns
     -------
     float
-        The log2 of amplitude divided by memory_days.
+        Raw log_amplitude parameter value.
     """
     return np.log2(amplitude / memory_days)
 
@@ -598,26 +679,46 @@ def get_log_amplitude(amplitude, memory_days):
 def init_params_singleton(
     initial_values_dict, n_tokens, n_subsidary_rules=0, chunk_period=60, log_for_k=True
 ):
-    """
-    Initialize parameters for a singleton.
+    """Initialize a single parameter set from human-readable initial values.
+
+    Converts intuitive values (memory_days, k_per_day, etc.) into the internal
+    reparameterized form (logit_lamb, log_k, etc.) as 1-D JAX arrays of length
+    ``n_tokens + n_subsidary_rules``.
 
     Parameters
     ----------
     initial_values_dict : dict
-        The initial values dictionary.
+        Human-readable initial values. Required keys:
+        - ``'initial_k_per_day'``: Weight update aggressiveness
+        - ``'initial_memory_length'``: EWMA memory in days
+        Optional keys:
+        - ``'initial_memory_length_delta'``: Additional memory for alt lambda
+        - ``'initial_weights_logits'``: Starting weight logits
+        - ``'initial_log_amplitude'``: Channel amplitude (log2 scale)
+        - ``'initial_raw_width'``: Channel width (log2 scale)
+        - ``'initial_raw_exponents'``: Power exponents (squareplus space)
+        - ``'initial_pre_exp_scaling'``: Pre-exponential scaling (logit space)
     n_tokens : int
-        The number of tokens.
+        Number of assets in the pool.
     n_subsidary_rules : int, optional
-        The number of subsidary rules. Default is 0.
+        Number of subsidiary rules (for composite pools). Default is 0.
     chunk_period : int, optional
-        The chunk period. Default is 60.
+        Time between price observations in minutes. Default is 60.
     log_for_k : bool, optional
-        Whether to use log scale for k parameter. Default is True.
+        If True, use ``log_k`` parameterization; if False, use linear ``k``.
+        Default is True.
 
     Returns
     -------
     dict
-        The initialized parameters.
+        Parameter dict with keys: ``'log_k'`` (or ``'k'``), ``'logit_lamb'``,
+        ``'logit_delta_lamb'``, ``'initial_weights_logits'``, ``'log_amplitude'``,
+        ``'raw_width'``, ``'raw_exponents'``, ``'logit_pre_exp_scaling'``,
+        ``'subsidary_params'``. All values are 1-D ``jnp.ndarray``.
+
+    See Also
+    --------
+    init_params : Multi-set version with noise injection.
     """
     n_pool_members = n_tokens + n_subsidary_rules
     if log_for_k:
@@ -768,28 +869,39 @@ def init_params(
     n_parameter_sets=1,
     noise="gaussian",
 ):
-    """
-    Initialize parameters.
+    """Initialize multiple parameter sets from human-readable initial values.
+
+    Creates ``n_parameter_sets`` copies of the base parameters. When
+    ``n_parameter_sets > 1``, Gaussian noise is added to all rows except
+    the first (which remains at the exact initial values). This is the
+    legacy ensemble initialization method; for more control, see
+    ``EnsembleAveragingHook``.
 
     Parameters
     ----------
     initial_values_dict : dict
-        The initial values dictionary.
+        Human-readable initial values (same format as ``init_params_singleton``).
     n_tokens : int
-        The number of tokens.
+        Number of assets in the pool.
     n_subsidary_rules : int, optional
-        The number of subsidary rules. Default is 0.
+        Number of subsidiary rules. Default is 0.
     chunk_period : int, optional
-        The chunk period. Default is 60.
+        Time between price observations in minutes. Default is 60.
     n_parameter_sets : int, optional
-        The number of parameter sets. Default is 1.
+        Number of parameter sets (ensemble members). Default is 1.
     noise : str, optional
-        The type of noise to add. Default is "gaussian".
+        Noise type for diversification. Only ``'gaussian'`` is supported.
+        Default is ``'gaussian'``.
 
     Returns
     -------
     dict
-        The initialized parameters.
+        Parameter dict with 2-D arrays of shape ``(n_parameter_sets, n_pool_members)``
+        for each parameter key.
+
+    See Also
+    --------
+    init_params_singleton : Single parameter set initialization.
     """
     n_pool_members = n_tokens + n_subsidary_rules
     log_k = np.array(
@@ -1475,7 +1587,7 @@ def load_or_init(
                 dumped = json.dumps(params, cls=NumpyEncoder)
                 with open(run_location, "w", encoding='utf-8') as json_file:
                     json.dump(dumped, json_file, indent=4)
-        
+
         if isinstance(params, list):
             params = [
                 fill_in_missing_values_from_init(
@@ -1906,26 +2018,31 @@ def split_param_combinations(param_combinations):
 def make_vmap_in_axes_dict(
     input_dict, in_axes, keys_to_recur_on, keys_with_no_vamp=[], n_repeats_of_recurred=0
 ):
-    """
-    Create a dictionary specifying vmap axes for input parameters.
+    """Create a ``vmap`` in_axes specification dict matching a parameter dict structure.
+
+    Constructs the nested dict/list structure that ``jax.vmap`` expects for its
+    ``in_axes`` argument when vectorizing over a dict of parameters. Handles
+    recursive structure for subsidiary parameters.
 
     Parameters
     ----------
     input_dict : dict
-        Dictionary of input parameters.
+        Parameter dictionary whose structure to mirror.
     in_axes : int
-        The axis to vectorize over.
-    keys_to_recur_on : list
-        Keys in input_dict that should be recursively processed.
-    keys_with_no_vamp : list, optional
-        Keys that should not be vectorized. Defaults to [].
+        Axis to vectorize over (typically 0 for the parameter-set dimension).
+    keys_to_recur_on : list of str
+        Keys (e.g., ``'subsidary_params'``) that contain nested parameter dicts
+        requiring recursive axis specification.
+    keys_with_no_vamp : list of str, optional
+        Keys that should not be vectorized (axis set to None). Default is ``[]``.
     n_repeats_of_recurred : int, optional
-        Number of times to repeat recursion. Defaults to 0.
+        Number of subsidiary parameter dicts. Default is 0.
 
     Returns
     -------
     dict
-        Dictionary mapping parameter keys to their vmap axes specifications.
+        Nested dict matching the structure of ``input_dict`` with integer axes
+        or None for each leaf.
     """
 
     in_axes_dict = dict()
@@ -2014,6 +2131,37 @@ def generate_params_combinations(
 def process_initial_values(
     initial_values_dict, key, n_assets, n_parameter_sets, force_scalar=False
 ):
+    """Extract and broadcast a parameter value to the correct shape.
+
+    Handles flexible input formats: scalar (broadcast to all assets and sets),
+    per-asset vector (broadcast across sets), or full matrix. Used by the
+    schema-aware initialization path.
+
+    Parameters
+    ----------
+    initial_values_dict : dict
+        Dictionary containing initial parameter values.
+    key : str
+        Parameter name to extract.
+    n_assets : int
+        Number of assets (columns).
+    n_parameter_sets : int
+        Number of parameter sets / ensemble members (rows).
+    force_scalar : bool, optional
+        If True, treat value as a scalar even if it's array-like, producing
+        shape ``(n_parameter_sets,)`` instead of ``(n_parameter_sets, n_assets)``.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``(n_parameter_sets, n_assets)`` or ``(n_parameter_sets,)``
+        if ``force_scalar=True``.
+
+    Raises
+    ------
+    ValueError
+        If ``key`` is not in ``initial_values_dict`` or has incompatible shape.
+    """
     if key in initial_values_dict:
         initial_value = initial_values_dict[key]
         if isinstance(initial_value, (np.ndarray, jnp.ndarray, list)):
@@ -2051,7 +2199,7 @@ def _to_float64_list(value):
 
 def _to_bd18_string_list(values):
     """Convert list of floats to list of 18 fixed point integer strings.
-    
+
     Uses string manipulation to avoid overflow from multiplication by 1e18.
     Formats each value with 18 decimal places, then removes the decimal point
     and strips leading zeros.
@@ -2076,26 +2224,37 @@ def _to_bd18_string_list(values):
 
 
 def convert_parameter_values(params, run_fingerprint, max_memory_days=None):
-    """
-    Compute parameter values from raw parameters and return as both float64 lists
-    and 18 decimal place fixed point strings.
+    """Convert raw (reparameterized) parameters to human-readable and on-chain formats.
+
+    Applies the inverse reparameterizations (logit → lambda → memory_days, log2 → k,
+    squareplus → exponents, etc.) and produces both float64 values and BD18 fixed-point
+    string representations suitable for on-chain deployment.
 
     Parameters
     ----------
     params : dict
-        Dictionary containing raw parameter values (e.g., "logit_lamb", "log_k", etc.)
+        Raw parameter dictionary (e.g., ``'logit_lamb'``, ``'log_k'``, ``'raw_exponents'``).
     run_fingerprint : dict
-        Dictionary containing run_fingerprint information, must include "chunk_period"
+        Run configuration, must include ``'chunk_period'``.
     max_memory_days : float, optional
-        Maximum memory days for clipping. Default is None.
+        Maximum memory days for lambda clipping. If None, uses
+        ``run_fingerprint['max_memory_days']`` (default 365).
 
     Returns
     -------
     dict
-        Dictionary with top-level keys "values" and "strings", each containing
-        a dictionary mapping parameter names to their respective lists:
-        - "values": dict mapping parameter names to lists of float64 values
-        - "strings": dict mapping parameter names to lists of 18 decimal place fixed point strings
+        ``{'values': {...}, 'strings': {...}}`` where each inner dict maps
+        human-readable parameter names (``'lamb'``, ``'k'``, ``'exponents'``,
+        ``'width'``, ``'amplitude'``, ``'pre_exp_scaling'``) to lists.
+        ``'values'`` contains float64 lists; ``'strings'`` contains BD18
+        (18-decimal fixed-point integer) string representations.
+
+    Notes
+    -----
+    BD18 format multiplies the float value by 10^18 and represents as an integer
+    string, matching the Solidity ``uint256`` representation used by the on-chain
+    QuantAMM contracts. The conversion uses string manipulation to avoid float64
+    overflow from direct multiplication by 1e18.
     """
     result = {"values": {}, "strings": {}}
     memory_days = None  # Keep track of computed memory_days for reuse

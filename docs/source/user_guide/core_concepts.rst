@@ -21,6 +21,10 @@ For modelling QuantAMM pools, the library supports multiple different strategies
 * Anti-Momentum
 * Power Channel
 * Mean Reversion Channel
+* Triple Threat Mean Reversion Channel
+* Difference Momentum (MACD-like)
+* Min Variance
+* HODLing Index / Traditional HODLing Index
 
 Understanding Pool Parameters
 -----------------------------
@@ -80,3 +84,27 @@ This allows fine-tuning of how aggressively each asset's weight responds to mark
 * Custom parameter sets for different market regimes
 
 Note that when using vector parameters, the length must match the number of assets in the pool.
+
+Training Robustness
+-------------------
+
+Optimising strategy parameters on historical data risks overfitting — the
+strategy memorises the training period rather than learning generalisable
+signals.  quantammsim provides a multi-level approach to address this:
+
+* **Walk-forward validation**: Train on rolling windows and evaluate on
+  subsequent out-of-sample periods.  The Walk-Forward Efficiency (WFE)
+  metric quantifies generalisation quality.  See
+  :doc:`../tutorials/walk_forward_analysis`.
+
+* **Ensemble training**: Train multiple parameter sets and average their
+  outputs for implicit regularisation.  See
+  :doc:`../tutorials/ensemble_training`.
+
+* **Hyperparameter tuning**: Optimise training hyperparameters (learning
+  rate, regularisation strength, etc.) using OOS metrics as the objective,
+  not in-sample performance.  See :doc:`../tutorials/hyperparameter_tuning`.
+
+* **Regularisation features**: Early stopping, SWA, price noise
+  augmentation, turnover penalty, and weight decay.  See
+  :doc:`robustness_features`.

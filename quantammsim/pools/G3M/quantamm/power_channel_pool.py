@@ -252,9 +252,9 @@ class PowerChannelPool(MomentumPool):
 
         # exponents: prefer sp_exponents, fall back to raw_exponents (both use squareplus)
         if params.get("sp_exponents") is not None:
-            exponents = jnp.clip(squareplus(params.get("sp_exponents")), a_min=1.0, a_max=None)
+            exponents = jnp.clip(squareplus(params.get("sp_exponents")), min=1.0)
         else:
-            exponents = jnp.clip(squareplus(params.get("raw_exponents")), a_min=1.0, a_max=None)
+            exponents = jnp.clip(squareplus(params.get("raw_exponents")), min=1.0)
 
         rule_outputs = _jax_power_channel_weight_update(
             gradients, k, exponents, pre_exp_scaling=pre_exp_scaling
@@ -298,7 +298,7 @@ class PowerChannelPool(MomentumPool):
         max_lamb = jax_memory_days_to_lamb(
             run_fingerprint["max_memory_days"], run_fingerprint["chunk_period"]
         )
-        lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+        lamb = jnp.clip(lamb, min=0.0, max=max_lamb)
 
         # Get estimator constants (inherited from MomentumPool)
         G_inf, saturated_b = self._get_estimator_constants(lamb)
@@ -336,9 +336,9 @@ class PowerChannelPool(MomentumPool):
 
         # exponents: prefer sp_exponents, fall back to raw_exponents (both use squareplus)
         if params.get("sp_exponents") is not None:
-            exponents = jnp.clip(squareplus(params.get("sp_exponents")), a_min=1.0, a_max=None)
+            exponents = jnp.clip(squareplus(params.get("sp_exponents")), min=1.0)
         else:
-            exponents = jnp.clip(squareplus(params.get("raw_exponents")), a_min=1.0, a_max=None)
+            exponents = jnp.clip(squareplus(params.get("raw_exponents")), min=1.0)
 
         # Apply power channel weight update
         rule_output = _jax_power_channel_weight_update(

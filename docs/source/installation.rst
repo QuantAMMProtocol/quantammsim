@@ -4,7 +4,7 @@ Installation
 Requirements
 ------------
 
-* Python 3.8+
+* Python 3.9+
 * JAX
 * NumPy
 * Pandas

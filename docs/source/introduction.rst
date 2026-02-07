@@ -76,8 +76,13 @@ Key Features
 
 * Simulation of multiple AMM protocols (Balancer, QuantAMM, CowAMM and Gyroscope)
 * Various weight-updating strategies for QuantAMM pools
-* Historical data analysis
-* Performance metrics calculation
+* Historical data analysis and backtesting
+* ~30 financial metrics for training and evaluation (Sharpe, Calmar, Sterling, VaR, etc.)
+* Walk-forward validation for out-of-sample robustness assessment
+* Ensemble training with structured initialisation (LHS, Sobol, grid)
+* Hyperparameter tuning using Optuna with walk-forward objectives
+* Robustness features: early stopping, SWA, price noise augmentation, Rademacher complexity
+* Composable hook system for custom fee logic, weight bounds, and performance tracking
 
 Quick Start
 ~~~~~~~~~~~

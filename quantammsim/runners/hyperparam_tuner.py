@@ -4,43 +4,44 @@ Hyperparameter Tuner: Optuna/TPE-based optimization of training hyperparameters.
 This module provides meta-optimization for training hyperparameters using
 walk-forward evaluation as the objective. Instead of optimizing for in-sample
 performance (which leads to overfitting), we optimize for OOS metrics like:
+
 - Mean OOS Sharpe
 - Walk-Forward Efficiency (WFE)
 - Rademacher-adjusted Sharpe
 
-Architecture:
-------------
-Level 3: HyperparamTuner (this module)
-    ↓ tries different (lr, bs, bout_offset, ...)
-Level 2: TrainingEvaluator
-    ↓ runs walk-forward cycles, computes WFE/Rademacher
-Level 1: Trainer (train_on_historic_data, multi_period_sgd)
-    ↓ optimizes strategy params (lamb, k, weights)
-Level 0: Forward pass
+Architecture::
+
+    Level 3: HyperparamTuner (this module)
+        | tries different (lr, bs, bout_offset, ...)
+    Level 2: TrainingEvaluator
+        | runs walk-forward cycles, computes WFE/Rademacher
+    Level 1: Trainer (train_on_historic_data, multi_period_sgd)
+        | optimizes strategy params (lamb, k, weights)
+    Level 0: Forward pass
 
 Usage:
-------
-```python
-from quantammsim.runners.hyperparam_tuner import HyperparamTuner
 
-# Basic usage - tune training hyperparameters
-tuner = HyperparamTuner(
-    runner_name="train_on_historic_data",
-    n_trials=50,
-    n_wfa_cycles=3,  # WFA cycles per trial
-)
-result = tuner.tune(run_fingerprint)
+.. code-block:: python
 
-# Use best params for final training
-run_fingerprint["optimisation_settings"].update(result.best_params)
+    from quantammsim.runners.hyperparam_tuner import HyperparamTuner
 
-# Multi-objective: optimize OOS Sharpe AND WFE
-tuner = HyperparamTuner(
-    runner_name="multi_period_sgd",
-    objective="multi",  # Pareto front of OOS Sharpe vs WFE
-    n_trials=30,
-)
-```
+    # Basic usage - tune training hyperparameters
+    tuner = HyperparamTuner(
+        runner_name="train_on_historic_data",
+        n_trials=50,
+        n_wfa_cycles=3,  # WFA cycles per trial
+    )
+    result = tuner.tune(run_fingerprint)
+
+    # Use best params for final training
+    run_fingerprint["optimisation_settings"].update(result.best_params)
+
+    # Multi-objective: optimize OOS Sharpe AND WFE
+    tuner = HyperparamTuner(
+        runner_name="multi_period_sgd",
+        objective="multi",  # Pareto front of OOS Sharpe vs WFE
+        n_trials=30,
+    )
 """
 
 import numpy as np
@@ -100,7 +101,36 @@ OUTER_TO_INNER_METRIC = {
 
 @dataclass
 class TuningResult:
-    """Results from hyperparameter tuning."""
+    """Results from hyperparameter tuning.
+
+    Captures the best trial, study-level statistics, and (optionally) the
+    full Pareto front for multi-objective optimisation.
+
+    Attributes
+    ----------
+    best_params : Dict[str, Any]
+        Hyperparameter values from the best trial.
+    best_value : float
+        Objective value achieved by the best trial.
+    best_evaluation : Optional[EvaluationResult]
+        Full walk-forward evaluation result for the best trial, or ``None``
+        if evaluation was skipped.
+    n_trials : int
+        Total number of trials launched.
+    n_completed : int
+        Number of trials that completed successfully.
+    n_pruned : int
+        Number of trials pruned by the Optuna pruner.
+    n_failed : int
+        Number of trials that raised exceptions.
+    all_trials : List[Dict[str, Any]]
+        Per-trial summary dicts (params, value, state) for post-hoc analysis.
+    pareto_front : Optional[List[Dict[str, Any]]]
+        For multi-objective studies: list of non-dominated trial summaries.
+        ``None`` for single-objective studies.
+    total_time_seconds : float
+        Wall-clock time for the entire tuning run.
+    """
     best_params: Dict[str, Any]
     best_value: float
     best_evaluation: Optional[EvaluationResult]
@@ -132,12 +162,14 @@ class HyperparamSpace:
     - categorical: {"choices": ["adam", "sgd"]}
     - conditional: {"conditional_on": "parent_param", "conditional_value": "value", ...}
 
-    Conditional Parameters:
+    Conditional parameters:
+
     - softmin_temperature: only sampled when aggregation="softmin"
     - weight_decay: only sampled when use_weight_decay=True (and triggers adamw)
     - lr_decay_ratio: only sampled when lr_schedule_type != "constant"
-    - warmup_fraction: only sampled when lr_schedule_type == "warmup_cosine"
-      (converted to warmup_steps = warmup_fraction * n_iterations)
+    - warmup_fraction: only sampled when lr_schedule_type == "warmup_cosine",
+      converted to ``warmup_steps = warmup_fraction * n_iterations``
+
 
     Note on bout_offset:
     - bout_offset is in MINUTES, always multiples of 1440 (whole days)
@@ -313,22 +345,66 @@ class HyperparamSpace:
 
     @classmethod
     def default_sgd_space(cls, cycle_days: int = 180) -> "HyperparamSpace":
-        """Default search space for SGD-based training. Wrapper around create()."""
+        """Default search space for SGD-based training.
+
+        Parameters
+        ----------
+        cycle_days : int
+            Training cycle length in days (scales ``bout_offset`` range).
+
+        Returns
+        -------
+        HyperparamSpace
+            Space with SGD-appropriate learning rate, schedule, and
+            early stopping ranges.
+        """
         return cls.create(cycle_days=cycle_days, optimizer="sgd")
 
     @classmethod
     def default_adam_space(cls, cycle_days: int = 180) -> "HyperparamSpace":
-        """Default search space for Adam-based training. Wrapper around create()."""
+        """Default search space for Adam-based training.
+
+        Parameters
+        ----------
+        cycle_days : int
+            Training cycle length in days (scales ``bout_offset`` range).
+
+        Returns
+        -------
+        HyperparamSpace
+            Space with Adam-appropriate learning rate and schedule ranges.
+        """
         return cls.create(cycle_days=cycle_days, optimizer="adam")
 
     @classmethod
     def default_multi_period_space(cls, cycle_days: int = 180) -> "HyperparamSpace":
-        """Default search space for multi_period_sgd. Wrapper around create()."""
+        """Default search space for multi-period SGD training.
+
+        Includes additional parameters for period count and aggregation
+        method selection.
+
+        Parameters
+        ----------
+        cycle_days : int
+            Training cycle length in days.
+
+        Returns
+        -------
+        HyperparamSpace
+        """
         return cls.create(runner="multi_period_sgd", cycle_days=cycle_days)
 
     @classmethod
     def minimal_space(cls) -> "HyperparamSpace":
-        """Minimal space for quick tuning. Wrapper around create()."""
+        """Minimal search space for quick smoke-test tuning.
+
+        Contains only learning rate and epoch count — useful for
+        verifying the tuning pipeline before a full run.
+
+        Returns
+        -------
+        HyperparamSpace
+        """
         return cls.create(minimal=True)
 
     @classmethod
@@ -341,7 +417,28 @@ class HyperparamSpace:
         include_weight_decay: bool = True,
         **kwargs,
     ) -> "HyperparamSpace":
-        """Create search space with bout_offset scaled to cycle duration. Wrapper around create()."""
+        """Create search space with ``bout_offset`` scaled to cycle duration.
+
+        A convenience wrapper around :meth:`create` that forwards all
+        keyword arguments and sets the ``cycle_days`` accordingly.
+
+        Parameters
+        ----------
+        cycle_days : int
+            Training cycle length in days.
+        runner : str
+            Runner name (``"train_on_historic_data"`` or ``"multi_period_sgd"``).
+        include_lr_schedule : bool
+            Include learning rate schedule parameters.
+        include_early_stopping : bool
+            Include early stopping parameters.
+        include_weight_decay : bool
+            Include weight decay parameter.
+
+        Returns
+        -------
+        HyperparamSpace
+        """
         return cls.create(
             runner=runner,
             cycle_days=cycle_days,
@@ -392,7 +489,27 @@ class HyperparamSpace:
         return suggested
 
     def _suggest_param(self, trial: optuna.Trial, name: str, spec: Dict[str, Any]) -> Any:
-        """Suggest a single parameter value."""
+        """Suggest a single parameter value from an Optuna trial.
+
+        Dispatches to ``trial.suggest_categorical``, ``trial.suggest_int``,
+        or ``trial.suggest_float`` depending on the spec format.
+
+        Parameters
+        ----------
+        trial : optuna.Trial
+            Active Optuna trial.
+        name : str
+            Parameter name (used as Optuna distribution name).
+        spec : Dict[str, Any]
+            Parameter specification with keys ``"choices"`` (categorical),
+            ``"type": "int"`` (integer), or ``"low"``/``"high"`` (float).
+            Optional ``"log": True`` for log-uniform sampling.
+
+        Returns
+        -------
+        Any
+            Sampled parameter value.
+        """
         if "choices" in spec:
             return trial.suggest_categorical(name, spec["choices"])
         elif spec.get("type") == "int":
@@ -1125,7 +1242,19 @@ class HyperparamTuner:
         return result
 
     def _print_report(self, result: TuningResult, study: optuna.Study):
-        """Print tuning results."""
+        """Print a human-readable summary of the tuning run.
+
+        Includes trial counts (completed/pruned/failed), best trial
+        parameters and value, timing, and (for multi-objective studies)
+        the Pareto front.
+
+        Parameters
+        ----------
+        result : TuningResult
+            Completed tuning result.
+        study : optuna.Study
+            Underlying Optuna study (used to query trial states).
+        """
         print("\n" + "=" * 70)
         print("TUNING COMPLETE")
         print("=" * 70)

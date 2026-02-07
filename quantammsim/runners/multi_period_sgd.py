@@ -56,19 +56,69 @@ from quantammsim.core_simulator.forward_pass import (
 
 @dataclass
 class PeriodSpec:
-    """Specification for a single evaluation period within the forward pass."""
+    """Specification for a single evaluation period within the forward pass.
+
+    Defines a contiguous temporal slice of the forward pass output that
+    constitutes one evaluation window. Multiple ``PeriodSpec`` instances
+    partition (or overlap-partition) the full simulation into the windows
+    used by multi-period SGD training.
+
+    Attributes
+    ----------
+    period_id : int
+        Zero-based ordinal index identifying this period within the
+        sequence of evaluation windows.
+    rel_start : int
+        Start index of this period, relative to the first timestep of
+        the forward pass output (not the raw price array).
+    rel_end : int
+        End index (exclusive) of this period, relative to the first
+        timestep of the forward pass output.
+    """
     period_id: int
     rel_start: int  # Start index relative to forward pass output
     rel_end: int    # End index relative to forward pass output
 
     @property
     def length(self) -> int:
+        """Return the number of timesteps in this period."""
         return self.rel_end - self.rel_start
 
 
 @dataclass
 class MultiPeriodResult:
-    """Results from multi-period training."""
+    """Results from multi-period training.
+
+    Collects per-period evaluation metrics and their summary statistics
+    after training a single parameter set across all temporal windows.
+
+    Attributes
+    ----------
+    period_sharpes : List[float]
+        Annualised Sharpe ratio for each evaluation period.
+    period_returns : List[float]
+        Cumulative return for each evaluation period.
+    period_returns_over_hodl : List[float]
+        Cumulative return relative to a uniform hold-all-assets baseline,
+        per evaluation period.
+    mean_sharpe : float
+        Arithmetic mean of ``period_sharpes``.
+    std_sharpe : float
+        Standard deviation of ``period_sharpes``, measuring cross-period
+        consistency.
+    worst_sharpe : float
+        Minimum of ``period_sharpes`` (worst single-period performance).
+    mean_returns_over_hodl : float
+        Arithmetic mean of ``period_returns_over_hodl``.
+    epochs_trained : int
+        Total number of gradient update steps executed.
+    final_objective : float
+        Best aggregated objective value observed during training (the
+        value that triggered ``best_params`` to be saved).
+    best_params : Dict[str, Any]
+        Strategy parameters corresponding to ``final_objective``, stored
+        as NumPy arrays. Empty dict if training produced no valid update.
+    """
     period_sharpes: List[float]
     period_returns: List[float]
     period_returns_over_hodl: List[float]
@@ -193,7 +243,42 @@ def generate_period_specs(
     total_length: int,
     overlap_fraction: float = 0.0,
 ) -> List[PeriodSpec]:
-    """Generate period specifications for multi-period training."""
+    """Generate period specifications that partition the simulation into evaluation windows.
+
+    Divides ``total_length`` timesteps into ``n_periods`` contiguous windows.
+    When ``overlap_fraction`` is zero the windows tile the interval exactly
+    (the last period absorbs any remainder). When positive, each window
+    extends into its successor by ``overlap_fraction`` of the base period
+    length, producing correlated but longer evaluation windows useful for
+    smoothing period-boundary effects.
+
+    Parameters
+    ----------
+    n_periods : int
+        Number of evaluation windows to generate.
+    total_length : int
+        Total number of timesteps available in the forward pass output.
+    overlap_fraction : float, optional
+        Fraction of a base period length by which consecutive windows
+        overlap. ``0.0`` (default) produces a non-overlapping partition;
+        ``0.5`` means each window shares half its length with the next.
+
+    Returns
+    -------
+    List[PeriodSpec]
+        Ordered list of ``PeriodSpec`` instances covering (possibly
+        overlapping) the full simulation length.
+
+    Examples
+    --------
+    >>> specs = generate_period_specs(n_periods=4, total_length=1000)
+    >>> [(s.rel_start, s.rel_end) for s in specs]
+    [(0, 250), (250, 500), (500, 750), (750, 1000)]
+
+    >>> specs = generate_period_specs(3, 900, overlap_fraction=0.5)
+    >>> [(s.rel_start, s.rel_end) for s in specs]
+    [(0, 300), (150, 450), (300, 600)]
+    """
     if overlap_fraction > 0:
         base_period_len = total_length // n_periods
         overlap = int(base_period_len * overlap_fraction)

@@ -13,7 +13,26 @@ import numpy as np
 # =============================================================================
 
 def _latin_hypercube_samples(n_samples: int, n_dims: int, seed: int = 0) -> np.ndarray:
-    """Generate Latin Hypercube samples in [0, 1]^n_dims."""
+    """Generate Latin Hypercube samples in [0, 1]^n_dims.
+
+    Each dimension is divided into ``n_samples`` equal intervals and one
+    random point is placed in each interval, with a random permutation
+    across dimensions to ensure space-filling coverage.
+
+    Parameters
+    ----------
+    n_samples : int
+        Number of sample points.
+    n_dims : int
+        Dimensionality of the sample space.
+    seed : int
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    np.ndarray, shape (n_samples, n_dims)
+        Samples in [0, 1]^n_dims with stratified marginals.
+    """
     rng = np.random.default_rng(seed)
     samples = np.zeros((n_samples, n_dims))
     for dim in range(n_dims):
@@ -24,7 +43,27 @@ def _latin_hypercube_samples(n_samples: int, n_dims: int, seed: int = 0) -> np.n
 
 
 def _centered_lhs_samples(n_samples: int, n_dims: int, seed: int = 0) -> np.ndarray:
-    """Generate centered Latin Hypercube samples in [0, 1]^n_dims."""
+    """Generate centered Latin Hypercube samples in [0, 1]^n_dims.
+
+    Like :func:`_latin_hypercube_samples` but places each point at the
+    *centre* of its stratum (interval midpoint) rather than a random
+    position within the interval.  This produces a more deterministic,
+    evenly-spaced layout at the cost of reduced randomness.
+
+    Parameters
+    ----------
+    n_samples : int
+        Number of sample points.
+    n_dims : int
+        Dimensionality of the sample space.
+    seed : int
+        Random seed (controls the stratum permutation only).
+
+    Returns
+    -------
+    np.ndarray, shape (n_samples, n_dims)
+        Centred LHS samples in [0, 1]^n_dims.
+    """
     rng = np.random.default_rng(seed)
     samples = np.zeros((n_samples, n_dims))
     for dim in range(n_dims):
@@ -35,7 +74,25 @@ def _centered_lhs_samples(n_samples: int, n_dims: int, seed: int = 0) -> np.ndar
 
 
 def _sobol_samples(n_samples: int, n_dims: int, seed: int = 0) -> np.ndarray:
-    """Generate Sobol quasi-random samples in [0, 1]^n_dims."""
+    """Generate scrambled Sobol quasi-random samples in [0, 1]^n_dims.
+
+    Uses ``scipy.stats.qmc.Sobol`` with Owen scrambling for a
+    low-discrepancy sequence.  Falls back to LHS if scipy is unavailable.
+
+    Parameters
+    ----------
+    n_samples : int
+        Number of sample points.
+    n_dims : int
+        Dimensionality of the sample space.
+    seed : int
+        Scrambling seed for reproducibility.
+
+    Returns
+    -------
+    np.ndarray, shape (n_samples, n_dims)
+        Sobol samples in [0, 1]^n_dims (or LHS fallback).
+    """
     try:
         from scipy.stats import qmc
         sampler = qmc.Sobol(d=n_dims, scramble=True, seed=seed)
@@ -47,7 +104,27 @@ def _sobol_samples(n_samples: int, n_dims: int, seed: int = 0) -> np.ndarray:
 
 
 def _grid_samples(n_samples: int, n_dims: int, seed: int = 0) -> np.ndarray:
-    """Generate grid samples in [0, 1]^n_dims."""
+    """Generate grid samples in [0, 1]^n_dims.
+
+    Creates a regular grid with ``ceil(n_samples^(1/n_dims))`` points per
+    dimension, then randomly subsamples to exactly ``n_samples`` points
+    if the full grid is larger.  Grid coordinates are spaced in [0.1, 0.9]
+    to avoid boundary effects.
+
+    Parameters
+    ----------
+    n_samples : int
+        Desired number of sample points.
+    n_dims : int
+        Dimensionality of the sample space.
+    seed : int
+        Random seed for the subsampling step.
+
+    Returns
+    -------
+    np.ndarray, shape (n_samples, n_dims)
+        Grid samples in [0.1, 0.9]^n_dims.
+    """
     points_per_dim = max(2, int(np.ceil(n_samples ** (1.0 / n_dims))))
     coords = [np.linspace(0.1, 0.9, points_per_dim) for _ in range(n_dims)]
     grid = np.meshgrid(*coords, indexing='ij')
@@ -105,6 +182,9 @@ def generate_ensemble_samples(
 # Shared parameter-space sampling utility
 # =============================================================================
 
+#: Parameter keys excluded from parameter-space sampling by default.
+#: ``subsidary_params`` are subsidiary pool parameters (not directly tunable),
+#: and ``initial_weights_logits`` are typically handled separately by Optuna.
 _DEFAULT_EXCLUDE_KEYS = ("subsidary_params", "initial_weights_logits")
 
 

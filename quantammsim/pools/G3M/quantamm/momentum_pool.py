@@ -418,7 +418,7 @@ class MomentumPool(TFMMBasePool):
         max_lamb = jax_memory_days_to_lamb(
             run_fingerprint["max_memory_days"], run_fingerprint["chunk_period"]
         )
-        lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+        lamb = jnp.clip(lamb, min=0.0, max=max_lamb)
 
         # Get estimator constants
         G_inf, saturated_b = self._get_estimator_constants(lamb)

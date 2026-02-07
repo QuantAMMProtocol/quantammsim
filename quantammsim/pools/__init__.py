@@ -7,7 +7,10 @@ from .G3M.quantamm.antimomentum_pool import AntiMomentumPool
 from .G3M.quantamm.difference_momentum_pool import DifferenceMomentumPool
 from .G3M.quantamm.power_channel_pool import PowerChannelPool
 from .G3M.quantamm.mean_reversion_channel_pool import MeanReversionChannelPool
+from .G3M.quantamm.triple_threat_mean_reversion_channel_pool import TripleThreatMeanReversionChannelPool
 from .G3M.quantamm.min_variance_pool import MinVariancePool
+from .G3M.quantamm.hodling_index_pool import HodlingIndexPool
+from .G3M.quantamm.trad_hodling_index_pool import TradHodlingIndexPool
 from .FM_AMM.cow_pool import CowPool
 from .ECLP.gyroscope import GyroscopePool
 
@@ -18,9 +21,13 @@ __all__ = [
     "TFMMBasePool",
     "MomentumPool",
     "AntiMomentumPool",
+    "DifferenceMomentumPool",
     "PowerChannelPool",
     "MeanReversionChannelPool",
+    "TripleThreatMeanReversionChannelPool",
     "MinVariancePool",
+    "HodlingIndexPool",
+    "TradHodlingIndexPool",
     "CowPool",
     "GyroscopePool",
 ]
