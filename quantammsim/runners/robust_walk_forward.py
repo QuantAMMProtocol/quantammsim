@@ -32,7 +32,35 @@ from datetime import datetime
 
 @dataclass
 class WalkForwardCycle:
-    """Specification for a single walk-forward cycle."""
+    """Specification for a single walk-forward train/test cycle.
+
+    Defines one segment of a walk-forward analysis: a contiguous training
+    window followed by a contiguous test window.  Date fields are set at
+    cycle-generation time; index fields are populated later once the price
+    data has been loaded and aligned.
+
+    Attributes
+    ----------
+    cycle_number : int
+        Zero-based index of this cycle within the walk-forward sequence.
+    train_start_date : str
+        Training window start date (``"YYYY-MM-DD HH:MM:SS"``).
+    train_end_date : str
+        Training window end date (inclusive).
+    test_start_date : str
+        Test window start date, typically equal to ``train_end_date``.
+    test_end_date : str
+        Test window end date (inclusive).
+    train_start_idx : int
+        Row index into the price array for the start of training.
+        Default 0; populated after data loading.
+    train_end_idx : int
+        Row index for the end of training. Default 0.
+    test_start_idx : int
+        Row index for the start of testing. Default 0.
+    test_end_idx : int
+        Row index for the end of testing. Default 0.
+    """
     cycle_number: int
     train_start_date: str
     train_end_date: str
@@ -198,13 +226,35 @@ def compute_walk_forward_efficiency(
 # =============================================================================
 
 def datetime_to_timestamp(date_string: str) -> float:
-    """Convert datetime string to unix timestamp."""
+    """Convert a datetime string to a Unix timestamp.
+
+    Parameters
+    ----------
+    date_string : str
+        Date in ``"YYYY-MM-DD HH:MM:SS"`` format.
+
+    Returns
+    -------
+    float
+        Seconds since the Unix epoch, interpreted in the local timezone.
+    """
     dt = datetime.strptime(date_string, "%Y-%m-%d %H:%M:%S")
     return dt.timestamp()
 
 
 def timestamp_to_datetime(timestamp: float) -> str:
-    """Convert unix timestamp to datetime string."""
+    """Convert a Unix timestamp to a datetime string.
+
+    Parameters
+    ----------
+    timestamp : float
+        Seconds since the Unix epoch.
+
+    Returns
+    -------
+    str
+        Formatted date string in ``"YYYY-MM-DD HH:MM:SS"`` format.
+    """
     dt = datetime.fromtimestamp(timestamp)
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 

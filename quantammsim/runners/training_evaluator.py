@@ -112,7 +112,54 @@ from quantammsim.runners.robust_walk_forward import (
 
 @dataclass
 class CycleEvaluation:
-    """Evaluation results for a single walk-forward cycle."""
+    """Evaluation results for a single walk-forward cycle.
+
+    Captures in-sample (IS) and out-of-sample (OOS) performance metrics
+    for one train/test window, plus robustness diagnostics.
+
+    Attributes
+    ----------
+    cycle_number : int
+        Zero-based index of this cycle.
+    is_sharpe : float
+        Annualised Sharpe ratio on the in-sample (training) window.
+    is_returns_over_hodl : float
+        Cumulative return relative to uniform HODL on the IS window.
+    oos_sharpe : float
+        Annualised Sharpe ratio on the out-of-sample (test) window.
+    oos_returns_over_hodl : float
+        Cumulative return relative to uniform HODL on the OOS window.
+    walk_forward_efficiency : float
+        WFE = OOS Sharpe / IS Sharpe (Pardo metric).
+    is_oos_gap : float
+        IS Sharpe minus OOS Sharpe (positive = overfitting).
+    epochs_trained : int
+        Number of gradient updates in this cycle's training run.
+    rademacher_complexity : float or None
+        Empirical Rademacher complexity from training checkpoints.
+    adjusted_oos_sharpe : float or None
+        OOS Sharpe minus the Rademacher haircut.
+    is_calmar, oos_calmar : float or None
+        Calmar ratio (return / max drawdown) for IS and OOS.
+    is_sterling, oos_sterling : float or None
+        Sterling ratio for IS and OOS.
+    is_ulcer, oos_ulcer : float or None
+        Ulcer index for IS and OOS.
+    is_returns, oos_returns : float or None
+        Cumulative returns for IS and OOS.
+    is_daily_log_sharpe, oos_daily_log_sharpe : float or None
+        Daily-log-return Sharpe for IS and OOS.
+    trained_params : dict or None
+        Strategy parameters at end of training for this cycle.
+    train_start_date, train_end_date : str or None
+        IS window date boundaries.
+    test_start_date, test_end_date : str or None
+        OOS window date boundaries.
+    run_location : str or None
+        Filesystem path to the training output for this cycle.
+    run_fingerprint : dict or None
+        Full run configuration used for this cycle.
+    """
     cycle_number: int
     is_sharpe: float
     is_returns_over_hodl: float
@@ -148,7 +195,39 @@ class CycleEvaluation:
 
 @dataclass
 class EvaluationResult:
-    """Complete evaluation results."""
+    """Complete evaluation results across all walk-forward cycles.
+
+    Aggregates per-cycle metrics into summary statistics and provides
+    an effectiveness verdict based on configurable thresholds.
+
+    Attributes
+    ----------
+    trainer_name : str
+        Identifier for the trainer wrapper that produced these results.
+    trainer_config : Dict[str, Any]
+        Configuration dict passed to the trainer.
+    cycles : List[CycleEvaluation]
+        Per-cycle evaluation results.
+    mean_wfe : float
+        Mean Walk-Forward Efficiency across cycles.
+    mean_oos_sharpe : float
+        Mean OOS Sharpe ratio across cycles.
+    std_oos_sharpe : float
+        Standard deviation of OOS Sharpe across cycles.
+    worst_oos_sharpe : float
+        Minimum OOS Sharpe across cycles.
+    mean_is_oos_gap : float
+        Mean IS–OOS Sharpe gap (positive = overfitting).
+    aggregate_rademacher : float or None
+        Mean Rademacher complexity across cycles (if computed).
+    adjusted_mean_oos_sharpe : float or None
+        Mean OOS Sharpe minus the mean Rademacher haircut.
+    is_effective : bool
+        Whether the strategy passes the effectiveness criteria
+        (positive mean OOS Sharpe, WFE > threshold, etc.).
+    effectiveness_reasons : List[str]
+        Human-readable explanations for the effectiveness verdict.
+    """
     trainer_name: str
     trainer_config: Dict[str, Any]
     cycles: List[CycleEvaluation]
@@ -222,7 +301,11 @@ class TrainerWrapper:
 
 
 class FunctionWrapper(TrainerWrapper):
-    """Wrap a plain function as a trainer."""
+    """Wrap a plain ``(run_fingerprint, **kwargs) -> (params, metrics)`` function as a trainer.
+
+    Use via :meth:`TrainingEvaluator.from_function` rather than
+    constructing directly.
+    """
 
     def __init__(
         self,
@@ -400,7 +483,36 @@ class ExistingRunnerWrapper(TrainerWrapper):
         train_start_date: Optional[str],
         train_end_date: Optional[str],
     ) -> Tuple[Dict, Dict]:
-        """Adapter for multi_period_sgd_training."""
+        """Run multi-period SGD training for a single walk-forward cycle.
+
+        Adapts the multi-period runner interface to the standard trainer
+        contract by constructing a cycle-specific fingerprint and
+        extracting the best parameters from the result.
+
+        Parameters
+        ----------
+        data_dict : dict
+            Price data and index bounds.
+        train_start_idx, train_end_idx : int
+            Row indices bounding the training window.
+        pool : AbstractPool
+            Pool instance (used for parameter initialisation).
+        run_fingerprint : dict
+            Base run configuration (deep-copied and modified per cycle).
+        n_assets : int
+            Number of assets.
+        warm_start_params : dict or None
+            Parameters from the previous cycle for warm-starting.
+        train_start_date, train_end_date : str or None
+            ISO-8601 date boundaries for this cycle's training window.
+
+        Returns
+        -------
+        params : dict
+            Best parameters found during training.
+        metadata : dict
+            Summary statistics from the multi-period result.
+        """
         from datetime import datetime, timedelta
         from quantammsim.runners.multi_period_sgd import multi_period_sgd_training
 
@@ -559,7 +671,34 @@ class RandomBaselineWrapper(TrainerWrapper):
         run_fingerprint: dict,
         n_assets: int,
     ) -> Tuple[Dict[str, float], Dict[str, float]]:
-        """Compute train and test metrics for random params."""
+        """Compute train and test period metrics for a given parameter set.
+
+        Runs a no-gradient forward pass over the training window and the
+        test window, then calls ``calculate_period_metrics`` on each to
+        extract Sharpe, Calmar, returns-over-HODL, etc.
+
+        Parameters
+        ----------
+        params : dict
+            Strategy parameter dict.
+        data_dict : dict
+            Price data and index bounds.
+        train_start_idx, train_end_idx : int
+            Row indices bounding the training window.
+        pool : AbstractPool
+            Pool instance.
+        run_fingerprint : dict
+            Run configuration.
+        n_assets : int
+            Number of assets.
+
+        Returns
+        -------
+        train_metrics : dict
+            Metric dict for the training window.
+        test_metrics : dict
+            Metric dict for the test window.
+        """
         from jax import jit
         from functools import partial as Partial
         from quantammsim.core_simulator.forward_pass import forward_pass_nograd
@@ -1133,7 +1272,27 @@ class TrainingEvaluator:
         cycles: List[WalkForwardCycle],
         all_checkpoint_returns: List[np.ndarray],
     ) -> EvaluationResult:
-        """Aggregate cycle results into final evaluation."""
+        """Aggregate per-cycle results into a single :class:`EvaluationResult`.
+
+        Computes mean/std/worst OOS Sharpe, mean WFE, mean IS–OOS gap,
+        optional aggregate Rademacher complexity with haircut, and an
+        effectiveness verdict.
+
+        Parameters
+        ----------
+        cycle_results : List[CycleEvaluation]
+            Per-cycle evaluation results.
+        cycles : List[WalkForwardCycle]
+            Cycle specifications (used for test-window lengths).
+        all_checkpoint_returns : List[np.ndarray]
+            Per-cycle checkpoint return matrices for Rademacher computation.
+            Empty list if checkpoints were not tracked.
+
+        Returns
+        -------
+        EvaluationResult
+            Aggregated evaluation with summary statistics and verdict.
+        """
         oos_sharpes = [c.oos_sharpe for c in cycle_results]
         wfes = [c.walk_forward_efficiency for c in cycle_results]
         gaps = [c.is_oos_gap for c in cycle_results]
@@ -1221,7 +1380,17 @@ class TrainingEvaluator:
         )
 
     def print_report(self, result: EvaluationResult):
-        """Print formatted evaluation report."""
+        """Print a human-readable evaluation report to stdout.
+
+        Shows per-cycle IS/OOS metrics in a tabular layout, aggregate
+        statistics, Rademacher diagnostics (if available), and the
+        effectiveness verdict.
+
+        Parameters
+        ----------
+        result : EvaluationResult
+            Completed evaluation result to display.
+        """
         print("\n" + "=" * 70)
         print("EVALUATION REPORT")
         print("=" * 70)
