@@ -33,23 +33,28 @@ class TestHyperparamSpace:
     """Tests for the hyperparameter search space."""
 
     def test_default_sgd_space_has_expected_params(self):
-        """Default SGD space should include lr, batch_size, etc."""
+        """Default SGD space should include lr, n_iterations, etc. (batch_size is now fixed)."""
         space = HyperparamSpace.default_sgd_space()
 
         assert "base_lr" in space.params
-        assert "batch_size" in space.params
         assert "n_iterations" in space.params
         assert "bout_offset_days" in space.params
+        assert "maximum_change" in space.params
+        assert "turnover_penalty" in space.params
+        # batch_size is now fixed from domain knowledge
+        assert "batch_size" not in space.params
 
         # Check lr is log-scaled
         assert space.params["base_lr"]["log"] is True
 
     def test_default_adam_space_has_expected_params(self):
-        """Default Adam space should include lr, batch_size."""
+        """Default Adam space should include lr, n_iterations (batch_size is now fixed)."""
         space = HyperparamSpace.default_adam_space()
 
         assert "base_lr" in space.params
-        assert "batch_size" in space.params
+        assert "n_iterations" in space.params
+        # batch_size is now fixed from domain knowledge
+        assert "batch_size" not in space.params
         assert space.params["base_lr"]["log"] is True
 
     def test_default_multi_period_space_has_expected_params(self):
@@ -101,36 +106,29 @@ class TestHyperparamSpace:
         # 365-day cycle: max = 365 * 0.9 = 328 days
         assert space_365.params["bout_offset_days"]["high"] == int(365 * 0.9)
 
-    def test_lr_schedule_params_included(self):
-        """lr_schedule_type and warmup_fraction should be in default spaces."""
+    def test_lr_schedule_params_fixed_not_searched(self):
+        """lr_schedule_type and warmup_fraction should be fixed, not in search space."""
         space = HyperparamSpace.default_sgd_space()
 
-        assert "lr_schedule_type" in space.params
-        assert "choices" in space.params["lr_schedule_type"]
-        assert "constant" in space.params["lr_schedule_type"]["choices"]
-        assert "cosine" in space.params["lr_schedule_type"]["choices"]
-        assert "warmup_cosine" in space.params["lr_schedule_type"]["choices"]
-        assert "exponential" in space.params["lr_schedule_type"]["choices"]
+        # These are now fixed from domain knowledge
+        assert "lr_schedule_type" not in space.params
+        assert "warmup_fraction" not in space.params
+        # Verify they're in the fixed defaults
+        assert "lr_schedule_type" in HyperparamSpace.FIXED_TRAINING_DEFAULTS
 
-        assert "warmup_fraction" in space.params
-        assert space.params["warmup_fraction"]["low"] == 0.05
-        assert space.params["warmup_fraction"]["high"] == 0.3
-
-    def test_early_stopping_patience_included(self):
-        """early_stopping_patience should be in default spaces."""
+    def test_early_stopping_patience_fixed_not_searched(self):
+        """early_stopping_patience should be fixed, not in search space."""
         space = HyperparamSpace.default_adam_space()
 
-        assert "early_stopping_patience" in space.params
-        assert space.params["early_stopping_patience"]["type"] == "int"
-        assert space.params["early_stopping_patience"]["log"] is True
+        assert "early_stopping_patience" not in space.params
+        # early_stopping is fixed on
+        assert "early_stopping" in HyperparamSpace.FIXED_TRAINING_DEFAULTS
 
     def test_for_cycle_duration_factory(self):
         """for_cycle_duration should create properly scaled spaces."""
         space = HyperparamSpace.for_cycle_duration(
             cycle_days=120,
             runner="train_on_historic_data",
-            include_lr_schedule=True,
-            include_early_stopping=True,
         )
 
         # Check bout_offset_days scaling (in days)
@@ -138,39 +136,40 @@ class TestHyperparamSpace:
         assert space.params["bout_offset_days"]["low"] == 7
         assert space.params["bout_offset_days"]["high"] == int(120 * 0.9)
 
-        # Check optional params included
-        assert "lr_schedule_type" in space.params
-        assert "early_stopping_patience" in space.params
+        # These are now fixed, not searched
+        assert "lr_schedule_type" not in space.params
+        assert "early_stopping_patience" not in space.params
 
-    def test_for_cycle_duration_without_optional_params(self):
-        """for_cycle_duration should respect include flags."""
+    def test_for_cycle_duration_focused_space(self):
+        """for_cycle_duration should produce focused ~7D space."""
         space = HyperparamSpace.for_cycle_duration(
             cycle_days=120,
             runner="train_on_historic_data",
-            include_lr_schedule=False,
-            include_early_stopping=False,
-            include_weight_decay=False,
         )
 
+        # Fixed params should not appear in search space
         assert "lr_schedule_type" not in space.params
         assert "warmup_fraction" not in space.params
         assert "early_stopping_patience" not in space.params
         assert "use_weight_decay" not in space.params
         assert "weight_decay" not in space.params
+        assert "batch_size" not in space.params
+        assert "noise_scale" not in space.params
 
 
 class TestConditionalSampling:
     """Tests for conditional hyperparameter sampling."""
 
-    def test_weight_decay_is_conditional_on_use_weight_decay(self):
-        """weight_decay should only be sampled when use_weight_decay=True."""
+    def test_weight_decay_is_fixed_not_conditional(self):
+        """weight_decay is now fixed from domain knowledge, not in search space."""
         space = HyperparamSpace.default_sgd_space()
 
-        # Check spec structure
-        assert "use_weight_decay" in space.params
-        assert "weight_decay" in space.params
-        assert space.params["weight_decay"]["conditional_on"] == "use_weight_decay"
-        assert space.params["weight_decay"]["conditional_value"] is True
+        # Weight decay is fixed, not searched
+        assert "use_weight_decay" not in space.params
+        assert "weight_decay" not in space.params
+        # Verify it's in the fixed defaults
+        assert HyperparamSpace.FIXED_TRAINING_DEFAULTS["weight_decay"] == 0.01
+        assert HyperparamSpace.FIXED_TRAINING_DEFAULTS["use_weight_decay"] is True
 
     def test_softmin_temperature_is_conditional_on_aggregation(self):
         """softmin_temperature should only be sampled when aggregation='softmin'."""
@@ -181,15 +180,15 @@ class TestConditionalSampling:
         assert space.params["softmin_temperature"]["conditional_on"] == "aggregation"
         assert space.params["softmin_temperature"]["conditional_value"] == "softmin"
 
-    def test_warmup_fraction_is_conditional_on_lr_schedule(self):
-        """warmup_fraction should only be sampled when lr_schedule_type == 'warmup_cosine'."""
+    def test_warmup_fraction_is_fixed_not_searched(self):
+        """warmup_fraction and lr_schedule_type are fixed, not in search space."""
         space = HyperparamSpace.default_sgd_space()
 
-        assert "lr_schedule_type" in space.params
-        assert "warmup_fraction" in space.params
-        assert space.params["warmup_fraction"]["conditional_on"] == "lr_schedule_type"
-        # warmup_fraction only makes sense for warmup_cosine schedule
-        assert space.params["warmup_fraction"]["conditional_value"] == "warmup_cosine"
+        # Both are fixed from domain knowledge
+        assert "lr_schedule_type" not in space.params
+        assert "warmup_fraction" not in space.params
+        # lr_schedule is fixed to cosine
+        assert HyperparamSpace.FIXED_TRAINING_DEFAULTS["lr_schedule_type"] == "cosine"
 
     def test_suggest_excludes_weight_decay_when_disabled(self):
         """When use_weight_decay=False, weight_decay should not be in suggested."""
