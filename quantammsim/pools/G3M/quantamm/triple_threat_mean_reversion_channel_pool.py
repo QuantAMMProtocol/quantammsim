@@ -63,35 +63,63 @@ def _jax_triple_threat_mean_reversion_channel_weight_update(
     pre_exp_scaling=0.5,
 ):
     """
-    Calculate weight updates using mean reversion channel strategy.
+    Compute weight updates for the triple-threat mean-reversion-channel rule.
+
+    Combines a **channel portion** (mean reversion inside the envelope) with
+    a **trend portion** (power-law momentum outside the envelope). The
+    Gaussian envelope acts as a soft gate: near-zero gradient activates the
+    channel signal; large gradient activates the trend signal.
+
+    Channel math::
+
+        envelope = exp(-g_env^2 / (2 * width^2))
+        s_ch     = pi * g_ch / (3 * width)
+        channel  = -amplitude * envelope * (s_ch - s_ch^3 / 6) / inverse_scaling
+
+    Trend math::
+
+        trend = (1 - envelope) * sign(g_trend)
+                * |g_trend / (2 * pre_exp_scaling)|^exponents
+
+    The final weight update is ``k * (channel + trend)``, with an
+    offset subtracted to ensure the updates sum to zero across assets.
 
     Parameters
     ----------
-    price_gradient : jnp.ndarray
-        Array of price gradients for each asset.
-    k : float or jnp.ndarray
-        Scaling factor for weight updates.
-    width : float or jnp.ndarray
-        Width parameter for the mean reversion channel.
-    amplitude : float or jnp.ndarray
-        Amplitude of the mean reversion effect.
+    price_gradient_channel : jnp.ndarray
+        EWMA price gradient used for the channel (mean-reversion) signal.
+        Shape ``(T, n_assets)``.
+    price_gradient_trend : jnp.ndarray
+        EWMA price gradient used for the trend-following signal.
+        Shape ``(T, n_assets)``.
+    price_gradient_envelope : jnp.ndarray
+        EWMA price gradient used to compute the Gaussian envelope.
+        Shape ``(T, n_assets)``.
+    k : jnp.ndarray
+        Per-asset responsiveness scaling factor. Shape ``(n_assets,)``
+        or broadcastable.
+    width : jnp.ndarray
+        Width (standard deviation) of the Gaussian envelope. Controls
+        the boundary between mean-reversion and trend regimes.
+    amplitude : jnp.ndarray
+        Amplitude of the channel (mean-reversion) signal, typically
+        scaled by ``memory_days``.
     exponents : jnp.ndarray
-        Exponents for the trend following portion.
+        Power-law exponents for the trend portion (passed through
+        ``squareplus`` to ensure positivity).
     inverse_scaling : float, optional
-        Scaling factor for the channel portion, by default 0.5415.
+        Normalisation constant for the channel portion, by default
+        0.5415 (the maximum of ``sin(x)`` approximated by the cubic).
     pre_exp_scaling : float, optional
-        Scaling factor applied before exponentiation, by default 0.5.
+        Controls the relative contribution of the trend signal.
+        Larger values attenuate the trend; smaller values amplify it.
+        By default 0.5.
 
     Returns
     -------
     jnp.ndarray
-        Array of weight updates for each asset.
-
-    Notes
-    -----
-    Combines a mean reversion channel component with a trend following component:
-    1. Channel portion uses a Gaussian envelope and cubic function
-    2. Trend portion uses power law scaling outside the channel
+        Weight updates for each asset at each timestep, summing to zero
+        across assets. Shape ``(T, n_assets)``.
     """
     envelope = jnp.exp(-(price_gradient_envelope**2) / (2 * width**2))
     scaled_price_gradient = jnp.pi * price_gradient_channel / (3 * width)
@@ -117,26 +145,30 @@ def _jax_triple_threat_mean_reversion_channel_weight_update(
 
 class TripleThreatMeanReversionChannelPool(MomentumPool):
     """
-    A class for mean reversion channel strategies run as TFMM liquidity pools.
+    QuantAMM pool combining mean-reversion channel and trend-following rules.
 
-    This class implements a "mean reversion channel" strategy for asset allocation within a TFMM framework.
-    It uses price data to generate mean reversion channel signals, which are then translated into weight adjustments.
+    The "triple threat" refers to three interacting signal components:
 
-    Parameters
-    ----------
-    None
+    1. **Channel-based mean reversion** -- A Gaussian envelope modulates a
+       cubic function of the normalised price gradient, producing a signal
+       that reverts positions when price is within the channel width.
+    2. **Trend component** -- Outside the channel, a power-law scaling of
+       the price gradient drives trend-following behaviour.
+    3. **Interaction** -- The ``pre_exp_scaling`` parameter controls the
+       relative contribution of trend vs. channel; the Gaussian envelope
+       naturally cross-fades between the two regimes.
 
-    Methods
-    -------
-    calculate_rule_outputs(params, run_fingerprint, prices, additional_oracle_input)
-        Calculate the raw weight outputs based on mean reversion channel signals.
+    Each of the three signal components uses its own EWMA timescale
+    (controlled by separate ``logit_lamb`` entries), allowing the channel,
+    trend, and envelope to operate on different look-back horizons.
 
-    Notes
-    -----
-    The MeanReversionChannelPool implements a mean-reversion-based channel following strategy for asset allocation within a TFMM framework.
-    It uses price data to generate mean-reversion signals, which are then translated into weight adjustments.
-    The class provides methods to calculate raw weight outputs based on these signals and refine them
-    into final asset weights, taking into account various parameters and constraints defined in the pool setup.
+    Inherits from ``MomentumPool`` and overrides ``calculate_rule_outputs``
+    to apply the triple-threat update rule instead of a pure momentum rule.
+
+    See Also
+    --------
+    MeanReversionChannelPool : Channel-only (no trend) variant.
+    MomentumPool : Pure trend-following base class.
     """
 
     def __init__(self):

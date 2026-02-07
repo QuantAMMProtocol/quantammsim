@@ -33,7 +33,42 @@ H = TypeVar("H", bound=ABC)  # For hooks
 
 
 def create_hooked_pool_instance(base_pool_class: Type[P], *hooks: Type) -> P:
-    """Create a pool instance with the specified hooks mixed in."""
+    """
+    Create a pool instance with hook classes mixed in via Python MRO.
+
+    Constructs a dynamic ``_HookedPool`` class whose MRO places the hook
+    classes before the base pool class, then instantiates it. Hooks are
+    applied right-to-left so that the **first** hook listed has the highest
+    priority in method dispatch (i.e. its methods shadow those of later hooks
+    and the base pool).
+
+    The resulting mixed class is registered as a JAX pytree, which is
+    required for the instance to be passed through ``jit``-compiled
+    functions.
+
+    Parameters
+    ----------
+    base_pool_class : Type[P]
+        The pool class to use as the base, e.g. ``MomentumPool``,
+        ``MeanReversionChannelPool``.
+    *hooks : Type
+        One or more hook classes to mix in, e.g.
+        ``BoundedWeightsHook``, ``EnsembleAveragingHook``. The first
+        hook listed takes highest priority in the MRO.
+
+    Returns
+    -------
+    P
+        An instance of the dynamically created ``_HookedPool`` class,
+        with all hook and base-pool methods available via standard
+        Python method resolution.
+
+    Examples
+    --------
+    >>> pool = create_hooked_pool_instance(
+    ...     MomentumPool, EnsembleAveragingHook, BoundedWeightsHook
+    ... )
+    """
 
     # Hooks should be applied right-to-left to maintain correct MRO
     hooks = hooks[::-1]
@@ -79,50 +114,84 @@ def create_pool(rule):
     """
     Create a pool instance based on the specified rule type.
 
-    This function acts as a central registry for all available pool types in the system.
-    New pool implementations must be:
+    This function acts as a central registry for all available pool types in
+    the system. New pool implementations must be:
+
     1. Imported at the top of this file
     2. Added to the if/elif chain below with a unique string identifier
+
     to be accessible through the simulation runners.
 
     Parameters
     ----------
     rule : str
-        The identifier string for the desired pool type. Valid options are:
-        - "balancer": Standard Balancer pool implementation
-        - "momentum": Momentum-based G3M pool variant
-        - "power_channel": Power law G3M pool variant
-        - "mean_reversion_channel": Mean reversion G3M pool variant
-        - "hodl": Basic HODL strategy pool
-        - "cow": CoW AMM pool implementation
+        The identifier string for the desired pool type. May optionally
+        include hook prefixes using double-underscore syntax (see Notes).
+
+        Valid base pool types:
+
+        - ``"balancer"`` : Standard Balancer constant-weight pool.
+        - ``"momentum"`` : Momentum (trend-following) QuantAMM pool.
+        - ``"anti_momentum"`` : Anti-momentum (contrarian) QuantAMM pool.
+        - ``"power_channel"`` : Power-law channel QuantAMM pool.
+        - ``"mean_reversion_channel"`` : Mean-reversion channel QuantAMM pool.
+        - ``"triple_threat_mean_reversion_channel"`` : Combined mean-reversion
+          channel + trend-following QuantAMM pool.
+        - ``"difference_momentum"`` : Difference-of-momentum QuantAMM pool.
+        - ``"index_market_cap"`` : Market-cap-weighted index pool.
+        - ``"hodling_index_market_cap"`` : HODLing variant of the market-cap
+          index pool (on-chain reserve mechanics).
+        - ``"trad_hodling_index_market_cap"`` : Traditional (off-chain) HODLing
+          variant with realistic CEX trading costs.
+        - ``"min_variance"`` : Minimum-variance QuantAMM pool.
+        - ``"hodl"`` : Pure buy-and-hold (no rebalancing) pool.
+        - ``"cow"`` : CoW (Coincidence of Wants) AMM pool.
+        - ``"gyroscope"`` : Gyroscope E-CLP pool.
+
+        Available hook prefixes (prepended with ``__`` separator):
+
+        - ``"lvr"`` : Loss-versus-rebalancing accounting hook.
+        - ``"rvr"`` : Rebalancing-versus-rebalancing accounting hook.
+        - ``"bounded"`` : Bounded-weights guardrail hook.
+        - ``"ensemble"`` : Ensemble-averaging hook.
 
     Returns
     -------
-    Pool
-        An instance of the specified pool class ready for use in simulations
+    AbstractPool
+        An instance of the specified pool class (or a hooked composite
+        class) ready for use in simulations.
 
     Raises
     ------
     NotImplementedError
-        If the provided rule string does not match any registered pool types
+        If the base pool type or any hook prefix is unrecognised.
 
     Notes
     -----
-    This factory function centralizes pool creation and provides a simple string-based
-    interface for specifying pool types in configuration. To add a new pool type:
+    **Hook prefix system**
 
-    1. Create the new pool class implementing required interfaces
-    2. Import the class at the top of this file
-    3. Add a new elif clause matching the desired identifier string
-    4. Return an instance of the new pool class
+    Hooks are chained onto a base pool using double-underscore (``__``)
+    delimiters. The base pool type is always the **last** segment. For
+    example::
 
-    The returned pool instance will be automatically compatible with the JAX-based
-    simulation runners as long as it implements the required interfaces.
+        "ensemble__bounded__momentum"
+
+    is parsed as hooks ``[EnsembleAveragingHook, BoundedWeightsHook]``
+    applied to ``MomentumPool``, with ``EnsembleAveragingHook`` having
+    highest priority in the MRO.
+
+    To add a new pool type:
+
+    1. Create the new pool class implementing the required interfaces.
+    2. Import the class at the top of this file.
+    3. Add a new ``elif`` clause matching the desired identifier string.
+    4. Return an instance of the new pool class.
 
     Examples
     --------
-    >>> pool = create_pool("balancer")  # Creates a BalancerPool pool instance
-    >>> pool = create_pool("momentum")  # Creates a MomentumPool pool instance
+    >>> pool = create_pool("balancer")
+    >>> pool = create_pool("momentum")
+    >>> pool = create_pool("ensemble__bounded__momentum")
     """
     # Split rule into hook_types and base_rule
     # Supports multiple hooks: "ensemble__bounded__momentum" -> hooks=[ensemble, bounded], base=momentum
