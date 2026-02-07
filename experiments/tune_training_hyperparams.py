@@ -28,14 +28,12 @@ PercentilePruner (25%) is better for our case:
 
 Search Space:
 -------------
-The full search space (~20 dimensions) includes:
-- Core: base_lr, batch_size, n_iterations, clip_norm, bout_offset
-- Schedule: lr_schedule_type, lr_decay_ratio, warmup_fraction
-- Regularization: weight_decay, noise_scale, turnover_penalty, price_noise_sigma
-- Sampling: sample_method (uniform/stratified), parameter_init_method (gaussian/sobol/lhs)
-- Strategy: maximum_change, training_objective
-- Early stopping: patience, val_fraction
-- Initial params (optional): memory_length, k_per_day, amplitude, width, exponents
+Focused ~7D search space (domain-knowledge defaults fix the rest):
+- Tuned: base_lr, n_iterations, bout_offset_days, val_fraction,
+         turnover_penalty, maximum_change, (training_objective if meaningful)
+- Fixed: lr_schedule=cosine, clip_norm=10, noise_scale=0.3, weight_decay=0.01,
+         sample_method=uniform, parameter_init_method=gaussian, price_noise=0
+- Initial strategy params: conservative but learnable defaults (not tuned)
 
 Usage:
 ------
@@ -63,6 +61,7 @@ import os
 import json
 import argparse
 import numpy as np
+from scipy import stats as scipy_stats
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -74,8 +73,10 @@ from quantammsim.runners.hyperparam_tuner import (
     HyperparamTuner,
     HyperparamSpace,
     TuningResult,
+    OUTER_TO_INNER_METRIC,
 )
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
+from quantammsim.utils.post_train_analysis import deflated_sharpe_ratio
 
 
 # =============================================================================
@@ -104,14 +105,19 @@ STUDY_NAME = "eth_usdc_tuning_v3"
 def create_search_space(
     cycle_days: int = 180,
     conservative: bool = False,
-    include_initial_params: bool = True,
     objective_metric: str = "mean_oos_daily_log_sharpe",
 ) -> HyperparamSpace:
     """
-    Create hyperparameter search space.
+    Create focused ~7D hyperparameter search space.
 
-    Builds on HyperparamSpace.create() from the library, adding initial strategy
-    parameter values which are crucial for gradient descent convergence.
+    Domain-knowledge defaults (LR schedule, weight decay, clip norm, noise,
+    sampling, init method, price noise) are fixed on the base fingerprint —
+    see create_base_fingerprint(). Initial strategy params use conservative
+    defaults instead of being tuned (the inner optimizer handles them).
+
+    Remaining tunable dimensions (~7):
+      base_lr, n_iterations, bout_offset_days, val_fraction,
+      turnover_penalty, maximum_change, (training_objective if meaningful)
 
     Parameters
     ----------
@@ -119,74 +125,31 @@ def create_search_space(
         Approximate WFA cycle length in days
     conservative : bool
         If True, use tighter ranges for stability
-    include_initial_params : bool
-        If True, include initial strategy parameter values. These are crucial
-        because gradient descent with poor initialization often converges to
-        bad local minima.
     objective_metric : str
         Outer Optuna objective (e.g., "mean_oos_daily_log_sharpe", "mean_oos_calmar").
         Passed to library to conditionally include training_objective choice.
     """
-    # Start from library defaults - includes:
-    # - Core training params (base_lr, batch_size, n_iterations, bout_offset_days, clip_norm)
-    # - Weight decay (use_weight_decay, weight_decay)
-    # - LR schedule (lr_schedule_type, lr_decay_ratio, warmup_fraction)
-    # - Early stopping (use_early_stopping, early_stopping_patience, val_fraction)
-    # - Regularization (noise_scale, maximum_change, turnover_penalty, price_noise_sigma)
-    # - Sampling (sample_method, parameter_init_method)
-    # - Training objective (conditionally included based on objective_metric)
     space = HyperparamSpace.create(cycle_days=cycle_days, objective_metric=objective_metric)
 
-    # Conservative mode: tighten ranges for stability
     if conservative:
         space.params["base_lr"] = {"low": 1e-5, "high": 1e-2, "log": True}
-        space.params["batch_size"] = {"low": 8, "high": 32, "log": True, "type": "int"}
         space.params["n_iterations"] = {"low": 100, "high": 2000, "log": True, "type": "int"}
-
-    if include_initial_params:
-        # Initial strategy parameter values - crucial for gradient descent convergence!
-        # Bad initializations lead to bad local minima regardless of learning rate.
-        #
-        # IMPORTANT: Ranges derived from PARAM_SCHEMA optuna bounds + transformations:
-        # - sp_k uses squareplus, optuna range [-1, 100] -> k in [0.6, 100]
-        # - logit_lamb optuna range [-4, 8] -> memory_days ~[1, 200] with chunk_period=1440
-        # - sp_amplitude uses 2^log_amplitude then inverse_squareplus, optuna [-3, 4]
-        # - sp_width uses 2^raw_width then inverse_squareplus, optuna [-3, 3]
-        # - sp_exponents is DIRECT (not 2^x!), optuna range [-2, 4]
-        space.params.update({
-            # Memory length: how many days of history the strategy remembers
-            # logit_lamb optuna [-4, 8] corresponds to ~[1, 200] days at chunk_period=1440
-            "initial_memory_length": {"low": 2.0, "high": 100.0, "log": True},
-
-            # k_per_day: aggressiveness of weight changes (updates per day)
-            # sp_k optuna [-1, 100] -> squareplus gives [0.6, 100]
-            "initial_k_per_day": {"low": 0.5, "high": 100.0, "log": True},
-
-            # log_amplitude: amplitude of mean reversion effect (2^x scaling)
-            # sp_amplitude optuna [-3, 4] -> squareplus gives [0.3, 4.2]
-            # So 2^log_amplitude should be in [0.3, 4.2] -> log_amplitude in [-2, 2]
-            "initial_log_amplitude": {"low": -2.0, "high": 2.0, "log": False},
-
-            # raw_width: width of mean reversion channel (2^x scaling)
-            # sp_width optuna [-3, 3] -> squareplus gives [0.3, 3.3]
-            # So 2^raw_width should be in [0.3, 3.3] -> raw_width in [-2, 2]
-            "initial_raw_width": {"low": -2.0, "high": 2.0, "log": False},
-
-            # raw_exponents: DIRECT pass-through to sp_exponents (NOT 2^x!)
-            # sp_exponents optuna range [-2, 4] -> squareplus gives [0.4, 4.2]
-            "initial_raw_exponents": {"low": -2.0, "high": 4.0, "log": False},
-
-            # pre_exp_scaling: scales price gradient before exponentiation
-            # Goes through inverse_squareplus to get sp_pre_exp_scaling
-            # Broad range from very small to very large scaling
-            "initial_pre_exp_scaling": {"low": 0.01, "high": 100.0, "log": True},
-        })
 
     return space
 
 
 def create_base_fingerprint() -> dict:
-    """Create the base run fingerprint."""
+    """Create the base run fingerprint with domain-knowledge fixed values.
+
+    Fixed training params (from HyperparamSpace.FIXED_TRAINING_DEFAULTS):
+      lr_schedule_type=cosine, clip_norm=10.0, noise_scale=0.3,
+      price_noise_sigma=0.0, sample_method=uniform, parameter_init_method=gaussian,
+      weight_decay=0.01 (adamw), early_stopping=True.
+
+    Conservative initial strategy params (from HyperparamSpace.CONSERVATIVE_INITIAL_PARAMS):
+      k_per_day=0.5, memory_length=30, log_amplitude=-1, raw_width=1.0,
+      raw_exponents=1.0, pre_exp_scaling=0.01.
+    """
     fp = deepcopy(run_fingerprint_defaults)
 
     fp["tokens"] = TOKENS
@@ -212,10 +175,41 @@ def create_base_fingerprint() -> dict:
     fp["minimum_weight"] = 0.01
     fp["max_memory_days"] = 365
 
-    fp["optimisation_settings"]["optimiser"] = "adam"
+    # --- Fixed training params (domain knowledge, not worth searching) ---
+    fixed = HyperparamSpace.FIXED_TRAINING_DEFAULTS
+    fp["optimisation_settings"]["optimiser"] = "adamw"
     fp["optimisation_settings"]["method"] = "gradient_descent"
     fp["optimisation_settings"]["use_gradient_clipping"] = True
     fp["optimisation_settings"]["n_parameter_sets"] = 8
+    fp["optimisation_settings"]["lr_schedule_type"] = fixed["lr_schedule_type"]
+    fp["optimisation_settings"]["clip_norm"] = fixed["clip_norm"]
+    fp["optimisation_settings"]["noise_scale"] = fixed["noise_scale"]
+    # Wider exploration for under-studied params (raw_width, pre_exp_scaling)
+    fp["optimisation_settings"]["per_param_noise_scale"] = {
+        "raw_width": 0.5,
+        "pre_exp_scaling": 0.5,
+    }
+    fp["optimisation_settings"]["sample_method"] = fixed["sample_method"]
+    fp["optimisation_settings"]["parameter_init_method"] = fixed["parameter_init_method"]
+    fp["optimisation_settings"]["weight_decay"] = fixed["weight_decay"]
+    fp["optimisation_settings"]["early_stopping"] = fixed["early_stopping"]
+    fp["price_noise_sigma"] = fixed["price_noise_sigma"]
+
+    # --- Conservative initial strategy params ---
+    # Nonzero enough for gradient signal. The inner optimizer discovers the right
+    # values from here; we don't waste outer Optuna budget searching init space.
+    init = HyperparamSpace.CONSERVATIVE_INITIAL_PARAMS
+    fp["initial_k_per_day"] = init["initial_k_per_day"]
+    fp["initial_memory_length"] = init["initial_memory_length"]
+    fp["initial_log_amplitude"] = init["initial_log_amplitude"]
+    fp["initial_raw_width"] = init["initial_raw_width"]
+    fp["initial_raw_exponents"] = init["initial_raw_exponents"]
+    fp["initial_pre_exp_scaling"] = init["initial_pre_exp_scaling"]
+
+    # Training objective default: align with outer objective.
+    # Overridden by search space if training_objective is in the space.
+    fp["return_val"] = OUTER_TO_INNER_METRIC.get("mean_oos_daily_log_sharpe", "daily_log_sharpe")
+    fp["optimisation_settings"]["early_stopping_metric"] = fp["return_val"]
 
     return fp
 
@@ -224,8 +218,16 @@ def create_base_fingerprint() -> dict:
 # Stability Analysis
 # =============================================================================
 
-def analyze_stability(result: TuningResult) -> Dict[str, Any]:
-    """Analyze stability of best hyperparameters across top trials."""
+def analyze_stability(result: TuningResult, study: Optional[Any] = None) -> Dict[str, Any]:
+    """Analyze hyperparameter importance and stability using fANOVA.
+
+    Uses Optuna's fANOVA importance evaluator when a study is available,
+    falling back to coefficient-of-variation analysis otherwise.
+
+    Parameters with high importance + high variability across top trials
+    are dangerous (sensitive and unstable). Low importance = candidates
+    for fixing in future runs.
+    """
     if not result.all_trials:
         return {"error": "No trials to analyze"}
 
@@ -233,6 +235,18 @@ def analyze_stability(result: TuningResult) -> Dict[str, Any]:
     if len(completed) < 3:
         return {"error": "Need at least 3 completed trials"}
 
+    # fANOVA importance (if study available and enough trials)
+    fanova_importances = {}
+    if study is not None and len(completed) >= 10:
+        try:
+            from optuna.importance import get_param_importances, FanovaImportanceEvaluator
+            fanova_importances = get_param_importances(
+                study, evaluator=FanovaImportanceEvaluator()
+            )
+        except Exception as e:
+            print(f"  fANOVA failed (falling back to CV analysis): {e}")
+
+    # CV-based stability analysis on top trials
     completed.sort(key=lambda t: t["value"] if t["value"] else float("-inf"), reverse=True)
     top_trials = completed[:min(10, len(completed))]
 
@@ -241,23 +255,126 @@ def analyze_stability(result: TuningResult) -> Dict[str, Any]:
         values = [t["params"].get(param) for t in top_trials if param in t["params"]]
         if values and all(isinstance(v, (int, float)) for v in values):
             mean_val = np.mean(values)
-            param_distributions[param] = {
-                "mean": mean_val,
-                "std": np.std(values),
-                "cv": np.std(values) / mean_val if mean_val != 0 else float("inf"),
+            entry = {
+                "mean": float(mean_val),
+                "std": float(np.std(values)),
+                "cv": float(np.std(values) / mean_val) if mean_val != 0 else float("inf"),
             }
+            if param in fanova_importances:
+                entry["fanova_importance"] = float(fanova_importances[param])
+            param_distributions[param] = entry
 
     unstable = [p for p, s in param_distributions.items() if s.get("cv", 0) > 0.5]
+    # High importance + high variability = dangerous
+    dangerous = [
+        p for p, s in param_distributions.items()
+        if s.get("fanova_importance", 0) > 0.1 and s.get("cv", 0) > 0.3
+    ]
+    # Low importance = candidates for fixing
+    fixable = [
+        p for p, s in param_distributions.items()
+        if s.get("fanova_importance", 0) < 0.05 and p in fanova_importances
+    ]
 
     return {
         "param_distributions": param_distributions,
+        "fanova_importances": {k: float(v) for k, v in fanova_importances.items()} if fanova_importances else None,
         "n_analyzed": len(top_trials),
         "unstable_params": unstable,
+        "dangerous_params": dangerous,
+        "fixable_params": fixable,
         "recommendation": (
             "All parameters stable." if not unstable
-            else f"Consider fixing: {', '.join(unstable)}"
+            else f"Unstable (high CV): {', '.join(unstable)}"
+        ) + (
+            f"\nDangerous (important + unstable): {', '.join(dangerous)}" if dangerous
+            else ""
+        ) + (
+            f"\nCandidates for fixing (low importance): {', '.join(fixable)}" if fixable
+            else ""
         ),
     }
+
+
+# =============================================================================
+# Regime Tagging
+# =============================================================================
+
+
+def analyze_regimes(result: TuningResult) -> Optional[Dict[str, Dict[str, float]]]:
+    """Tag each WFA cycle with regime labels and report per-regime metrics.
+
+    Examines the best trial's per-cycle data. Tags each test period with:
+    - Volatility bucket (low/medium/high, based on annualised vol)
+    - Trend direction (bull/bear/sideways, based on total return)
+
+    Returns per-regime aggregated OOS metrics.
+    """
+    # Find best trial with cycle data
+    best_eval = None
+    for trial in result.all_trials:
+        if trial.get("value") == result.best_value and trial.get("evaluation_result"):
+            best_eval = trial["evaluation_result"]
+            break
+
+    if not best_eval or "cycles" not in best_eval:
+        return None
+
+    cycles = best_eval["cycles"]
+    if not cycles:
+        return None
+
+    # Group cycles by regime
+    regime_groups: Dict[str, List[dict]] = {}
+    for cycle in cycles:
+        oos_sharpe = cycle.get("oos_sharpe", 0)
+        oos_roh = cycle.get("oos_returns_over_hodl", 0)
+        wfe = cycle.get("walk_forward_efficiency", cycle.get("wfe", 0))
+
+        # Use regime tags computed from actual price data if available
+        vol_regime = cycle.get("volatility_regime")
+        trend = cycle.get("trend_regime")
+
+        if not vol_regime or vol_regime == "unknown":
+            import warnings
+            warnings.warn(
+                f"Cycle {cycle.get('cycle_number', '?')}: no volatility_regime tag from evaluator. "
+                f"This means _compute_regime_tags() didn't run — check TrainingEvaluator. "
+                f"Skipping this cycle from regime analysis.",
+                stacklevel=2,
+            )
+            continue
+
+        if not trend or trend == "unknown":
+            import warnings
+            warnings.warn(
+                f"Cycle {cycle.get('cycle_number', '?')}: no trend_regime tag from evaluator. "
+                f"Skipping this cycle from regime analysis.",
+                stacklevel=2,
+            )
+            continue
+
+        regime = f"{vol_regime}/{trend}"
+
+        if regime not in regime_groups:
+            regime_groups[regime] = []
+        regime_groups[regime].append({
+            "oos_sharpe": oos_sharpe,
+            "wfe": wfe,
+            "oos_returns_over_hodl": oos_roh,
+        })
+
+    # Aggregate per regime
+    regime_analysis = {}
+    for regime, group in regime_groups.items():
+        regime_analysis[regime] = {
+            "n_cycles": len(group),
+            "mean_oos_sharpe": float(np.mean([g["oos_sharpe"] for g in group])),
+            "mean_wfe": float(np.mean([g["wfe"] for g in group])),
+            "mean_oos_roh": float(np.mean([g["oos_returns_over_hodl"] for g in group])),
+        }
+
+    return regime_analysis
 
 
 # =============================================================================
@@ -266,14 +383,13 @@ def analyze_stability(result: TuningResult) -> Dict[str, Any]:
 
 def run_tuning(
     n_trials: int = 150,
-    n_wfa_cycles: int = 4,
+    n_wfa_cycles: int = 8,
     resume: bool = False,
     quick: bool = False,
     conservative: bool = False,
     pruner: str = "percentile",
     objective: str = "mean_oos_daily_log_sharpe",
     total_timeout: float = None,
-    include_initial_params: bool = True,
 ) -> Dict[str, Any]:
     """
     Run hyperparameter tuning.
@@ -284,9 +400,6 @@ def run_tuning(
         Pruning strategy: "percentile" (recommended), "median", "hyperband", "successive_halving", "none"
         Percentile (25%) filters obvious disasters without over-predicting future cycles.
         Hyperband/ASHA assume multi-fidelity correlation we don't have with WFA.
-    include_initial_params : bool
-        If True (default), tune initial strategy parameters (memory_length, k_per_day, etc.).
-        This is crucial because gradient descent with poor initialization leads to bad local minima.
     """
     if quick:
         n_trials = 5
@@ -302,12 +415,9 @@ def run_tuning(
     search_space = create_search_space(
         cycle_days=cycle_days,
         conservative=conservative,
-        include_initial_params=include_initial_params,
         objective_metric=objective,
     )
 
-    # Use in-memory storage to avoid SQLAlchemy version conflicts
-    # For persistent storage, fix: pip install 'sqlalchemy<2.0' or upgrade typing_extensions
     storage_path = STUDY_DIR / f"{STUDY_NAME}.db"
     storage = f"sqlite:///{storage_path}"
 
@@ -321,9 +431,18 @@ def run_tuning(
     print(f"Objective: {objective}")
     print(f"Pruner: {pruner}")
     print(f"Conservative: {conservative}")
-    print(f"Tune initial params: {include_initial_params}")
-    print(f"Search space: {len(search_space.params)} parameters")
+    print(f"Search space: {len(search_space.params)} dimensions")
+    for name, spec in sorted(search_space.params.items()):
+        if "choices" in spec:
+            print(f"  {name}: {spec['choices']}")
+        elif spec.get("type") == "int":
+            print(f"  {name}: [{spec['low']}, {spec['high']}] (int, log={spec.get('log', False)})")
+        else:
+            print(f"  {name}: [{spec['low']}, {spec['high']}] (log={spec.get('log', False)})")
     print(f"Trials: {n_trials}")
+    print(f"WFA cycles: {n_wfa_cycles} (~{cycle_days} days each)")
+    print(f"Fixed training params: {list(HyperparamSpace.FIXED_TRAINING_DEFAULTS.keys())}")
+    print(f"Conservative init params: {list(HyperparamSpace.CONSERVATIVE_INITIAL_PARAMS.keys())}")
     print("=" * 70)
 
     tuner = HyperparamTuner(
@@ -341,33 +460,147 @@ def run_tuning(
     )
 
     result = tuner.tune(base_fp)
-    stability = analyze_stability(result)
 
-    # Print stability analysis
+    # Load study back from storage for fANOVA analysis
+    import optuna
+    study = None
+    try:
+        studies = optuna.study.get_all_study_summaries(storage)
+        if studies:
+            study = optuna.load_study(study_name=studies[-1].study_name, storage=storage)
+    except Exception as e:
+        print(f"Could not load study for fANOVA: {e}")
+
+    stability = analyze_stability(result, study=study)
+
+    # --- Stability Analysis ---
     print("\n" + "=" * 70)
-    print("STABILITY ANALYSIS")
+    print("STABILITY ANALYSIS (fANOVA + CV)")
     print("=" * 70)
     if "error" not in stability:
-        for param, stats in stability.get("param_distributions", {}).items():
-            cv = stats.get("cv", 0)
+        if stability.get("fanova_importances"):
+            print("\nfANOVA importance:")
+            for param, imp in sorted(stability["fanova_importances"].items(), key=lambda x: -x[1]):
+                print(f"  {param}: {imp:.3f}")
+        print("\nTop-10 trial CV:")
+        for param, st in stability.get("param_distributions", {}).items():
+            cv = st.get("cv", 0)
+            imp = st.get("fanova_importance", None)
+            imp_str = f", importance={imp:.3f}" if imp is not None else ""
             label = "STABLE" if cv < 0.3 else "MODERATE" if cv < 0.5 else "UNSTABLE"
-            print(f"  {param}: CV={cv:.2f} ({label})")
+            print(f"  {param}: CV={cv:.2f} ({label}{imp_str})")
         print(f"\n{stability['recommendation']}")
     print("=" * 70)
 
+    # --- Extract best trial's evaluation result ---
+    best_eval = None
+    for trial in result.all_trials:
+        if trial.get("value") == result.best_value and trial.get("evaluation_result"):
+            best_eval = trial["evaluation_result"]
+            break
+
+    # --- Bootstrap CIs for OOS Sharpe ---
+    bootstrap_ci = None
+    if best_eval:
+        bootstrap_ci = best_eval.get("bootstrap_ci")
+        if bootstrap_ci and "warning" not in bootstrap_ci:
+            print("\n" + "=" * 70)
+            print("BOOTSTRAP CI FOR OOS SHARPE (95%)")
+            print("=" * 70)
+            print(f"  Point estimate:  {bootstrap_ci['point_estimate']:.4f}")
+            print(f"  95% CI:          [{bootstrap_ci['lower']:.4f}, {bootstrap_ci['upper']:.4f}]")
+            print(f"  Bootstrap std:   {bootstrap_ci['std']:.4f}")
+            if bootstrap_ci["lower"] <= 0:
+                print("  WARNING: CI includes zero — OOS performance not significantly positive")
+            print("=" * 70)
+        elif bootstrap_ci and "warning" in bootstrap_ci:
+            print(f"\nBootstrap CI skipped: {bootstrap_ci['warning']}")
+
+    # --- Deflated Sharpe Ratio ---
+    # Use concatenated OOS daily returns for correct T (not total_days which
+    # conflates number of cycles with per-cycle precision)
+    dsr_result = None
+    if result.n_completed > 0 and best_eval:
+        concat_returns = best_eval.get("concatenated_oos_daily_returns")
+        observed_sr = best_eval.get("mean_oos_sharpe", result.best_value)
+
+        if concat_returns and len(concat_returns) > 1:
+            # T = number of daily return observations in the concatenated OOS series.
+            # This correctly reflects the precision of the SR estimator.
+            T_oos = len(concat_returns)
+            returns_arr = np.array(concat_returns)
+            skew_val = float(scipy_stats.skew(returns_arr))
+            kurt_val = float(scipy_stats.kurtosis(returns_arr))
+            if np.isnan(skew_val) or np.isnan(kurt_val):
+                print(f"\nWARNING: skew/kurtosis is NaN (n={len(returns_arr)}) — "
+                      "falling back to normal assumption for DSR")
+                skew_val, kurt_val = 0.0, 0.0
+            dsr_result = deflated_sharpe_ratio(
+                observed_sr=observed_sr,
+                n_trials=result.n_completed + result.n_pruned,
+                T=T_oos,
+                skew=skew_val,
+                kurt=kurt_val,
+            )
+        else:
+            # Fallback: use per-cycle day count (less precise but still usable)
+            print("\nWARNING: No concatenated OOS returns available for DSR — "
+                  "using per-cycle day estimate (less precise)")
+            dsr_result = deflated_sharpe_ratio(
+                observed_sr=observed_sr,
+                n_trials=result.n_completed + result.n_pruned,
+                T=cycle_days,  # per-cycle, not total
+            )
+
+        print("\n" + "=" * 70)
+        print("DEFLATED SHARPE RATIO (Bailey & López de Prado)")
+        print("=" * 70)
+        print(f"  Observed SR:     {dsr_result['observed_sr']:.4f}")
+        print(f"  Expected max SR: {dsr_result['sr0']:.4f} (under null, {dsr_result['n_trials']} trials)")
+        print(f"  DSR:             {dsr_result['dsr']:.4f}")
+        print(f"  T (observations):{dsr_result['T']}")
+        print(f"  Significant:     {'YES' if dsr_result['significant'] else 'NO (DSR < 0.95 — result may be noise)'}")
+        print("=" * 70)
+
+    # --- Regime Tagging ---
+    regime_analysis = analyze_regimes(result)
+    if regime_analysis:
+        print("\n" + "=" * 70)
+        print("REGIME ANALYSIS")
+        print("=" * 70)
+        for regime, metrics in sorted(regime_analysis.items()):
+            print(f"  {regime}: OOS Sharpe={metrics['mean_oos_sharpe']:.4f} "
+                  f"(n={metrics['n_cycles']}, WFE={metrics['mean_wfe']:.4f})")
+        print("=" * 70)
+
     # Save results
-    save_results(result, stability, pruner)
+    save_results(
+        result, stability, pruner,
+        dsr_result=dsr_result, regime_analysis=regime_analysis,
+        bootstrap_ci=bootstrap_ci,
+    )
 
-    return {"result": result, "stability": stability}
+    return {
+        "result": result, "stability": stability,
+        "dsr": dsr_result, "regimes": regime_analysis,
+        "bootstrap_ci": bootstrap_ci,
+    }
 
 
-def save_results(result, stability: Dict[str, Any], pruner: str):
+def save_results(
+    result,
+    stability: Dict[str, Any],
+    pruner: str,
+    dsr_result: Optional[Dict] = None,
+    regime_analysis: Optional[Dict] = None,
+    bootstrap_ci: Optional[Dict] = None,
+):
     """Save tuning results to JSON."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_path = STUDY_DIR / f"best_params_{timestamp}.json"
 
     output = {
-        "version": "3.0",
+        "version": "4.0",
         "timestamp": timestamp,
         "pruner": pruner,
         "basket": TOKENS,
@@ -380,12 +613,19 @@ def save_results(result, stability: Dict[str, Any], pruner: str):
             "n_completed": result.n_completed,
             "n_pruned": getattr(result, 'n_pruned', 0),
         },
+        "fixed_training_defaults": HyperparamSpace.FIXED_TRAINING_DEFAULTS,
+        "conservative_initial_params": HyperparamSpace.CONSERVATIVE_INITIAL_PARAMS,
         "stability_analysis": stability,
+        "deflated_sharpe_ratio": dsr_result,
+        "bootstrap_ci": bootstrap_ci,
+        "regime_analysis": regime_analysis,
         "next_steps": [
             "1. Validate on final holdout (2025 - 2026)",
             "2. Review stability - fix unstable params if any",
-            "3. Run on additional asset pairs to check transferability",
-            "4. Paper trade before production",
+            "3. Check DSR significance (>= 0.95)",
+            "4. Review regime breakdown for regime-specific failures",
+            "5. Run on additional asset pairs to check transferability",
+            "6. Paper trade before production",
         ],
     }
 
@@ -415,12 +655,10 @@ def main():
         description="Hyperparameter tuning for crypto baskets",
     )
     parser.add_argument("--n-trials", "-n", type=int, default=150)
-    parser.add_argument("--n-wfa-cycles", "-c", type=int, default=4)
+    parser.add_argument("--n-wfa-cycles", "-c", type=int, default=8)
     parser.add_argument("--resume", "-r", action="store_true")
     parser.add_argument("--quick", "-q", action="store_true")
     parser.add_argument("--conservative", action="store_true")
-    parser.add_argument("--no-initial-params", action="store_true",
-                        help="Skip tuning initial strategy params (memory_length, k_per_day, etc.)")
     parser.add_argument("--pruner", "-p", default="percentile",
                         choices=["percentile", "median", "hyperband", "successive_halving", "none"],
                         help="Pruning strategy: percentile (recommended), median, hyperband, successive_halving, none")
@@ -447,7 +685,6 @@ def main():
         pruner=args.pruner,
         objective=args.objective,
         total_timeout=args.timeout * 3600 if args.timeout else None,
-        include_initial_params=not args.no_initial_params,
     )
 
 
