@@ -178,20 +178,53 @@ class HyperparamSpace:
     """
     params: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
+    # Fixed values from domain knowledge — these are not worth searching over.
+    # Set them on the base fingerprint before calling create_objective().
+    FIXED_TRAINING_DEFAULTS = {
+        "lr_schedule_type": "cosine",
+        "clip_norm": 10.0,
+        "noise_scale": 0.3,
+        "price_noise_sigma": 0.0,
+        "sample_method": "uniform",
+        "parameter_init_method": "gaussian",
+        "use_weight_decay": True,
+        "weight_decay": 0.01,
+        "early_stopping": True,
+    }
+
+    # Conservative but learnable strategy param initialisation.
+    # Values are nonzero enough for gradient signal to exist — zero amplitude/width
+    # creates dead zones where the optimizer sees no gradient.
+    CONSERVATIVE_INITIAL_PARAMS = {
+        "initial_k_per_day": 0.5,        # low = "do nothing" starting point
+        "initial_memory_length": 30.0,   # mid-range for crypto
+        "initial_log_amplitude": -1.0,   # 2^(-1) = 0.5, small signal but nonzero
+        "initial_raw_width": 1.0,        # modest channel width
+        "initial_raw_exponents": 1.0,    # linear response
+        "initial_pre_exp_scaling": 0.01, # small but nonzero
+    }
+
     @classmethod
     def create(
         cls,
         runner: str = "train_on_historic_data",
         cycle_days: int = 180,
         optimizer: str = "adam",
-        include_lr_schedule: bool = True,
-        include_early_stopping: bool = True,
-        include_weight_decay: bool = True,
         minimal: bool = False,
         objective_metric: str = "mean_oos_sharpe",
     ) -> "HyperparamSpace":
         """
-        Unified factory method for creating hyperparameter search spaces.
+        Create a focused ~7D hyperparameter search space.
+
+        Domain-informed defaults (LR schedule, weight decay, clip norm, noise,
+        sampling method, init method, price noise) are fixed — see
+        FIXED_TRAINING_DEFAULTS. Set these on the base fingerprint before tuning.
+        Initial strategy params use conservative defaults — see
+        CONSERVATIVE_INITIAL_PARAMS.
+
+        Remaining tunable dimensions (~7):
+          base_lr, n_iterations, bout_offset_days, val_fraction,
+          turnover_penalty, maximum_change, (training_objective if meaningful)
 
         Parameters
         ----------
@@ -201,12 +234,6 @@ class HyperparamSpace:
             Approximate duration of one WFA cycle in days. Used to set bout_offset upper bound.
         optimizer : str
             Optimizer type: "adam", "adamw", or "sgd". Affects learning rate ranges.
-        include_lr_schedule : bool
-            Include lr_schedule_type and warmup_fraction (conditional).
-        include_early_stopping : bool
-            Include early_stopping_patience.
-        include_weight_decay : bool
-            Include use_weight_decay and weight_decay (conditional).
         minimal : bool
             If True, return minimal space with just lr and iterations.
         objective_metric : str
@@ -217,12 +244,6 @@ class HyperparamSpace:
         -------
         HyperparamSpace
             Configured search space.
-
-        Example
-        -------
-        >>> space = HyperparamSpace.create(cycle_days=180, optimizer="adam")
-        >>> space = HyperparamSpace.create(runner="multi_period_sgd", cycle_days=90)
-        >>> space = HyperparamSpace.create(minimal=True)  # Quick tuning
         """
         if minimal:
             return cls(params={
@@ -258,88 +279,29 @@ class HyperparamSpace:
             bout_offset_low = min(7, max_bout_days)  # Use 7 or max if max is smaller
             params = {
                 "base_lr": lr_range,
-                "batch_size": {"low": 8, "high": 64, "log": True, "type": "int"},
-                "n_iterations": {"low": 50, "high": 5000, "log": True, "type": "int"},
+                "n_iterations": {"low": 100, "high": 5000, "log": True, "type": "int"},
                 "bout_offset_days": {"low": bout_offset_low, "high": max_bout_days, "log": True, "type": "int"},
-                "clip_norm": {"low": 0.5, "high": 50.0, "log": True},
             }
 
-        if include_weight_decay:
-            params["use_weight_decay"] = {"choices": [True, False]}
-            params["weight_decay"] = {
-                "low": 0.0001, "high": 0.1, "log": True,
-                "conditional_on": "use_weight_decay", "conditional_value": True
-            }
-
-        if include_lr_schedule:
-            # Available schedules in backpropagation._create_lr_schedule:
-            # constant, cosine, exponential, warmup_cosine
-            params["lr_schedule_type"] = {"choices": ["constant", "cosine", "warmup_cosine", "exponential"]}
-            # lr_decay_ratio: min_lr = base_lr / lr_decay_ratio (only for decay schedules)
-            params["lr_decay_ratio"] = {
-                "low": 10, "high": 10000, "log": True,
-                "conditional_on": "lr_schedule_type", "conditional_value_not": "constant"
-            }
-            # Only warmup_cosine uses warmup_fraction (converted to warmup_steps later)
-            # Sample as fraction of n_iterations to avoid warmup_steps > n_iterations
-            params["warmup_fraction"] = {
-                "low": 0.05, "high": 0.3, "log": False,
-                "conditional_on": "lr_schedule_type", "conditional_value": "warmup_cosine"
-            }
-
-        if include_early_stopping:
-            params["use_early_stopping"] = {"choices": [True, False]}
-            params["early_stopping_patience"] = {
-                "low": 30, "high": 300, "log": True, "type": "int",
-                "conditional_on": "use_early_stopping", "conditional_value": True
-            }
-            # Validation fraction - how much of training to hold out for early stopping
-            # Larger = more robust validation signal but less training data
-            params["val_fraction"] = {
-                "low": 0.15, "high": 0.4, "log": False,
-                "conditional_on": "use_early_stopping", "conditional_value": True
-            }
+        # val_fraction: how much of training to hold out for early stopping / validation.
+        # Unconditional — early stopping is always on (fixed from domain knowledge).
+        params["val_fraction"] = {"low": 0.1, "high": 0.3, "log": False}
 
         # Training objective: controls BOTH return_val (what gradients optimize) AND
         # early_stopping_metric (what decides when to stop / which params to select)
-        # - "aligned": match the outer Optuna objective (sharpe→sharpe, calmar→calmar, etc.)
-        # - "returns_over_uniform_hodl": always use this robust proxy metric
-        # If "aligned" performs poorly (e.g., calmar has bad gradients), Optuna will learn
-        # to favor "returns_over_uniform_hodl" instead.
-        #
-        # Only include this choice if it's meaningful (i.e., aligned would differ from
-        # returns_over_uniform_hodl). If outer objective already maps to returns_over_hodl,
-        # both choices would be identical, so we skip it.
+        # Only include this choice if it's meaningful (aligned would differ from
+        # returns_over_uniform_hodl).
         aligned_metric = OUTER_TO_INNER_METRIC.get(objective_metric, "returns_over_uniform_hodl")
         if aligned_metric != "returns_over_uniform_hodl":
-            # Choice is meaningful - include it
             params["training_objective"] = {"choices": ["aligned", "returns_over_uniform_hodl"]}
 
-        # noise_scale: controls initialization diversity for n_parameter_sets > 1
-        # Larger noise = more diverse initializations = better exploration but more variance
-        # Only relevant when n_parameter_sets > 1 (set in run_fingerprint)
-        params["noise_scale"] = {"low": 0.01, "high": 0.5, "log": True}
-
         # maximum_change: max weight change per time step (controls trading speed limit)
-        # Lower = more constrained/slower rebalancing, higher = more aggressive
-        # Default is 3e-4, range from very constrained (1e-5) to effectively unconstrained (2.0)
-        params["maximum_change"] = {"low": 1e-5, "high": 2.0, "log": True}
+        # Narrowed from full range — very large values are never useful in practice.
+        params["maximum_change"] = {"low": 1e-4, "high": 1e-2, "log": True}
 
         # turnover_penalty: penalize weight turnover in loss function
-        # Higher values discourage frequent rebalancing, improving out-of-sample robustness
-        params["turnover_penalty"] = {"low": 1e-4, "high": 1.0, "log": True}
-
-        # price_noise_sigma: multiplicative noise on prices during training
-        # Acts as data augmentation to improve out-of-sample robustness
-        params["price_noise_sigma"] = {"low": 0.0001, "high": 0.01, "log": True}
-
-        # sample_method: how training windows are sampled
-        # "uniform" = random, "stratified" = one sample per time segment (better coverage)
-        params["sample_method"] = {"choices": ["uniform", "stratified"]}
-
-        # parameter_init_method: how parameter sets 1+ are initialized
-        # "gaussian" = random noise, "sobol"/"lhs" = low-discrepancy (better coverage)
-        params["parameter_init_method"] = {"choices": ["gaussian", "sobol", "lhs"]}
+        # Linear scale including 0.0 (no penalty) — log doesn't make sense when 0 is valid.
+        params["turnover_penalty"] = {"low": 0.0, "high": 0.5, "log": False}
 
         return cls(params=params)
 
@@ -412,9 +374,6 @@ class HyperparamSpace:
         cls,
         cycle_days: int,
         runner: str = "train_on_historic_data",
-        include_lr_schedule: bool = True,
-        include_early_stopping: bool = True,
-        include_weight_decay: bool = True,
         **kwargs,
     ) -> "HyperparamSpace":
         """Create search space with ``bout_offset`` scaled to cycle duration.
@@ -442,9 +401,6 @@ class HyperparamSpace:
         return cls.create(
             runner=runner,
             cycle_days=cycle_days,
-            include_lr_schedule=include_lr_schedule,
-            include_early_stopping=include_early_stopping,
-            include_weight_decay=include_weight_decay,
             **kwargs,
         )
 
@@ -572,49 +528,43 @@ def create_objective(
         fp = deepcopy(run_fingerprint)
         recursive_default_set(fp, run_fingerprint_defaults)
 
-        # Handle weight_decay conditional logic:
-        # If use_weight_decay=True and weight_decay was sampled, use AdamW
-        # If use_weight_decay=False or not present, use Adam (no weight decay)
-        use_weight_decay = suggested.get("use_weight_decay", False)
-        if use_weight_decay and "weight_decay" in suggested:
-            fp["optimisation_settings"]["optimiser"] = "adamw"
-            fp["optimisation_settings"]["weight_decay"] = suggested["weight_decay"]
-        else:
-            # Ensure no weight decay is applied
-            fp["optimisation_settings"]["weight_decay"] = 0.0
-
-        # Handle val_fraction and early_stopping
-        # For Optuna: val_fraction always applies (controls validation holdout)
-        # For SGD: val_fraction is tied to early_stopping
-        is_optuna = fp["optimisation_settings"].get("method") == "optuna"
-        use_early_stopping = suggested.get("use_early_stopping", True)
-
-        if is_optuna:
-            # Optuna always uses val_fraction (not tied to early_stopping)
-            if "val_fraction" in suggested:
-                fp["optimisation_settings"]["val_fraction"] = suggested["val_fraction"]
-        else:
-            # SGD: val_fraction tied to early_stopping
-            fp["optimisation_settings"]["early_stopping"] = use_early_stopping
-            if use_early_stopping:
-                if "val_fraction" in suggested:
-                    fp["optimisation_settings"]["val_fraction"] = suggested["val_fraction"]
+        # Handle weight_decay: only override fingerprint if explicitly in search space.
+        # If not searched, the fingerprint's values (set by FIXED_TRAINING_DEFAULTS) stand.
+        if "use_weight_decay" in suggested:
+            use_weight_decay = suggested["use_weight_decay"]
+            if use_weight_decay and "weight_decay" in suggested:
+                fp["optimisation_settings"]["optimiser"] = "adamw"
+                fp["optimisation_settings"]["weight_decay"] = suggested["weight_decay"]
             else:
-                # Set a very high patience so it effectively never triggers
-                fp["optimisation_settings"]["early_stopping_patience"] = 999999
-                # Set val_fraction to 0 when early stopping is disabled
-                fp["optimisation_settings"]["val_fraction"] = 0.0
+                fp["optimisation_settings"]["weight_decay"] = 0.0
 
-        # Handle training_objective: controls BOTH return_val AND early_stopping_metric
-        training_obj = suggested.get("training_objective", "returns_over_uniform_hodl")
-        if training_obj == "aligned":
-            # Align with outer objective
-            inner_metric = OUTER_TO_INNER_METRIC.get(objective_metric, "returns_over_uniform_hodl")
-        else:
-            # Use robust proxy
-            inner_metric = "returns_over_uniform_hodl"
-        fp["return_val"] = inner_metric
-        fp["optimisation_settings"]["early_stopping_metric"] = inner_metric
+        # Handle val_fraction and early_stopping.
+        # Only override fingerprint if explicitly in search space.
+        if "val_fraction" in suggested:
+            fp["optimisation_settings"]["val_fraction"] = suggested["val_fraction"]
+
+        if "use_early_stopping" in suggested:
+            is_optuna = fp["optimisation_settings"].get("method") == "optuna"
+            use_early_stopping = suggested["use_early_stopping"]
+            if not is_optuna:
+                fp["optimisation_settings"]["early_stopping"] = use_early_stopping
+                if not use_early_stopping:
+                    fp["optimisation_settings"]["early_stopping_patience"] = 999999
+                    fp["optimisation_settings"]["val_fraction"] = 0.0
+
+        if "early_stopping_patience" in suggested:
+            fp["optimisation_settings"]["early_stopping_patience"] = suggested["early_stopping_patience"]
+
+        # Handle training_objective: controls BOTH return_val AND early_stopping_metric.
+        # If not in search space, leave fingerprint defaults (caller should set return_val).
+        if "training_objective" in suggested:
+            training_obj = suggested["training_objective"]
+            if training_obj == "aligned":
+                inner_metric = OUTER_TO_INNER_METRIC.get(objective_metric, "returns_over_uniform_hodl")
+            else:
+                inner_metric = "returns_over_uniform_hodl"
+            fp["return_val"] = inner_metric
+            fp["optimisation_settings"]["early_stopping_metric"] = inner_metric
 
         # Apply suggested hyperparameters
         # These go in optimisation_settings
