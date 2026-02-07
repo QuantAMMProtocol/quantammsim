@@ -1367,18 +1367,14 @@ def probe_max_n_parameter_sets(
     Returns
     -------
     dict
-        {
-            "max_n_parameter_sets": int,  # Maximum that fit in memory
-            "recommended_n_parameter_sets": int,  # With safety margin applied
-            "probed_values": list,  # Values tried during binary search
-            "success_values": list,  # Values that succeeded
-            "failed_values": list,  # Values that OOM'd
-        }
+        Keys: ``max_n_parameter_sets`` (int), ``recommended_n_parameter_sets``
+        (int, with safety margin applied), ``probed_values`` (list),
+        ``success_values`` (list), ``failed_values`` (list).
 
     Notes
     -----
-    - This function temporarily modifies run_fingerprint during probing
-    - JAX caches are cleared between attempts
+    - This function temporarily modifies run_fingerprint during probing.
+    - JAX caches are cleared between attempts.
     - The forward pass (without gradients) is used for probing, so gradient
       computation may require ~2x more memory. Hence the safety_margin.
     """
@@ -1580,14 +1576,9 @@ def allocate_memory_budget(
     Returns
     -------
     dict
-        Recommended settings:
-        {
-            "n_parameter_sets": int,
-            "n_ensemble_members": int,
-            "batch_size": int,
-            "priority_used": str,
-            "probe_result": dict or None,
-        }
+        Recommended settings with keys: ``n_parameter_sets`` (int),
+        ``n_ensemble_members`` (int), ``batch_size`` (int),
+        ``priority_used`` (str), ``probe_result`` (dict or None).
     """
     probe_result = None
 

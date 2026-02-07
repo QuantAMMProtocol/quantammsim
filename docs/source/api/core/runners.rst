@@ -7,7 +7,6 @@ Core Training Runners
 .. automodule:: quantammsim.runners.jax_runners
    :members:
    :show-inheritance:
-   :show-inheritance:
 
 Runner Utilities
 ~~~~~~~~~~~~~~~~
@@ -15,14 +14,12 @@ Runner Utilities
 .. automodule:: quantammsim.runners.jax_runner_utils
    :members:
    :show-inheritance:
-   :show-inheritance:
 
 Run Fingerprint Defaults
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: quantammsim.runners.default_run_fingerprint
    :members:
-   :show-inheritance:
    :show-inheritance:
 
 Multi-Period SGD

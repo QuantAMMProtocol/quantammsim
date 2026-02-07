@@ -875,9 +875,8 @@ class TrainingEvaluator:
         Parameters
         ----------
         fn : Callable
-            Function with signature:
-            fn(data_dict, train_start_idx, train_end_idx, pool, run_fingerprint,
-               n_assets, warm_start_params) -> (params, metadata)
+            Function with signature
+            ``fn(data_dict, train_start_idx, train_end_idx, pool, run_fingerprint, n_assets, warm_start_params) -> (params, metadata)``.
         name : str
             Name for this trainer
         n_cycles : int

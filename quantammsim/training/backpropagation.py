@@ -1,3 +1,30 @@
+"""Backpropagation pipeline for gradient-based strategy optimisation.
+
+This module provides the factory functions that construct the JAX computation
+graph for training: objective construction, gradient computation, and
+parameter updates.  The key abstraction is a three-stage pipeline:
+
+1. **Batching** — ``batched_partial_training_step_factory`` vmaps a single
+   forward-pass function over a batch of randomly-sampled time windows.
+2. **Objective** — ``batched_objective_factory`` reduces the batch to a
+   scalar (mean) suitable for differentiation; an optional Hessian-trace
+   regularisation variant is available via
+   ``batched_objective_with_hessian_factory``.
+3. **Update** — ``update_factory`` / ``update_factory_with_optax`` close
+   over ``value_and_grad`` and the chosen optimiser to produce a single
+   JIT-compiled training step.
+
+Two high-level entry points compose these stages automatically:
+
+- :func:`update_from_partial_training_step_factory` — vanilla SGD updates.
+- :func:`update_from_partial_training_step_factory_with_optax` — Optax-based
+  updates (Adam, AdamW, SGD with schedules).
+
+The :func:`create_optimizer_chain` function builds an Optax optimizer from
+``run_fingerprint["optimisation_settings"]``, supporting learning-rate
+schedules, plateau-based decay, gradient clipping, and weight decay.
+"""
+
 import os
 import glob
 
@@ -511,7 +538,25 @@ def update_from_partial_training_step_factory_with_optax(
 
 
 def create_opt_state_in_axes_dict(opt_state):
-    """Create in_axes dict for optimizer state based on its actual structure."""
+    """Create a ``vmap`` in_axes specification mirroring an optimizer state pytree.
+
+    When training multiple parameter sets in parallel via ``vmap``, the
+    optimizer state must be mapped over its first (batch) dimension.  This
+    function inspects every leaf of the pytree and returns ``0`` for
+    array-like leaves with a non-trivial first dimension, and ``None``
+    for scalars and empty containers (which should be broadcast).
+
+    Parameters
+    ----------
+    opt_state : pytree
+        An Optax optimizer state (e.g., from ``optimizer.init(params)``).
+
+    Returns
+    -------
+    pytree
+        A pytree of the same structure containing ``0`` or ``None`` for
+        each leaf, suitable for passing as ``in_axes`` to ``jax.vmap``.
+    """
 
     def _create_axes_for_leaf(leaf):
         # Handle empty lists specifically - they should not be vmapped over
@@ -627,6 +672,46 @@ def _create_lr_schedule(settings):
 
 
 def create_optimizer_chain(run_fingerprint):
+    """Build an Optax optimizer chain from run fingerprint settings.
+
+    Constructs a composite ``optax.GradientTransformation`` by chaining:
+
+    1. **Gradient clipping** (optional) — global-norm clipping via
+       ``optax.clip_by_global_norm`` when ``use_gradient_clipping`` is True.
+    2. **Base optimizer** — one of ``adam``, ``adamw``, or ``sgd``, selected
+       by ``optimiser``.
+    3. **Learning-rate schedule** — constant, cosine, exponential, or
+       warmup-cosine, selected by ``lr_schedule_type``.
+    4. **Plateau reduction** (optional) — ``optax.contrib.reduce_on_plateau``
+       when ``use_plateau_decay`` is True, reducing LR by ``decay_lr_ratio``
+       after ``decay_lr_plateau`` steps without improvement.
+
+    Parameters
+    ----------
+    run_fingerprint : dict
+        Must contain an ``"optimisation_settings"`` sub-dict with keys:
+
+        - ``optimiser`` : str — ``"adam"``, ``"adamw"``, or ``"sgd"``
+        - ``base_lr`` : float — peak / initial learning rate
+        - ``n_iterations`` : int — total training iterations (for schedules)
+        - ``lr_schedule_type`` : str — ``"constant"``, ``"cosine"``,
+          ``"exponential"``, or ``"warmup_cosine"``
+        - ``use_plateau_decay`` : bool
+        - ``decay_lr_ratio`` : float — multiplicative factor on plateau
+        - ``decay_lr_plateau`` : int — patience in iterations
+        - ``use_gradient_clipping`` : bool
+        - ``clip_norm`` : float — max global gradient norm
+        - ``weight_decay`` : float, optional — for AdamW (default 0.0)
+        - ``lr_decay_ratio`` : float, optional — ``min_lr = base_lr / lr_decay_ratio``
+        - ``min_lr`` : float, optional — absolute minimum LR (fallback)
+        - ``warmup_steps`` : int — required when ``lr_schedule_type="warmup_cosine"``
+
+    Returns
+    -------
+    optax.GradientTransformation
+        The composed optimizer chain, ready to pass to
+        :func:`update_from_partial_training_step_factory_with_optax`.
+    """
     settings = run_fingerprint["optimisation_settings"]
     weight_decay = settings.get("weight_decay", 0.0)  # Default to no weight decay
 

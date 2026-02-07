@@ -162,12 +162,14 @@ class HyperparamSpace:
     - categorical: {"choices": ["adam", "sgd"]}
     - conditional: {"conditional_on": "parent_param", "conditional_value": "value", ...}
 
-    Conditional Parameters:
+    Conditional parameters:
+
     - softmin_temperature: only sampled when aggregation="softmin"
     - weight_decay: only sampled when use_weight_decay=True (and triggers adamw)
     - lr_decay_ratio: only sampled when lr_schedule_type != "constant"
-    - warmup_fraction: only sampled when lr_schedule_type == "warmup_cosine"
-      (converted to warmup_steps = warmup_fraction * n_iterations)
+    - warmup_fraction: only sampled when lr_schedule_type == "warmup_cosine",
+      converted to ``warmup_steps = warmup_fraction * n_iterations``
+
 
     Note on bout_offset:
     - bout_offset is in MINUTES, always multiples of 1440 (whole days)

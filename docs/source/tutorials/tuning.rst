@@ -77,7 +77,7 @@ Let's optimize a QuantAMMmomentum strategy for a BTC/ETH pool:
         "endDateString": "2024-03-01 00:00:00",
         "endTestDateString": "2024-04-01 00:00:00",
         "chunk_period": 60,
-        "return_val": "sharpe",
+        "return_val": "daily_log_sharpe",
         "initial_pool_value": 1000000.0
     }
 
@@ -252,7 +252,7 @@ Advanced Features
 
 .. code-block:: python
 
-    run_fingerprint["return_val"] = "sharpe"  # or "returns", "sortino" among others
+    run_fingerprint["return_val"] = "daily_log_sharpe"  # or "sharpe", "returns", "sortino" among others
 
 2. Multi-period Training (Gradient-free only):
 
