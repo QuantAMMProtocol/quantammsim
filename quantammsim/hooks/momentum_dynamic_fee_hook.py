@@ -50,7 +50,7 @@ class MomentumDynamicFeeHook(BaseDynamicFeeHook):
         params["momentum_fee_params"]["fee_logit"] = jnp.array([10.0])
         params["momentum_fee_params"]["fee_scaling_factor"] = jnp.array([1.0])
         params["momentum_fee_params"]["logit_lamb"] = jnp.array([0.5])
-        max_fees = softplus(params["momentum_fee_params"]["fee_logit"]).clip(0.0, 0.3)
+        max_fees = jnp.clip(softplus(params["momentum_fee_params"]["fee_logit"]), min=0.0, max=0.3)
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
         gradients = calc_gradients(
             params["momentum_fee_params"],

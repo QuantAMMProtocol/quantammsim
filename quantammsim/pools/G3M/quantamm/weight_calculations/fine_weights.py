@@ -123,7 +123,7 @@ def ste_clip(x, lo, hi):
         Clipped values in the forward pass, with gradients of ``x`` in the
         backward pass.
     """
-    y = jnp.clip(x, lo, hi)
+    y = jnp.clip(x, min=lo, max=hi)
     # forward: y; backward: identity wrt x
     return ste(x, y)
 
@@ -160,7 +160,7 @@ def _apply_per_asset_bounds(
     if use_ste:
         clipped = ste_clip(weights, min_weights, max_weights)
     else:
-        clipped = jnp.clip(weights, min_weights, max_weights)
+        clipped = jnp.clip(weights, min=min_weights, max=max_weights)
 
     total = jnp.sum(clipped)
 
@@ -187,7 +187,7 @@ def _apply_per_asset_bounds(
     if use_ste:
         weights_final = ste_clip(weights_adjusted, min_weights, max_weights)
     else:
-        weights_final = jnp.clip(weights_adjusted, min_weights, max_weights)
+        weights_final = jnp.clip(weights_adjusted, min=min_weights, max=max_weights)
 
     # Final normalisation (should be very close to 1 already)
     weights_final = weights_final / jnp.sum(weights_final)
@@ -852,7 +852,7 @@ def _jax_calc_coarse_weight_scan_function(
         )
     else:
         normed_weight_update = jnp.clip(
-            normed_weight_update, minimum_weight, maximum_weight
+            normed_weight_update, min=minimum_weight, max=maximum_weight
         )
 
     # calculate 'left over' weight, 1 - n * epsilon

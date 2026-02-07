@@ -121,7 +121,7 @@ def calc_gradients(
     max_lamb = jax_memory_days_to_lamb(max_memory_days, chunk_period)
     # Apply max_memory_days restriction to lamb and alt_lamb
     if cap_lamb:
-        capped_lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+        capped_lamb = jnp.clip(lamb, min=0.0, max=max_lamb)
         lamb = capped_lamb
     safety_margin_max_memory_days = max_memory_days * safety_margin_multiplier
     # we can use alt lamb / alt memory days to allow different parts of
@@ -132,7 +132,7 @@ def calc_gradients(
             logit_alt_lamb = logit_delta_lamb + update_rule_parameter_dict["logit_lamb"]
             alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
             if cap_lamb:
-                capped_alt_lamb = jnp.clip(alt_lamb, a_min=0.0, a_max=max_lamb)
+                capped_alt_lamb = jnp.clip(alt_lamb, min=0.0, max=max_lamb)
                 alt_lamb = capped_alt_lamb
         else:
             raise Exception
@@ -140,7 +140,7 @@ def calc_gradients(
         alt_memory_days = (
             jnp.cbrt(6 * alt_lamb / ((1 - alt_lamb) ** 3)) * 2 * chunk_period / 1440
         )
-        alt_memory_days = jnp.clip(alt_memory_days, a_min=0.0, a_max=max_memory_days)
+        alt_memory_days = jnp.clip(alt_memory_days, min=0.0, max=max_memory_days)
     else:
         capped_alt_lamb = lamb
         alt_lamb = lamb
@@ -259,7 +259,7 @@ def calc_triple_threat_gradients(
     max_lamb = jax_memory_days_to_lamb(max_memory_days, chunk_period)
     # Apply max_memory_days restriction to lamb and alt_lamb
     if cap_lamb:
-        capped_lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+        capped_lamb = jnp.clip(lamb, min=0.0, max=max_lamb)
         lamb = capped_lamb
     safety_margin_max_memory_days = max_memory_days * 5.0
     # we can use alt lamb / alt memory days to allow different parts of
@@ -268,7 +268,7 @@ def calc_triple_threat_gradients(
         logit_alt_lamb = update_rule_parameter_dict.get("logit_lamb_for_ewma")
         alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
         if cap_lamb:
-            capped_alt_lamb = jnp.clip(alt_lamb, a_min=0.0, a_max=max_lamb)
+            capped_alt_lamb = jnp.clip(alt_lamb, min=0.0, max=max_lamb)
             alt_lamb = capped_alt_lamb
     else:
         raise Exception
@@ -276,7 +276,7 @@ def calc_triple_threat_gradients(
     alt_memory_days = (
         jnp.cbrt(6 * alt_lamb / ((1 - alt_lamb) ** 3)) * 2 * chunk_period / 1440
     )
-    alt_memory_days = jnp.clip(alt_memory_days, a_min=0.0, a_max=max_memory_days)
+    alt_memory_days = jnp.clip(alt_memory_days, min=0.0, max=max_memory_days)
 
     if DEFAULT_BACKEND != "cpu":
         lamb = jnp.broadcast_to(
@@ -382,7 +382,7 @@ def calc_triple_threat_gradients(
     max_lamb = jax_memory_days_to_lamb(max_memory_days, chunk_period)
     # Apply max_memory_days restriction to lamb and alt_lamb
     if cap_lamb:
-        capped_lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+        capped_lamb = jnp.clip(lamb, min=0.0, max=max_lamb)
         lamb = capped_lamb
     safety_margin_max_memory_days = max_memory_days * 5.0
     # we can use alt lamb / alt memory days to allow different parts of
@@ -391,7 +391,7 @@ def calc_triple_threat_gradients(
         logit_alt_lamb = update_rule_parameter_dict.get("logit_lamb_for_ewma")
         alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
         if cap_lamb:
-            capped_alt_lamb = jnp.clip(alt_lamb, a_min=0.0, a_max=max_lamb)
+            capped_alt_lamb = jnp.clip(alt_lamb, min=0.0, max=max_lamb)
             alt_lamb = capped_alt_lamb
     else:
         raise Exception
@@ -399,7 +399,7 @@ def calc_triple_threat_gradients(
     alt_memory_days = (
         jnp.cbrt(6 * alt_lamb / ((1 - alt_lamb) ** 3)) * 2 * chunk_period / 1440
     )
-    alt_memory_days = jnp.clip(alt_memory_days, a_min=0.0, a_max=max_memory_days)
+    alt_memory_days = jnp.clip(alt_memory_days, min=0.0, max=max_memory_days)
 
     if DEFAULT_BACKEND != "cpu":
         lamb = jnp.broadcast_to(
@@ -498,7 +498,7 @@ def calc_gradients_with_readout(
     max_lamb = jax_memory_days_to_lamb(max_memory_days, chunk_period)
     # Apply max_memory_days restriction to lamb and alt_lamb
     if cap_lamb:
-        capped_lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+        capped_lamb = jnp.clip(lamb, min=0.0, max=max_lamb)
         lamb = capped_lamb
     safety_margin_max_memory_days = max_memory_days * 5.0
     gradients_dict = _jax_gradients_at_infinity_via_scan_with_readout(
@@ -551,7 +551,7 @@ def calc_ewma_padded(
     # Apply max_memory_days restriction to lamb and alt_lamb
     # og_lamb = lamb.copy()
     if cap_lamb:
-        capped_lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+        capped_lamb = jnp.clip(lamb, min=0.0, max=max_lamb)
         lamb = capped_lamb
     safety_margin_max_memory_days = max_memory_days * 5.0
 
@@ -623,7 +623,7 @@ def calc_alt_ewma_padded(
     # Apply max_memory_days restriction to lamb and alt_lamb
     # og_lamb = lamb.copy()
     if cap_lamb:
-        capped_lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+        capped_lamb = jnp.clip(lamb, min=0.0, max=max_lamb)
         lamb = capped_lamb
     safety_margin_max_memory_days = max_memory_days * 5.0
     # we can use alt lamb / alt memory days to allow different parts of
@@ -634,7 +634,7 @@ def calc_alt_ewma_padded(
         alt_lamb = jnp.exp(logit_alt_lamb) / (1 + jnp.exp(logit_alt_lamb))
         # og_alt_lamb = alt_lamb.copy()
         if cap_lamb:
-            capped_alt_lamb = jnp.clip(alt_lamb, a_min=0.0, a_max=max_lamb)
+            capped_alt_lamb = jnp.clip(alt_lamb, min=0.0, max=max_lamb)
             alt_lamb = capped_alt_lamb
     else:
         raise Exception
@@ -642,7 +642,7 @@ def calc_alt_ewma_padded(
     alt_memory_days = (
         jnp.cbrt(6 * alt_lamb / ((1 - alt_lamb) ** 3)) * 2 * chunk_period / 1440
     )
-    alt_memory_days = jnp.clip(alt_memory_days, a_min=0.0, a_max=max_memory_days)
+    alt_memory_days = jnp.clip(alt_memory_days, min=0.0, max=max_memory_days)
 
     alt_ewma_kernel = make_ewma_kernel(
         alt_lamb, safety_margin_max_memory_days, chunk_period
@@ -748,8 +748,8 @@ def calc_ewma_pair(
 
     if cap_lamb:
         max_lamb = jax_memory_days_to_lamb(max_memory_days, chunk_period)
-        lamb_1 = jnp.clip(lamb_1, a_min=0.0, a_max=max_lamb)
-        lamb_2 = jnp.clip(lamb_2, a_min=0.0, a_max=max_lamb)
+        lamb_1 = jnp.clip(lamb_1, min=0.0, max=max_lamb)
+        lamb_2 = jnp.clip(lamb_2, min=0.0, max=max_lamb)
 
     # Ensure input is 2D
     chunkwise_price_values = jnp.atleast_2d(chunkwise_price_values)
@@ -861,7 +861,7 @@ def calc_return_variances(
 
     if cap_lamb:
         max_lamb = memory_days_to_lamb(max_memory_days, chunk_period)
-        lamb = jnp.clip(lamb, a_min=0.0, a_max=max_lamb)
+        lamb = jnp.clip(lamb, min=0.0, max=max_lamb)
     returns = jnp.diff(chunkwise_price_values, axis=0) / chunkwise_price_values[:-1]
 
     if DEFAULT_BACKEND != "cpu":

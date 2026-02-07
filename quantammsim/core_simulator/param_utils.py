@@ -486,7 +486,7 @@ def lamb_to_memory_days_clipped(lamb, chunk_period, max_memory_days):
         The clipped memory value in days.
     """
     memory_days = jnp.clip(
-        lamb_to_memory_days(lamb, chunk_period), a_min=0.0, a_max=max_memory_days
+        lamb_to_memory_days(lamb, chunk_period), min=0.0, max=max_memory_days
     )
     return memory_days
 
