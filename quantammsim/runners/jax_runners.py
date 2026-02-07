@@ -324,7 +324,8 @@ def train_on_historic_data(
 
             # Step 2: Add noise using existing pool method (reuse single source of truth)
             noise_scale = run_fingerprint["optimisation_settings"].get("noise_scale", 0.1)
-            params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale)
+            per_param_noise_scale = run_fingerprint["optimisation_settings"].get("per_param_noise_scale")
+            params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale, per_param_noise_scale)
 
             # Initialize reserves with fresh initial_pool_value
             # If warm_start_weights provided, distribute according to those weights
@@ -394,7 +395,8 @@ def train_on_historic_data(
         # noise_scale controls initialization diversity for param sets 1+
         # Default 0.1 maintains backward compatibility
         noise_scale = run_fingerprint["optimisation_settings"].get("noise_scale", 0.1)
-        params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale=noise_scale)
+        per_param_noise_scale = run_fingerprint["optimisation_settings"].get("per_param_noise_scale")
+        params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale=noise_scale, per_param_noise_scale=per_param_noise_scale)
 
     params_in_axes_dict = pool.make_vmap_in_axes(params)
 

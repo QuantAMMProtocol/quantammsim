@@ -1,7 +1,16 @@
-"""Performance metric calculations for SGD analysis."""
+"""Performance metric calculations for SGD analysis.
+
+Includes:
+- Period metric calculations (Sharpe, Calmar, etc.)
+- Deflated Sharpe Ratio (Bailey & López de Prado, 2014)
+- Block bootstrap confidence intervals for Sharpe
+- Impermanent loss decomposition
+"""
 
 import numpy as np
 import jax.numpy as jnp
+from typing import Dict, List, Tuple, Optional
+from scipy import stats
 from quantammsim.core_simulator.forward_pass import _calculate_return_value
 
 
@@ -68,7 +77,12 @@ def calculate_period_metrics(results_dict, prices=None):
         jnp.diff(results_dict["value"][::24 * 60])
         / results_dict["value"][::24 * 60][:-1]
     )
-    daily_sharpe = jnp.sqrt(365) * (daily_returns.mean() / daily_returns.std())
+    daily_std = daily_returns.std()
+    daily_sharpe = jnp.where(
+        daily_std > 1e-12,
+        jnp.sqrt(365) * daily_returns.mean() / daily_std,
+        0.0,
+    )
 
     daily_log_sharpe = _calculate_return_value(
         "daily_log_sharpe",
@@ -111,6 +125,7 @@ def calculate_period_metrics(results_dict, prices=None):
         "ulcer": float(ulcer_index),
         "calmar": float(calmar_ratio),
         "sterling": float(sterling_ratio),
+        "daily_returns": np.asarray(daily_returns, dtype=np.float64),
     }
 
 def calculate_continuous_test_metrics(continuous_results, train_len, test_len, prices):
@@ -273,3 +288,272 @@ def process_continuous_outputs(
             continuous_test_metrics_list.append(continuous_test_metrics)
 
     return train_metrics_list, test_metrics_list, continuous_test_metrics_list
+
+
+# =============================================================================
+# Deflated Sharpe Ratio (Bailey & López de Prado, 2014)
+# =============================================================================
+
+def _expected_max_sr(n_trials: int, T: int, skew: float = 0.0, kurt: float = 3.0) -> float:
+    """Expected maximum Sharpe ratio under the null (all strategies are noise).
+
+    Eq. (6) from Bailey & López de Prado (2014):
+      E[max(SR)] ≈ sqrt(V(SR)) * ((1 - γ)*Φ^{-1}(1-1/N) + γ*Φ^{-1}(1-1/(N*e)))
+    where γ ≈ 0.5772 (Euler-Mascheroni), V(SR) is the variance of the SR estimator.
+
+    Parameters
+    ----------
+    n_trials : int
+        Number of independent strategies tested (Optuna trials).
+    T : int
+        Number of return observations per strategy.
+    skew : float
+        Skewness of returns (0 for normal).
+    kurt : float
+        Kurtosis of returns (3 for normal).
+    """
+    if n_trials <= 0 or T <= 1:
+        return 0.0
+
+    # Variance of SR estimator (Lo, 2002, corrected for non-normality)
+    # V(SR) ≈ (1 + 0.25*skew*SR - (kurt-3)/4*SR^2) / T
+    # Under null (SR=0): V(SR) ≈ 1/T
+    var_sr = (1.0 + 0.25 * skew * 0 - (kurt - 3.0) / 4.0 * 0) / T
+    std_sr = np.sqrt(max(var_sr, 1e-12))
+
+    euler_mascheroni = 0.5772156649
+    z1 = stats.norm.ppf(1.0 - 1.0 / n_trials) if n_trials > 1 else 0.0
+    z2 = stats.norm.ppf(1.0 - 1.0 / (n_trials * np.e)) if n_trials > 1 else 0.0
+
+    return std_sr * ((1 - euler_mascheroni) * z1 + euler_mascheroni * z2)
+
+
+def deflated_sharpe_ratio(
+    observed_sr: float,
+    n_trials: int,
+    T: int,
+    skew: float = 0.0,
+    kurt: float = 3.0,
+) -> Dict[str, float]:
+    """Compute the Deflated Sharpe Ratio (DSR).
+
+    Tests whether the observed Sharpe ratio exceeds the expected maximum SR
+    under the null hypothesis that all tested strategies are noise.
+
+    Parameters
+    ----------
+    observed_sr : float
+        Best observed OOS Sharpe ratio (annualised).
+    n_trials : int
+        Number of independent strategies/hyperparameter sets tested.
+    T : int
+        Number of OOS return observations.
+    skew : float
+        Skewness of OOS returns.
+    kurt : float
+        Excess kurtosis of OOS returns (0 for normal, not 3).
+
+    Returns
+    -------
+    dict
+        sr0: expected max SR under null
+        dsr: probability that observed SR exceeds sr0
+        significant: True if DSR >= 0.95
+    """
+    sr0 = _expected_max_sr(n_trials, T, skew, kurt + 3.0)  # convert excess to raw
+
+    # Variance of SR estimator
+    var_sr = (1.0 + 0.25 * skew * observed_sr - (kurt) / 4.0 * observed_sr ** 2) / T
+    std_sr = np.sqrt(max(var_sr, 1e-12))
+
+    # DSR = P(SR > SR0) = Φ((SR - SR0) / std(SR))
+    if std_sr > 0:
+        dsr = float(stats.norm.cdf((observed_sr - sr0) / std_sr))
+    else:
+        dsr = 1.0 if observed_sr > sr0 else 0.0
+
+    return {
+        "sr0": float(sr0),
+        "dsr": dsr,
+        "significant": dsr >= 0.95,
+        "observed_sr": float(observed_sr),
+        "n_trials": n_trials,
+        "T": T,
+    }
+
+
+# =============================================================================
+# Block Bootstrap Confidence Intervals for Sharpe Ratio
+# =============================================================================
+
+def block_bootstrap_sharpe_ci(
+    daily_returns: np.ndarray,
+    n_bootstrap: int = 10000,
+    block_length: int = 10,
+    confidence: float = 0.95,
+    seed: int = 42,
+) -> Dict[str, float]:
+    """Block bootstrap confidence intervals for annualised Sharpe ratio.
+
+    Uses circular block bootstrap to preserve autocorrelation structure
+    in the return series.
+
+    Parameters
+    ----------
+    daily_returns : array-like
+        Daily (or per-period) return series.
+    n_bootstrap : int
+        Number of bootstrap samples.
+    block_length : int
+        Block length for block bootstrap. Should be long enough to capture
+        autocorrelation (10-20 for daily crypto returns).
+    confidence : float
+        Confidence level (e.g., 0.95 for 95% CI).
+    seed : int
+        Random seed.
+
+    Returns
+    -------
+    dict
+        point_estimate, lower, upper, std, confidence_level
+    """
+    returns = np.asarray(daily_returns, dtype=np.float64)
+    T = len(returns)
+
+    if T < 2 * block_length:
+        return {
+            "point_estimate": float("nan"),
+            "lower": float("nan"),
+            "upper": float("nan"),
+            "std": float("nan"),
+            "confidence_level": confidence,
+            "warning": f"Too few observations ({T}) for block length {block_length}",
+        }
+
+    rng = np.random.RandomState(seed)
+    n_blocks = int(np.ceil(T / block_length))
+
+    bootstrap_sharpes = np.empty(n_bootstrap)
+    annualisation = np.sqrt(365.0)
+
+    for i in range(n_bootstrap):
+        # Circular block bootstrap: sample random start indices
+        starts = rng.randint(0, T, size=n_blocks)
+        indices = np.concatenate([
+            np.arange(s, s + block_length) % T for s in starts
+        ])[:T]
+
+        sample = returns[indices]
+        std = sample.std()
+        if std > 1e-12:
+            bootstrap_sharpes[i] = annualisation * sample.mean() / std
+        else:
+            bootstrap_sharpes[i] = 0.0
+
+    alpha = 1 - confidence
+    lower = float(np.percentile(bootstrap_sharpes, 100 * alpha / 2))
+    upper = float(np.percentile(bootstrap_sharpes, 100 * (1 - alpha / 2)))
+    full_std = returns.std()
+    point = annualisation * returns.mean() / full_std if full_std > 1e-12 else 0.0
+
+    return {
+        "point_estimate": float(point),
+        "lower": lower,
+        "upper": upper,
+        "std": float(np.std(bootstrap_sharpes)),
+        "confidence_level": confidence,
+    }
+
+
+# =============================================================================
+# Impermanent Loss Decomposition
+# =============================================================================
+
+def decompose_pool_returns(
+    values: np.ndarray,
+    reserves: np.ndarray,
+    prices: np.ndarray,
+    weights: Optional[np.ndarray] = None,
+    fees_earned: float = 0.0,
+) -> Dict[str, float]:
+    """Decompose pool returns into components.
+
+    Components:
+    - hodl_return: What the initial portfolio would be worth if weights never changed
+    - pool_return: Actual pool return (value[-1] / value[0] - 1)
+    - divergence_loss: Value lost due to arb-driven rebalancing (always <= 0 for G3M)
+    - fee_income: Value gained from swap fees (external input, not computed from sim)
+    - strategy_alpha: Residual — return from dynamic weight changes beyond passive AMM
+
+    The decomposition: pool_return = hodl_return + divergence_loss + fee_income + strategy_alpha
+
+    Parameters
+    ----------
+    values : array-like
+        Pool value over time, shape (T,).
+    reserves : array-like
+        Pool reserves over time, shape (T, n_assets).
+    prices : array-like
+        Asset prices over time, shape (T, n_assets).
+    weights : array-like, optional
+        Pool weights over time, shape (T, n_assets). If None, inferred from reserves * prices / value.
+    fees_earned : float
+        Total fees earned by pool (as fraction of initial value). Default 0.0.
+
+    Returns
+    -------
+    dict
+        hodl_return, pool_return, divergence_loss, fee_income, strategy_alpha,
+        and diagnostic: hodl_value_final, pool_value_final.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    reserves = np.asarray(reserves, dtype=np.float64)
+    prices = np.asarray(prices, dtype=np.float64)
+
+    T = len(values)
+    n_assets = reserves.shape[1] if reserves.ndim > 1 else 1
+
+    # Pool return
+    pool_return = values[-1] / values[0] - 1.0
+
+    # HODL return: hold initial reserves, revalue at final prices
+    initial_reserves = reserves[0]
+    hodl_final_value = float(np.sum(initial_reserves * prices[-1]))
+    hodl_return = hodl_final_value / values[0] - 1.0
+
+    # Constant-weight AMM return (passive rebalancing to initial weights)
+    # For a constant-weight AMM, value = C * prod(price_i ^ w_i)
+    # This is the "passive AMM" benchmark — what you'd get with fixed weights
+    if weights is not None:
+        initial_weights = np.asarray(weights[0], dtype=np.float64)
+    else:
+        initial_weights = (initial_reserves * prices[0]) / values[0]
+
+    # Avoid log(0) for zero-price assets
+    safe_prices_0 = np.maximum(prices[0], 1e-18)
+    safe_prices_T = np.maximum(prices[-1], 1e-18)
+    price_ratios = safe_prices_T / safe_prices_0
+
+    # Constant-weight AMM value: V_T = V_0 * prod(price_ratio_i ^ w_i)
+    cw_amm_return = float(np.prod(price_ratios ** initial_weights)) - 1.0
+
+    # Divergence loss = constant-weight AMM return - HODL return
+    # This is always <= 0 (the "cost" of continuous rebalancing)
+    divergence_loss = cw_amm_return - hodl_return
+
+    # Strategy alpha = pool return - constant-weight AMM return - fees
+    # This is the residual from dynamic weight changes
+    strategy_alpha = pool_return - cw_amm_return - fees_earned
+
+    return {
+        "pool_return": float(pool_return),
+        "hodl_return": float(hodl_return),
+        "cw_amm_return": float(cw_amm_return),
+        "divergence_loss": float(divergence_loss),
+        "fee_income": float(fees_earned),
+        "strategy_alpha": float(strategy_alpha),
+        # Diagnostics
+        "hodl_value_final": hodl_final_value,
+        "pool_value_final": float(values[-1]),
+        "initial_weights": initial_weights.tolist() if hasattr(initial_weights, 'tolist') else list(initial_weights),
+    }
