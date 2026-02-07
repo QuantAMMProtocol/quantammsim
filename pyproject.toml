@@ -88,6 +88,9 @@ markers = [
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
+    "ignore:Argument ``multivariate``:optuna.exceptions.ExperimentalWarning",
+    "ignore:The balance properties of Sobol:UserWarning",
+    "ignore::FutureWarning:dask",
 ]
 
 [tool.coverage.run]
