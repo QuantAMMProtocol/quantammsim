@@ -5,5 +5,5 @@
 
 .. autoclass:: AntiMomentumPool
    :members:
-   :undoc-members:
+   :no-index:
    :show-inheritance:

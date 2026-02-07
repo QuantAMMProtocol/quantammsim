@@ -5,15 +5,15 @@ This module provides unified metric extraction from CycleEvaluation objects,
 replacing repetitive if/elif chains with a registry-based approach.
 
 Usage:
-------
-```python
-from quantammsim.runners.metric_extraction import extract_cycle_metric
 
-# Extract aggregated metrics from cycle evaluations
-value = extract_cycle_metric(cycle_evals, "mean_oos_sharpe")
-value = extract_cycle_metric(cycle_evals, "worst_wfe")
-value = extract_cycle_metric(cycle_evals, "neg_is_oos_gap")
-```
+.. code-block:: python
+
+    from quantammsim.runners.metric_extraction import extract_cycle_metric
+
+    # Extract aggregated metrics from cycle evaluations
+    value = extract_cycle_metric(cycle_evals, "mean_oos_sharpe")
+    value = extract_cycle_metric(cycle_evals, "worst_wfe")
+    value = extract_cycle_metric(cycle_evals, "neg_is_oos_gap")
 """
 
 from typing import List, Dict, Callable, Any

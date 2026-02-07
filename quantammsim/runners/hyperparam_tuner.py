@@ -4,43 +4,44 @@ Hyperparameter Tuner: Optuna/TPE-based optimization of training hyperparameters.
 This module provides meta-optimization for training hyperparameters using
 walk-forward evaluation as the objective. Instead of optimizing for in-sample
 performance (which leads to overfitting), we optimize for OOS metrics like:
+
 - Mean OOS Sharpe
 - Walk-Forward Efficiency (WFE)
 - Rademacher-adjusted Sharpe
 
-Architecture:
-------------
-Level 3: HyperparamTuner (this module)
-    ↓ tries different (lr, bs, bout_offset, ...)
-Level 2: TrainingEvaluator
-    ↓ runs walk-forward cycles, computes WFE/Rademacher
-Level 1: Trainer (train_on_historic_data, multi_period_sgd)
-    ↓ optimizes strategy params (lamb, k, weights)
-Level 0: Forward pass
+Architecture::
+
+    Level 3: HyperparamTuner (this module)
+        | tries different (lr, bs, bout_offset, ...)
+    Level 2: TrainingEvaluator
+        | runs walk-forward cycles, computes WFE/Rademacher
+    Level 1: Trainer (train_on_historic_data, multi_period_sgd)
+        | optimizes strategy params (lamb, k, weights)
+    Level 0: Forward pass
 
 Usage:
-------
-```python
-from quantammsim.runners.hyperparam_tuner import HyperparamTuner
 
-# Basic usage - tune training hyperparameters
-tuner = HyperparamTuner(
-    runner_name="train_on_historic_data",
-    n_trials=50,
-    n_wfa_cycles=3,  # WFA cycles per trial
-)
-result = tuner.tune(run_fingerprint)
+.. code-block:: python
 
-# Use best params for final training
-run_fingerprint["optimisation_settings"].update(result.best_params)
+    from quantammsim.runners.hyperparam_tuner import HyperparamTuner
 
-# Multi-objective: optimize OOS Sharpe AND WFE
-tuner = HyperparamTuner(
-    runner_name="multi_period_sgd",
-    objective="multi",  # Pareto front of OOS Sharpe vs WFE
-    n_trials=30,
-)
-```
+    # Basic usage - tune training hyperparameters
+    tuner = HyperparamTuner(
+        runner_name="train_on_historic_data",
+        n_trials=50,
+        n_wfa_cycles=3,  # WFA cycles per trial
+    )
+    result = tuner.tune(run_fingerprint)
+
+    # Use best params for final training
+    run_fingerprint["optimisation_settings"].update(result.best_params)
+
+    # Multi-objective: optimize OOS Sharpe AND WFE
+    tuner = HyperparamTuner(
+        runner_name="multi_period_sgd",
+        objective="multi",  # Pareto front of OOS Sharpe vs WFE
+        n_trials=30,
+    )
 """
 
 import numpy as np

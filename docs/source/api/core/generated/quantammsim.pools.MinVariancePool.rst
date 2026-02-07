@@ -5,5 +5,5 @@
 
 .. autoclass:: MinVariancePool
    :members:
-   :undoc-members:
+   :no-index:
    :show-inheritance:

@@ -5,5 +5,5 @@
 
 .. autoclass:: MomentumPool
    :members:
-   :undoc-members:
+   :no-index:
    :show-inheritance:

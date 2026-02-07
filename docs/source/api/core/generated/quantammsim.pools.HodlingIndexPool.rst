@@ -5,5 +5,5 @@
 
 .. autoclass:: HodlingIndexPool
    :members:
-   :undoc-members:
+   :no-index:
    :show-inheritance:

@@ -5,5 +5,5 @@
 
 .. autoclass:: TFMMBasePool
    :members:
-   :undoc-members:
+   :no-index:
    :show-inheritance:

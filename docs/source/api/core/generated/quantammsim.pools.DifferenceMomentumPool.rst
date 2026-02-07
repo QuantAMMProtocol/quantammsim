@@ -5,5 +5,5 @@
 
 .. autoclass:: DifferenceMomentumPool
    :members:
-   :undoc-members:
+   :no-index:
    :show-inheritance:

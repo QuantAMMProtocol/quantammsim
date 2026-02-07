@@ -66,8 +66,8 @@ def squareplus(x):
 
     References
     ----------
-    .. [1] Barron, J.T. (2021). "Squareplus: A Softplus-Like Algebraic Rectifier."
-       arXiv:2112.11687.
+    Barron, J.T. (2021). "Squareplus: A Softplus-Like Algebraic Rectifier."
+    arXiv:2112.11687.
 
     See Also
     --------

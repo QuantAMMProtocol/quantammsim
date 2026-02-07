@@ -5,5 +5,5 @@
 
 .. autoclass:: TradHodlingIndexPool
    :members:
-   :undoc-members:
+   :no-index:
    :show-inheritance:

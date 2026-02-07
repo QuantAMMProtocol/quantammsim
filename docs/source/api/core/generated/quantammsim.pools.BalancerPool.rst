@@ -5,5 +5,5 @@
 
 .. autoclass:: BalancerPool
    :members:
-   :undoc-members:
+   :no-index:
    :show-inheritance:

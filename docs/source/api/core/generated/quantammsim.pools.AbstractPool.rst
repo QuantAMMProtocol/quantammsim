@@ -5,5 +5,5 @@
 
 .. autoclass:: AbstractPool
    :members:
-   :undoc-members:
+   :no-index:
    :show-inheritance:

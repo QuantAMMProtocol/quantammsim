@@ -5,5 +5,5 @@
 
 .. autoclass:: TripleThreatMeanReversionChannelPool
    :members:
-   :undoc-members:
+   :no-index:
    :show-inheritance:

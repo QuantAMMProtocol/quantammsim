@@ -5,5 +5,5 @@
 
 .. autoclass:: MeanReversionChannelPool
    :members:
-   :undoc-members:
+   :no-index:
    :show-inheritance:

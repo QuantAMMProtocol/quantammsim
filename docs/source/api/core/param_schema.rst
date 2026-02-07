@@ -8,5 +8,5 @@ ad-hoc initialisation code.
 
 .. automodule:: quantammsim.core_simulator.param_schema
    :members:
-   :undoc-members:
+   :exclude-members: low, high, log_scale, scalar, initial, optuna, transform, description, trainable
    :show-inheritance:

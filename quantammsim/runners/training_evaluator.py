@@ -1,76 +1,79 @@
 """
-Training Evaluator: A Meta-Runner for Assessing Training Effectiveness
+Training Evaluator: A Meta-Runner for Assessing Training Effectiveness.
 
 Wrap any training approach and evaluate whether it's effective using:
+
 - Walk-Forward Efficiency (Pardo)
-- Rademacher Complexity (Paleologo) - requires checkpoint tracking, see below
+- Rademacher Complexity (Paleologo) — requires checkpoint tracking, see below
 - OOS performance metrics
 
 Usage:
-------
-```python
-from quantammsim.runners.training_evaluator import TrainingEvaluator, compare_trainers
 
-# Option 1: Wrap existing runner
-evaluator = TrainingEvaluator.from_runner("train_on_historic_data", max_iterations=500)
-results = evaluator.evaluate(run_fingerprint, n_cycles=5)
+.. code-block:: python
 
-# Option 2: Wrap custom function
-def my_trainer(data_dict, train_start_idx, train_end_idx, pool, run_fp, warm_start=None):
-    # ... your logic ...
-    return params, {"epochs": n}
+    from quantammsim.runners.training_evaluator import TrainingEvaluator, compare_trainers
 
-evaluator = TrainingEvaluator.from_function(my_trainer)
+    # Option 1: Wrap existing runner
+    evaluator = TrainingEvaluator.from_runner("train_on_historic_data", max_iterations=500)
+    results = evaluator.evaluate(run_fingerprint, n_cycles=5)
 
-# Option 3: Compare approaches
-comparison = compare_trainers(
-    run_fingerprint,
-    trainers={
-        "sgd": TrainingEvaluator.from_runner("train_on_historic_data"),
-        "random": TrainingEvaluator.random_baseline(),
-    },
-)
-```
+    # Option 2: Wrap custom function
+    def my_trainer(data_dict, train_start_idx, train_end_idx, pool, run_fp, warm_start=None):
+        # ... your logic ...
+        return params, {"epochs": n}
+
+    evaluator = TrainingEvaluator.from_function(my_trainer)
+
+    # Option 3: Compare approaches
+    comparison = compare_trainers(
+        run_fingerprint,
+        trainers={
+            "sgd": TrainingEvaluator.from_runner("train_on_historic_data"),
+            "random": TrainingEvaluator.random_baseline(),
+        },
+    )
 
 Rademacher Complexity
----------------------
-Rademacher complexity measures overfitting risk by tracking the "search space" explored
-during optimization. To compute Rademacher complexity, the trainer must return
-checkpoint_returns in metadata:
+~~~~~~~~~~~~~~~~~~~~~
 
-```python
-def my_trainer_with_checkpoints(...):
-    checkpoint_returns = []
-    for epoch in range(n_epochs):
-        params = update(params)
-        if epoch % checkpoint_interval == 0:
-            returns = evaluate(params)  # Returns array of shape (T,)
-            checkpoint_returns.append(returns)
+Rademacher complexity measures overfitting risk by tracking the "search space"
+explored during optimization. To compute Rademacher complexity, the trainer
+must return ``checkpoint_returns`` in metadata:
 
-    return params, {
-        "epochs_trained": n_epochs,
-        "checkpoint_returns": np.stack(checkpoint_returns),  # Shape: (n_checkpoints, T)
-    }
+.. code-block:: python
 
-evaluator = TrainingEvaluator.from_function(
-    my_trainer_with_checkpoints,
-    compute_rademacher=True,  # Enable Rademacher computation
-)
-```
+    def my_trainer_with_checkpoints(...):
+        checkpoint_returns = []
+        for epoch in range(n_epochs):
+            params = update(params)
+            if epoch % checkpoint_interval == 0:
+                returns = evaluate(params)  # Returns array of shape (T,)
+                checkpoint_returns.append(returns)
 
-The built-in wrapper for train_on_historic_data now supports checkpoint tracking.
-Enable it by passing compute_rademacher=True to from_runner():
+        return params, {
+            "epochs_trained": n_epochs,
+            "checkpoint_returns": np.stack(checkpoint_returns),  # (n_checkpoints, T)
+        }
 
-```python
-evaluator = TrainingEvaluator.from_runner(
-    "train_on_historic_data",
-    compute_rademacher=True,  # Enable checkpoint tracking
-    checkpoint_interval=10,   # Optional: checkpoint every N iterations
-)
-```
+    evaluator = TrainingEvaluator.from_function(
+        my_trainer_with_checkpoints,
+        compute_rademacher=True,  # Enable Rademacher computation
+    )
 
-For multi_period_sgd or custom trainers, you can implement checkpoint tracking manually
-by returning checkpoint_returns in metadata (as shown above).
+The built-in wrapper for ``train_on_historic_data`` supports checkpoint tracking.
+Enable it by passing ``compute_rademacher=True`` to ``from_runner()``:
+
+.. code-block:: python
+
+    evaluator = TrainingEvaluator.from_runner(
+        "train_on_historic_data",
+        compute_rademacher=True,  # Enable checkpoint tracking
+        checkpoint_interval=10,   # Optional: checkpoint every N iterations
+    )
+
+For ``multi_period_sgd`` or custom trainers, you can implement checkpoint
+tracking manually by returning ``checkpoint_returns`` in metadata (as shown
+above).
 """
 
 import numpy as np

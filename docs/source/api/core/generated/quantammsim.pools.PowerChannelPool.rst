@@ -5,5 +5,5 @@
 
 .. autoclass:: PowerChannelPool
    :members:
-   :undoc-members:
+   :no-index:
    :show-inheritance:

@@ -5,5 +5,5 @@
 
 .. autoclass:: CowPool
    :members:
-   :undoc-members:
+   :no-index:
    :show-inheritance:
