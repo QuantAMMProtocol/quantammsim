@@ -35,8 +35,19 @@ QuantAMM Dynamic Weight Pools
    AntiMomentumPool
    PowerChannelPool
    MeanReversionChannelPool
+   TripleThreatMeanReversionChannelPool
    MinVariancePool
    DifferenceMomentumPool
+
+Index Pools
+-----------
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+
+   HodlingIndexPool
+   TradHodlingIndexPool
 
 Concentrated Pools
 ------------------
