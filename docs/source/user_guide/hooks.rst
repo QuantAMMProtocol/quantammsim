@@ -71,6 +71,64 @@ See :doc:`per_asset_bounds` for full documentation.
         # ... other parameters
     }
 
+Ensemble Averaging
+~~~~~~~~~~~~~~~~~~
+
+The ``ensemble`` hook trains multiple parameter sets ("members") simultaneously
+and averages their weight outputs, providing implicit regularisation through
+diversity.  Members start from different initial parameters (using structured
+sampling methods) and converge to different local optima.
+
+.. code-block:: python
+
+    pool = create_pool("ensemble__momentum")
+
+    run_fingerprint["optimisation_settings"].update({
+        "n_ensemble_members": 4,            # Number of members
+        "ensemble_init_method": "lhs",      # Initialisation sampling method
+        "ensemble_init_scale": 1.0,         # Perturbation scale
+    })
+
+Available initialisation methods:
+
+* ``"lhs"`` — Latin Hypercube Sampling (default, good space coverage)
+* ``"sobol"`` — Sobol quasi-random sequence (low discrepancy)
+* ``"grid"`` — Regular grid (deterministic, evenly spaced)
+* ``"gaussian"`` — Gaussian perturbations around initial values
+
+The ensemble hook averages the *weight outputs* of all members, not the
+parameters. This means each member produces its own weight trajectory, and the
+final weights are the arithmetic mean.  Gradients flow through all members
+during backpropagation.
+
+Multi-Hook Chaining
+~~~~~~~~~~~~~~~~~~~
+
+Multiple hooks can be combined using the double-underscore syntax.  Hooks are
+applied left-to-right (leftmost = highest priority in MRO):
+
+.. code-block:: python
+
+    # Ensemble + bounded weights + mean reversion channel
+    pool = create_pool("ensemble__bounded__mean_reversion_channel")
+
+    # Ensemble + LVR tracking + momentum
+    pool = create_pool("ensemble__lvr__momentum")
+
+This is equivalent to constructing the class manually:
+
+.. code-block:: python
+
+    from quantammsim.pools.creator import create_hooked_pool_instance
+    from quantammsim.hooks.ensemble_averaging_hook import EnsembleAveragingHook
+    from quantammsim.hooks.bounded_weights_hook import BoundedWeightsHook
+
+    pool = create_hooked_pool_instance(
+        MeanReversionChannelPool,
+        BoundedWeightsHook,
+        EnsembleAveragingHook,
+    )
+
 Dynamic Fee Hooks
 ~~~~~~~~~~~~~~~~~
 
