@@ -51,8 +51,8 @@ Basic Training Setup
             "n_parameter_sets": 4,
         },
 
-        # Objective
-        "return_val": "sharpe",
+        # Objective (daily_log_sharpe is the default and recommended)
+        "return_val": "daily_log_sharpe",
     }
 
 2. Run Training
@@ -171,11 +171,11 @@ Set the objective function:
 
 .. code-block:: python
 
-    # Maximize Sharpe ratio (default)
-    run_fingerprint["return_val"] = "sharpe"
+    # Daily log-return Sharpe (default, recommended)
+    run_fingerprint["return_val"] = "daily_log_sharpe"
 
-    # Maximize daily Sharpe
-    run_fingerprint["return_val"] = "daily_sharpe"
+    # Annualised Sharpe ratio
+    run_fingerprint["return_val"] = "sharpe"
 
     # Maximize total return
     run_fingerprint["return_val"] = "returns"
@@ -314,7 +314,7 @@ Example: Complete Training Script
         },
 
         # Objective
-        "return_val": "sharpe",
+        "return_val": "daily_log_sharpe",
     }
 
     train_on_historic_data(
@@ -326,6 +326,11 @@ Example: Complete Training Script
 See Also
 --------
 
-- :doc:`../user_guide/run_fingerprints` - Complete run fingerprint reference
-- :doc:`tuning` - Optuna hyperparameter optimization
-- :func:`~quantammsim.runners.jax_runners.train_on_historic_data` - API reference
+- :doc:`../user_guide/run_fingerprints` — Complete run fingerprint reference
+- :doc:`../user_guide/metrics_reference` — Available training objectives
+- :doc:`../user_guide/robustness_features` — Regularisation techniques (early stopping, SWA, price noise)
+- :doc:`tuning` — Optuna hyperparameter optimization
+- :doc:`walk_forward_analysis` — Walk-forward validation for overfitting detection
+- :doc:`ensemble_training` — Ensemble training for implicit regularisation
+- :doc:`hyperparameter_tuning` — Meta-optimization of training hyperparameters
+- :func:`~quantammsim.runners.jax_runners.train_on_historic_data` — API reference

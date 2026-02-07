@@ -302,5 +302,11 @@ Performance Considerations
 
 See Also
 --------
-* :doc:`../tutorials/quantamm_pools` for strategy details
-* `TFMM litepaper <https://quantamm.fi/research>`_ for theoretical background
+
+* :doc:`../tutorials/quantamm_pools` — Strategy details and parameters
+* :doc:`walk_forward_analysis` — Walk-forward validation for assessing robustness
+* :doc:`hyperparameter_tuning` — Automated tuning of training hyperparameters using walk-forward evaluation
+* :doc:`ensemble_training` — Ensemble training for implicit regularisation
+* :doc:`../user_guide/robustness_features` — Regularisation techniques
+* :doc:`../user_guide/metrics_reference` — Available training and evaluation metrics
+* `TFMM litepaper <https://quantamm.fi/research>`_ — Theoretical background
