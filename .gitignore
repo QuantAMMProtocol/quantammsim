@@ -160,3 +160,4 @@ target/
 # IPython
 profile_default/
 ipython_config.py
+docs/source/api/core/generated/
