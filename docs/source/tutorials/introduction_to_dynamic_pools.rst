@@ -42,7 +42,7 @@ When a pool's actual token composition differs from its weight vector, it create
 5. These trades naturally move the pool's composition toward its target weights.
 
 Example:
-   If :math:`\mathbf{w} = (0.6, 0.4)` but the pool acutal, empirical holdings means the pool holds equal values of tokens, arbitrageurs will:
+   If :math:`\mathbf{w} = (0.6, 0.4)` but the pool's actual holdings are equal values of tokens, arbitrageurs will:
 
    - sell token 1 to the pool, and
    - buy token 2 from the pool until the value ratio matches 60:40.
