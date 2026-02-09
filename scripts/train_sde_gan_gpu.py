@@ -221,9 +221,12 @@ def main():
     parser.add_argument("--g-lr", type=float, default=2e-5, help="Generator LR")
     parser.add_argument("--d-lr", type=float, default=1e-4, help="Discriminator LR")
 
-    # Drift penalty and solver
+    # Drift penalty, solver, and training mode
     parser.add_argument("--drift-lambda", type=float, nargs="+", default=[1.0],
                         help="Drift penalty weight(s). Multiple values = sweep.")
+    parser.add_argument("--gp-lambda", type=float, default=0.0,
+                        help="WGAN-GP gradient penalty weight (0=weight clipping, >0=GP). "
+                        "Recommended for larger models (hidden>16, depth>1). Typical: 10.")
     parser.add_argument("--solver", choices=["euler", "reversible_heun"], default="reversible_heun",
                         help="SDE solver. reversible_heun = O(1) memory (GPU), euler = simpler (CPU)")
 
@@ -285,6 +288,7 @@ def main():
             'discriminator_lr': args.d_lr,
             'drift_lambda': drift_lambda,
             'use_reversible_heun': args.solver == "reversible_heun",
+            'gp_lambda': args.gp_lambda,
         }
 
         gen, vol_scale, history, results, train_time = run_experiment(

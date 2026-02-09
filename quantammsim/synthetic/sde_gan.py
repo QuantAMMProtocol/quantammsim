@@ -283,6 +283,67 @@ def _make_step(
     return generator, discriminator, g_opt_state, d_opt_state
 
 
+# ---------------------------------------------------------------------------
+# WGAN-GP variant (Gulrajani et al. 2017)
+# ---------------------------------------------------------------------------
+
+@eqx.filter_grad
+def _grad_loss_gp(g_d, ts_i, ys_i, key, step, real_mean_return, drift_lambda, gp_lambda):
+    """Joint gradient with gradient penalty instead of weight clipping.
+
+    GP enforces Lipschitz constraint on D smoothly, avoiding the pathologies
+    of weight clipping for larger models (Gulrajani et al. 2017).
+    stop_gradient on fake_ys prevents GP flowing back to G.
+    """
+    generator, discriminator = g_d
+    batch_size = ts_i.shape[0]
+    key = jr.fold_in(key, step)
+    key, gp_key = jr.split(key)
+    keys = jr.split(key, batch_size)
+    fake_ys = jax.vmap(generator)(ts_i, key=keys)
+    real_score = jax.vmap(discriminator)(ts_i, ys_i)
+    fake_score = jax.vmap(discriminator)(ts_i, fake_ys)
+    wgan = jnp.mean(real_score - fake_score)
+
+    # Gradient penalty: interpolate between real and fake, penalize ||grad_D|| != 1
+    alpha = jr.uniform(gp_key, (batch_size, 1, 1))
+    interp_ys = alpha * ys_i + (1 - alpha) * jax.lax.stop_gradient(fake_ys)
+
+    def d_single(ys, ts):
+        return jnp.sum(discriminator(ts, ys))
+
+    grads = jax.vmap(jax.grad(d_single))(interp_ys, ts_i)
+    grad_norms = jnp.sqrt(jnp.sum(grads ** 2, axis=(1, 2)) + 1e-8)
+    gp = gp_lambda * jnp.mean((grad_norms - 1) ** 2)
+
+    # Drift penalty (G only, d/d(D)=0)
+    gen_returns = jnp.diff(fake_ys, axis=1)
+    gen_mean = jnp.mean(gen_returns, axis=(0, 1))
+    drift_pen = drift_lambda * jnp.sum((gen_mean - real_mean_return) ** 2)
+
+    return wgan + gp + drift_pen
+
+
+@eqx.filter_jit
+def _make_step_gp(
+    generator, discriminator, g_opt_state, d_opt_state,
+    g_optim, d_optim, ts_i, ys_i, key, step,
+    real_mean_return, drift_lambda, gp_lambda,
+):
+    g_grad, d_grad = _grad_loss_gp(
+        (generator, discriminator), ts_i, ys_i, key, step,
+        real_mean_return, drift_lambda, gp_lambda,
+    )
+    g_updates, g_opt_state = g_optim.update(g_grad, g_opt_state)
+    d_updates, d_opt_state = d_optim.update(d_grad, d_opt_state)
+    g_updates = _increase_update_initial(g_updates)
+    d_updates = _increase_update_initial(d_updates)
+    generator = eqx.apply_updates(generator, g_updates)
+    discriminator = eqx.apply_updates(discriminator, d_updates)
+    # No weight clipping — GP enforces Lipschitz constraint
+    return generator, discriminator, g_opt_state, d_opt_state
+
+
 def _extract_windows(daily_log_prices: jnp.ndarray, window_len: int) -> jnp.ndarray:
     """Extract cumulative-return windows from daily log-prices.
 
@@ -325,6 +386,7 @@ def train_sde_gan(
     n_critic: int = 1,
     drift_lambda: float = 0.0,
     use_reversible_heun: bool = False,
+    gp_lambda: float = 0.0,
     val_fraction: float = 0.2,
     verbose: bool = True,
     checkpoint_fn=None,
@@ -353,6 +415,9 @@ def train_sde_gan(
         n_critic: Discriminator steps per generator step.
         drift_lambda: Weight on drift moment-matching penalty (0=pure WGAN).
         use_reversible_heun: Use ReversibleHeun solver (O(1) memory, GPU).
+        gp_lambda: WGAN-GP gradient penalty weight (0=use weight clipping,
+            >0=use gradient penalty instead). Typical value: 10.
+            Recommended for larger models (hidden>16, depth>1).
         val_fraction: Fraction of data held out for validation.
         verbose: Print training progress.
         checkpoint_fn: Optional callback called every checkpoint_every steps
@@ -407,6 +472,10 @@ def train_sde_gan(
         print(f"[SDE-GAN] data_size={n_assets}, hidden={hidden_size}, noise={noise_size}")
         print(f"[SDE-GAN] G lr={generator_lr}, D lr={discriminator_lr}, batch={batch_size}")
         print(f"[SDE-GAN] n_critic={n_critic}, drift_lambda={drift_lambda}")
+        if gp_lambda > 0:
+            print(f"[SDE-GAN] WGAN-GP mode: gp_lambda={gp_lambda} (no weight clipping)")
+        else:
+            print(f"[SDE-GAN] WGAN-clip mode: weight clipping ±1/out_features")
         if drift_lambda > 0:
             print(f"[SDE-GAN] real mean return (norm): {[f'{float(v):.6f}' for v in real_mean_return]}")
 
@@ -429,6 +498,7 @@ def train_sde_gan(
 
     history = []
     steps_per_print = max(n_steps // 20, 1)
+    use_gp = gp_lambda > 0
 
     for step in range(n_steps):
         # Sample batch of real windows
@@ -436,11 +506,18 @@ def train_sde_gan(
         idx = jr.randint(batch_key, (batch_size,), 0, n_train)
         ys_batch = train_windows[idx]
 
-        generator, discriminator, g_opt_state, d_opt_state = _make_step(
-            generator, discriminator, g_opt_state, d_opt_state,
-            g_optim, d_optim, ts_batch_template, ys_batch, step_key,
-            jnp.asarray(step), real_mean_return, drift_lambda,
-        )
+        if use_gp:
+            generator, discriminator, g_opt_state, d_opt_state = _make_step_gp(
+                generator, discriminator, g_opt_state, d_opt_state,
+                g_optim, d_optim, ts_batch_template, ys_batch, step_key,
+                jnp.asarray(step), real_mean_return, drift_lambda, gp_lambda,
+            )
+        else:
+            generator, discriminator, g_opt_state, d_opt_state = _make_step(
+                generator, discriminator, g_opt_state, d_opt_state,
+                g_optim, d_optim, ts_batch_template, ys_batch, step_key,
+                jnp.asarray(step), real_mean_return, drift_lambda,
+            )
 
         if step % steps_per_print == 0 or step == n_steps - 1:
             # Eval on val
