@@ -327,6 +327,8 @@ def train_sde_gan(
     use_reversible_heun: bool = False,
     val_fraction: float = 0.2,
     verbose: bool = True,
+    checkpoint_fn=None,
+    checkpoint_every: int = 2000,
 ) -> Tuple[Generator, jnp.ndarray, list]:
     """Train a Neural SDE generator via WGAN with a Neural CDE discriminator.
 
@@ -353,6 +355,9 @@ def train_sde_gan(
         use_reversible_heun: Use ReversibleHeun solver (O(1) memory, GPU).
         val_fraction: Fraction of data held out for validation.
         verbose: Print training progress.
+        checkpoint_fn: Optional callback called every checkpoint_every steps
+            with (generator, vol_scale, step). Use for saving to Drive etc.
+        checkpoint_every: Steps between checkpoint_fn calls (default 2000).
 
     Returns:
         (trained_generator, vol_scale, loss_history) where vol_scale is
@@ -456,6 +461,9 @@ def train_sde_gan(
             history.append((train_loss, val_loss))
             if verbose:
                 print(f"  step {step:5d} | train: {train_loss:.6f} | val: {val_loss:.6f}")
+
+        if checkpoint_fn is not None and step > 0 and step % checkpoint_every == 0:
+            checkpoint_fn(generator, vol_scale, step)
 
     return generator, vol_scale, history
 
