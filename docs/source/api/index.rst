@@ -13,5 +13,7 @@ API Reference
    core/pools
    core/estimators
    core/sampling
+   core/training
+   core/hooks
    core/analysis
    rest_api
