@@ -35,6 +35,27 @@ def import_crypto_historical_data(token, root_path):
 
 
 def forward_fill_ohlcv_data(df, token):
+    """Forward fill OHLCV data to create a complete minute-level time series.
+
+    Creates a complete minute-level index between the first and last timestamps,
+    then fills missing values using appropriate strategies for each column type.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with 'unix' column (millisecond timestamps) and OHLCV columns.
+    token : str
+        Token symbol, used to identify the volume column.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with complete minute-level index and filled values:
+        - close: forward filled
+        - open/high/low: filled with previous close
+        - volume columns: filled with 0
+        - symbol: forward filled
+    """
     # Set unix as index
     df.set_index("unix", inplace=True)
 

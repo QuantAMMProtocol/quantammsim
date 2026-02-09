@@ -1,26 +1,29 @@
 import pandas as pd
 import numpy as np
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import seaborn as sns
+import seaborn.objects as so
 from matplotlib.ticker import MultipleLocator
 from datetime import datetime, timezone
-import warnings
+from pathlib import Path
 
-warnings.filterwarnings("ignore")
+
 sns.set(rc={"text.usetex": True})
 
 
 def calc_returns_from_values(values_in):
-    r"""Calculate returns
+    r"""Calculate period-over-period returns from a value series.
+
+    Parameters
     ----------
-    arr_in : np.ndarray, float64
-        A one-dimenisional numpy array of price data
+    values_in : np.ndarray
+        A one-dimensional numpy array of value data.
 
     Returns
     -------
     np.ndarray
-        The returns
-
+        The returns array, with the first element set to 0.0.
     """
     n = values_in.shape[0]
     returns = np.empty((n,), dtype=np.float64)
@@ -34,16 +37,17 @@ def calc_returns_from_values(values_in):
 
 
 def calc_overall_returns_from_values(values_in):
-    r"""Calculate returns
+    r"""Calculate the total return from start to end of a value series.
+
+    Parameters
     ----------
-    arr_in : np.ndarray, float64
-        A one-dimenisional numpy array of price data
+    values_in : np.ndarray
+        A one-dimensional numpy array of value data.
 
     Returns
     -------
     float
-        The returns
-
+        The overall return (final_value / initial_value - 1).
     """
     returns = values_in[-1] / values_in[0] - 1.0
     return returns
@@ -311,7 +315,7 @@ def plot_vals(
         cmap_ = "RdYlGn"
 
     def get_dfwise(df):
-        df_wide = df.pivot(*cols)
+        df_wide = df.pivot(index=cols[0], columns=cols[1], values=cols[2])
         #  clean up window length values
         if window_size_estimate_yaxis:
             window_size_estimate = [str(item) for item in df_wide.index]
@@ -830,4 +834,279 @@ def plot_lineplot(
         y_value = [yv.replace("$$+0\\%$$", "$$0\\%$$") for yv in y_value]
         ax.set_yticklabels(y_value)
     plt.savefig(save_location, dpi=700, bbox_inches="tight")
+    plt.close()
+
+
+def name_to_latex_name(name):
+    """Convert run name to clean LaTeX formatted name.
+
+    Parameters
+    ----------
+    name : str
+        Name of the run (e.g. 'Current_index_BTC-ETH_min_0.1_index_memory_day_30.0')
+
+    Returns
+    -------
+    str
+        LaTeX formatted name
+    """
+    if name.startswith("Current_index"):
+        return "$\\mathrm{Current\\ Index\\ Product}$"
+    elif name.startswith("HODL"):
+        return "$\\mathrm{HODL}$"
+    elif name.startswith("QuantAMM_index"):
+        return "$\\mathrm{QuantAMM\\ Index}$"
+    elif name.startswith("Balancer"):
+        return "$\\mathrm{Balancer}$"
+    elif name.startswith("Traditional DEX"):
+        return "$\\mathrm{Traditional\\ DEX}$"
+    elif name.startswith("Optimized_QuantAMM"):
+        rule = name.split("rule_")[-1]
+        rule = rule.replace("_", " ").title()
+        if rule == "Mean Reversion Channel":
+            rule = "Mean-Reversion\\ Channel"
+        elif rule == "Anti Momentum":
+            rule = "Anti-Momentum"
+        elif rule == "Power Channel":
+            rule = "Power-Channel"
+        return f"$\\mathrm{{QuantAMM\\ {rule}}}$"
+    else:
+        return name
+
+
+def do_weight_change_as_rebalances_plots(
+    output_dict,
+    run_fingerprint,
+    n_bars=200,
+    plot_prefix="weight_change",
+    color="black",
+    verbose=True,
+):
+    """Plot weight changes as rebalance bars overlaid on price series.
+
+    Parameters
+    ----------
+    output_dict : dict
+        Simulation output with 'reserves' and 'prices' arrays.
+    run_fingerprint : dict
+        Run configuration with 'tokens', 'chunk_period', date strings.
+    n_bars : int
+        Number of bars to display.
+    plot_prefix : str
+        Prefix for saved plot filenames.
+    color : str
+        Color for axis spines, ticks, and labels.
+    verbose : bool
+        Whether to print diagnostic info.
+    """
+    output_dict = output_dict.copy()
+    plot_path = Path("./plots/")
+    plot_path.mkdir(parents=True, exist_ok=True)
+
+    total_value = np.sum(
+        output_dict["reserves"] * output_dict["prices"], axis=1, keepdims=True
+    )
+    weights = output_dict["reserves"] * output_dict["prices"] / total_value
+    output_dict["weights"] = weights
+    raw_weight_changes = np.diff(output_dict["weights"], axis=0)
+    raw_weight_changes = np.vstack(
+        [np.zeros((1, raw_weight_changes.shape[1])), raw_weight_changes]
+    )
+    indexes = np.arange(len(output_dict["prices"]))
+    bar_fill_ratio = 0.8
+    plot_prefix = "./plots/" + plot_prefix
+    first = True
+    lims = []
+    decimation = int(len(indexes) / n_bars)
+    remainder = len(output_dict["prices"]) % decimation
+    if remainder > 0:
+        trim_length = len(output_dict["prices"]) - remainder
+        output_dict["prices"] = output_dict["prices"][:trim_length]
+        output_dict["weights"] = output_dict["weights"][:trim_length]
+        raw_weight_changes = raw_weight_changes[:trim_length]
+        indexes = indexes[:trim_length]
+
+    tokens = sorted(run_fingerprint["tokens"])
+
+    for i in range(output_dict["prices"].shape[1]):
+        token = tokens[i]
+        prices_range = np.max(output_dict["prices"][:, i]) - np.min(
+            output_dict["prices"][:, i]
+        )
+
+        raw_weight_changes = np.vstack(
+            [
+                np.zeros((1, raw_weight_changes.shape[1])),
+                np.diff(output_dict["weights"][::decimation], axis=0),
+            ]
+        )
+        max_raw_weight_changes = np.max(np.abs(raw_weight_changes))
+        scaled_pool_value = prices_range / max_raw_weight_changes
+        trades = raw_weight_changes[:, i] * scaled_pool_value
+        if verbose:
+            print(scaled_pool_value)
+
+        bar_width = bar_fill_ratio * len(output_dict["prices"]) / n_bars
+
+        ax = sns.lineplot(
+            x=np.arange(len(output_dict["prices"])),
+            y=output_dict["prices"][:, i],
+            legend=False,
+            color="#DAAB43",
+            linewidth=0.5,
+        )
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color(color)
+        ax.spines["bottom"].set_color(color)
+        ax.tick_params(axis="both", colors=color, direction="out", length=6, width=1)
+        ax.yaxis.set_ticks_position("left")
+        ax.xaxis.set_ticks_position("bottom")
+        ax.set_ylabel(
+            f"$\\mathrm{{{token}}}\\ \\mathrm{{price}}\\ (\\mathrm{{USD}})$",
+            color=color,
+        )
+
+        start_date = datetime.strptime(
+            run_fingerprint["startDateString"], "%Y-%m-%d %H:%M:%S"
+        )
+        end_date = datetime.strptime(
+            run_fingerprint["endDateString"], "%Y-%m-%d %H:%M:%S"
+        )
+
+        total_seconds = len(output_dict["prices"])
+        date_range = pd.date_range(start=start_date, end=end_date, periods=6)
+
+        x_positions = np.linspace(0, total_seconds - 1, len(date_range))
+
+        date_labels = [f"$$\\mathrm{{{d.strftime('%Y-%m-%d')}}}$$" for d in date_range]
+
+        plt.xticks(x_positions, date_labels, rotation=45)
+        ax.grid(False)
+        max_trades = trades
+        max_prices = output_dict["prices"][:, i][::decimation]
+        max_x = indexes[::decimation]
+        if first:
+            lims.append(
+                [
+                    int(np.max([np.min(max_trades + max_prices) * 0.9, 0])),
+                    np.ceil(np.max(max_trades + max_prices) * 1.1),
+                ]
+            )
+
+        pos_mask = max_trades > 0
+        neg_mask = max_trades < 0
+
+        plt.bar(
+            x=max_x[pos_mask],
+            height=max_trades[pos_mask],
+            width=bar_width,
+            bottom=max_prices[pos_mask],
+            color="g",
+            linewidth=0.0,
+        )
+        plt.bar(
+            x=max_x[neg_mask],
+            height=max_trades[neg_mask],
+            width=bar_width,
+            bottom=max_prices[neg_mask],
+            color="r",
+            linewidth=0.0,
+        )
+
+        plt.ylim(*lims[i])
+
+        plt.savefig(
+            plot_prefix
+            + "_weight_change_signal_"
+            + "_token_"
+            + str(i)
+            + "_nbars_"
+            + str(n_bars)
+            + "_.png",
+            dpi=700,
+            bbox_inches="tight",
+        )
+
+        plt.close()
+    first = False
+
+
+def plot_weights(
+    output_dict, run_fingerprint, plot_prefix="weights", plot_dir=None, verbose=True
+):
+    """Plot token weights over time as a stacked area chart.
+
+    Parameters
+    ----------
+    output_dict : dict
+        Simulation output with 'reserves' and 'prices' arrays.
+    run_fingerprint : dict
+        Run configuration with 'tokens' and date strings.
+    plot_prefix : str
+        Prefix for saved plot filenames.
+    plot_dir : str or None
+        Directory to save plots. Defaults to './plots/'.
+    verbose : bool
+        Whether to print diagnostic info.
+    """
+    if plot_dir is None:
+        plot_dir = "./plots/"
+    plot_path = Path(plot_dir)
+    plot_path.mkdir(parents=True, exist_ok=True)
+
+    total_value = np.sum(
+        output_dict["reserves"] * output_dict["prices"], axis=1, keepdims=True
+    )
+    weights = np.array(output_dict["reserves"] * output_dict["prices"] / total_value)
+
+    weights = weights[::1440]
+    df_list = []
+    tokens = sorted(run_fingerprint["tokens"])
+    for i, token in enumerate(tokens):
+        df_list.extend(
+            [
+                {"Time": t, "Weight": w, "Token": token}
+                for t, w in enumerate(weights[:, i])
+            ]
+        )
+
+    df = pd.DataFrame(df_list)
+    start_date = datetime.strptime(
+        run_fingerprint["startDateString"], "%Y-%m-%d %H:%M:%S"
+    )
+    end_date = datetime.strptime(run_fingerprint["endDateString"], "%Y-%m-%d %H:%M:%S")
+
+    date_range = pd.date_range(
+        start=start_date, end=end_date, periods=len(df["Time"].unique())
+    )
+    df["Time"] = np.tile(date_range, weights.shape[1])
+
+    f = mpl.figure.Figure()
+
+    pl = (
+        so.Plot(df, "Time", "Weight", color="Token")
+        .add(so.Area(alpha=0.7), so.Stack())
+        .limit(y=(0, 1))
+        .scale(color=sns.color_palette())
+        .label(y="$\\mathrm{Weight}$", x="$\\mathrm{Date}$")
+    )
+
+    res = pl.on(f).plot()
+    ax = f.axes[0]
+    unique_dates = df["Time"].unique()
+    date_indices = np.linspace(0, len(unique_dates) - 1, 4, dtype=int)
+    selected_dates = unique_dates[date_indices]
+
+    date_labels = [
+        f"$$\\mathrm{{{pd.Timestamp(date).strftime('%Y-%m-%d')}}}$$"
+        for date in selected_dates
+    ]
+    ax.set_xticks(date_indices, date_labels, rotation=45)
+    plt.tight_layout()
+    pl.save(
+        plot_path / (plot_prefix + "_weights_over_time.png"),
+        dpi=700,
+        bbox_inches="tight",
+    )
     plt.close()
