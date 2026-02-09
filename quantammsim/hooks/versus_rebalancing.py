@@ -518,16 +518,12 @@ class CalculateLossVersusRebalancing(ABC):
         """
         Calculate reserves with dynamic inputs.
 
-        This method is intended to calculate the reserves for a pool with dynamic inputs.
-        However, it is not implemented for LVR pools and will raise a NotImplementedError
-        if called.
+        Not implemented for LVR pools.
 
-        Args:
-            *args: Variable length argument list.
-            **kwargs: Arbitrary keyword arguments.
-
-        Raises:
-            NotImplementedError: This method is not implemented for LVR pools.
+        Raises
+        ------
+        NotImplementedError
+            Always raised.
         """
 
         raise NotImplementedError("This method is not implemented for LVR pools.")
@@ -656,16 +652,12 @@ class CalculateRebalancingVersusRebalancing(ABC):
         """
         Calculate reserves with dynamic inputs.
 
-        This method is intended to calculate the reserves for RVR pools using
-        dynamic inputs provided through *args and **kwargs. However, it is
-        currently not implemented and will raise a NotImplementedError if called.
+        Not implemented for RVR pools.
 
-        Args:
-            *args: Variable length argument list.
-            **kwargs: Arbitrary keyword arguments.
-
-        Raises:
-            NotImplementedError: This method is not implemented for RVR pools.
+        Raises
+        ------
+        NotImplementedError
+            Always raised.
         """
         raise NotImplementedError("This method is not implemented for RVR pools.")
 

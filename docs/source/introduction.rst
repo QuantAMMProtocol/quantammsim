@@ -41,10 +41,10 @@ Runners are high-level interfaces that handle the execution of simulations. They
 * Simulation execution
 * Result collection and analysis
 
-The can also handle a wide variety of different choices of pool fees, the gas cost paid by arbitrageurs,
+They can also handle a wide variety of different choices of pool fees, the gas cost paid by arbitrageurs,
 and other simulation choices.
 
-As well as simple backtest simulations, the package also supports the training of pool to improve
+As well as simple backtest simulations, the package also supports the training of pools to improve
 their performance on historic or synthetic data. This is most relevant for QuantAMM pools, as they
 themselves *run* strategies and those strategies include parameters that must be chosen by a pool creator. For 
 example, using the appropriate runner, a user could tune a QuantAMM pool that implements a momentum strategy
