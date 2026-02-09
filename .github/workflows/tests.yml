@@ -2,7 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [main, master, run-readout]
+    branches: [main, master, dev]
   pull_request:
     branches: [main, master]
 
