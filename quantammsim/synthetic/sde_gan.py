@@ -199,8 +199,13 @@ class Discriminator(eqx.Module):
         solver = diffrax.Euler()
         y0 = self.initial(init)
         saveat = diffrax.SaveAt(t0=True, t1=True)
+        # Static t0/t1/max_steps: enables reverse-mode differentiation through
+        # diffeqsolve (needed for WGAN-GP gradient penalty).  ts.shape[0] is a
+        # Python int so these are all compile-time constants.
+        n = ts.shape[0]
         sol = diffrax.diffeqsolve(
-            terms, solver, ts[0], ts[-1], 1.0, y0, saveat=saveat
+            terms, solver, 0.0, float(n - 1), 1.0, y0,
+            saveat=saveat, max_steps=n,
         )
         return jax.vmap(self.readout)(sol.ys)
 
@@ -287,6 +292,33 @@ def _make_step(
 # WGAN-GP variant (Gulrajani et al. 2017)
 # ---------------------------------------------------------------------------
 
+def _disc_score_scan(disc, ts, ys):
+    """Discriminator score via lax.scan (not diffeqsolve).
+
+    Equivalent to sum(disc(ts, ys)) but uses lax.scan for the CDE Euler
+    steps, enabling second-order reverse-mode differentiation.  diffeqsolve's
+    internal while_loop blocks second-order AD, which WGAN-GP requires
+    (outer grad of inner grad-norm w.r.t. D params).
+    """
+    init = jnp.concatenate([jnp.zeros(1), ys[0]])
+    z0 = disc.initial(init)
+    n_steps = ts.shape[0] - 1  # Python int, static
+
+    def step_fn(z, i):
+        t = ts[i]
+        f_val = disc.vf(t, z, None)           # (hidden,)
+        g_val = disc.cvf(t, z, None)           # (hidden, data_size)
+        dx = ys[i + 1] - ys[i]                 # (data_size,)
+        z_next = z + f_val + g_val @ dx         # dt = 1.0
+        return z_next, None
+
+    z_final, _ = jax.lax.scan(step_fn, z0, jnp.arange(n_steps))
+    # Match Discriminator.__call__: SaveAt(t0=True, t1=True) → readout at both
+    z_both = jnp.stack([z0, z_final])
+    scores = jax.vmap(disc.readout)(z_both)
+    return jnp.sum(scores)
+
+
 @eqx.filter_grad
 def _grad_loss_gp(g_d, ts_i, ys_i, key, step, real_mean_return, drift_lambda, gp_lambda):
     """Joint gradient with gradient penalty instead of weight clipping.
@@ -309,10 +341,14 @@ def _grad_loss_gp(g_d, ts_i, ys_i, key, step, real_mean_return, drift_lambda, gp
     alpha = jr.uniform(gp_key, (batch_size, 1, 1))
     interp_ys = alpha * ys_i + (1 - alpha) * jax.lax.stop_gradient(fake_ys)
 
-    def d_single(ys, ts):
-        return jnp.sum(discriminator(ts, ys))
+    # Use scan-based discriminator for GP: lax.scan supports second-order AD
+    # (diffeqsolve's while_loop does not).  Static ts avoids traced loop bounds.
+    ts_static = jnp.arange(ys_i.shape[1], dtype=jnp.float32)
 
-    grads = jax.vmap(jax.grad(d_single))(interp_ys, ts_i)
+    def d_single(ys):
+        return _disc_score_scan(discriminator, ts_static, ys)
+
+    grads = jax.vmap(jax.grad(d_single))(interp_ys)
     grad_norms = jnp.sqrt(jnp.sum(grads ** 2, axis=(1, 2)) + 1e-8)
     gp = gp_lambda * jnp.mean((grad_norms - 1) ** 2)
 
