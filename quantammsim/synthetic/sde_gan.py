@@ -111,6 +111,7 @@ class Generator(eqx.Module):
     readout: eqx.nn.Linear
     initial_noise_size: int
     noise_size: int
+    use_reversible_heun: bool
 
     def __init__(
         self,
@@ -120,6 +121,7 @@ class Generator(eqx.Module):
         hidden_size: int = 16,
         width_size: int = 16,
         depth: int = 1,
+        use_reversible_heun: bool = False,
         *,
         key,
     ):
@@ -134,6 +136,7 @@ class Generator(eqx.Module):
         self.readout = eqx.nn.Linear(hidden_size, data_size, key=readout_key)
         self.initial_noise_size = initial_noise_size
         self.noise_size = noise_size
+        self.use_reversible_heun = use_reversible_heun
 
     def __call__(self, ts, *, key):
         t0, t1 = ts[0], ts[-1]
@@ -146,7 +149,9 @@ class Generator(eqx.Module):
         vf = diffrax.ODETerm(self.vf)
         cvf = diffrax.ControlTerm(self.cvf, control)
         terms = diffrax.MultiTerm(vf, cvf)
-        solver = diffrax.Euler()
+        # ReversibleHeun: O(1) memory backprop (Kidger 2021), ideal for GPU.
+        # Euler: simpler, faster JIT compile, fine for CPU.
+        solver = diffrax.ReversibleHeun() if self.use_reversible_heun else diffrax.Euler()
         y0 = self.initial(init)
         saveat = diffrax.SaveAt(ts=ts)
         sol = diffrax.diffeqsolve(terms, solver, t0, t1, dt0, y0, saveat=saveat)
@@ -318,6 +323,7 @@ def train_sde_gan(
     n_steps: int = 10000,
     n_critic: int = 1,
     drift_lambda: float = 0.0,
+    use_reversible_heun: bool = False,
     val_fraction: float = 0.2,
     verbose: bool = True,
 ) -> Tuple[Generator, jnp.ndarray, list]:
@@ -339,6 +345,7 @@ def train_sde_gan(
         n_steps: Number of generator training steps.
         n_critic: Discriminator steps per generator step.
         drift_lambda: Weight on drift moment-matching penalty (0=pure WGAN).
+        use_reversible_heun: Use ReversibleHeun solver (O(1) memory, GPU).
         val_fraction: Fraction of data held out for validation.
         verbose: Print training progress.
 
@@ -390,7 +397,8 @@ def train_sde_gan(
     key, g_key, d_key = jr.split(key, 3)
     generator = Generator(
         n_assets, initial_noise_size, noise_size,
-        hidden_size, width_size, depth, key=g_key,
+        hidden_size, width_size, depth,
+        use_reversible_heun=use_reversible_heun, key=g_key,
     )
     discriminator = Discriminator(
         n_assets, hidden_size, width_size, depth, key=d_key,
