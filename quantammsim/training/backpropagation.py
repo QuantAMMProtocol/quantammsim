@@ -73,6 +73,28 @@ np.seterr(under="print")
 
 # TODO above is all from jax utils, tidy up required
 
+# Keys excluded from NaN checking (matches has_nan_params in jax_runner_utils.py)
+_NAN_EXCLUDED_KEYS = frozenset([
+    "initial_weights", "initial_weights_logits", "subsidary_params",
+])
+
+
+def _has_nan_in_params(params):
+    """Check if any non-excluded param has NaN. JIT- and vmap-compatible.
+
+    Under vmap this operates on a single param set; the vmapped result
+    is a per-set boolean array of shape (n_parameter_sets,).
+    """
+    nan_checks = []
+    for k in sorted(params.keys()):
+        if k not in _NAN_EXCLUDED_KEYS:
+            v = params[k]
+            if hasattr(v, "dtype"):  # skip non-array values (e.g. [])
+                nan_checks.append(jnp.any(jnp.isnan(v)))
+    if nan_checks:
+        return jnp.any(jnp.stack(nan_checks))
+    return jnp.bool_(False)
+
 
 def objective_factor(partial_training_step):
     """Creates a JIT-compiled objective function from a partial training step.
@@ -220,11 +242,13 @@ def update_factory(batched_objective):
     @jit
     def update(params, start_indexes, learning_rate):
         objective_value, grads = value_and_grad(batched_objective)(params, start_indexes)
+        new_params = tree_map(lambda p, g: p + learning_rate * g, params, grads)
         return (
-            tree_map(lambda p, g: p + learning_rate * g, params, grads),
+            new_params,
             objective_value,
             params,
             grads,
+            _has_nan_in_params(new_params),
         )
 
     return update
@@ -255,11 +279,13 @@ def update_with_hessian_factory(batched_objective_with_hessian):
     @jit
     def update_with_hessian(params, start_indexes, learning_rate):
         objective_value, grads = value_and_grad(batched_objective_with_hessian)(params, start_indexes)
+        new_params = tree_map(lambda p, g: p + learning_rate * g, params, grads)
         return (
-            tree_map(lambda p, g: p + learning_rate * g, params, grads),
+            new_params,
             objective_value,
             params,
             grads,
+            _has_nan_in_params(new_params),
         )
 
     return update_with_hessian
@@ -434,6 +460,7 @@ def update_factory_with_optax(batched_objective, optimizer):
             params,
             grads,
             new_opt_state,
+            _has_nan_in_params(new_params),
         )
 
     return update
@@ -488,6 +515,7 @@ def update_with_hessian_factory_with_optax(batched_objective_with_hessian, optim
             params,
             grads,
             new_opt_state,
+            _has_nan_in_params(new_params),
         )
 
     return update_with_hessian

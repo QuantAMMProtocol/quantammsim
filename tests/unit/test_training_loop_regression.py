@@ -6,6 +6,7 @@ Captures exact outputs of:
 - NaN reinitialization (nan_param_reinit)
 - Period metrics (calculate_period_metrics)
 - Continuous test metrics slicing
+- Update factory return signatures
 
 These serve as a safety net when refactoring these functions for
 GPU utilization improvements. Tests pin actual numeric values so

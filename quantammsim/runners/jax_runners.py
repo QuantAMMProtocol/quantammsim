@@ -66,6 +66,7 @@ from quantammsim.core_simulator.result_exporter import (
 
 from quantammsim.runners.jax_runner_utils import (
     nan_param_reinit,
+    nan_param_reinit_vectorized,
     has_nan_grads,
     Hashabledict,
     NestedHashabledict,
@@ -540,8 +541,8 @@ def train_on_historic_data(
     # Early stopping state (only used when use_early_stopping=True)
     # Early stopping only controls WHEN to stop, not WHAT params to return.
     # Final param selection is handled by BestParamsTracker.
-    best_early_stopping_metric = float("inf") if metric_direction == -1 else -float("inf")
-    iterations_since_early_stopping_improvement = 0
+    best_early_stopping_metric = jnp.where(metric_direction == -1, jnp.inf, -jnp.inf)
+    iterations_since_early_stopping_improvement = jnp.int32(0)
     use_validation_for_early_stopping = val_fraction > 0
     warned_about_nan = False  # Track if we've already warned about NaN metrics
 
@@ -656,17 +657,17 @@ def train_on_historic_data(
                 "adamw",
             ]:
                 # Adam update with state maintenance
-                params, objective_value, old_params, grads, opt_state = update(
+                params, objective_value, old_params, grads, opt_state, has_nan = update(
                     params, start_indexes, local_learning_rate, opt_state
                 )
             else:
                 # Regular SGD update
-                params, objective_value, old_params, grads = update(
+                params, objective_value, old_params, grads, has_nan = update(
                     params, start_indexes, local_learning_rate
                 )
-            params = nan_param_reinit(
+            params = nan_param_reinit_vectorized(
                 params,
-                grads,
+                has_nan,
                 pool,
                 initial_params,
                 run_fingerprint,
@@ -735,10 +736,10 @@ def train_on_historic_data(
                 # Collect validation metrics for saving
                 validationSteps.append(val_metrics_list)
                 # Compute current_val_metric for early stopping
-                val_metrics_per_set = np.array([
-                    t.get(selection_metric, np.nan) for t in val_metrics_list
+                val_metrics_per_set = jnp.array([
+                    t.get(selection_metric, jnp.nan) for t in val_metrics_list
                 ])
-                current_val_metric = np.nanmean(val_metrics_per_set)
+                current_val_metric = jnp.nanmean(val_metrics_per_set)
             else:
                 val_metrics_list = None
                 current_val_metric = None
@@ -754,73 +755,53 @@ def train_on_historic_data(
             )
 
             # Track iterations since improvement for learning rate decay
-            # This uses the tracker's improvement signal
-            if tracker_improved:
-                iterations_since_improvement = 0
-            else:
-                iterations_since_improvement += 1
-
-            if iterations_since_improvement > max_iterations_with_no_improvement:
-                local_learning_rate = local_learning_rate * decay_lr_ratio
-                iterations_since_improvement = 0
-                if local_learning_rate < min_lr:
-                    local_learning_rate = min_lr
+            # Branchless via jnp.where — no device→host sync needed
+            iterations_since_improvement = jnp.where(
+                tracker_improved, 0, iterations_since_improvement + 1
+            )
+            should_decay = iterations_since_improvement > max_iterations_with_no_improvement
+            local_learning_rate = jnp.where(
+                should_decay,
+                jnp.maximum(local_learning_rate * decay_lr_ratio, min_lr),
+                local_learning_rate,
+            )
+            iterations_since_improvement = jnp.where(should_decay, 0, iterations_since_improvement)
 
             # Save step data for checkpointing
             paramSteps.append(deepcopy(params))
             trainingSteps.append(train_metrics_list)
             continuousTestSteps.append(continuous_test_metrics_list)
-            objectiveSteps.append(np.array(objective_value.copy()))
-            learningRateSteps.append(deepcopy(local_learning_rate))
+            objectiveSteps.append(objective_value)
+            learningRateSteps.append(local_learning_rate)
             interationsSinceImprovementSteps.append(iterations_since_improvement)
             stepSteps.append(step)
 
             # Early stopping based on validation or test metrics
             # Note: Early stopping only controls WHEN to stop training.
             # Final param selection is handled by params_tracker.
+            # Early stopping: branchless patience tracking (no device→host sync).
+            # The break check is deferred to after the display block so it
+            # piggybacks on the float() syncs that materialise the graph.
             if use_early_stopping:
                 if use_validation_for_early_stopping and val_metrics_list:
-                    # Reuse current_val_metric computed above (same value)
                     current_early_stopping_metric = current_val_metric
                     metric_source = "validation"
-                    # Warn on first occurrence of NaN (not just iteration 0)
-                    if np.isnan(current_early_stopping_metric) and not warned_about_nan:
-                        import warnings
-                        warnings.warn(
-                            f"Validation {selection_metric} is NaN at iteration {i}. "
-                            f"Early stopping may not work correctly. "
-                            f"Check that validation period has sufficient data.",
-                            UserWarning
-                        )
-                        warned_about_nan = True
                 elif continuous_test_metrics_list:
-                    # Fallback to continuous test metrics (not recommended - causes data leakage)
-                    # Note: When using test metrics for early stopping, param SELECTION still uses
-                    # training-best (since val_fraction=0). This is intentional - we don't want to
-                    # select params based on test performance, only use it as a stopping heuristic.
-                    # Use nanmean to ignore NaN param sets
-                    current_early_stopping_metric = np.nanmean([
-                        t.get(selection_metric, np.nan) for t in continuous_test_metrics_list
-                    ])
+                    current_early_stopping_metric = jnp.nanmean(jnp.array([
+                        t.get(selection_metric, jnp.nan) for t in continuous_test_metrics_list
+                    ]))
                     metric_source = "continuous_test"
                 else:
-                    current_early_stopping_metric = -float("inf")
+                    current_early_stopping_metric = -jnp.inf
                     metric_source = "none"
 
-                # Track early stopping metric for patience countdown
                 metric_improved = (current_early_stopping_metric * metric_direction) > (best_early_stopping_metric * metric_direction)
-                if metric_improved:
-                    best_early_stopping_metric = current_early_stopping_metric
-                    iterations_since_early_stopping_improvement = 0
-                else:
-                    iterations_since_early_stopping_improvement += 1
-
-                if iterations_since_early_stopping_improvement >= early_stopping_patience:
-                    if verbose:
-                        print(f"\n[Early stopping] No {metric_source} {selection_metric} improvement for {early_stopping_patience} iterations")
-                        print(f"  Stopped at iteration {step}, best {selection_metric}={best_early_stopping_metric:+.4f}")
-                    # Just break - param selection happens at the end using params_tracker
-                    break
+                best_early_stopping_metric = jnp.where(
+                    metric_improved, current_early_stopping_metric, best_early_stopping_metric
+                )
+                iterations_since_early_stopping_improvement = jnp.where(
+                    metric_improved, 0, iterations_since_early_stopping_improvement + 1
+                )
 
             # SWA: collect parameters after swa_start_frac of training
             if use_swa and i >= int(n_iterations * swa_start_frac) and i % swa_freq == 0:
@@ -868,7 +849,9 @@ def train_on_historic_data(
 
             if step % iterations_per_print == 0:
                 if verbose:
-                    # Format metrics for display
+                    # Format metrics for display — these float() calls materialise the
+                    # computation graph; all subsequent bool()/float() in this iteration
+                    # are effectively free (values already on host).
                     obj_val = float(np.mean(objective_value)) if hasattr(objective_value, '__len__') else float(objective_value)
                     print(f"\n[Iter {step}] objective={obj_val:.4f}")
 
@@ -892,6 +875,14 @@ def train_on_historic_data(
                         test_sharpes = [t.get("sharpe", np.nan) for t in continuous_test_metrics_list]
                         test_rohs = [t.get("returns_over_uniform_hodl", np.nan) for t in continuous_test_metrics_list]
                         print(f"  Test (OOS):  sharpe={np.nanmean(test_sharpes):+.4f}  ret_over_hodl={np.nanmean(test_rohs):+.4f}")
+
+            # Early stopping break check — placed after display so the float()
+            # calls above materialise the graph first (free ride for this bool()).
+            if use_early_stopping and bool(iterations_since_early_stopping_improvement >= early_stopping_patience):
+                if verbose:
+                    print(f"\n[Early stopping] No {metric_source} {selection_metric} improvement for {early_stopping_patience} iterations")
+                    print(f"  Stopped at iteration {step}, best {selection_metric}={float(best_early_stopping_metric):+.4f}")
+                break
                 save_multi_params(
                     deepcopy(run_fingerprint),
                     paramSteps,

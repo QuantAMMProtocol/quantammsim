@@ -35,6 +35,21 @@ from typing import Dict, Any, Generic, TypeVar, List, Optional, Tuple
 from copy import deepcopy
 T = TypeVar('T')      # Declare type variable
 
+# Parameter keys excluded from NaN checking and selective reinitialization.
+# These keys are either non-differentiable (subsidary_params), derived from
+# other params (initial_weights), or handled separately (initial_weights_logits).
+#
+# This set is the single source of truth — import it rather than duplicating.
+# Currently also hardcoded in:
+#   - backpropagation.py (_NAN_EXCLUDED_KEYS)
+#   - base_pool.py (add_noise)
+#   - sampling.py (_DEFAULT_EXCLUDE_KEYS, subset)
+# TODO: consolidate all those sites to import from here.
+NAN_EXCLUDED_PARAM_KEYS = frozenset([
+    "initial_weights", "initial_weights_logits", "subsidary_params",
+])
+
+
 def create_trial_params(
     trial: Any,  # optuna.Trial, but avoid direct dependency
     param_config: Dict,
@@ -819,7 +834,7 @@ def has_nan_grads(grad_tree):
 def has_nan_params(params):
     """Check if any parameters contain NaN values."""
     for key in params:
-        if key not in ["initial_weights", "initial_weights_logits", "subsidary_params"]:
+        if key not in NAN_EXCLUDED_PARAM_KEYS:
             if hasattr(params[key], 'shape') and jnp.any(jnp.isnan(params[key])):
                 return True
     return False
@@ -844,7 +859,7 @@ def nan_param_reinit(
             # Check if any key has NaNs for this parameter set
             has_nans = False
             for key in params:
-                if key not in ["initial_weights", "initial_weights_logits", "subsidary_params"]:
+                if key not in NAN_EXCLUDED_PARAM_KEYS:
                     if hasattr(params[key], 'shape') and len(params[key].shape) > 0:
                         if jnp.any(jnp.isnan(params[key][i])):
                             has_nans = True
@@ -853,9 +868,47 @@ def nan_param_reinit(
             # If NaNs found, replace all params for this index
             if has_nans:
                 for key in params:
-                    if key not in ["initial_weights", "initial_weights_logits", "subsidary_params"]:
+                    if key not in NAN_EXCLUDED_PARAM_KEYS:
                         if hasattr(params[key], 'shape') and len(params[key].shape) > 0:
                             params[key] = params[key].at[i].set(new_noised_params[key][i])
+    return params
+
+
+def nan_param_reinit_vectorized(
+    params, has_nan_per_set, pool, initial_params, run_fingerprint, n_tokens, n_parameter_sets
+):
+    """Vectorized reinitialization of NaN parameter sets.
+
+    Uses a pre-computed boolean mask (from the JIT'd update function) instead of
+    re-checking every param key with device syncs.
+
+    Parameters
+    ----------
+    params : dict
+        Batched params, shape (n_parameter_sets, ...) per key.
+    has_nan_per_set : jnp.ndarray
+        Boolean array of shape (n_parameter_sets,) from the JIT'd update.
+    pool : AbstractPool
+        Pool instance for generating replacement params.
+    initial_params, run_fingerprint : dict
+        Passed through to pool.init_parameters.
+    n_tokens, n_parameter_sets : int
+        Shape info.
+    """
+    if not jnp.any(has_nan_per_set):
+        return params
+
+    new_noised_params = pool.init_parameters(
+        initial_params, run_fingerprint, n_tokens, n_parameter_sets
+    )
+
+    for key in params:
+        if key not in NAN_EXCLUDED_PARAM_KEYS:
+            if hasattr(params[key], 'shape') and len(params[key].shape) > 0:
+                # mask shape: (n_parameter_sets,) -> broadcast with (n_parameter_sets, n_tokens)
+                mask = has_nan_per_set.reshape(-1, *([1] * (len(params[key].shape) - 1)))
+                params[key] = jnp.where(mask, new_noised_params[key], params[key])
+
     return params
 
 
@@ -1723,6 +1776,11 @@ SELECTION_METHODS = [
 ]
 
 
+def _nanargmax_jnp(arr):
+    """jnp.argmax ignoring NaNs (no jnp.nanargmax in JAX)."""
+    return jnp.argmax(jnp.where(jnp.isnan(arr), -jnp.inf, arr))
+
+
 def compute_selection_metric(
     train_metrics: List[Dict],
     val_metrics: Optional[List[Dict]] = None,
@@ -1730,7 +1788,7 @@ def compute_selection_metric(
     method: str = "best_val",
     metric: str = "sharpe",
     min_threshold: float = 0.0,
-) -> Tuple[float, int]:
+) -> Tuple:
     """
     Compute selection metric value for a single iteration/trial.
 
@@ -1738,11 +1796,13 @@ def compute_selection_metric(
     and load_manually (post-training). Returns a value for comparison and the
     index of the best param set.
 
+    Returns JAX scalars to avoid device→host sync. Callers that need host values
+    should explicitly convert (e.g., ``float(selection_value)``).
+
     Parameters
     ----------
     train_metrics : list of dict
-        Training metrics for each param set. Each dict has keys like "sharpe",
-        "returns_over_uniform_hodl", etc.
+        Training metrics for each param set. Values may be JAX scalars or floats.
     val_metrics : list of dict, optional
         Validation metrics for each param set. Required if method="best_val".
     continuous_test_metrics : list of dict, optional
@@ -1756,78 +1816,61 @@ def compute_selection_metric(
 
     Returns
     -------
-    tuple of (float, int)
-        (selection_value, best_param_idx) - value for comparison and index of best param set.
+    tuple of (scalar, scalar)
+        (selection_value, best_param_idx). May be JAX or Python scalars.
         Higher selection_value is always better.
     """
     if method not in SELECTION_METHODS:
         raise ValueError(f"Unknown selection method: {method}. Must be one of {SELECTION_METHODS}")
 
     if method == "last":
-        # "Last" always wins - return high value, first param set
-        return float("inf"), 0
+        return jnp.inf, 0
 
     elif method == "best_train":
         if not train_metrics:
-            return -float("inf"), 0
-        metrics_per_set = np.array([m.get(metric, np.nan) for m in train_metrics])
-        valid_mask = ~np.isnan(metrics_per_set)
-        if not valid_mask.any():
-            return -float("inf"), 0
-        best_idx = int(np.nanargmax(metrics_per_set))
-        # Use nanmean across param sets for selection value (matches SGD behavior)
-        return float(np.nanmean(metrics_per_set)), best_idx
+            return -jnp.inf, 0
+        metrics_per_set = jnp.array([m.get(metric, jnp.nan) for m in train_metrics])
+        has_valid = jnp.any(~jnp.isnan(metrics_per_set))
+        best_idx = jnp.where(has_valid, _nanargmax_jnp(metrics_per_set), 0)
+        selection_val = jnp.where(has_valid, jnp.nanmean(metrics_per_set), -jnp.inf)
+        return selection_val, best_idx
 
     elif method == "best_val":
         if not val_metrics:
             raise ValueError("best_val method requires val_metrics (set val_fraction > 0)")
-        metrics_per_set = np.array([m.get(metric, np.nan) for m in val_metrics])
-        valid_mask = ~np.isnan(metrics_per_set)
-        if not valid_mask.any():
-            return -float("inf"), 0
-        best_idx = int(np.nanargmax(metrics_per_set))
-        # Use nanmean across param sets for selection value
-        return float(np.nanmean(metrics_per_set)), best_idx
+        metrics_per_set = jnp.array([m.get(metric, jnp.nan) for m in val_metrics])
+        has_valid = jnp.any(~jnp.isnan(metrics_per_set))
+        best_idx = jnp.where(has_valid, _nanargmax_jnp(metrics_per_set), 0)
+        selection_val = jnp.where(has_valid, jnp.nanmean(metrics_per_set), -jnp.inf)
+        return selection_val, best_idx
 
     elif method == "best_continuous_test":
-        # NOT RECOMMENDED - causes data leakage
         if not continuous_test_metrics:
-            return -float("inf"), 0
-        metrics_per_set = np.array([m.get(metric, np.nan) for m in continuous_test_metrics])
-        valid_mask = ~np.isnan(metrics_per_set)
-        if not valid_mask.any():
-            return -float("inf"), 0
-        best_idx = int(np.nanargmax(metrics_per_set))
-        return float(np.nanmean(metrics_per_set)), best_idx
+            return -jnp.inf, 0
+        metrics_per_set = jnp.array([m.get(metric, jnp.nan) for m in continuous_test_metrics])
+        has_valid = jnp.any(~jnp.isnan(metrics_per_set))
+        best_idx = jnp.where(has_valid, _nanargmax_jnp(metrics_per_set), 0)
+        selection_val = jnp.where(has_valid, jnp.nanmean(metrics_per_set), -jnp.inf)
+        return selection_val, best_idx
 
     elif method == "best_train_min_test":
-        # Best training metric that meets minimum test threshold
         if not train_metrics:
-            return -float("inf"), 0
+            return -jnp.inf, 0
 
-        train_per_set = np.array([m.get(metric, np.nan) for m in train_metrics])
+        train_per_set = jnp.array([m.get(metric, jnp.nan) for m in train_metrics])
 
         if continuous_test_metrics:
-            test_per_set = np.array([m.get(metric, np.nan) for m in continuous_test_metrics])
+            test_per_set = jnp.array([m.get(metric, jnp.nan) for m in continuous_test_metrics])
+            # Mask: valid train AND test >= threshold
+            valid = ~jnp.isnan(train_per_set) & ~jnp.isnan(test_per_set) & (test_per_set >= min_threshold)
+            masked_train = jnp.where(valid, train_per_set, -jnp.inf)
+            any_valid = jnp.any(valid)
+            best_idx = jnp.where(any_valid, jnp.argmax(masked_train), _nanargmax_jnp(train_per_set))
+            selection_val = jnp.where(any_valid, masked_train[jnp.argmax(masked_train)], jnp.nanmean(train_per_set))
+            return selection_val, best_idx
         else:
-            # No test metrics - fall back to best_train
-            best_idx = int(np.nanargmax(train_per_set))
-            return float(np.nanmean(train_per_set)), best_idx
-
-        best_val = -float("inf")
-        best_idx = 0
-        for i, (train_v, test_v) in enumerate(zip(train_per_set, test_per_set)):
-            if not np.isnan(test_v) and test_v >= min_threshold:
-                if not np.isnan(train_v) and train_v > best_val:
-                    best_val = train_v
-                    best_idx = i
-
-        if best_val == -float("inf"):
-            # No param set met threshold - fall back to best train
-            best_idx = int(np.nanargmax(train_per_set))
-            return float(np.nanmean(train_per_set)), best_idx
-
-        return best_val, best_idx
+            best_idx = _nanargmax_jnp(train_per_set)
+            return jnp.nanmean(train_per_set), best_idx
 
     else:
         raise ValueError(f"Unknown selection method: {method}")
@@ -1924,18 +1967,18 @@ class BestParamsTracker:
         bool
             True if this iteration improved the best metric, False otherwise.
         """
-        # Always update "last" state
+        # Always update "last" state — no copies needed, JAX arrays are immutable
         self.last_iteration = iteration
-        self.last_params = deepcopy(params)
+        self.last_params = params
         self.last_train_metrics = train_metrics_list
         self.last_val_metrics = val_metrics_list
         self.last_continuous_test_metrics = continuous_test_metrics_list
         self.last_continuous_outputs = {
-            "reserves": np.array(continuous_outputs["reserves"]),
-            "weights": np.array(continuous_outputs["weights"]),
+            "reserves": continuous_outputs["reserves"],
+            "weights": continuous_outputs["weights"],
         }
 
-        # Compute selection value and param_idx
+        # Compute selection value and param_idx (JAX ops, no device→host sync)
         selection_value, param_idx = compute_selection_metric(
             train_metrics_list,
             val_metrics_list,
@@ -1946,22 +1989,57 @@ class BestParamsTracker:
         )
         self.last_param_idx = param_idx
 
-        # Update "best" if improved
-        if selection_value > self.best_metric_value:
+        # Branchless update of "best" state via jnp.where — avoids device→host sync.
+        # The comparison produces a JAX boolean that stays on device; jnp.where
+        # dispatches conditional copies without materialising the boolean to Python.
+        improved = selection_value > self.best_metric_value
+
+        if self.best_params is None:
+            # First call: initialise all best state directly
             self.best_metric_value = selection_value
             self.best_iteration = iteration
             self.best_param_idx = param_idx
-            self.best_params = deepcopy(params)
+            self.best_params = params
             self.best_train_metrics = train_metrics_list
             self.best_val_metrics = val_metrics_list
             self.best_continuous_test_metrics = continuous_test_metrics_list
             self.best_continuous_outputs = {
-                "reserves": np.array(continuous_outputs["reserves"]),
-                "weights": np.array(continuous_outputs["weights"]),
+                "reserves": continuous_outputs["reserves"],
+                "weights": continuous_outputs["weights"],
             }
-            return True
+        else:
+            # Branchless conditional update — all ops stay on device
+            self.best_metric_value = jnp.where(improved, selection_value, self.best_metric_value)
+            self.best_iteration = jnp.where(improved, iteration, self.best_iteration)
+            self.best_param_idx = jnp.where(improved, param_idx, self.best_param_idx)
+            self.best_params = tree_map(
+                lambda new, old: jnp.where(improved, new, old),
+                params, self.best_params,
+            )
+            self.best_train_metrics = [
+                {k: jnp.where(improved, new[k], old[k]) for k in new}
+                for new, old in zip(train_metrics_list, self.best_train_metrics)
+            ]
+            if val_metrics_list is not None and self.best_val_metrics is not None:
+                self.best_val_metrics = [
+                    {k: jnp.where(improved, new[k], old[k]) for k in new}
+                    for new, old in zip(val_metrics_list, self.best_val_metrics)
+                ]
+            elif val_metrics_list is not None:
+                self.best_val_metrics = val_metrics_list
+            if continuous_test_metrics_list is not None and self.best_continuous_test_metrics is not None:
+                self.best_continuous_test_metrics = [
+                    {k: jnp.where(improved, new[k], old[k]) for k in new}
+                    for new, old in zip(continuous_test_metrics_list, self.best_continuous_test_metrics)
+                ]
+            elif continuous_test_metrics_list is not None:
+                self.best_continuous_test_metrics = continuous_test_metrics_list
+            self.best_continuous_outputs = {
+                k: jnp.where(improved, continuous_outputs[k], self.best_continuous_outputs[k])
+                for k in ["reserves", "weights"]
+            }
 
-        return False
+        return improved
 
     def select_param_set(self, params_dict: Dict, idx: int, n_param_sets: int) -> Dict:
         """
