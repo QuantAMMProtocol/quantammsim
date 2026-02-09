@@ -77,8 +77,8 @@ def load_data(tokens, data_root):
     return jnp.array(minute_prices)
 
 
-def evaluate(generator, vol_scale, daily_log, tokens, real_drift, real_vol, key,
-             horizons=(10, 30, 50, 100, 200), n_paths=1000):
+def evaluate(generator, vol_scale, daily_log, tokens, real_drift, real_vol,
+             real_corr, key, horizons=(10, 30, 50, 100, 200), n_paths=1000):
     """Evaluate generated paths at multiple horizons."""
     n_assets = len(tokens)
     y0 = daily_log[0]
@@ -93,6 +93,11 @@ def evaluate(generator, vol_scale, daily_log, tokens, real_drift, real_vol, key,
         drift = jnp.mean(returns, axis=(0, 2))
         vol = jnp.mean(jnp.std(returns, axis=2), axis=0)
 
+        # Cross-asset correlation: pool returns across paths
+        # returns shape: (horizon, n_assets, n_paths) -> (horizon * n_paths, n_assets)
+        flat_returns = returns.transpose(0, 2, 1).reshape(-1, n_assets)
+        gen_corr = jnp.corrcoef(flat_returns.T)
+
         horizon_results = {}
         for i, t in enumerate(tokens):
             rd, rv = float(real_drift[i]), float(real_vol[i])
@@ -103,6 +108,10 @@ def evaluate(generator, vol_scale, daily_log, tokens, real_drift, real_vol, key,
                 'drift': d, 'drift_ratio': drift_ratio,
                 'vol': v, 'vol_ratio': vol_ratio,
             }
+        horizon_results['_corr'] = {
+            'generated': np.array(gen_corr),
+            'real': np.array(real_corr),
+        }
         results[horizon] = horizon_results
 
     return results
@@ -110,9 +119,9 @@ def evaluate(generator, vol_scale, daily_log, tokens, real_drift, real_vol, key,
 
 def print_results(results, horizons):
     """Pretty-print evaluation results."""
-    tokens = list(results[horizons[0]].keys())
+    tokens = [k for k in results[horizons[0]].keys() if not k.startswith('_')]
 
-    # Header
+    # Drift/vol table
     print(f"\n{'':>6}", end="")
     for h in horizons:
         print(f" | {h:>3}d drift  {h:>3}d vol ", end="")
@@ -125,11 +134,26 @@ def print_results(results, horizons):
             r = results[h][t]
             dr = r['drift_ratio']
             vr = r['vol_ratio']
-            # Color-code: bold if within 0.5x of target
             dr_str = f"{dr:>5.1f}x" if abs(dr) < 100 else f"{'inf':>5}x"
             vr_str = f"{vr:>5.2f}x"
             print(f" | {dr_str}  {vr_str}", end="")
         print()
+
+    # Correlation table (use middle horizon for display)
+    corr_horizon = horizons[len(horizons) // 2]
+    corr_data = results[corr_horizon].get('_corr')
+    if corr_data is not None:
+        real_corr = corr_data['real']
+        gen_corr = corr_data['generated']
+        print(f"\nCorrelations ({corr_horizon}d horizon):")
+        print(f"  {'pair':>12}   {'real':>6}  {'gen':>6}  {'error':>6}")
+        print(f"  {'-'*38}")
+        for i in range(len(tokens)):
+            for j in range(i + 1, len(tokens)):
+                rc = real_corr[i, j]
+                gc = gen_corr[i, j]
+                err = gc - rc
+                print(f"  {tokens[i]+'-'+tokens[j]:>12}   {rc:>6.3f}  {gc:>6.3f}  {err:>+6.3f}")
 
 
 def run_experiment(minute_prices, n_assets, tokens, daily_log, real_drift, real_vol,
@@ -169,8 +193,10 @@ def run_experiment(minute_prices, n_assets, tokens, daily_log, real_drift, real_
     # Evaluate
     key_eval = jax.random.PRNGKey(99)
     horizons = [10, 30, 50, 100, 200]
+    real_returns = jnp.diff(daily_log, axis=0)
+    real_corr = jnp.corrcoef(real_returns.T)
     results = evaluate(generator, vol_scale, daily_log, tokens, real_drift, real_vol,
-                       key_eval, horizons=horizons, n_paths=2000)
+                       real_corr, key_eval, horizons=horizons, n_paths=2000)
     print_results(results, horizons)
 
     return generator, vol_scale, history, results, train_time

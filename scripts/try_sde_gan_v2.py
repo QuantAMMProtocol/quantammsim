@@ -88,6 +88,8 @@ print(f"\n=== Path evaluation ===")
 y0 = daily_log[0]
 key_eval = jax.random.PRNGKey(99)
 
+real_corr = jnp.corrcoef(real_daily_returns.T)
+
 for horizon in [10, 50, 100]:
     paths = generate_paths(generator, vol_scale, y0, n_days=horizon, n_paths=500, key=key_eval)
     y0_bc = jnp.broadcast_to(y0[:, None], (n_assets, 500))[None, ...]
@@ -104,3 +106,11 @@ for horizon in [10, 50, 100]:
         rv = float(real_vol[i])
         ratio = d / rd if abs(rd) > 1e-8 else float('inf')
         print(f"    {t}: drift={d:.6f} ({ratio:.1f}x real), vol={v:.6f} ({v/rv:.2f}x real)")
+
+    # Cross-asset correlations
+    flat_returns = returns.transpose(0, 2, 1).reshape(-1, n_assets)
+    gen_corr = jnp.corrcoef(flat_returns.T)
+    print(f"    Correlations (real -> gen):")
+    for i in range(n_assets):
+        for j in range(i + 1, n_assets):
+            print(f"      {tokens[i]}-{tokens[j]}: {float(real_corr[i,j]):.3f} -> {float(gen_corr[i,j]):.3f}")
