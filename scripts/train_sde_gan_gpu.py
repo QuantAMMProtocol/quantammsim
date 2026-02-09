@@ -5,17 +5,44 @@ Unlocks what CPU couldn't do:
 - Larger model (hidden=64, depth=2): more expressive drift/diffusion functions
 - More noise dims (noise=8): richer stochastic dynamics
 - ReversibleHeun solver: O(1) memory backprop through SDE solve
-- Multiple window lengths: train on 50 + 100 day windows for long-horizon stability
+
+CPU results (hidden=16, depth=1, batch=64) for reference:
+  lambda=0:   ETH 3.1x, BTC 5.1x drift (10d)
+  lambda=1.0: ETH 1.8x, BTC 0.9x drift (10d)  <-- best
 
 Usage:
-    # Single run with best config
+    # ---- Default: single run with recommended GPU config ----
     python scripts/train_sde_gan_gpu.py
 
-    # Sweep drift_lambda
-    python scripts/train_sde_gan_gpu.py --drift-lambda 0.0 0.1 0.5 1.0
+    # ---- Sweep drift_lambda to find optimal value ----
+    python scripts/train_sde_gan_gpu.py --drift-lambda 0.0 0.1 0.5 1.0 2.0
 
-    # Custom config
-    python scripts/train_sde_gan_gpu.py --hidden 128 --depth 3 --steps 50000
+    # ---- Full fat: big model + lambda sweep + save results ----
+    python scripts/train_sde_gan_gpu.py \
+        --hidden 128 --width 128 --depth 3 \
+        --noise 12 --initial-noise 12 \
+        --batch 1024 --steps 30000 --window 50 \
+        --drift-lambda 0.0 0.5 1.0 2.0 \
+        --output-dir results/sde_gan_sweep
+
+    # ---- Longer windows for multi-month generation ----
+    python scripts/train_sde_gan_gpu.py \
+        --window 100 --steps 30000 \
+        --drift-lambda 0.5 1.0
+
+    # ---- Quick sanity check (smaller, faster) ----
+    python scripts/train_sde_gan_gpu.py \
+        --hidden 32 --depth 1 --batch 512 --steps 5000
+
+    # ---- Force Euler solver (if ReversibleHeun has issues) ----
+    python scripts/train_sde_gan_gpu.py --solver euler
+
+    # ---- Different token set ----
+    python scripts/train_sde_gan_gpu.py --tokens ETH BTC SOL USDC
+
+    # ---- Auto CPU fallback ----
+    # If no GPU detected, automatically reduces to CPU-safe config:
+    # hidden=16, depth=1, batch=64, Euler solver
 """
 
 import argparse
