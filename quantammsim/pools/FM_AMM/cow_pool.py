@@ -1,3 +1,11 @@
+"""CoW AMM (Function-Maximising AMM) pool implementation.
+
+Implements the CoW Protocol's FM-AMM, which replaces the continuous
+arbitrage of traditional AMMs with batch-auction-based rebalancing.
+The pool computes reserves under both perfect and single-arbitrageur
+models, blended by an ``arb_quality`` parameter, and supports dynamic
+fees, external trades, and noise traders.
+"""
 from typing import Dict, Any, Optional
 
 # again, this only works on startup!

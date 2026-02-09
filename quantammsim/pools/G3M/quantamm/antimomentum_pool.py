@@ -1,3 +1,10 @@
+"""Contrarian (anti-momentum) pool for QuantAMM.
+
+Extends :class:`MomentumPool` by negating the momentum sensitivity factor ``k``,
+producing a mean-reversion strategy that overweights recently declining assets
+and underweights recently appreciating ones. Shares all parameters and EWMA
+estimator infrastructure with the momentum pool.
+"""
 # again, this only works on startup!
 from jax import config
 

@@ -1,3 +1,11 @@
+"""EWMA-based estimator functions for QuantAMM update rules.
+
+Provides high-level routines for computing time-weighted statistics from price
+series: EWMA price gradients (``calc_gradients``), momentum sensitivity
+factors (``calc_k``), return variances (``calc_return_variances``), and
+paired/triple-threat gradient variants. Dispatches to either a sequential
+``scan`` (CPU) or convolutional (GPU) backend based on ``DEFAULT_BACKEND``.
+"""
 # again, this only works on startup!
 from jax import config
 

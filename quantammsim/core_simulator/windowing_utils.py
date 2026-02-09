@@ -290,20 +290,25 @@ def raw_fee_like_amounts_to_fee_like_array(
         return np.array(full_index_df, dtype=np.float64)
 
 def filter_coarse_weights_by_data_indices(coarse_weights, data_dict):
-        """
-        Filter coarse weights to match the start and end indices from data_dict.
+        """Slice coarse (chunk-period) weights to match the time range in ``data_dict``.
+
+        Used when pre-computed coarse weights are loaded from a previous run
+        or from on-chain data, and need to be aligned with the current
+        training/evaluation window.
 
         Parameters
         ----------
         coarse_weights : dict
-            Dictionary containing 'unix_values' and 'weights' arrays
+            Must contain ``'unix_values'`` (timestamps) and ``'weights'``
+            array of shape ``(T_coarse, n_assets)``.
         data_dict : dict
-            Dictionary containing 'unix_values', 'start_idx' and 'end_idx'
+            Must contain ``'unix_values'``, ``'start_idx'``, and ``'end_idx'``.
 
         Returns
         -------
         dict
-            Copy of coarse_weights with filtered weights array
+            Shallow copy of ``coarse_weights`` with ``'weights'`` sliced to
+            the matching time range.
         """
         weights_start_index = np.where(
             coarse_weights["unix_values"]
@@ -321,8 +326,25 @@ def filter_coarse_weights_by_data_indices(coarse_weights, data_dict):
         return filtered_weights
 
 def filter_reserves_by_data_indices(reserves, unix_values, data_dict):
-    """
-    Filter reserves to match the start and end indices from data_dict.
+    """Slice a reserves array to match the time range in ``data_dict``.
+
+    Looks up the unix timestamps at ``data_dict["start_idx"]`` and
+    ``data_dict["end_idx"] - 1`` in ``unix_values``, then returns the
+    corresponding slice of ``reserves``.
+
+    Parameters
+    ----------
+    reserves : np.ndarray
+        Full reserves array, shape ``(T, n_assets)``.
+    unix_values : np.ndarray
+        Unix timestamps corresponding to each row of ``reserves``.
+    data_dict : dict
+        Must contain ``unix_values``, ``start_idx``, and ``end_idx``.
+
+    Returns
+    -------
+    np.ndarray
+        Sliced reserves matching the data_dict time range.
     """
     reserves_start_index = np.where(
         unix_values
@@ -340,8 +362,26 @@ def filter_reserves_by_data_indices(reserves, unix_values, data_dict):
     return filtered_reserves
 
 def filter_reserves_by_given_timestamp(reserves, unix_values, timestamp):
-    """
-    Filter reserves to match the start and end indices from data_dict.
+    """Extract the reserves row at a specific unix timestamp.
+
+    Parameters
+    ----------
+    reserves : np.ndarray
+        Full reserves array, shape ``(T, n_assets)``.
+    unix_values : np.ndarray
+        Unix timestamps corresponding to each row.
+    timestamp : int
+        Unix timestamp (milliseconds) to look up.
+
+    Returns
+    -------
+    np.ndarray
+        Reserves at the given timestamp, shape ``(n_assets,)``.
+
+    Raises
+    ------
+    IndexError
+        If ``timestamp`` is not found in ``unix_values``.
     """
     reserves_index = np.where(
         unix_values

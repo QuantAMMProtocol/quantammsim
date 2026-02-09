@@ -1,3 +1,10 @@
+"""Reserve calculations for Gyroscope ECLP pools.
+
+Provides JAX-based functions for computing ECLP reserves over time via
+``jax.lax.scan``, following the mathematics in the E-CLP paper. Includes
+zero-fee, fixed-fee, and dynamic-fee variants, as well as reserve
+initialisation from pool value and direct trade execution via Proposition 14.
+"""
 from jax import config, jit
 from jax.lax import scan, cond
 from jax.tree_util import Partial

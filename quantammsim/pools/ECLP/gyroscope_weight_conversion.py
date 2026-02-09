@@ -1,3 +1,11 @@
+"""Conversion between ECLP parameters and G3M-style weights.
+
+Provides routines to find the ECLP parameters (lambda, tan_phi) that
+achieve a target token weight, bridging the Gyroscope ECLP parameterisation
+with the weight-based interface used by the rest of the simulator. Uses
+grid search followed by gradient descent in an unconstrained (softplus)
+parameter space.
+"""
 from jax import numpy as jnp
 from jax import jit, grad, value_and_grad
 from typing import Tuple
