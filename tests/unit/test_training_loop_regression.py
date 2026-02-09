@@ -907,6 +907,148 @@ class TestTrainingGradientRegression:
         )
 
 
+class TestUpdateFactoryReturnSignature:
+    """Verify update factory return tuple structure and has_nan semantics.
+
+    These tests exist because changing the return tuple length (e.g., adding
+    has_nan as the last element) is a breaking change that MUST be caught.
+    Without these, a tuple length change passes silently — as demonstrated
+    when we added has_nan to all 4 factories and no tests failed.
+    """
+
+    @pytest.fixture(scope="class")
+    def sgd_update_setup(self):
+        """Build update fn via update_factory (SGD path)."""
+        from quantammsim.core_simulator.param_utils import memory_days_to_logit_lamb
+        from quantammsim.training.backpropagation import update_factory
+
+        params = {
+            "log_k": jnp.array([3.0, 3.0]),
+            "logit_lamb": jnp.array([
+                memory_days_to_logit_lamb(10.0, chunk_period=1440),
+                memory_days_to_logit_lamb(10.0, chunk_period=1440),
+            ]),
+            "initial_weights_logits": jnp.array([0.0, 0.0]),
+        }
+        batched_obj, start_indexes = _setup_gradient_test("momentum", params)
+        update = update_factory(batched_obj)
+        return update, params, start_indexes
+
+    @pytest.fixture(scope="class")
+    def optax_update_setup(self):
+        """Build update fn via update_factory_with_optax (Adam path)."""
+        import optax
+        from quantammsim.core_simulator.param_utils import memory_days_to_logit_lamb
+        from quantammsim.training.backpropagation import update_factory_with_optax
+
+        params = {
+            "log_k": jnp.array([3.0, 3.0]),
+            "logit_lamb": jnp.array([
+                memory_days_to_logit_lamb(10.0, chunk_period=1440),
+                memory_days_to_logit_lamb(10.0, chunk_period=1440),
+            ]),
+            "initial_weights_logits": jnp.array([0.0, 0.0]),
+        }
+        batched_obj, start_indexes = _setup_gradient_test("momentum", params)
+        optimizer = optax.adam(0.01)
+        update = update_factory_with_optax(batched_obj, optimizer)
+        opt_state = optimizer.init(params)
+        return update, params, start_indexes, opt_state
+
+    # ── SGD (update_factory) ──
+
+    def test_sgd_returns_5_tuple(self, sgd_update_setup):
+        """SGD update must return exactly 5 values."""
+        update, params, start_indexes = sgd_update_setup
+        result = update(params, start_indexes, 0.01)
+        assert len(result) == 5, f"Expected 5-tuple, got {len(result)}-tuple"
+
+    def test_sgd_tuple_structure(self, sgd_update_setup):
+        """Verify each position: (new_params, obj, old_params, grads, has_nan)."""
+        update, params, start_indexes = sgd_update_setup
+        new_params, obj_val, old_params, grads, has_nan = update(params, start_indexes, 0.01)
+
+        assert set(new_params.keys()) == set(params.keys()), "new_params keys mismatch"
+        assert obj_val.shape == (), "objective should be scalar"
+        for k in params:
+            np.testing.assert_array_equal(
+                old_params[k], params[k],
+                err_msg=f"old_params['{k}'] should match input params",
+            )
+        assert set(grads.keys()) == set(params.keys()), "grads keys mismatch"
+        assert has_nan.dtype == jnp.bool_, f"has_nan should be bool, got {has_nan.dtype}"
+
+    def test_sgd_has_nan_false_for_clean_params(self, sgd_update_setup):
+        update, params, start_indexes = sgd_update_setup
+        _, _, _, _, has_nan = update(params, start_indexes, 0.01)
+        assert not bool(has_nan), "has_nan should be False for clean params"
+
+    # ── Optax (update_factory_with_optax) ──
+
+    def test_optax_returns_6_tuple(self, optax_update_setup):
+        """Optax update must return exactly 6 values."""
+        update, params, start_indexes, opt_state = optax_update_setup
+        result = update(params, start_indexes, 0.01, opt_state)
+        assert len(result) == 6, f"Expected 6-tuple, got {len(result)}-tuple"
+
+    def test_optax_tuple_structure(self, optax_update_setup):
+        """Verify each position: (new_params, obj, old_params, grads, opt_state, has_nan)."""
+        update, params, start_indexes, opt_state = optax_update_setup
+        new_params, obj_val, old_params, grads, new_opt_state, has_nan = update(
+            params, start_indexes, 0.01, opt_state,
+        )
+
+        assert set(new_params.keys()) == set(params.keys()), "new_params keys mismatch"
+        assert obj_val.shape == (), "objective should be scalar"
+        for k in params:
+            np.testing.assert_array_equal(
+                old_params[k], params[k],
+                err_msg=f"old_params['{k}'] should match input params",
+            )
+        assert set(grads.keys()) == set(params.keys()), "grads keys mismatch"
+        assert new_opt_state is not None, "opt_state should not be None"
+        assert has_nan.dtype == jnp.bool_, f"has_nan should be bool, got {has_nan.dtype}"
+
+    def test_optax_has_nan_false_for_clean_params(self, optax_update_setup):
+        update, params, start_indexes, opt_state = optax_update_setup
+        _, _, _, _, _, has_nan = update(params, start_indexes, 0.01, opt_state)
+        assert not bool(has_nan), "has_nan should be False for clean params"
+
+    # ── has_nan detection (synthetic) ──
+
+    def test_sgd_has_nan_true_when_grads_nan(self):
+        """When gradient is NaN, new_params become NaN, so has_nan must be True."""
+        from quantammsim.training.backpropagation import update_factory
+
+        def bad_objective(params, start_indexes):
+            # sqrt(negative) → NaN value and NaN gradient
+            return jnp.sqrt(-jnp.square(params["x"]) - 1.0).sum()
+
+        update = update_factory(bad_objective)
+        params = {"x": jnp.array([1.0, 2.0])}
+        start_indexes = jnp.array([0])
+        new_params, _, _, _, has_nan = update(params, start_indexes, 0.01)
+        assert bool(jnp.any(jnp.isnan(new_params["x"]))), "Expected NaN in new_params"
+        assert bool(has_nan), "has_nan should be True when new_params contain NaN"
+
+    def test_optax_has_nan_true_when_grads_nan(self):
+        """Same NaN detection test for the optax path."""
+        import optax
+        from quantammsim.training.backpropagation import update_factory_with_optax
+
+        def bad_objective(params, start_indexes):
+            return jnp.sqrt(-jnp.square(params["x"]) - 1.0).sum()
+
+        optimizer = optax.adam(0.01)
+        update = update_factory_with_optax(bad_objective, optimizer)
+        params = {"x": jnp.array([1.0, 2.0])}
+        start_indexes = jnp.array([0])
+        opt_state = optimizer.init(params)
+        new_params, _, _, _, _, has_nan = update(params, start_indexes, 0.01, opt_state)
+        assert bool(jnp.any(jnp.isnan(new_params["x"]))), "Expected NaN in new_params"
+        assert bool(has_nan), "has_nan should be True when new_params contain NaN"
+
+
 class TestMeanReversionTrainingRegression:
     """Training regression for mean_reversion_channel — the actual tuning target.
 
