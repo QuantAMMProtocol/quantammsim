@@ -221,6 +221,7 @@ class Discriminator(eqx.Module):
 
 @eqx.filter_jit
 def _wgan_loss(generator, discriminator, ts_i, ys_i, key, step):
+    """WGAN loss for evaluation: E[D(real)] - E[D(fake)]."""
     batch_size = ts_i.shape[0]
     key = jr.fold_in(key, step)
     keys = jr.split(key, batch_size)
@@ -230,24 +231,42 @@ def _wgan_loss(generator, discriminator, ts_i, ys_i, key, step):
     return jnp.mean(real_score - fake_score)
 
 
-@eqx.filter_grad
-def _grad_loss(g_d, ts_i, ys_i, key, step):
-    generator, discriminator = g_d
-    return _wgan_loss(generator, discriminator, ts_i, ys_i, key, step)
-
-
 def _increase_update_initial(updates):
     get_initial_leaves = lambda u: jax.tree_util.tree_leaves(u.initial)
     return eqx.tree_at(get_initial_leaves, updates, replace_fn=lambda x: x * 10)
+
+
+@eqx.filter_grad
+def _grad_loss(g_d, ts_i, ys_i, key, step, real_mean_return, drift_lambda):
+    """Joint gradient: WGAN loss + drift penalty on generator mean return.
+
+    The drift penalty only depends on generator output, so
+    d(penalty)/d(discriminator) = 0 — it adds gradient to G only.
+    """
+    generator, discriminator = g_d
+    batch_size = ts_i.shape[0]
+    key = jr.fold_in(key, step)
+    keys = jr.split(key, batch_size)
+    fake_ys = jax.vmap(generator)(ts_i, key=keys)
+    real_score = jax.vmap(discriminator)(ts_i, ys_i)
+    fake_score = jax.vmap(discriminator)(ts_i, fake_ys)
+    wgan = jnp.mean(real_score - fake_score)
+    # Drift moment-matching: penalize generator's mean return deviating from real
+    gen_returns = jnp.diff(fake_ys, axis=1)
+    gen_mean = jnp.mean(gen_returns, axis=(0, 1))
+    drift_pen = drift_lambda * jnp.sum((gen_mean - real_mean_return) ** 2)
+    return wgan + drift_pen
 
 
 @eqx.filter_jit
 def _make_step(
     generator, discriminator, g_opt_state, d_opt_state,
     g_optim, d_optim, ts_i, ys_i, key, step,
+    real_mean_return, drift_lambda,
 ):
     g_grad, d_grad = _grad_loss(
-        (generator, discriminator), ts_i, ys_i, key, step
+        (generator, discriminator), ts_i, ys_i, key, step,
+        real_mean_return, drift_lambda,
     )
     g_updates, g_opt_state = g_optim.update(g_grad, g_opt_state)
     d_updates, d_opt_state = d_optim.update(d_grad, d_opt_state)
@@ -297,6 +316,8 @@ def train_sde_gan(
     discriminator_lr: float = 1e-4,
     batch_size: int = 1024,
     n_steps: int = 10000,
+    n_critic: int = 1,
+    drift_lambda: float = 0.0,
     val_fraction: float = 0.2,
     verbose: bool = True,
 ) -> Tuple[Generator, jnp.ndarray, list]:
@@ -313,9 +334,11 @@ def train_sde_gan(
         width_size: MLP hidden layer width.
         depth: MLP depth.
         generator_lr: Generator learning rate (RMSprop).
-        discriminator_lr: Discriminator learning rate (RMSprop, applied negatively).
+        discriminator_lr: Discriminator learning rate (RMSprop).
         batch_size: Batch size for training.
-        n_steps: Number of training steps.
+        n_steps: Number of generator training steps.
+        n_critic: Discriminator steps per generator step.
+        drift_lambda: Weight on drift moment-matching penalty (0=pure WGAN).
         val_fraction: Fraction of data held out for validation.
         verbose: Print training progress.
 
@@ -349,12 +372,19 @@ def train_sde_gan(
     # Broadcast ts to batch: (batch, window_len)
     ts_batch_template = jnp.broadcast_to(ts, (batch_size, window_len))
 
+    # Precompute real mean return in normalized space for drift penalty
+    real_returns_norm = jnp.diff(train_windows, axis=1)
+    real_mean_return = jnp.mean(real_returns_norm, axis=(0, 1))  # (n_assets,)
+
     if verbose:
         print(f"[SDE-GAN] {n_days} days -> {n_windows} windows (len={window_len})")
         print(f"[SDE-GAN] train: {n_train}, val: {n_val}")
         print(f"[SDE-GAN] vol_scale: {[f'{float(v):.6f}' for v in vol_scale]}")
         print(f"[SDE-GAN] data_size={n_assets}, hidden={hidden_size}, noise={noise_size}")
         print(f"[SDE-GAN] G lr={generator_lr}, D lr={discriminator_lr}, batch={batch_size}")
+        print(f"[SDE-GAN] n_critic={n_critic}, drift_lambda={drift_lambda}")
+        if drift_lambda > 0:
+            print(f"[SDE-GAN] real mean return (norm): {[f'{float(v):.6f}' for v in real_mean_return]}")
 
     # Build models
     key, g_key, d_key = jr.split(key, 3)
@@ -366,7 +396,7 @@ def train_sde_gan(
         n_assets, hidden_size, width_size, depth, key=d_key,
     )
 
-    # Optimizers (note: negative lr for discriminator in WGAN)
+    # Optimizers (note: negative lr for discriminator in WGAN — gradient ascent)
     g_optim = optax.rmsprop(generator_lr)
     d_optim = optax.rmsprop(-discriminator_lr)
     g_opt_state = g_optim.init(eqx.filter(generator, eqx.is_inexact_array))
@@ -379,12 +409,12 @@ def train_sde_gan(
         # Sample batch of real windows
         key, batch_key, step_key = jr.split(key, 3)
         idx = jr.randint(batch_key, (batch_size,), 0, n_train)
-        ys_batch = train_windows[idx]  # (batch, window_len, n_assets)
-        ts_batch = ts_batch_template
+        ys_batch = train_windows[idx]
 
         generator, discriminator, g_opt_state, d_opt_state = _make_step(
             generator, discriminator, g_opt_state, d_opt_state,
-            g_optim, d_optim, ts_batch, ys_batch, step_key, jnp.asarray(step),
+            g_optim, d_optim, ts_batch_template, ys_batch, step_key,
+            jnp.asarray(step), real_mean_return, drift_lambda,
         )
 
         if step % steps_per_print == 0 or step == n_steps - 1:
@@ -395,11 +425,13 @@ def train_sde_gan(
             val_ts = jnp.broadcast_to(ts, val_ys.shape[:2])
             key, eval_key = jr.split(key)
             train_loss = float(_wgan_loss(
-                generator, discriminator, ts_batch, ys_batch, eval_key, jnp.asarray(step)
+                generator, discriminator, ts_batch_template, ys_batch,
+                eval_key, jnp.asarray(step),
             ))
             key, eval_key2 = jr.split(key)
             val_loss = float(_wgan_loss(
-                generator, discriminator, val_ts, val_ys, eval_key2, jnp.asarray(step)
+                generator, discriminator, val_ts, val_ys,
+                eval_key2, jnp.asarray(step),
             ))
             history.append((train_loss, val_loss))
             if verbose:
