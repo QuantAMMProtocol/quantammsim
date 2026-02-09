@@ -1,3 +1,10 @@
+"""Linear weight interpolation between coarse update steps.
+
+Provides a simple linear ramp from the previous coarse weight to the next,
+used to produce fine-grained (sub-chunk) weight trajectories. The last
+interpolated value is held constant for any remaining fine steps beyond
+the interpolation window.
+"""
 from jax import jit
 import jax.numpy as jnp
 

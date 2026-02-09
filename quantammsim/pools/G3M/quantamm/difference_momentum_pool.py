@@ -1,3 +1,13 @@
+"""Differential (MACD-style) momentum pool for QuantAMM.
+
+Computes weight changes from the difference between two EWMA price estimates
+with different memory lengths, analogous to a MACD signal. The fast and slow
+moving averages are controlled by ``logit_lamb`` and ``logit_delta_lamb``
+respectively, and their difference drives trend-following allocations.
+
+Key parameters: ``logit_lamb`` (fast EWMA decay), ``logit_delta_lamb`` (slow
+EWMA offset), ``log_k`` (sensitivity).
+"""
 # again, this only works on startup!
 from jax import config
 

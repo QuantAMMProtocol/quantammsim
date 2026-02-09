@@ -248,6 +248,25 @@ def get_best_balanced_solution(study):
 
 
 class OptunaManager:
+    """Manages an Optuna hyperparameter optimization study lifecycle.
+
+    Encapsulates study creation, execution, early stopping, and result
+    persistence.  Configuration is drawn from
+    ``run_fingerprint["optimisation_settings"]["optuna_settings"]``.
+
+    Parameters
+    ----------
+    run_fingerprint : dict
+        Run configuration.  Must contain ``optimisation_settings.optuna_settings``.
+
+    Attributes
+    ----------
+    study : optuna.Study or None
+        The Optuna study, created by :meth:`setup_study`.
+    logger : logging.Logger
+        File-backed logger writing to ``output_dir/optimization.log``.
+    """
+
     def __init__(self, run_fingerprint):
         self.run_fingerprint = run_fingerprint
         self.optuna_settings = run_fingerprint["optimisation_settings"]["optuna_settings"]
@@ -282,7 +301,18 @@ class OptunaManager:
         return logger
 
     def setup_study(self, multi_objective=False):
-        """Create and configure the Optuna study."""
+        """Create and configure the Optuna study.
+
+        Initialises an Optuna study with TPE sampler (multivariate), median
+        pruner, and optional RDB storage.  For multi-objective mode, creates
+        a three-direction maximize study (mean return, worst-case, stability).
+
+        Parameters
+        ----------
+        multi_objective : bool, optional
+            If True, creates a multi-objective study with three maximize
+            directions. Default is False (single-objective maximize).
+        """
         self.multi_objective = multi_objective
         study_name = (
             self.optuna_settings["study_name"]
@@ -487,7 +517,19 @@ class OptunaManager:
         # self._plot_train_vs_validation(trial_data, study_dir)
 
     def optimize(self, objective):
-        """Run the optimization process with error handling and parallel execution."""
+        """Run the optimization process with error handling and parallel execution.
+
+        Delegates to ``study.optimize`` with the configured number of trials,
+        timeout, parallel jobs, and early-stopping callback.  All exceptions
+        are caught (logged, not re-raised) so that partial results are always
+        saved via ``save_results``.
+
+        Parameters
+        ----------
+        objective : callable
+            Optuna objective function: ``trial -> float`` (single-objective)
+            or ``trial -> tuple[float, ...]`` (multi-objective).
+        """
         try:
             self.study.optimize(
                 objective,
@@ -808,7 +850,21 @@ def nan_rollback(grads, params, old_params):
 
 @jit
 def has_nan_grads(grad_tree):
-    """Check if any gradients contain NaN values."""
+    """Check whether any leaf in a gradient pytree contains NaN values.
+
+    JIT-compiled for use inside training loops. Uses ``tree_reduce`` to
+    scan all leaves without materializing intermediate structures.
+
+    Parameters
+    ----------
+    grad_tree : pytree
+        JAX pytree of gradient arrays.
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar boolean: True if any gradient leaf contains a NaN.
+    """
     return tree_reduce(
         lambda acc, x: jnp.logical_or(acc, jnp.any(jnp.isnan(x))),
         grad_tree,
@@ -817,7 +873,21 @@ def has_nan_grads(grad_tree):
 
 
 def has_nan_params(params):
-    """Check if any parameters contain NaN values."""
+    """Check whether any learnable parameter arrays contain NaN values.
+
+    Skips non-learnable keys (``initial_weights``, ``initial_weights_logits``,
+    ``subsidary_params``) that are not updated by the optimizer.
+
+    Parameters
+    ----------
+    params : dict
+        Parameter dict with arrays of shape ``(n_parameter_sets, n_assets)``.
+
+    Returns
+    -------
+    bool
+        True if any learnable parameter contains a NaN.
+    """
     for key in params:
         if key not in ["initial_weights", "initial_weights_logits", "subsidary_params"]:
             if hasattr(params[key], 'shape') and jnp.any(jnp.isnan(params[key])):
@@ -830,8 +900,33 @@ def nan_param_reinit(
 ):
     """Reinitialize parameter sets that contain NaN values.
 
-    Checks params directly (not just grads) since params can become NaN
-    from bad update steps even when grads were finite.
+    During training, parameters can become NaN from bad update steps even when
+    gradients were finite (e.g., large learning rate + steep curvature).  This
+    function detects NaN-contaminated parameter sets and replaces them with
+    freshly initialized (noised) parameters via ``pool.init_parameters``,
+    preserving the remaining healthy sets.
+
+    Parameters
+    ----------
+    params : dict
+        Current parameter dict with arrays of shape ``(n_parameter_sets, ...)``.
+    grads : dict
+        Current gradient dict (unused directly, but passed for API consistency).
+    pool : BaseTFMMPool
+        Pool instance, used to call ``init_parameters`` for replacement values.
+    initial_params : dict
+        Initial values dict passed to ``pool.init_parameters``.
+    run_fingerprint : dict
+        Run configuration.
+    n_tokens : int
+        Number of assets in the pool.
+    n_parameter_sets : int
+        Number of parallel parameter sets.
+
+    Returns
+    -------
+    dict
+        Parameter dict with NaN-contaminated sets replaced by fresh initializations.
     """
     # Check if any param set has NaN params (the actual problem)
     if has_nan_params(params):

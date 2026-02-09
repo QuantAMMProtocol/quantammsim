@@ -1,3 +1,14 @@
+"""Triple-threat mean-reversion-channel pool for QuantAMM.
+
+Combines three EWMA-based signals -- a channel (mean-reversion) component, a
+trend (momentum) component, and a Gaussian envelope that gates between them --
+into a single weight-update rule. Small price deviations activate the channel
+signal; large deviations activate the trend signal via a power-law response.
+
+Key parameters: ``width`` (envelope scale), ``amplitude`` (channel strength),
+``exponents`` (trend power-law), three independent ``logit_lamb`` values for
+channel, trend, and envelope memory lengths.
+"""
 # again, this only works on startup!
 from jax import config
 

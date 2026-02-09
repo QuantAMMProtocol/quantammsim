@@ -1,3 +1,10 @@
+"""Low-level EWMA and gradient primitives for the estimator pipeline.
+
+Implements the core numerical operations underlying the EWMA estimators:
+scan-based and convolution-based EWMA computation, proportional price gradient
+calculation, return variance estimation, and kernel construction. These are the
+JAX-jittable building blocks consumed by :mod:`.estimators`.
+"""
 # again, this only works on startup!
 from jax import config
 

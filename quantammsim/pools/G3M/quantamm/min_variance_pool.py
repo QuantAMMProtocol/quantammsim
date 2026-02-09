@@ -1,3 +1,12 @@
+"""Minimum-variance portfolio pool for QuantAMM.
+
+Allocates weights inversely proportional to each asset's EWMA return variance
+(diagonal-covariance minimum-variance portfolio). The strategy outputs weights
+directly rather than weight changes, producing a risk-parity-like allocation
+that tilts toward lower-volatility assets.
+
+Key parameters: ``logit_lamb`` (EWMA decay for variance estimation).
+"""
 # again, this only works on startup!
 from jax import config
 

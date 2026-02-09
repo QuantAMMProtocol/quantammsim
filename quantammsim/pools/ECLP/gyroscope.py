@@ -1,3 +1,11 @@
+"""Gyroscope Elliptical Concentrated Liquidity Pool (ECLP) implementation.
+
+Implements the ECLP AMM design from the Gyroscope protocol, which uses
+elliptical geometry to concentrate liquidity within a price range defined
+by (alpha, beta). The ellipse shape is controlled by rotation angle phi
+and scaling factor lambda. Supports fee-based and zero-fee reserve
+calculation, dynamic inputs, and weight derivation from reserves.
+"""
 # again, this only works on startup!
 from jax import config
 
