@@ -307,10 +307,11 @@ def compute_daily_log_prices(minute_prices: jnp.ndarray) -> jnp.ndarray:
 
 
 def train_sde_gan(
-    minute_prices: jnp.ndarray,
-    n_assets: int,
-    key: jax.Array,
+    minute_prices: jnp.ndarray = None,
+    n_assets: int = None,
+    key: jax.Array = None,
     *,
+    daily_log_prices: jnp.ndarray = None,
     window_len: int = 50,
     initial_noise_size: int = 5,
     noise_size: int = 3,
@@ -330,9 +331,13 @@ def train_sde_gan(
     """Train a Neural SDE generator via WGAN with a Neural CDE discriminator.
 
     Args:
-        minute_prices: (T_minutes, n_assets) raw price array.
-        n_assets: Number of assets.
+        minute_prices: (T_minutes, n_assets) raw price array. Converted to
+            daily log-prices internally. Provide this OR daily_log_prices.
+        n_assets: Number of assets. Inferred from data if not provided.
         key: JAX PRNG key.
+        daily_log_prices: (T_days, n_assets) pre-computed daily log-prices.
+            Use this when you already have daily data (e.g. from yfinance)
+            to avoid needing minute-resolution parquets.
         window_len: Length of daily windows for training.
         initial_noise_size: Dimension of initial random noise.
         noise_size: Dimension of Brownian motion driving noise.
@@ -355,7 +360,14 @@ def train_sde_gan(
         list of (train_loss, val_loss) tuples.
     """
     # Prepare daily log-price windows
-    daily_log = compute_daily_log_prices(minute_prices)
+    if daily_log_prices is not None:
+        daily_log = daily_log_prices
+    elif minute_prices is not None:
+        daily_log = compute_daily_log_prices(minute_prices)
+    else:
+        raise ValueError("Provide either minute_prices or daily_log_prices")
+    if n_assets is None:
+        n_assets = daily_log.shape[1]
     n_days = daily_log.shape[0]
     windows = _extract_windows(daily_log, window_len)
     n_windows = windows.shape[0]
