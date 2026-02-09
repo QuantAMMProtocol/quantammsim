@@ -184,13 +184,17 @@ def recursive_default_set(target_dict, default_dict):
 
 
 class NumpyEncoder(json.JSONEncoder):
-    """
-    Special json encoder for numpy types.
+    """JSON encoder that handles NumPy scalar and array types.
 
-    Methods
-    -------
-    default(obj)
-        Convert numpy types to Python native types.
+    Extends ``json.JSONEncoder`` to serialize ``np.integer`` as ``int``,
+    ``np.floating`` as ``float``, and ``np.ndarray`` as nested lists.
+    Used when saving training checkpoints and run fingerprints to JSON.
+
+    Examples
+    --------
+    >>> import json, numpy as np
+    >>> json.dumps({"val": np.float64(0.5)}, cls=NumpyEncoder)
+    '{"val": 0.5}'
     """
 
     def default(self, o):
@@ -301,18 +305,33 @@ def dict_of_np_to_jnp(dictionary):
 
 @jit
 def lamb_to_memory(lamb):
-    """
-    Convert lambda value to memory.
+    """Convert EWMA decay factor lambda to the effective memory length (unitless).
+
+    The EWMA weighting kernel ``w_t = lambda^t * (1 - lambda)`` has a
+    characteristic memory scale that grows with lambda.  This function
+    inverts the cubic relationship used in quantammsim's parameterisation:
+
+    .. math::
+
+        \\text{memory} = 4 \\cdot \\sqrt[3]{\\frac{6 \\lambda}{(1 - \\lambda)^3}}
+
+    To convert to days, use :func:`lamb_to_memory_days` which divides by
+    ``2 * chunk_period / 1440``.
 
     Parameters
     ----------
-    lamb : float
-        The lambda value.
+    lamb : float or jnp.ndarray
+        EWMA decay factor in (0, 1).
 
     Returns
     -------
-    float
-        The memory value.
+    float or jnp.ndarray
+        Unitless memory scale.
+
+    See Also
+    --------
+    lamb_to_memory_days : Returns memory in days.
+    memory_days_to_lamb : Inverse mapping (days -> lambda).
     """
     memory = jnp.cbrt(6 * lamb / ((1 - lamb) ** 3.0)) * 4.0
     return memory
@@ -421,28 +440,49 @@ def memory_days_to_logit_lamb(memory_days, chunk_period=60):
 
 @jit
 def lamb_to_memory_days(lamb, chunk_period):
-    """
-    Convert lambda value to memory days.
+    """Convert EWMA decay factor lambda to effective memory in days.
+
+    Applies :func:`lamb_to_memory` then rescales by ``2 * chunk_period / 1440``
+    to convert from unitless memory to calendar days, accounting for the
+    observation frequency.
 
     Parameters
     ----------
-    lamb : float
-        The lambda value.
+    lamb : float or jnp.ndarray
+        EWMA decay factor in (0, 1).
     chunk_period : int
-        The chunk period in minutes.
+        Time between observations in minutes (e.g., 1440 for daily, 60 for hourly).
 
     Returns
     -------
-    float
-        The memory value in days.
+    float or jnp.ndarray
+        Effective memory in days.
+
+    See Also
+    --------
+    lamb_to_memory : Unitless version.
+    memory_days_to_lamb : Inverse mapping.
+    lamb_to_memory_days_clipped : Clipped version with max_memory_days bound.
     """
     memory_days = jnp.cbrt(6 * lamb / ((1 - lamb) ** 3.0)) * 2 * chunk_period / 1440
     return memory_days
 
 @jit
 def logistic_func(x):
-    """
-    Calculate the logistic function.
+    """Standard logistic sigmoid: ``sigma(x) = exp(x) / (1 + exp(x))``.
+
+    Maps R -> (0, 1).  Used to convert the unconstrained ``logit_lamb``
+    parameter to the EWMA decay factor ``lambda`` in (0, 1).
+
+    Parameters
+    ----------
+    x : float or jnp.ndarray
+        Unconstrained input value(s).
+
+    Returns
+    -------
+    float or jnp.ndarray
+        Output in (0, 1).
     """
     return jnp.exp(x) / (1 + jnp.exp(x))
 

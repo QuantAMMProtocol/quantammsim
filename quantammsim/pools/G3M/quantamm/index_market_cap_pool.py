@@ -1,3 +1,12 @@
+"""Market-capitalisation weighted index pool for QuantAMM.
+
+Computes pool weights proportional to each asset's market capitalisation,
+loaded from historical data via the data pipeline. This is the base index
+strategy: weights are derived directly from market-cap ratios (optionally
+softmax-normalised) and output as absolute weights rather than weight changes.
+Serves as the parent class for :class:`HodlingIndexPool` and
+:class:`TradHodlingIndexPool`.
+"""
 # again, this only works on startup!
 from jax import config
 

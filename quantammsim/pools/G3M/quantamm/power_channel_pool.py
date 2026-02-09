@@ -1,3 +1,13 @@
+"""Power-law weighted momentum pool for QuantAMM.
+
+Applies a per-asset power-law transformation to EWMA price gradients before
+computing zero-sum weight changes. The learnable ``exponents`` parameter
+controls whether the response to price trends is sub-linear, linear, or
+super-linear for each asset, allowing asymmetric sensitivity shaping.
+
+Key parameters: ``exponents`` (per-asset power-law exponents), ``log_k``
+(momentum sensitivity), ``logit_lamb`` (EWMA decay).
+"""
 # again, this only works on startup!
 from jax import config
 

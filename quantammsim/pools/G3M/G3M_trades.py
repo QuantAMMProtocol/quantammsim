@@ -1,3 +1,10 @@
+"""Trade execution for G3M (Geometric Mean Market Maker) pools.
+
+Provides the core swap function for G3M pools: given reserves, weights,
+a token pair, and an input amount, computes the output amount and
+resulting reserve changes. Also provides a conditional wrapper for
+use inside ``jax.lax.scan`` loops where trades may or may not be present.
+"""
 from jax import config, jit, devices
 import jax.numpy as jnp
 from jax.lax import cond
@@ -59,12 +66,35 @@ def _jax_calc_G3M_trade_from_exact_out_given_in(
 # version of _jax_calc_G3M_trade_from_exact_out_given_in that
 # in 'trade' as one single input. Useful for lazy evaluation
 def wrapped_G3M_trade_function(reserves, weights, trade, gamma):
+    """Wrapper that unpacks a trade array into positional args for the G3M swap function.
+
+    Parameters
+    ----------
+    reserves : jnp.ndarray
+        Current pool reserves.
+    weights : jnp.ndarray
+        Current pool weights.
+    trade : jnp.ndarray
+        Array of [token_in_index, token_out_index, amount_in].
+    gamma : float
+        Fee parameter (1 - fee_percentage).
+
+    Returns
+    -------
+    jnp.ndarray
+        Reserve changes from the trade.
+    """
     return _jax_calc_G3M_trade_from_exact_out_given_in(
         reserves, weights, trade[0], trade[1], trade[2], gamma
     )
 
 
 def zero_trade_function_G3M(reserves, weights, trade, gamma):
+    """No-op trade function returning zero reserve changes.
+
+    Used as the false branch in ``jax.lax.cond`` for conditional trade
+    execution, matching the signature of ``wrapped_G3M_trade_function``.
+    """
     return jnp.zeros(reserves.shape)
 
 

@@ -1,3 +1,11 @@
+"""On-chain HODLing index pool for QuantAMM.
+
+Extends :class:`IndexMarketCapPool` with a HODLing regime: reserves are only
+rebalanced via on-chain G3M arbitrage during a short interpolation window at
+the start of each chunk period, and frozen (HODLed) otherwise. This models
+the behaviour of an AMM-based index product that limits rebalancing frequency
+to reduce impermanent loss.
+"""
 # again, this only works on startup!
 from jax import config
 
