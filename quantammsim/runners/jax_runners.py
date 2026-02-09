@@ -199,6 +199,84 @@ def train_on_historic_data(
     )
     max_memory_days = data_dict["max_memory_days"]
 
+    # Synthetic price path augmentation
+    # If enabled, generate synthetic paths from a pre-trained neural SDE and stack
+    # them with the real data, switching to MC mode for windowing/forward_pass.
+    synthetic_settings = run_fingerprint.get("synthetic_settings", {})
+    if synthetic_settings.get("use_synthetic", False):
+        import jax as _jax
+        from quantammsim.synthetic.generation import (
+            generate_synthetic_price_array,
+            generate_synthetic_price_array_daily,
+            generate_synthetic_price_array_latent,
+        )
+        from quantammsim.synthetic.model import load_sde, load_latent_sde
+
+        sde_path = synthetic_settings["sde_model_path"]
+        if sde_path is None:
+            raise ValueError(
+                "synthetic_settings.use_synthetic=True but sde_model_path is None. "
+                "Pre-train an SDE with scripts/fit_price_sde.py first."
+            )
+
+        sde_method = synthetic_settings.get("sde_method", "mle")
+        sde_architecture = synthetic_settings.get("sde_architecture", "standard")
+
+        if sde_architecture == "latent":
+            sde = load_latent_sde(
+                sde_path,
+                n_assets=n_assets,
+                n_hidden=synthetic_settings.get("sde_n_hidden", 4),
+                hidden_dim=synthetic_settings.get("sde_hidden_dim", 32),
+            )
+        else:
+            sde = load_sde(
+                sde_path,
+                n_assets=n_assets,
+                hidden_dim=synthetic_settings.get("sde_hidden_dim", 32),
+                diagonal_only=synthetic_settings.get("sde_diagonal_only", False),
+                learn_drift=sde_method == "sigw1" or synthetic_settings.get("sde_learn_drift", False),
+            )
+        n_synthetic = synthetic_settings.get("n_synthetic_paths", 10)
+
+        if verbose:
+            print(f"[Synthetic] Generating {n_synthetic} {sde_method}/{sde_architecture} synthetic paths from {sde_path}")
+
+        gen_key = _jax.random.PRNGKey(
+            run_fingerprint["optimisation_settings"].get("initial_random_key", 0)
+        )
+        hist_prices = _jax.numpy.array(data_dict["prices"])
+
+        if sde_architecture == "latent":
+            synthetic_prices = generate_synthetic_price_array_latent(
+                sde, hist_prices, n_synthetic, key=gen_key,
+            )
+        elif sde_method == "sigw1":
+            synthetic_prices = generate_synthetic_price_array_daily(
+                sde, hist_prices, n_synthetic, key=gen_key,
+            )
+        else:
+            synthetic_prices = generate_synthetic_price_array(
+                sde, hist_prices, n_synthetic, key=gen_key,
+            )
+
+        # Stack real (version 0) + synthetic: (T, n_assets) -> (T, n_assets, 1 + n_synthetic)
+        real_prices = data_dict["prices"]
+        # Truncate real to match synthetic length (synthetic is truncated to whole days)
+        T_synth = synthetic_prices.shape[0]
+        real_3d = real_prices[:T_synth, :, np.newaxis]
+        data_dict["prices"] = np.concatenate(
+            [real_3d, np.array(synthetic_prices)], axis=-1
+        )
+
+        # Switch to MC mode
+        run_fingerprint["optimisation_settings"]["training_data_kind"] = "mc"
+        run_fingerprint["optimisation_settings"]["max_mc_version"] = n_synthetic
+
+        if verbose:
+            print(f"[Synthetic] Price array shape: {data_dict['prices'].shape}")
+            print(f"[Synthetic] MC mode enabled: version 0 = real, versions 1-{n_synthetic} = synthetic")
+
     # Validation holdout setup
     # If val_fraction > 0, carve out validation window from end of training
     val_fraction = run_fingerprint["optimisation_settings"].get("val_fraction", 0.0)

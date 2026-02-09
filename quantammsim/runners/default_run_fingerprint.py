@@ -102,6 +102,20 @@ run_fingerprint_defaults = {
     "weight_calculation_method": "auto",  # "auto", "vectorized", or "scan"
     # Learnable bounds settings - for per-asset min/max weight constraints
     # Control is via rule string prefix (e.g., "bounded__momentum")
+    # Neural SDE synthetic price path augmentation
+    # Pre-train an SDE with scripts/fit_price_sde.py, then point sde_model_path at the .eqx file.
+    # When use_synthetic=True, synthetic paths are generated and stacked with real data,
+    # and training_data_kind is switched to "mc" so windowing/forward_pass sample across versions.
+    "synthetic_settings": {
+        "use_synthetic": False,
+        "sde_model_path": None,  # Path to pre-trained .eqx file
+        "n_synthetic_paths": 10,
+        "sde_hidden_dim": 32,  # Must match the architecture used during SDE fitting
+        "sde_diagonal_only": False,
+        "sde_learn_drift": False,
+        "sde_architecture": "standard",  # "standard" or "latent"
+        "sde_n_hidden": 4,  # (Latent only) number of hidden latent dimensions
+    },
     "learnable_bounds_settings": {
         "freeze_bounds": False,  # If True, treat bounds as hyperparameters (no gradients)
         "min_weights_per_asset": None,  # Must be set if using bounded pool, e.g., [0.05, 0.05]

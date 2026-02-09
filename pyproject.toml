@@ -26,6 +26,9 @@ dependencies = [
     "Historic-Crypto",
     "bidask",
     "optax",
+    "diffrax>=0.5.0",
+    "equinox>=0.11.0",
+    "signax>=0.2.0",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +55,7 @@ packages = [
     "quantammsim.pools.FM_AMM",
     "quantammsim.pools.G3M",
     "quantammsim.runners",
+    "quantammsim.synthetic",
 ]
 
 [tool.hatch.build]

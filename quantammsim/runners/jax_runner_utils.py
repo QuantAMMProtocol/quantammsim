@@ -605,6 +605,7 @@ _TRAINING_ONLY_FIELDS = frozenset({
     "subsidary_pools",  # Handled separately
     "bout_offset",  # Training sampling config
     "freq",  # Data frequency string
+    "synthetic_settings",  # Neural SDE synthetic path generation config
 })
 
 
