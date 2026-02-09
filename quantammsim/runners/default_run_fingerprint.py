@@ -135,6 +135,11 @@ optuna_settings = {
     # Value of 0.5 means: if train=1.0 and val=0.5, penalty = 0.5 * (1.0 - 0.5) = 0.25
     # Set to 0.0 to disable. Range [0.0, 1.0] recommended.
     "overfitting_penalty": 0.2,
+    # hessian_penalty: Penalize high-curvature (sharp) optima using Hessian Frobenius norm.
+    # 0.0 = disabled (no Hessian computation). > 0.0 = compute Frobenius norm per trial
+    # and subtract hessian_penalty * frobenius from objective (single-obj) or add
+    # -frobenius as extra objective (multi-obj). Typical range: 0.001-0.1.
+    "hessian_penalty": 0.0,
     "parameter_config": {
         "memory_length": {
             "low": 1,

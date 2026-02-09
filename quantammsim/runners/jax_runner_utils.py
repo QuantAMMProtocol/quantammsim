@@ -31,7 +31,7 @@ from optuna.visualization import plot_optimization_history, plot_param_importanc
 import numpy as np
 
 
-from typing import Dict, Any, Generic, TypeVar, List, Optional, Tuple
+from typing import Dict, Any, Generic, TypeVar, List, Optional, Set, Tuple
 from copy import deepcopy
 T = TypeVar('T')      # Declare type variable
 
@@ -42,10 +42,10 @@ def create_trial_params(
     run_fingerprint: Dict,
     n_assets: int,
     expand_around=False
-) -> Dict:
+) -> Tuple[Dict, Set[str]]:
     """
     Create trial parameters for Optuna optimization.
-    
+
     Parameters:
     -----------
     trial : optuna.Trial
@@ -62,18 +62,21 @@ def create_trial_params(
         Run configuration
     n_assets : int
         Number of assets
-        
+
     Returns:
     --------
-    dict
-        Trial parameters dictionary
-    
+    tuple of (dict, set)
+        Trial parameters dictionary and set of keys that Optuna searched
+        (i.e. called trial.suggest_float on). Keys not in searched_keys
+        were held fixed (subsidary_params, initial_weights, etc.).
+
     Raises:
     -------
     ValueError
         If parameter shapes are invalid or required config is missing
     """
     trial_params = {}
+    searched_keys = set()
     # Copy subsidary_params if present (required by forward pass)
     if "subsidary_params" in params:
         trial_params["subsidary_params"] = params["subsidary_params"]
@@ -151,7 +154,8 @@ def create_trial_params(
                     for i in range(param_length)
                 ]
             )
-    return trial_params
+        searched_keys.add(key)
+    return trial_params, searched_keys
 
 def generate_evaluation_points(
     start_idx, end_idx, bout_length, n_points, min_spacing, random_key=0
@@ -281,9 +285,20 @@ class OptunaManager:
 
         return logger
 
-    def setup_study(self, multi_objective=False):
-        """Create and configure the Optuna study."""
+    def setup_study(self, multi_objective=False, n_objectives=None):
+        """Create and configure the Optuna study.
+
+        Parameters
+        ----------
+        multi_objective : bool
+            Whether to use multi-objective optimization.
+        n_objectives : int, optional
+            Number of objectives for multi-objective mode. Defaults to 3
+            (mean_return, worst_case, stability). Set to 4 when using
+            hessian_penalty to add a flatness objective.
+        """
         self.multi_objective = multi_objective
+        self.n_objectives = n_objectives or (3 if multi_objective else 1)
         study_name = (
             self.optuna_settings["study_name"]
             or f"quantamm_{self.run_fingerprint['rule']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -314,7 +329,7 @@ class OptunaManager:
                 storage=storage,
                 pruner=pruner,
                 sampler=sampler,
-                directions=["maximize", "maximize", "maximize"],
+                directions=["maximize"] * self.n_objectives,
             )
         else:
             self.study = optuna.create_study(
@@ -450,11 +465,12 @@ class OptunaManager:
 
                 # Handle multi-objective values
                 if self.multi_objective:
+                    obj_names = ["mean_return", "worst_case", "stability", "flatness"]
                     trial_data_entry.update(
                         {
-                            "mean_return": float(trial.values[0]),
-                            "worst_case": float(trial.values[1]),
-                            "stability": float(trial.values[2]),
+                            obj_names[i]: float(v)
+                            for i, v in enumerate(trial.values)
+                            if i < len(obj_names)
                         }
                     )
                 else:

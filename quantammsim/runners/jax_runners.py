@@ -1096,10 +1096,18 @@ def train_on_historic_data(
 
         # Initialize Optuna manager
         optuna_manager = OptunaManager(run_fingerprint)
+        multi_objective = run_fingerprint["optimisation_settings"]["optuna_settings"][
+            "multi_objective"
+        ]
+        hessian_penalty = run_fingerprint["optimisation_settings"]["optuna_settings"].get(
+            "hessian_penalty", 0.0
+        )
+        n_objectives = None
+        if multi_objective and hessian_penalty > 0:
+            n_objectives = 4  # mean_return, worst_case, stability, flatness
         optuna_manager.setup_study(
-            multi_objective=run_fingerprint["optimisation_settings"]["optuna_settings"][
-                "multi_objective"
-            ]
+            multi_objective=multi_objective,
+            n_objectives=n_objectives,
         )
 
         run_fingerprint["optimisation_settings"]["optuna_settings"]["parameter_config"][
@@ -1123,6 +1131,8 @@ def train_on_historic_data(
         optuna_settings = run_fingerprint["optimisation_settings"]["optuna_settings"]
         expand_around = optuna_settings.get("expand_around", True)
         overfitting_penalty = optuna_settings.get("overfitting_penalty", 0.0)
+        if hessian_penalty > 0:
+            from quantammsim.training.hessian_trace import hessian_frobenius
 
         # Create objective with parameter configuration and validation
         def objective(trial):
@@ -1138,7 +1148,7 @@ def train_on_historic_data(
                     for param_key in param_config:
                         param_config[param_key]["scalar"] = True
 
-                trial_params = create_trial_params(
+                trial_params, searched_keys = create_trial_params(
                     trial, param_config, params, run_fingerprint, n_assets, expand_around=expand_around
                 )
                 # Training evaluation
@@ -1328,25 +1338,58 @@ def train_on_historic_data(
                 trial.set_user_attr("continuous_test_returns_over_hodl", continuous_test_metrics["returns_over_hodl"])
                 trial.set_user_attr("continuous_test_returns_over_uniform_hodl", continuous_test_metrics["returns_over_uniform_hodl"])
 
+                # Compute Hessian Frobenius norm if penalty is active
+                hess_frob = 0.0
+                if hessian_penalty > 0:
+                    hessian_exclude_params = [k for k in trial_params if k not in searched_keys]
+                    # Build a differentiable scalar-valued function for the Hessian.
+                    # forward_pass (not nograd) with base_static_dict returns the
+                    # training objective scalar (e.g. daily_log_sharpe).
+                    def _hessian_objective(p):
+                        return forward_pass(
+                            p,
+                            start_index=(data_dict["start_idx"], 0),
+                            prices=data_dict["prices"],
+                            static_dict=Hashabledict(base_static_dict),
+                            pool=pool,
+                        )
+                    hess_frob = float(hessian_frobenius(
+                        trial_params, _hessian_objective,
+                        exclude_params=hessian_exclude_params,
+                    ))
+                    trial.set_user_attr("hessian_frobenius", hess_frob)
+                    optuna_manager.logger.info(
+                        f"Trial {trial.number}, Hessian Frobenius: {hess_frob}"
+                    )
+
                 if run_fingerprint["optimisation_settings"]["optuna_settings"][
                     "multi_objective"
                 ]:
-                    return (
+                    objectives = (
                         np.mean(train_objectives),  # mean_return
                         np.min(train_objectives),  # worst_case
                         -np.std(train_objectives),  # stability
                     )
+                    if hessian_penalty > 0:
+                        # Add -frobenius as 4th objective (maximize = minimize curvature)
+                        objectives = objectives + (-hess_frob,)
+                    return objectives
                 else:
+                    objective_value = float(mean_train_value)
                     # Apply overfitting penalty if configured
                     # Penalty is proportional to (train - validation) gap when train > validation
                     if overfitting_penalty > 0:
                         train_val_gap = float(mean_train_value) - float(validation_value)
                         if train_val_gap > 0:  # Only penalize if training better than validation
                             penalty = overfitting_penalty * train_val_gap
-                            penalized_value = float(mean_train_value) - penalty
+                            objective_value -= penalty
                             trial.set_user_attr("overfitting_penalty_applied", float(penalty))
-                            return penalized_value
-                    return mean_train_value  # Optimize on training value
+                    # Apply Hessian penalty (stacks with overfitting penalty)
+                    if hessian_penalty > 0:
+                        hessian_penalty_applied = hessian_penalty * hess_frob
+                        objective_value -= hessian_penalty_applied
+                        trial.set_user_attr("hessian_penalty_applied", float(hessian_penalty_applied))
+                    return objective_value
 
             except Exception as e:
                 import traceback
