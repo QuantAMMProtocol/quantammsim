@@ -116,14 +116,17 @@ def metrics_arr_to_dicts(metrics_arr, daily_returns_arr=None):
     """Convert (n_param_sets, 12) metrics array to list of dicts.
 
     Used at display/save boundaries where downstream code expects the
-    original dict-per-param-set format.
+    original dict-per-param-set format.  Transfers the whole array to
+    host in one shot then indexes with numpy (avoids per-scalar JAX
+    dispatch overhead).
     """
-    n = metrics_arr.shape[0]
+    arr_np = np.asarray(metrics_arr)
+    n = arr_np.shape[0]
     result = []
     for i in range(n):
-        d = {k: metrics_arr[i, j] for j, k in enumerate(_METRIC_KEYS)}
+        d = {k: float(arr_np[i, j]) for j, k in enumerate(_METRIC_KEYS)}
         if daily_returns_arr is not None:
-            d["daily_returns"] = daily_returns_arr[i]
+            d["daily_returns"] = np.asarray(daily_returns_arr[i])
         result.append(d)
     return result
 
