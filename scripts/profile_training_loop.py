@@ -117,30 +117,29 @@ def profile_coarse(fp, trace_dir=None, root=None):
     """
     Coarse profiling: time JIT compilation vs steady-state iteration cost.
 
-    Strategy: run with n_iterations=1 (forces JIT + 1 step), then run the full
-    config. The difference reveals per-iteration amortized cost.
+    Strategy: run with the SAME n_iterations for warmup and main run so that
+    the scan chunk length matches and JIT compilation is fully cached on the
+    2nd call. This isolates steady-state per-iteration cost.
     """
     from quantammsim.runners.jax_runners import train_on_historic_data
 
-    # ── Warmup: 1 iteration (JIT compile dominates) ───────────────────────
-    warmup_fp = deepcopy(fp)
-    warmup_fp["optimisation_settings"]["n_iterations"] = 1
+    n_its = fp["optimisation_settings"]["n_iterations"]
 
-    print("\nPhase 1: JIT warmup (1 iteration)...")
+    # ── Warmup: same config (pays JIT compile + data load) ────────────────
+    print(f"\nPhase 1: JIT warmup ({n_its} iterations, same config as main)...")
     jax.effects_barrier()
     t0 = time.perf_counter()
     train_on_historic_data(
-        warmup_fp, verbose=False, force_init=True,
+        deepcopy(fp), verbose=False, force_init=True,
         return_training_metadata=True, iterations_per_print=999999,
         root=root,
     )
     jax.effects_barrier()
     t_warmup = time.perf_counter() - t0
-    print(f"  Warmup: {t_warmup:.2f}s (includes data load + JIT compile + 1 iteration)")
+    print(f"  Warmup: {t_warmup:.2f}s (includes data load + JIT compile + {n_its} iterations)")
 
-    # ── Main run ──────────────────────────────────────────────────────────
-    n_its = fp["optimisation_settings"]["n_iterations"]
-    print(f"\nPhase 2: Main run ({n_its} iterations)...")
+    # ── Main run (JIT cached, measures steady-state) ──────────────────────
+    print(f"\nPhase 2: Main run ({n_its} iterations, JIT cached)...")
 
     ctx = jax.profiler.trace(trace_dir) if trace_dir else contextmanager(lambda: (yield))()
 
@@ -148,7 +147,7 @@ def profile_coarse(fp, trace_dir=None, root=None):
     with ctx:
         t0 = time.perf_counter()
         _, metadata = train_on_historic_data(
-            fp, verbose=False, force_init=True,
+            deepcopy(fp), verbose=False, force_init=True,
             return_training_metadata=True, iterations_per_print=999999,
             root=root,
         )
@@ -158,29 +157,17 @@ def profile_coarse(fp, trace_dir=None, root=None):
     actual_its = metadata["epochs_trained"]
 
     # ── Results ───────────────────────────────────────────────────────────
-    # Warmup primes JAX's JIT cache. Main run benefits from cached compilation
-    # but re-loads data. The difference between warmup and main run tells us
-    # how much was JIT compile vs data+iteration cost.
     amortized_ms = t_main / max(actual_its, 1) * 1000
+    jit_compile_est = t_warmup - t_main  # warmup includes compile, main doesn't
 
-    # Better estimate: if JIT cache hit, main run = data_load + N*iteration.
-    # Warmup = data_load + JIT_compile + 1*iteration.
-    # JIT_compile_est = warmup - main/actual_its*(actual_its) ... can't cleanly separate.
-    # Just report both and let user interpret.
     print(f"\n{'=' * 60}")
     print(f"  COARSE TIMING RESULTS")
     print(f"{'=' * 60}")
-    print(f"  1st call (data+JIT+1it):   {t_warmup:.2f}s")
-    print(f"  2nd call (data+{actual_its}its):    {t_main:.2f}s")
-    if t_main < t_warmup:
-        jit_est = t_warmup - t_main / actual_its
-        print(f"  JIT cache hit on 2nd call: yes (saved ~{jit_est:.1f}s)")
-    print(f"  Amortized per-it (2nd):    {amortized_ms:.1f}ms")
-    if actual_its > 1:
-        # Very rough: assume data load is similar for both calls
-        # Then: warmup - main/actual_its ≈ jit_compile_time
-        data_plus_one_it = t_main / actual_its  # rough per-it incl data amortization
-        print(f"  Rough per-it estimate:     {data_plus_one_it*1000:.0f}ms (incl data amortization)")
+    print(f"  1st call (data+JIT+{actual_its}its): {t_warmup:.2f}s")
+    print(f"  2nd call (data+{actual_its}its):     {t_main:.2f}s")
+    if jit_compile_est > 0:
+        print(f"  JIT compile estimate:       {jit_compile_est:.1f}s")
+    print(f"  Amortized per-it (2nd):     {amortized_ms:.1f}ms")
     print(f"{'=' * 60}")
 
     return metadata
@@ -190,6 +177,9 @@ def profile_cprofile(fp, root=None):
     """
     Python cProfile: shows where host/Python time goes.
     Reveals whether the bottleneck is in JAX kernels vs Python overhead.
+
+    Runs a warmup call first (same config) so JIT compilation is cached,
+    then profiles the second call to measure steady-state behavior.
     """
     import cProfile
     import pstats
@@ -197,12 +187,20 @@ def profile_cprofile(fp, root=None):
 
     from quantammsim.runners.jax_runners import train_on_historic_data
 
-    print("\nRunning with cProfile...")
+    # Warmup: prime JIT cache with same config
+    print("\nWarmup for cProfile (priming JIT cache)...")
+    train_on_historic_data(
+        deepcopy(fp), verbose=False, force_init=True,
+        return_training_metadata=True, iterations_per_print=999999,
+        root=root,
+    )
+
+    print("Running with cProfile (JIT cached)...")
     profiler = cProfile.Profile()
     profiler.enable()
 
     train_on_historic_data(
-        fp, verbose=False, force_init=True,
+        deepcopy(fp), verbose=False, force_init=True,
         return_training_metadata=True, iterations_per_print=999999,
         root=root,
     )
