@@ -357,7 +357,10 @@ def _grad_loss_gp(g_d, ts_i, ys_i, key, step, real_mean_return, drift_lambda, gp
     gen_mean = jnp.mean(gen_returns, axis=(0, 1))
     drift_pen = drift_lambda * jnp.sum((gen_mean - real_mean_return) ** 2)
 
-    return wgan + gp + drift_pen
+    # D uses negative lr (gradient ascent): maximise wgan, minimise gp.
+    # G uses positive lr (gradient descent): minimise wgan.
+    # drift_pen only has G gradients; gp only has D gradients.
+    return wgan - gp + drift_pen
 
 
 @eqx.filter_jit
