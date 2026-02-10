@@ -817,7 +817,7 @@ def train_on_historic_data(
 
         # ── Outer loop: scan in chunks, Python between chunks ────────────
         total_iterations = n_iterations + 1  # 0..n_iterations inclusive
-        chunk_size = max(iterations_per_print, 1)
+        chunk_size = min(max(iterations_per_print, 1), total_iterations)
 
         # ── JIT-compile the scan chunk ──────────────────────────────────
         # lax.scan in eager mode just loops in Python — no fusion benefit.
