@@ -511,7 +511,6 @@ def calc_ewma_padded(
     max_memory_days,
     cap_lamb=True,
 ):
-
     lamb = calc_lamb(update_rule_parameter_dict)
     max_lamb = memory_days_to_lamb(max_memory_days, chunk_period)
     # Apply max_memory_days restriction to lamb and alt_lamb
