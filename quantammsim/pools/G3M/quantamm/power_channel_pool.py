@@ -1,3 +1,13 @@
+"""Power-law weighted momentum pool for QuantAMM.
+
+Applies a per-asset power-law transformation to EWMA price gradients before
+computing zero-sum weight changes. The learnable ``exponents`` parameter
+controls whether the response to price trends is sub-linear, linear, or
+super-linear for each asset, allowing asymmetric sensitivity shaping.
+
+Key parameters: ``exponents`` (per-asset power-law exponents), ``log_k``
+(momentum sensitivity), ``logit_lamb`` (EWMA decay).
+"""
 # again, this only works on startup!
 from jax import config
 
@@ -30,18 +40,23 @@ from quantammsim.core_simulator.param_utils import (
     calc_lamb,
     inverse_squareplus_np,
     get_raw_value,
+    jax_memory_days_to_lamb,
 )
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
     calc_gradients,
     calc_k,
     squareplus,
 )
+from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives import (
+    _jax_gradient_scan_function,
+)
+from quantammsim.core_simulator.param_schema import ParamSpec, OptunaRange
 
 from typing import Dict, Any, Optional
 from functools import partial
 import numpy as np
 
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_themselves_weights
 # as this is False for momentum pools --- the strategy outputs weight _changes_
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weight_changes,
@@ -98,7 +113,7 @@ class PowerChannelPool(MomentumPool):
 
     Methods
     -------
-    calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
+    calculate_rule_outputs(params, run_fingerprint, prices, additional_oracle_input)
         Calculate the raw weight outputs based on power channel signals.
 
     Notes
@@ -108,6 +123,57 @@ class PowerChannelPool(MomentumPool):
     The class provides methods to calculate raw weight outputs based on these signals and refine them
     into final asset weights, taking into account various parameters and constraints defined in the pool setup.
     """
+
+    # Pool-owned parameter schema for PowerChannel
+    # Uses sp_* (squareplus-transformed) params instead of log_*/raw_*
+    #
+    # Internal param mappings:
+    #   sp_k: squareplus(sp_k) = k -> inverse_squareplus(k) = sp_k
+    #     k_per_day in [0.5, 100] -> sp_k in [-0.25, 99.5] approximately
+    #   logit_lamb: logit(lamb) -> memory_length depends on chunk_period
+    #   sp_exponents: squareplus(sp_exponents) = exponents, typically 1-4
+    #   sp_pre_exp_scaling: squareplus(sp_pre_exp_scaling) = scaling, typically 0.1-2
+    PARAM_SCHEMA = {
+        # sp_k: squareplus transformed, maps to k_per_day
+        # k in [0.5, 100] gives sp_k in roughly [-0.2, 99]
+        "sp_k": ParamSpec(
+            initial=19.5,  # squareplus(19.5) ≈ 20
+            optuna=OptunaRange(low=-1.0, high=100.0, log_scale=False, scalar=False),
+            description="Squareplus-space k factor (squareplus gives k_per_day)",
+        ),
+        "logit_lamb": ParamSpec(
+            initial=4.0,
+            optuna=OptunaRange(low=-4.0, high=8.0, log_scale=False, scalar=False),
+            description="Logit of decay parameter lambda (memory length)",
+        ),
+        "logit_delta_lamb": ParamSpec(
+            initial=0.0,
+            optuna=OptunaRange(low=-5.0, high=5.0, log_scale=False, scalar=False),
+            description="Delta in logit space for alternative lambda",
+        ),
+        # Power channel specific parameters (squareplus transformed)
+        "sp_exponents": ParamSpec(
+            initial=0.0,  # squareplus(0) ≈ 1.0
+            optuna=OptunaRange(low=-2.0, high=4.0, log_scale=False, scalar=False),
+            description="Squareplus-space exponents (typically gives 0.3-5)",
+        ),
+        "sp_pre_exp_scaling": ParamSpec(
+            initial=-1.0,  # squareplus(-1) ≈ 0.38
+            optuna=OptunaRange(low=-3.0, high=2.0, log_scale=False, scalar=False),
+            description="Squareplus-space pre-exp scaling (gives 0.09-2.4)",
+        ),
+        "initial_weights_logits": ParamSpec(
+            initial=1.0,
+            optuna=OptunaRange(low=-10, high=10, log_scale=False, scalar=False),
+            description="Logit-space initial portfolio weights",
+            trainable=False,
+        ),
+    }
+
+    @classmethod
+    def get_param_schema(cls) -> dict:
+        """Get the full parameter schema for PowerChannelPool."""
+        return cls.PARAM_SCHEMA
 
     def __init__(self):
         """
@@ -120,7 +186,7 @@ class PowerChannelPool(MomentumPool):
         super().__init__()
 
     @partial(jit, static_argnums=(2))
-    def calculate_raw_weights_outputs(
+    def calculate_rule_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -162,11 +228,16 @@ class PowerChannelPool(MomentumPool):
         to be applied to the previous weights. These will be refined in subsequent steps.
         """
         use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-        if use_pre_exp_scaling and params.get("logit_pre_exp_scaling") is not None:
+        # pre_exp_scaling: prefer sp_ (squareplus), fall back to logit_ (sigmoid), then raw_ (2^x)
+        if use_pre_exp_scaling and params.get("sp_pre_exp_scaling") is not None:
+            pre_exp_scaling = squareplus(params.get("sp_pre_exp_scaling"))
+        elif use_pre_exp_scaling and params.get("logit_pre_exp_scaling") is not None:
             logit_pre_exp_scaling = params.get("logit_pre_exp_scaling")
             pre_exp_scaling = jnp.exp(logit_pre_exp_scaling) / (
                 1 + jnp.exp(logit_pre_exp_scaling)
             )
+        elif use_pre_exp_scaling and params.get("raw_pre_exp_scaling") is not None:
+            pre_exp_scaling = 2 ** params.get("raw_pre_exp_scaling")
         else:
             pre_exp_scaling = 0.5
         memory_days = lamb_to_memory_days_clipped(
@@ -174,7 +245,11 @@ class PowerChannelPool(MomentumPool):
             run_fingerprint["chunk_period"],
             run_fingerprint["max_memory_days"],
         )
-        k = calc_k(params, memory_days)
+        # k: prefer sp_k (squareplus), fall back to log_k (2^x)
+        if params.get("sp_k") is not None:
+            k = squareplus(params.get("sp_k")) * memory_days
+        else:
+            k = calc_k(params, memory_days)
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
         gradients = calc_gradients(
             params,
@@ -185,13 +260,107 @@ class PowerChannelPool(MomentumPool):
             cap_lamb=True,
         )
 
-        exponents = jnp.clip(squareplus(params.get("raw_exponents")), a_min=1.0, a_max=None)
+        # exponents: prefer sp_exponents, fall back to raw_exponents (both use squareplus)
+        if params.get("sp_exponents") is not None:
+            exponents = jnp.clip(squareplus(params.get("sp_exponents")), min=1.0)
+        else:
+            exponents = jnp.clip(squareplus(params.get("raw_exponents")), min=1.0)
 
-        raw_weight_outputs = _jax_power_channel_weight_update(
+        rule_outputs = _jax_power_channel_weight_update(
             gradients, k, exponents, pre_exp_scaling=pre_exp_scaling
         )
 
-        return raw_weight_outputs
+        return rule_outputs
+
+    def calculate_rule_output_step(
+        self,
+        carry: Dict[str, jnp.ndarray],
+        price: jnp.ndarray,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+    ) -> tuple:
+        """
+        Calculate a single step of power channel weight update.
+
+        This mirrors the production implementation where we:
+        1. Update the gradient estimator state (ewma, running_a)
+        2. Compute the gradient from the updated state
+        3. Apply the power channel weight update formula
+
+        Parameters
+        ----------
+        carry : Dict[str, jnp.ndarray]
+            Current state with 'ewma' and 'running_a'
+        price : jnp.ndarray
+            Current price observation (shape: n_assets,)
+        params : Dict[str, Any]
+            Pool parameters (logit_lamb, sp_k, sp_exponents, etc.)
+        run_fingerprint : Dict[str, Any]
+            Simulation settings (chunk_period, max_memory_days, use_pre_exp_scaling, etc.)
+
+        Returns
+        -------
+        tuple
+            (new_carry, rule_output)
+        """
+        # Compute lambda with max_memory_days capping
+        lamb = calc_lamb(params)
+        max_lamb = jax_memory_days_to_lamb(
+            run_fingerprint["max_memory_days"], run_fingerprint["chunk_period"]
+        )
+        lamb = jnp.clip(lamb, min=0.0, max=max_lamb)
+
+        # Get estimator constants (inherited from MomentumPool)
+        G_inf, saturated_b = self._get_estimator_constants(lamb)
+
+        # Use the estimator primitive for gradient calculation
+        carry_list = [carry["ewma"], carry["running_a"]]
+        new_carry_list, gradient = _jax_gradient_scan_function(
+            carry_list, price, G_inf, lamb, saturated_b
+        )
+
+        # Compute memory days and k for weight update
+        memory_days = lamb_to_memory_days_clipped(
+            lamb, run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"]
+        )
+
+        # k: prefer sp_k (squareplus), fall back to log_k (2^x)
+        if params.get("sp_k") is not None:
+            k = squareplus(params.get("sp_k")) * memory_days
+        else:
+            k = calc_k(params, memory_days)
+
+        # pre_exp_scaling: prefer sp_ (squareplus), fall back to logit_ (sigmoid), then raw_ (2^x)
+        use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
+        if use_pre_exp_scaling and params.get("sp_pre_exp_scaling") is not None:
+            pre_exp_scaling = squareplus(params.get("sp_pre_exp_scaling"))
+        elif use_pre_exp_scaling and params.get("logit_pre_exp_scaling") is not None:
+            logit_pre_exp_scaling = params.get("logit_pre_exp_scaling")
+            pre_exp_scaling = jnp.exp(logit_pre_exp_scaling) / (
+                1 + jnp.exp(logit_pre_exp_scaling)
+            )
+        elif use_pre_exp_scaling and params.get("raw_pre_exp_scaling") is not None:
+            pre_exp_scaling = 2 ** params.get("raw_pre_exp_scaling")
+        else:
+            pre_exp_scaling = 0.5
+
+        # exponents: prefer sp_exponents, fall back to raw_exponents (both use squareplus)
+        if params.get("sp_exponents") is not None:
+            exponents = jnp.clip(squareplus(params.get("sp_exponents")), min=1.0)
+        else:
+            exponents = jnp.clip(squareplus(params.get("raw_exponents")), min=1.0)
+
+        # Apply power channel weight update
+        rule_output = _jax_power_channel_weight_update(
+            gradient, k, exponents, pre_exp_scaling=pre_exp_scaling
+        )
+
+        new_carry = {
+            "ewma": new_carry_list[0],
+            "running_a": new_carry_list[1],
+        }
+
+        return new_carry, rule_output
 
     def init_base_parameters(
         self,
@@ -205,7 +374,7 @@ class PowerChannelPool(MomentumPool):
         Initialize parameters for a power channel pool.
 
         This method sets up the initial parameters for the power channel pool strategy, including
-        weights, memory length (lambda), the update agressiveness (k) and the exponents.
+        weights, memory length (lambda), the update aggressiveness (k) and the exponents.
 
         Parameters
         ----------
@@ -238,7 +407,7 @@ class PowerChannelPool(MomentumPool):
         any necessary transformations (e.g., logit transformations for lambda).
         """
 
-        np.random.seed(0)
+        # np.random.seed(0)
 
         # We need to initialise the weights for each parameter set
         # If a vector is provided in the inital values dict, we use
@@ -275,7 +444,8 @@ class PowerChannelPool(MomentumPool):
         initial_weights_logits = process_initial_values(
             initial_values_dict, "initial_weights_logits", n_assets, n_parameter_sets, force_scalar=False
         )
-        log_k = np.log2(
+        # sp_k: use inverse_squareplus to get param that squareplus maps to initial_k_per_day
+        sp_k = inverse_squareplus_np(
             process_initial_values(
                 initial_values_dict, "initial_k_per_day", n_assets, n_parameter_sets, force_scalar=run_fingerprint["optimisation_settings"]["force_scalar"]
             )
@@ -312,20 +482,33 @@ class PowerChannelPool(MomentumPool):
                 [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
             )
 
+        # sp_pre_exp_scaling: use inverse_squareplus to get param that squareplus maps to initial_pre_exp_scaling
+        sp_pre_exp_scaling_np = inverse_squareplus_np(
+            initial_values_dict["initial_pre_exp_scaling"]
+        )
         if run_fingerprint["optimisation_settings"]["force_scalar"]:
-            raw_exponents = np.array([[initial_values_dict["initial_raw_exponents"]]] * n_parameter_sets)
+            sp_pre_exp_scaling = np.array([[sp_pre_exp_scaling_np]] * n_parameter_sets)
         else:
-            raw_exponents = np.array(
+            sp_pre_exp_scaling = np.array(
+                [[sp_pre_exp_scaling_np] * n_assets] * n_parameter_sets
+            )
+
+        # sp_exponents: the initial_raw_exponents value is already in the right form for squareplus
+        if run_fingerprint["optimisation_settings"]["force_scalar"]:
+            sp_exponents = np.array([[initial_values_dict["initial_raw_exponents"]]] * n_parameter_sets)
+        else:
+            sp_exponents = np.array(
                 [[initial_values_dict["initial_raw_exponents"]] * n_assets]
                 * n_parameter_sets
             )
 
         params = {
-            "log_k": log_k,
+            "sp_k": sp_k,
             "logit_lamb": logit_lamb,
             "logit_delta_lamb": logit_delta_lamb,
             "initial_weights_logits": initial_weights_logits,
-            "raw_exponents": raw_exponents,
+            "sp_exponents": sp_exponents,
+            "sp_pre_exp_scaling": sp_pre_exp_scaling,
             "subsidary_params": [],
         }
 
@@ -334,21 +517,23 @@ class PowerChannelPool(MomentumPool):
 
     @classmethod
     def _process_specific_parameters(cls, update_rule_parameters, run_fingerprint):
-        """Process mean reversion channel specific parameters."""
+        """Process power channel specific parameters."""
         result = {}
 
         # Process specific parameters
         for urp in update_rule_parameters:
             if urp.name == "exponent":
-                raw_exponents = [float(inverse_squareplus_np(val)) for val in urp.value]
-                if len(raw_exponents) != len(run_fingerprint["tokens"]):
-                    raw_exponents = [raw_exponents[0]] * len(run_fingerprint["tokens"])
-                result["raw_exponents"] = np.array(raw_exponents)
+                # Use inverse_squareplus to get sp_exponents param
+                sp_exponents = [float(inverse_squareplus_np(val)) for val in urp.value]
+                if len(sp_exponents) != len(run_fingerprint["tokens"]):
+                    sp_exponents = [sp_exponents[0]] * len(run_fingerprint["tokens"])
+                result["sp_exponents"] = np.array(sp_exponents)
             elif urp.name == "pre_exp_scaling":
-                raw_pre_exp_scaling = [float(get_raw_value(val)) for val in urp.value]
-                if len(raw_pre_exp_scaling) != len(run_fingerprint["tokens"]):
-                    raw_pre_exp_scaling = [raw_pre_exp_scaling[0]] * len(run_fingerprint["tokens"])
-                result["raw_pre_exp_scaling"] = np.array(raw_pre_exp_scaling)
+                # Use inverse_squareplus to get sp_pre_exp_scaling param
+                sp_pre_exp_scaling = [float(inverse_squareplus_np(val)) for val in urp.value]
+                if len(sp_pre_exp_scaling) != len(run_fingerprint["tokens"]):
+                    sp_pre_exp_scaling = [sp_pre_exp_scaling[0]] * len(run_fingerprint["tokens"])
+                result["sp_pre_exp_scaling"] = np.array(sp_pre_exp_scaling)
 
         return result
 

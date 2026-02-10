@@ -1,3 +1,34 @@
+"""Forward pass simulation pipeline and financial metric calculation.
+
+This module implements the core simulation loop for AMM pool strategies:
+prices → parameterised weight rule → simulated arbitrage → reserve dynamics → financial metrics.
+
+The forward pass is the innermost computation in the three-level optimization hierarchy:
+forward pass (per-window) → training loop (gradient descent over windows) → hyperparameter
+tuner (meta-optimization over training configs). It is JIT-compiled via JAX and fully
+differentiable, enabling gradient-based optimization of strategy parameters.
+
+Key components:
+
+- ``forward_pass`` / ``forward_pass_nograd``: Entry points that wire pool dynamics to
+  metric calculation. ``forward_pass`` propagates gradients; ``forward_pass_nograd``
+  wraps inputs in ``stop_gradient`` for evaluation.
+- ``_calculate_return_value``: Dispatch registry mapping ~30 metric names to their
+  implementations, from simple returns to risk-adjusted ratios.
+- Metric helpers (``_daily_log_sharpe``, ``_calculate_max_drawdown``, etc.): Pure-JAX
+  implementations of financial metrics, designed for differentiability and JIT compatibility.
+- ``_apply_price_noise``: Multiplicative log-normal noise for data augmentation during training.
+
+Notes
+-----
+All time-series inputs use **minute resolution** (1 timestep = 1 minute). Duration parameters
+in metric helpers (e.g., ``duration=24*60``) are in minutes. Annualization assumes 365
+calendar days.
+
+The default training metric is ``daily_log_sharpe`` (not ``sharpe``). This uses log returns
+sampled at daily frequency, which is more numerically stable and better aligned with
+standard financial practice than minute-frequency arithmetic Sharpe.
+"""
 from jax import config
 
 config.update("jax_enable_x64", True)
@@ -15,6 +46,7 @@ else:
 
 
 import jax.numpy as jnp
+import jax.random
 from jax import jit, vmap, devices
 from jax.lax import stop_gradient, dynamic_slice, associative_scan
 
@@ -27,10 +59,73 @@ np.seterr(all="raise")
 np.seterr(under="print")
 
 
-def _daily_log_sharpe(values: jnp.ndarray) -> jnp.ndarray:
+def _apply_price_noise(prices, sigma, seed_int):
+    """Apply multiplicative log-normal noise to prices.
+
+    Uses exp(sigma * N(0,1)) multiplicative noise, which:
+    - Guarantees positive prices for any sigma
+    - Is symmetric in log-space (matches financial price dynamics)
+    - Has mean exp(sigma^2/2) ≈ 1 for small sigma
+
+    The key is derived deterministically from seed_int (typically
+    start_index[0]) so noise is reproducible per training window
+    but varies across windows.
+
+    Parameters
+    ----------
+    prices : jnp.ndarray
+        Price array of shape (T, n_assets)
+    sigma : float
+        Log-space standard deviation (0 = no noise)
+    seed_int : int or jnp.ndarray
+        Seed for JAX PRNG key
+
+    Returns
+    -------
+    jnp.ndarray
+        Noised prices, always positive (same shape as input)
     """
-    Daily Sharpe on log close-to-close returns.
-    Uses 1 day = 1440 minutes; annualizes with sqrt(365).
+    if sigma == 0.0:
+        return prices
+    key = jax.random.PRNGKey(seed_int)
+    epsilon = jax.random.normal(key, prices.shape)
+    return prices * jnp.exp(sigma * epsilon)
+
+
+def _daily_log_sharpe(values: jnp.ndarray) -> jnp.ndarray:
+    """Annualized Sharpe ratio computed on daily log returns.
+
+    This is the **default training metric** (``return_val='daily_log_sharpe'``).
+    It subsamples the minute-resolution value series at daily intervals (every 1440
+    steps), computes log close-to-close returns, then annualizes via sqrt(365).
+
+    .. math::
+
+        S = \sqrt{365} \cdot \frac{\mu(\log r_t)}{\sigma(\log r_t) + \epsilon}
+
+    where :math:`r_t = V_t / V_{t-1}` are daily value ratios and :math:`\epsilon = 10^{-8}`
+    prevents division by zero.
+
+    Parameters
+    ----------
+    values : jnp.ndarray
+        Pool value time series at minute resolution, shape ``(T,)``.
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar annualized daily log Sharpe ratio.
+
+    Notes
+    -----
+    Using log returns rather than arithmetic returns for the Sharpe calculation is more
+    numerically stable and avoids the volatility-drag bias inherent in arithmetic returns
+    over long horizons. The daily subsampling reduces autocorrelation in returns relative
+    to minute-frequency Sharpe, yielding more reliable gradient signal for training.
+
+    See Also
+    --------
+    _calculate_return_value : Dispatch registry that routes to this function.
     """
     # Sample daily values using stride slice
     daily_values = values[::1440]
@@ -45,7 +140,30 @@ def _daily_log_sharpe(values: jnp.ndarray) -> jnp.ndarray:
     return jnp.sqrt(365.0) * (mean / (std + 1e-8))
 
 def _calculate_max_drawdown(value_over_time, duration=7 * 24 * 60):
-    """Calculate maximum drawdown on a chosen basis."""
+    """Calculate worst maximum drawdown across non-overlapping chunks.
+
+    Splits the value series into chunks of ``duration`` minutes, computes the
+    running maximum drawdown within each chunk using ``associative_scan``, then
+    returns the worst (most negative) drawdown across all chunks.
+
+    Parameters
+    ----------
+    value_over_time : jnp.ndarray
+        Pool value time series at minute resolution, shape ``(T,)``.
+    duration : int, optional
+        Chunk size in minutes. Default is ``7 * 24 * 60`` (1 week).
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar worst maximum drawdown (negative float, e.g., -0.15 for 15% drawdown).
+
+    Notes
+    -----
+    Incomplete final chunks (where ``T`` is not divisible by ``duration``) are
+    silently dropped. The drawdown is computed as ``(V - V_max) / V_max`` so the
+    return value is always non-positive.
+    """
     n_complete_chunks = (len(value_over_time) // duration) * duration
     value_over_time_truncated = value_over_time[:n_complete_chunks]
     values = value_over_time_truncated.reshape(-1, duration)
@@ -56,7 +174,30 @@ def _calculate_max_drawdown(value_over_time, duration=7 * 24 * 60):
 
 
 def _calculate_var(value_over_time, percentile=5.0, duration=24 * 60):
-    """Calculate VaR using intraday returns."""
+    """Calculate Value at Risk using intraday returns within chunks.
+
+    Splits value series into chunks of ``duration`` minutes, computes intraday
+    (minute-to-minute) returns within each chunk, takes the specified percentile
+    of returns per chunk, then averages across chunks.
+
+    Parameters
+    ----------
+    value_over_time : jnp.ndarray
+        Pool value time series at minute resolution, shape ``(T,)``.
+    percentile : float, optional
+        VaR percentile (e.g., 5.0 for 95% VaR). Default is 5.0.
+    duration : int, optional
+        Chunk size in minutes. Default is ``24 * 60`` (1 day).
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar average VaR (negative float for losses).
+
+    See Also
+    --------
+    _calculate_var_trad : VaR using end-of-period returns only.
+    """
     n_complete_chunks = (len(value_over_time) // duration) * duration
     value_over_time_truncated = value_over_time[:n_complete_chunks]
     values = value_over_time_truncated.reshape(-1, duration)
@@ -66,7 +207,30 @@ def _calculate_var(value_over_time, percentile=5.0, duration=24 * 60):
 
 
 def _calculate_var_trad(value_over_time, percentile=5.0, duration=24 * 60):
-    """Calculate traditional VaR using daily returns."""
+    """Calculate traditional VaR using end-of-period returns.
+
+    Unlike ``_calculate_var`` which uses all intraday returns, this computes
+    returns only between end-of-period values (e.g., daily close-to-close),
+    then takes the specified percentile.
+
+    Parameters
+    ----------
+    value_over_time : jnp.ndarray
+        Pool value time series at minute resolution, shape ``(T,)``.
+    percentile : float, optional
+        VaR percentile (e.g., 5.0 for 95% VaR). Default is 5.0.
+    duration : int, optional
+        Period length in minutes. Default is ``24 * 60`` (1 day).
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar VaR (negative float for losses).
+
+    See Also
+    --------
+    _calculate_var : VaR using all intraday returns within each chunk.
+    """
     n_complete_chunks = (len(value_over_time) // duration) * duration
     value_over_time_truncated = value_over_time[:n_complete_chunks]
     value_over_time = value_over_time_truncated.reshape(-1, duration)[:, -1]
@@ -75,6 +239,30 @@ def _calculate_var_trad(value_over_time, percentile=5.0, duration=24 * 60):
 
 
 def _calculate_raroc(value_over_time, percentile=5.0, duration=24 * 60):
+    """Calculate Risk-Adjusted Return on Capital (RAROC).
+
+    RAROC = Annualized Return / Annualized VaR, where VaR uses the intraday
+    method (``_calculate_var``). Both return and VaR are annualized from the
+    sample period.
+
+    Parameters
+    ----------
+    value_over_time : jnp.ndarray
+        Pool value time series at minute resolution, shape ``(T,)``.
+    percentile : float, optional
+        VaR percentile. Default is 5.0.
+    duration : int, optional
+        Chunk size in minutes for VaR calculation. Default is ``24 * 60`` (1 day).
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar RAROC (positive means return exceeds risk).
+
+    See Also
+    --------
+    _calculate_rovar : Return Over VaR (uses per-chunk annualized returns).
+    """
     # Calculate returns
     total_return = value_over_time[-1] / value_over_time[0] - 1.0
 
@@ -99,6 +287,30 @@ def _calculate_raroc(value_over_time, percentile=5.0, duration=24 * 60):
 
 
 def _calculate_rovar(value_over_time, percentile=5.0, duration=24 * 60):
+    """Calculate Return Over VaR using intraday VaR and per-chunk returns.
+
+    Unlike RAROC (which uses total-period return), ROVAR annualizes returns
+    per chunk independently, averages them, then divides by annualized VaR.
+
+    Parameters
+    ----------
+    value_over_time : jnp.ndarray
+        Pool value time series at minute resolution, shape ``(T,)``.
+    percentile : float, optional
+        VaR percentile. Default is 5.0.
+    duration : int, optional
+        Chunk size in minutes. Default is ``24 * 60`` (1 day).
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar ROVAR (positive means return exceeds risk).
+
+    See Also
+    --------
+    _calculate_rovar_trad : Uses end-of-period VaR instead of intraday.
+    _calculate_raroc : Uses total-period return instead of per-chunk average.
+    """
     # Drop any incomplete chunks at the end by truncating to multiple of duration
     n_complete_chunks = (len(value_over_time) // duration) * duration
     value_over_time_truncated = value_over_time[:n_complete_chunks]
@@ -123,6 +335,29 @@ def _calculate_rovar(value_over_time, percentile=5.0, duration=24 * 60):
 
 
 def _calculate_rovar_trad(value_over_time, percentile=5.0, duration=24 * 60):
+    """Calculate Return Over VaR using traditional (end-of-period) VaR.
+
+    Same as ``_calculate_rovar`` but VaR is computed from end-of-period
+    returns rather than all intraday returns within each chunk.
+
+    Parameters
+    ----------
+    value_over_time : jnp.ndarray
+        Pool value time series at minute resolution, shape ``(T,)``.
+    percentile : float, optional
+        VaR percentile. Default is 5.0.
+    duration : int, optional
+        Chunk size in minutes. Default is ``24 * 60`` (1 day).
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar ROVAR (positive means return exceeds risk).
+
+    See Also
+    --------
+    _calculate_rovar : Uses intraday VaR.
+    """
     # Drop any incomplete chunks at the end by truncating to multiple of duration
     n_complete_chunks = (len(value_over_time) // duration) * duration
     value_over_time_truncated = value_over_time[:n_complete_chunks]
@@ -245,9 +480,31 @@ def _calculate_calmar_ratio(value_over_time, duration=None):
 
 
 def _calculate_ulcer_index(value_over_time, duration=7 * 24 * 60):
-    """Calculate Ulcer Index on a chosen basis.
+    """Calculate (negated) Ulcer Index on a chunked basis.
 
-    The Ulcer Index measures downside risk considering both depth and duration of drawdowns.
+    The Ulcer Index measures downside risk considering both depth and duration of
+    drawdowns, defined as the root-mean-square of percentage drawdowns from peak:
+
+    .. math::
+
+        UI = \sqrt{\frac{1}{N} \sum_{t=1}^{N} D_t^2}
+
+    where :math:`D_t = (V_t - V_{\max,t}) / V_{\max,t}`. The series is split into
+    non-overlapping chunks; UI is computed per chunk and averaged. The result is
+    **negated** so that higher (less negative) values indicate lower risk, consistent
+    with the convention that all metrics are maximized during training.
+
+    Parameters
+    ----------
+    value_over_time : jnp.ndarray
+        Pool value time series at minute resolution, shape ``(T,)``.
+    duration : int, optional
+        Chunk size in minutes. Default is ``7 * 24 * 60`` (1 week).
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar negated average Ulcer Index (non-positive).
     """
     n_complete_chunks = (len(value_over_time) // duration) * duration
     value_over_time_truncated = value_over_time[:n_complete_chunks]
@@ -263,7 +520,55 @@ def _calculate_ulcer_index(value_over_time, duration=7 * 24 * 60):
 def _calculate_return_value(
     return_val, reserves, local_prices, value_over_time, initial_reserves=None
 ):
-    """Helper function to calculate different return metrics based on the specified return_val."""
+    """Dispatch registry for all financial metrics computable from a forward pass.
+
+    Maps ``return_val`` string keys to metric implementations. This is the central
+    metric registry — any new metric must be added here to be usable as a training
+    objective or evaluation metric.
+
+    Parameters
+    ----------
+    return_val : str
+        Metric name. Must be one of the keys in the internal ``return_metrics`` dict.
+        **Return metrics:** ``'returns'``, ``'annualised_returns'``,
+        ``'returns_over_hodl'``, ``'annualised_returns_over_hodl'``,
+        ``'returns_over_uniform_hodl'``, ``'annualised_returns_over_uniform_hodl'``.
+        **Risk-adjusted:** ``'sharpe'`` (minute-frequency), ``'daily_sharpe'``
+        (daily arithmetic), ``'daily_log_sharpe'`` (daily log, **default**).
+        **Drawdown:** ``'greatest_draw_down'``, ``'weekly_max_drawdown'``.
+        **VaR:** ``'daily_var_95%'``, ``'daily_var_99%'``, ``'weekly_var_95%'``,
+        ``'weekly_var_99%'`` (intraday), plus ``'_trad'`` variants (end-of-period).
+        **RAROC/ROVAR:** ``'daily_raroc'``, ``'weekly_raroc'``, ``'daily_rovar'``,
+        ``'weekly_rovar'``, ``'monthly_rovar'``, plus ``'_trad'`` variants.
+        **Other:** ``'ulcer'``, ``'sterling'``, ``'calmar'``, ``'value'``,
+        ``'reserves'``, ``'reserves_and_values'``.
+    reserves : jnp.ndarray
+        Reserve array of shape ``(T, n_assets)``.
+    local_prices : jnp.ndarray
+        Price array of shape ``(T, n_assets)``.
+    value_over_time : jnp.ndarray
+        Pool value time series, shape ``(T,)``.
+    initial_reserves : jnp.ndarray, optional
+        Initial reserves for hodl-relative metrics, shape ``(n_assets,)``.
+
+    Returns
+    -------
+    jnp.ndarray or dict
+        Scalar metric value for most metrics. Dict for ``'reserves'`` and
+        ``'reserves_and_values'``.
+
+    Raises
+    ------
+    NotImplementedError
+        If ``return_val`` is not a recognized metric name.
+
+    Notes
+    -----
+    All scalar metrics are designed to be **maximized** during training (higher = better).
+    Metrics that are naturally "lower is better" (e.g., drawdown, VaR) are negated so
+    that maximization works uniformly. The ``jit`` decorator with ``static_argnums=(0,)``
+    means each unique ``return_val`` string triggers a separate compilation.
+    """
 
     if return_val == "reserves":
         return {"reserves": reserves}
@@ -288,14 +593,35 @@ def _calculate_return_value(
         * (daily_returns.mean() / daily_returns.std()),
         "daily_log_sharpe": lambda: _daily_log_sharpe(value_over_time),
         "returns": lambda: value_over_time[-1] / value_over_time[0] - 1.0,
+        "annualised_returns": lambda: (
+            (value_over_time[-1] / value_over_time[0])
+            ** (365 * 24 * 60 / (value_over_time.shape[0] - 1))
+            - 1.0
+        ),
         "returns_over_hodl": lambda: (
             value_over_time[-1]
             / (stop_gradient(initial_reserves) * local_prices[-1]).sum()
             - 1.0
         ),
+        "annualised_returns_over_hodl": lambda: (
+            (
+                value_over_time[-1]
+                / (stop_gradient(initial_reserves) * local_prices[-1]).sum()
+            )
+            ** (365 * 24 * 60 / (value_over_time.shape[0] - 1))
+            - 1.0
+        ),
         "returns_over_uniform_hodl": lambda: (
             value_over_time[-1]
             / (stop_gradient((initial_reserves * local_prices[0]).sum()/(reserves.shape[1]*local_prices[0])) * local_prices[-1]).sum()
+            - 1.0
+        ),
+        "annualised_returns_over_uniform_hodl": lambda: (
+            (
+                value_over_time[-1]
+                / (stop_gradient((initial_reserves * local_prices[0]).sum()/(reserves.shape[1]*local_prices[0])) * local_prices[-1]).sum()
+            )
+            ** (365 * 24 * 60 / (value_over_time.shape[0] - 1))
             - 1.0
         ),
         "greatest_draw_down": lambda: jnp.min(value_over_time - value_over_time[0])
@@ -581,6 +907,11 @@ def forward_pass(
             "reserves": reserves,
         }
     local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
+    price_noise_sigma = static_dict.get("price_noise_sigma", 0.0)
+    if price_noise_sigma > 0.0:
+        local_prices = _apply_price_noise(
+            local_prices, price_noise_sigma, start_index[0].astype(jnp.int32)
+        )
     value_over_time = jnp.sum(jnp.multiply(reserves, local_prices), axis=-1)
     if return_val == "reserves_and_values":
         return_dict = {
@@ -592,9 +923,9 @@ def forward_pass(
             "weights": pool.calculate_weights(
                 params, static_dict, prices, start_index, additional_oracle_input=None
             ),
-            "raw_weight_outputs": pool.calculate_raw_weights_outputs(
+            "rule_outputs": pool.calculate_rule_outputs(
                 params, static_dict, prices, additional_oracle_input=None
-            ) if hasattr(pool, "calculate_raw_weights_outputs") else None,
+            ) if hasattr(pool, "calculate_rule_outputs") else None,
         }
         if hasattr(pool, "calculate_readouts"):
             return_dict.update({
@@ -602,14 +933,32 @@ def forward_pass(
                     params, static_dict, prices, start_index, additional_oracle_input=None
                 )
             })
+        # if static_dict.get("calculate_final_weights", True):
+        #     return_dict.update(
+        #         {
+        #             "final_weights": pool.calculate_final_weights(
+        #                 params,
+        #                 static_dict,
+        #                 prices,
+        #                 start_index,
+        #                 additional_oracle_input=None,
+        #             )
+        #         }
+        #     )
         return return_dict
-    return _calculate_return_value(
+    base_metric = _calculate_return_value(
         return_val,
         reserves,
         local_prices,
         value_over_time,
         initial_reserves=reserves[0],
     )
+    turnover_penalty = static_dict.get("turnover_penalty", 0.0)
+    if turnover_penalty > 0.0:
+        implied_weights = (reserves * local_prices) / value_over_time[:, jnp.newaxis]
+        turnover = jnp.mean(jnp.sum(jnp.abs(jnp.diff(implied_weights, axis=0)), axis=-1))
+        return base_metric - turnover_penalty * turnover
+    return base_metric
 
 
 @partial(jit, static_argnums=(7, 8))

@@ -1,3 +1,32 @@
+"""Coarse-to-fine weight interpolation pipeline.
+
+Coarse weights are computed at chunk boundaries by the update rule (one weight
+vector per ``chunk_period`` minutes), then interpolated to minute resolution
+to produce smooth weight trajectories suitable for the arbitrage simulation.
+
+Key concepts
+------------
+- **maximum_change capping** : per-step weight deltas are uniformly scaled
+  down when any element exceeds ``maximum_change``, preventing large discrete
+  jumps in the weight trajectory.
+- **Straight-through estimators (STE)** : clipping and capping operations zero
+  out gradients for clamped values, which can starve learning.  The STE
+  variants (:func:`ste`, :func:`ste_clip`) let the forward pass apply the hard
+  constraint while the backward pass computes gradients as if the constraint
+  were absent, preserving gradient flow through weight guardrails and
+  maximum-change limits.
+- **Interpolation methods** : ``"linear"`` linearly ramps between successive
+  coarse weights; ``"approx_optimal"`` uses a non-linear schedule that
+  approximates the arbitrage-optimal transition path.
+- **Scan-based sequential computation** : coarse weight trajectories are
+  computed via ``jax.lax.scan`` because each step depends on the *actual*
+  position reached at the previous step (after capping), not the target.
+  This sequential dependency is fundamental and cannot be vectorised away.
+
+The main entry point is :func:`calc_fine_weight_output` (and its pre-bound
+partials ``calc_fine_weight_output_from_weights``, etc.).
+"""
+
 # again, this only works on startup!
 from jax import config
 
@@ -45,77 +74,246 @@ from quantammsim.core_simulator.param_utils import (
     jax_memory_days_to_lamb,
 )
 
+
 def ste(x, y):
+    """Straight-through estimator: forward pass returns ``y``, backward pass
+    computes gradients with respect to ``x``.
+
+    Implemented as ``x + stop_gradient(y - x)``, so the forward value is
+    ``y`` but JAX sees the backward path through ``x`` only.
+
+    Parameters
+    ----------
+    x : jnp.ndarray
+        The "soft" input whose gradients are preserved.
+    y : jnp.ndarray
+        The "hard" output used in the forward pass (e.g. a clipped version
+        of ``x``).
+
+    Returns
+    -------
+    jnp.ndarray
+        Equal to ``y`` in the forward pass, with gradients flowing through
+        ``x`` in the backward pass.
+    """
     # forward: y; backward: identity wrt x
     return x + stop_gradient(y - x)
 
+
 def ste_clip(x, lo, hi):
-    y = jnp.clip(x, lo, hi)
+    """Clip with straight-through gradient estimation.
+
+    Forward pass clips ``x`` to ``[lo, hi]``; backward pass passes gradients
+    through as if no clipping occurred.  This prevents gradient starvation for
+    parameters that are frequently at their bounds (e.g. weight guardrails,
+    lambda caps).
+
+    Parameters
+    ----------
+    x : jnp.ndarray
+        Input array to clip.
+    lo : float or jnp.ndarray
+        Lower bound(s).
+    hi : float or jnp.ndarray
+        Upper bound(s).
+
+    Returns
+    -------
+    jnp.ndarray
+        Clipped values in the forward pass, with gradients of ``x`` in the
+        backward pass.
+    """
+    y = jnp.clip(x, min=lo, max=hi)
     # forward: y; backward: identity wrt x
     return ste(x, y)
 
+
+@partial(jit, static_argnums=(3,))
+def _apply_per_asset_bounds(
+    weights: jnp.ndarray,
+    min_weights: jnp.ndarray,
+    max_weights: jnp.ndarray,
+    use_ste: bool = False,
+) -> jnp.ndarray:
+    """
+    Apply per-asset min/max bounds and redistribute to ensure sum equals 1.
+
+    This is a pre-processing step applied BEFORE the standard guardrails.
+    The result will still go through the uniform minimum_weight guardrails.
+
+    The algorithm:
+    1. Clip weights to per-asset [min, max] bounds
+    2. If total < 1: distribute deficit proportionally to assets with slack (can grow)
+    3. If total > 1: remove surplus proportionally from assets with slack (can shrink)
+    4. Final clip and normalise for numerical safety
+
+    Args:
+        weights: Input weights, shape (n_assets,).
+        min_weights: Minimum weight per asset, shape (n_assets,).
+        max_weights: Maximum weight per asset, shape (n_assets,).
+        use_ste: Use straight-through estimator for clipping.
+
+    Returns:
+        Adjusted weights satisfying bounds and summing to 1.
+    """
+    # Initial clip to bounds
+    if use_ste:
+        clipped = ste_clip(weights, min_weights, max_weights)
+    else:
+        clipped = jnp.clip(weights, min=min_weights, max=max_weights)
+
+    total = jnp.sum(clipped)
+
+    # Calculate slack in each direction
+    slack_up = max_weights - clipped  # how much each asset can grow
+    slack_down = clipped - min_weights  # how much each asset can shrink
+
+    total_slack_up = jnp.sum(slack_up)
+    total_slack_down = jnp.sum(slack_down)
+
+    deficit = 1.0 - total  # positive if we need to add weight
+    surplus = total - 1.0  # positive if we need to remove weight
+
+    # Redistribute: add to those with room to grow, or remove from those with room to shrink
+    adjustment = jnp.where(
+        total < 1.0,
+        deficit * slack_up / (total_slack_up + 1e-10),
+        jnp.where(total > 1.0, -surplus * slack_down / (total_slack_down + 1e-10), 0.0),
+    )
+
+    weights_adjusted = clipped + adjustment
+
+    # Final clip for numerical safety
+    if use_ste:
+        weights_final = ste_clip(weights_adjusted, min_weights, max_weights)
+    else:
+        weights_final = jnp.clip(weights_adjusted, min=min_weights, max=max_weights)
+
+    # Final normalisation (should be very close to 1 already)
+    weights_final = weights_final / jnp.sum(weights_final)
+
+    return weights_final
+
+
 def scale_diff(diff, maximum_change):
+    """Uniformly scale a weight-delta vector so no element exceeds ``maximum_change``.
+
+    If the largest absolute element of ``diff`` already satisfies the
+    constraint, the input is returned unchanged.  Otherwise, all elements
+    are multiplied by ``maximum_change / max(|diff|)`` so that the *direction*
+    of the weight change is preserved but its *magnitude* is capped.
+
+    Parameters
+    ----------
+    diff : jnp.ndarray, shape (n_assets,)
+        Per-asset weight increment for a single interpolation step.
+    maximum_change : float
+        Maximum allowed absolute value for any single element.
+
+    Returns
+    -------
+    jnp.ndarray, shape (n_assets,)
+        Scaled weight increment with ``max(|result|) <= maximum_change``.
+    """
     max_val = jnp.max(jnp.abs(diff))
     scale = maximum_change / (max_val + 1e-10)
     needs_scale = max_val > maximum_change
     scaled = jnp.where(needs_scale, diff * scale, diff)
     return scaled
 
+
 @partial(
     jit,
-    static_argnums=(4,5,6,7,8,9,10),
+    static_argnums=(6, 7, 8, 9, 10, 11, 12, 13),
 )
 def _jax_calc_coarse_weights(
-    raw_weight_outputs,
+    rule_outputs,
     initial_weights,
     minimum_weight,
     update_rule_parameter_dict,
+    min_weights_per_asset,
+    max_weights_per_asset,
     max_memory_days,
     chunk_period,
     weight_interpolation_period,
     maximum_change,
-    raw_weight_outputs_are_themselves_weights=False,
+    rule_outputs_are_weights=False,
     ste_max_change=False,
     ste_min_max_weight=False,
+    use_per_asset_bounds=False,
 ):
-    r"""calc weights from raw weight outputs, and make sure they fall inside
-    guard-rails --- sum to 1, are larger than minimum value
+    r"""Compute coarse weight trajectory from update-rule outputs via ``jax.lax.scan``.
+
+    Processes a sequence of rule outputs into guardrailed, normalised coarse
+    weight vectors.  Each step depends on the *actual* position reached at
+    the previous step (which may undershoot the target due to
+    ``maximum_change`` capping), making this computation inherently sequential.
+
+    The pipeline at each step:
+
+    1. **Blend / accumulate** : if ``rule_outputs_are_weights``, EMA-blend the
+       rule output with the previous position using ``alt_lamb``; otherwise,
+       add the rule output (an additive delta) to the previous position.
+    2. **Normalise** : project onto the simplex (divide by sum).
+    3. **Per-asset bounds** (optional): clip to ``[min_weights_per_asset,
+       max_weights_per_asset]`` and redistribute to maintain sum = 1.
+    4. **Uniform guardrails** : clip to ``[minimum_weight, 1 - (n-1)*minimum_weight]``
+       and redistribute excess to unclamped assets.
+    5. **maximum_change capping** : scale the per-step delta so no element
+       exceeds ``maximum_change``, preserving direction.
+
+    Parameters
     ----------
-    raw_weight_outputs : np.ndarray, float64
-        A 2-dimenisional numpy array
-    initial_weights: np.ndarray, float64
-        A 1-dimenisional numpy array
-    minimum_weight : float64
-        The minimum value (between 0 and 1/n_cols)
+    rule_outputs : jnp.ndarray, shape (T_coarse, n_assets)
+        Raw outputs from the update rule — either target weight vectors
+        (when ``rule_outputs_are_weights=True``) or additive deltas.
+    initial_weights : jnp.ndarray, shape (n_assets,)
+        Starting weight allocation.
+    minimum_weight : float
+        Per-asset floor (typically ``0.1 / n_assets``).
     update_rule_parameter_dict : dict
-        The update rule parameters
-    max_memory_days : float64
-        The maximum memory days
-    chunk_period : float64
-        The chunk period
-    weight_interpolation_period : float64
-        The weight interpolation period
-    maximum_change : float64
-        The maximum change
-    raw_weight_outputs_are_themselves_weights : bool
-        Whether the raw weight outputs are themselves weights
+        Learnable parameters including ``logit_lamb`` or ``memory_days_2``
+        for EMA blending (only used when ``rule_outputs_are_weights=True``).
+    min_weights_per_asset : jnp.ndarray, shape (n_assets,)
+        Per-asset lower bounds (used only when ``use_per_asset_bounds=True``).
+    max_weights_per_asset : jnp.ndarray, shape (n_assets,)
+        Per-asset upper bounds (used only when ``use_per_asset_bounds=True``).
+    max_memory_days : float
+        Upper cap on the EMA memory parameter in days.
+    chunk_period : int
+        Number of fine time-steps (minutes) per coarse interval.
+    weight_interpolation_period : int
+        Number of fine time-steps within the interpolation window.
+    maximum_change : float
+        Maximum absolute per-element weight change per interpolation step.
+    rule_outputs_are_weights : bool
+        If True, ``rule_outputs`` are target weight vectors blended via EMA.
+        If False, they are additive deltas applied to the previous weights.
     ste_max_change : bool
-        Whether to use ste max change
+        Use STE for the ``maximum_change`` capping operation.
     ste_min_max_weight : bool
-        Whether to use ste min max weight
+        Use STE for the min/max weight clipping operations.
+    use_per_asset_bounds : bool
+        Apply per-asset bounds from ``min_weights_per_asset`` /
+        ``max_weights_per_asset`` before the uniform guardrails.
 
     Returns
     -------
-    np.ndarray
-        The weight array, same length / shape as ``raw_weight_outputs``
-
+    actual_starts : jnp.ndarray, shape (T_coarse, n_assets)
+        The actual weight position at the *start* of each coarse interval
+        (i.e. the position reached after capping at the previous step).
+    scaled_diffs : jnp.ndarray, shape (T_coarse, n_assets)
+        The (possibly capped) per-interpolation-step weight increment for
+        each coarse interval.
+    target_weights : jnp.ndarray, shape (T_coarse, n_assets)
+        The guardrailed target weights before ``maximum_change`` capping.
     """
-    n = raw_weight_outputs.shape[0] + 1
-    n_assets = raw_weight_outputs.shape[1]
+    n = rule_outputs.shape[0] + 1
+    n_assets = rule_outputs.shape[1]
     asset_arange = jnp.arange(n_assets)
 
     cap_lamb = True
-    if raw_weight_outputs_are_themselves_weights:
+    if rule_outputs_are_weights:
         # Determine which parameterization is being used
         # allow for direct memory_days parameterization
         if "memory_days_2" in update_rule_parameter_dict:
@@ -129,7 +327,7 @@ def _jax_calc_coarse_weights(
             max_lamb = memory_days_to_lamb(max_memory_days, chunk_period)
             capped_alt_lamb = ste_clip(alt_lamb, lo=0.0, hi=max_lamb)
             alt_lamb = capped_alt_lamb
-        # initial_weights = raw_weight_outputs[0]
+        # initial_weights = rule_outputs[0]
     else:
         alt_lamb = None
 
@@ -141,68 +339,102 @@ def _jax_calc_coarse_weights(
         alt_lamb=alt_lamb,
         interpol_num=weight_interpolation_period + 1,
         maximum_change=maximum_change,
-        raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
+        rule_outputs_are_weights=rule_outputs_are_weights,
         ste_max_change=ste_max_change,
         ste_min_max_weight=ste_min_max_weight,
+        max_weights_per_asset=max_weights_per_asset,
+        min_weights_per_asset=min_weights_per_asset,
+        use_per_asset_bounds=use_per_asset_bounds,
     )
 
-    if raw_weight_outputs_are_themselves_weights:
+    if rule_outputs_are_weights:
         # Apply guardrails to initial weights
-        initial_carry = [raw_weight_outputs[0]]
-        guardrailed_init, (actual_starts_init, scaled_diffs_init, target_weights_init) = (
-            _jax_calc_coarse_weight_scan_function(
-                initial_carry,
-                raw_weight_outputs[0],
-                minimum_weight=minimum_weight,
-                asset_arange=asset_arange,
-                n_assets=n_assets,
-                alt_lamb=alt_lamb,
-                interpol_num=2,  # interpol_num = 2 for immediate weight change
-                maximum_change=maximum_change,
-                raw_weight_outputs_are_themselves_weights=raw_weight_outputs_are_themselves_weights,
-                ste_max_change=ste_max_change,
-                ste_min_max_weight=ste_min_max_weight,
-            )
+        initial_carry = [rule_outputs[0]]
+        guardrailed_init, (
+            actual_starts_init,
+            scaled_diffs_init,
+            target_weights_init,
+        ) = _jax_calc_coarse_weight_scan_function(
+            initial_carry,
+            rule_outputs[0],
+            minimum_weight=minimum_weight,
+            asset_arange=asset_arange,
+            n_assets=n_assets,
+            alt_lamb=alt_lamb,
+            interpol_num=2,  # interpol_num = 2 for immediate weight change
+            maximum_change=maximum_change,
+            rule_outputs_are_weights=rule_outputs_are_weights,
+            ste_max_change=ste_max_change,
+            ste_min_max_weight=ste_min_max_weight,
+            max_weights_per_asset=max_weights_per_asset,
+            min_weights_per_asset=min_weights_per_asset,
+            use_per_asset_bounds=use_per_asset_bounds,
         )
         carry_list_init = [target_weights_init]
     else:
         carry_list_init = [initial_weights]
 
-    _, (actual_starts, scaled_diffs, target_weights) = scan(scan_fn, carry_list_init, raw_weight_outputs)
+    _, (actual_starts, scaled_diffs, target_weights) = scan(
+        scan_fn, carry_list_init, rule_outputs
+    )
     return actual_starts, scaled_diffs, target_weights
 
 
-@partial(jit, static_argnums=(2, 4))
+@partial(jit, static_argnums=(2, 4, 5))
 def calc_fine_weight_output(
-    raw_weight_outputs,
+    rule_outputs,
     initial_weights,
     run_fingerprint,
     params,
-    raw_weight_outputs_are_themselves_weights,
+    rule_outputs_are_weights,
+    use_per_asset_bounds=False,
 ):
-    """
-    Calculate fine weight outputs based on raw weight outputs and various parameters.
+    """Main entry point for the coarse-to-fine weight pipeline.
 
-    This function performs the following steps:
-    1. Determines if the calculation is for minimum variance or volatility targeting.
-    2. Calculates coarse weights using the raw weight outputs.
-    3. Computes actual starts and scaled differences for fine weight interpolation.
-    4. Transfers data between CPU and GPU devices.
-    5. Calculates fine weights using either linear or non-linear interpolation.
+    Orchestrates the full pipeline from update-rule outputs to minute-resolution
+    weight trajectories:
 
-    Args:
-        raw_weight_outputs (jnp.ndarray): Raw weight outputs from previous calculations.
-        initial_weights (jnp.ndarray): Initial weights for the assets.
-        run_fingerprint (dict): The settings for this run.
-        params (dict): Dictionary containing parameters for the update rule.
-        raw_weight_outputs_are_themselves_weights (bool): Whether the raw weight outputs are weights or weight changes.
+    1. Compute coarse weights via :func:`_jax_calc_coarse_weights` (sequential
+       scan on CPU with guardrails, normalisation, and ``maximum_change``
+       capping).
+    2. Transfer ``actual_starts`` and ``scaled_diffs`` to GPU.
+    3. Interpolate each coarse interval to minute resolution via
+       :func:`_jax_fine_weights_from_actual_starts_and_diffs` (vectorised
+       over intervals on GPU).
 
-    Returns:
-        jnp.ndarray: Fine weights calculated based on the input parameters and chosen method.
+    When ``rule_outputs_are_weights=False`` (additive-delta mode), the first
+    ``chunk_period`` minutes are prepended with ``initial_weights`` because
+    there is no prior coarse step to interpolate from.
 
-    Note:
-        This function uses JAX for GPU acceleration and supports both linear and non-linear
-        interpolation methods for fine weight calculation.
+    Parameters
+    ----------
+    rule_outputs : jnp.ndarray, shape (T_coarse, n_assets)
+        Raw outputs from the update rule (target weights or additive deltas).
+    initial_weights : jnp.ndarray, shape (n_assets,)
+        Starting weight allocation.
+    run_fingerprint : dict
+        Run configuration. Required keys: ``weight_interpolation_period``,
+        ``chunk_period``, ``maximum_change``, ``weight_interpolation_method``,
+        ``n_assets``, ``ste_max_change``, ``ste_min_max_weight``,
+        ``max_memory_days``.  Optional: ``minimum_weight`` (defaults to
+        ``0.1 / n_assets``).
+    params : dict
+        Learnable parameters for the update rule (passed through to
+        :func:`_jax_calc_coarse_weights` as ``update_rule_parameter_dict``).
+    rule_outputs_are_weights : bool
+        If True, ``rule_outputs`` are target weight vectors blended via EMA.
+        If False, they are additive deltas.
+    use_per_asset_bounds : bool
+        If True, read ``min_weights_per_asset`` and ``max_weights_per_asset``
+        from ``params`` and enforce them.
+
+    Returns
+    -------
+    jnp.ndarray, shape (T_fine, n_assets)
+        Minute-resolution weight trajectory.  ``T_fine`` equals
+        ``T_coarse * chunk_period`` when ``rule_outputs_are_weights=True``,
+        or ``(T_coarse + 1) * chunk_period`` otherwise (due to the prepended
+        initial-weight block).
     """
 
     weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
@@ -216,18 +448,30 @@ def calc_fine_weight_output(
     if minimum_weight == None:
         minimum_weight = 0.1 / n_assets
 
+    # Get per-asset bounds from params (only used if use_per_asset_bounds=True)
+    if use_per_asset_bounds:
+        min_weights_per_asset = params["min_weights_per_asset"]
+        max_weights_per_asset = params["max_weights_per_asset"]
+    else:
+        # Dummy values - won't be used since use_per_asset_bounds=False
+        min_weights_per_asset = jnp.zeros(n_assets)
+        max_weights_per_asset = jnp.ones(n_assets)
+
     actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
-        raw_weight_outputs,
+        rule_outputs,
         initial_weights,
         minimum_weight,
         params,
+        min_weights_per_asset,
+        max_weights_per_asset,
         run_fingerprint["max_memory_days"],
         chunk_period,
         weight_interpolation_period,
         maximum_change,
-        raw_weight_outputs_are_themselves_weights,
+        rule_outputs_are_weights,
         ste_max_change,
         ste_min_max_weight,
+        use_per_asset_bounds,
     )
 
     scaled_diffs_gpu = device_put(scaled_diffs_cpu, GPU_DEVICE)
@@ -242,7 +486,7 @@ def calc_fine_weight_output(
         maximum_change=maximum_change,
         method=weight_interpolation_method,
     )
-    if raw_weight_outputs_are_themselves_weights:
+    if rule_outputs_are_weights:
         return weights
     else:
         return jnp.vstack(
@@ -254,11 +498,37 @@ def calc_fine_weight_output(
 
 
 calc_fine_weight_output_from_weight_changes = jit(
-    Partial(calc_fine_weight_output, raw_weight_outputs_are_themselves_weights=False),
+    Partial(
+        calc_fine_weight_output,
+        rule_outputs_are_weights=False,
+        use_per_asset_bounds=False,
+    ),
     static_argnums=(2,),
 )
 calc_fine_weight_output_from_weights = jit(
-    Partial(calc_fine_weight_output, raw_weight_outputs_are_themselves_weights=True),
+    Partial(
+        calc_fine_weight_output,
+        rule_outputs_are_weights=True,
+        use_per_asset_bounds=False,
+    ),
+    static_argnums=(2,),
+)
+
+# Bounded versions with per-asset bounds enabled
+calc_fine_weight_output_bounded_from_weight_changes = jit(
+    Partial(
+        calc_fine_weight_output,
+        rule_outputs_are_weights=False,
+        use_per_asset_bounds=True,
+    ),
+    static_argnums=(2,),
+)
+calc_fine_weight_output_bounded_from_weights = jit(
+    Partial(
+        calc_fine_weight_output,
+        rule_outputs_are_weights=True,
+        use_per_asset_bounds=True,
+    ),
     static_argnums=(2,),
 )
 
@@ -276,21 +546,42 @@ def _jax_fine_weights_from_actual_starts_and_diffs(
     maximum_change,
     method="linear",
 ):
-    r"""calc fine weights from coarse weight changes
+    r"""Vectorised interpolation from pre-computed starts and diffs.
+
+    Takes the ``actual_starts`` and ``scaled_diffs`` arrays produced by the
+    coarse weight scan and interpolates each coarse interval to minute
+    resolution using the chosen interpolation method.  The interpolation of
+    each interval is independent, so this function ``vmap``\s over the
+    time-step axis for GPU-friendly parallelism.
+
+    Parameters
     ----------
-    coarse_weights : jnp.ndarray, float64
-        A 2-dimenisional jax numpy array
-    interpol_num : float64
-        How many timesteps to interpolate over
-    num : float64
-        How many timesteps to map one coarse interval to
-    maximum_change : float64
-        maximum scalar change in w, for step sizes
+    actual_starts : jnp.ndarray, shape (T_coarse, n_assets)
+        Starting weight position for each coarse interval (output of the
+        coarse weight scan).
+    scaled_diffs : jnp.ndarray, shape (T_coarse, n_assets)
+        Per-interpolation-step weight increment for each interval (already
+        capped by ``maximum_change``).
+    intial_weights : jnp.ndarray, shape (n_assets,)
+        Initial weight vector (used only to infer ``n_assets``).
+    interpol_num : int
+        Number of interpolation points within the active transition window
+        (``weight_interpolation_period + 1``).
+    num : int
+        Total number of fine time-steps per coarse interval
+        (``chunk_period + 1``).
+    maximum_change : float
+        Maximum per-element weight change per step (carried through for
+        the interpolation functions, though already enforced upstream).
+    method : {``"linear"``, ``"approx_optimal"``}
+        Interpolation scheme.  ``"linear"`` ramps linearly between start
+        and end weights; ``"approx_optimal"`` uses a non-linear schedule
+        approximating the arbitrage-optimal transition path.
+
     Returns
     -------
-    jnp.ndarray
-        The weight array, same length / shape as ``raw_weight_changes``
-
+    jnp.ndarray, shape (T_coarse * (num - 1), n_assets)
+        Concatenated fine weight trajectory across all coarse intervals.
     """
     initial_weights = intial_weights
     # initial_i = 0
@@ -338,24 +629,41 @@ def _jax_fine_weights_from_actual_starts_and_diffs(
 def _jax_fine_weights_end_from_coarse_weights(
     coarse_weights, interpol_num, num, maximum_change, ste_max_change
 ):
-    r"""calc fine weights from coarse weight changes
+    r"""Scan-based computation of interpolation endpoints from coarse weights.
+
+    Processes a sequence of coarse target weights sequentially via
+    ``jax.lax.scan``, applying ``maximum_change`` constraints at each step.
+    Because each step's starting position depends on the *actual* position
+    reached at the previous step (which may undershoot the target due to
+    capping), this computation is inherently sequential.
+
+    The outputs (``actual_starts``, ``scaled_diffs``) fully parameterise the
+    piecewise-linear (or piecewise-nonlinear) fine weight trajectory and can
+    be passed to :func:`_jax_fine_weights_from_actual_starts_and_diffs` for
+    vectorised interpolation.
+
+    Parameters
     ----------
-    coarse_weights : jnp.ndarray, float64
-        A 2-dimenisional jax numpy array
-    interpol_num : float64
-        How many timesteps to interpolate over
-    num : float64
-        How many timesteps to map one coarse interval to
-    maximum_change : float64
-        maximum scalar change in w, for step sizes
+    coarse_weights : jnp.ndarray, shape (T_coarse, n_assets)
+        Target weight vectors at each coarse time-step (already guardrailed).
+    interpol_num : int
+        Number of interpolation points within the active transition window.
+    num : int
+        Total number of fine time-steps per coarse interval.
+    maximum_change : float
+        Maximum absolute per-element weight change per interpolation step.
     ste_max_change : bool
-        Whether to use ste max change
+        If True, use the straight-through estimator for the
+        ``maximum_change`` capping so that gradients flow through as if
+        the capping were absent.
 
     Returns
     -------
-    jnp.ndarray
-        The weight array, same length / shape as ``raw_weight_changes``
-
+    actual_starts : jnp.ndarray, shape (T_coarse, n_assets)
+        The actual weight position at the start of each coarse interval.
+    scaled_diffs : jnp.ndarray, shape (T_coarse, n_assets)
+        The (possibly capped) per-interpolation-step weight increment for
+        each interval.
     """
     initial_weights = coarse_weights[0]
     # initial_i = 0
@@ -389,7 +697,7 @@ def _jax_fine_weights_end_from_coarse_weights(
 
 @partial(
     jit,
-    static_argnums=(2,3,5,6,7,8,9),
+    static_argnums=(2, 3, 5, 6, 7, 8, 9),
 )
 def _jax_calc_fine_weight_ends_only_scan_function(
     carry_list,
@@ -453,20 +761,23 @@ def _jax_calc_fine_weight_ends_only_scan_function(
 
 @partial(
     jit,
-    static_argnums=(6,7,8,9,10),
+    static_argnums=(6, 7, 8, 9, 10, 13),
 )
 def _jax_calc_coarse_weight_scan_function(
     carry_list,
-    raw_weight_outputs,
+    rule_outputs,
     minimum_weight,
     asset_arange,
     n_assets,
     alt_lamb,
     interpol_num,
     maximum_change,
-    raw_weight_outputs_are_themselves_weights,
-    ste_max_change,
-    ste_min_max_weight,
+    rule_outputs_are_weights=False,
+    ste_max_change=False,
+    ste_min_max_weight=False,
+    max_weights_per_asset=None,
+    min_weights_per_asset=None,
+    use_per_asset_bounds=False,
 ):
     """
     Calculate the coarse weights for the AMM simulator.
@@ -478,7 +789,14 @@ def _jax_calc_coarse_weight_scan_function(
         asset_arange (ndarray): Array of asset indices.
         n_assets (int): Number of assets.
         alt_lamb (float): Alternative lambda value.
-        raw_weight_outputs_are_themselves_weights (bool): Whether raw weight outputs represent target weights (True) or weight changes (False).
+        interpol_num (int): Number of interpolation steps.
+        maximum_change (float): Maximum allowed weight change.
+        rule_outputs_are_weights (bool, optional): Whether raw weight outputs represent target weights (True) or weight changes (False). Defaults to False.
+        ste_max_change (bool, optional): Use straight-through estimator for max change. Defaults to False.
+        ste_min_max_weight (bool, optional): Use straight-through estimator for min/max weight. Defaults to False.
+        max_weights_per_asset (ndarray, optional): Per-asset maximum weights (applied before uniform guardrails). Defaults to None.
+        min_weights_per_asset (ndarray, optional): Per-asset minimum weights (applied before uniform guardrails). Defaults to None.
+        use_per_asset_bounds (bool, optional): Whether to apply per-asset bounds (static flag). Defaults to False.
 
     Returns:
         list: List containing the final weights.
@@ -500,15 +818,27 @@ def _jax_calc_coarse_weight_scan_function(
     ## it is at the (i-1)th moment in time we calculate the
     ## weights we WISH to have at the ith moment, using
     ## all information available at the (i-1)th moment
-    if raw_weight_outputs_are_themselves_weights:
-        raw_weights = alt_lamb * prev_actual_position + (1 - alt_lamb) * raw_weight_outputs
+    if rule_outputs_are_weights:
+        raw_weights = (
+            alt_lamb * prev_actual_position + (1 - alt_lamb) * rule_outputs
+        )
     else:
-        raw_weights = prev_actual_position + raw_weight_outputs
+        raw_weights = prev_actual_position + rule_outputs
     ## calc normed weights
     # if i > 5685:
     #     print(i, 'raw w', raw_weights)
     normed_weight_update = raw_weights / jnp.sum(raw_weights)
 
+    # Apply per-asset bounds if enabled (BEFORE uniform guardrails)
+    if use_per_asset_bounds:
+        normed_weight_update = _apply_per_asset_bounds(
+            normed_weight_update,
+            min_weights_per_asset,
+            max_weights_per_asset,
+            ste_min_max_weight,
+        )
+
+    # Uniform guardrails (applied AFTER per-asset bounds)
     maximum_weight = 1.0 - (n_assets - 1) * minimum_weight
     ## check values are all above minimum weight
     ## if any values are too small
@@ -517,9 +847,13 @@ def _jax_calc_coarse_weight_scan_function(
     idy = normed_weight_update > maximum_weight
 
     if ste_min_max_weight:
-        normed_weight_update = ste_clip(normed_weight_update, minimum_weight, maximum_weight)
+        normed_weight_update = ste_clip(
+            normed_weight_update, minimum_weight, maximum_weight
+        )
     else:
-        normed_weight_update = jnp.clip(normed_weight_update, minimum_weight, maximum_weight)
+        normed_weight_update = jnp.clip(
+            normed_weight_update, min=minimum_weight, max=maximum_weight
+        )
 
     # calculate 'left over' weight, 1 - n * epsilon
     remaining_weight = 1 - n_less_than_min * minimum_weight

@@ -22,6 +22,7 @@ Constant Weight Pools
 
    BalancerPool
    CowPool
+   HODLPool
 
 QuantAMM Dynamic Weight Pools
 -----------------------------
@@ -34,8 +35,19 @@ QuantAMM Dynamic Weight Pools
    AntiMomentumPool
    PowerChannelPool
    MeanReversionChannelPool
+   TripleThreatMeanReversionChannelPool
    MinVariancePool
    DifferenceMomentumPool
+
+Index Pools
+-----------
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+
+   HodlingIndexPool
+   TradHodlingIndexPool
 
 Concentrated Pools
 ------------------
@@ -54,3 +66,4 @@ Helper Functions
    :nosignatures:
 
    creator.create_pool
+   creator.create_hooked_pool_instance

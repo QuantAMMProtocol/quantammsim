@@ -1,3 +1,11 @@
+"""On-chain HODLing index pool for QuantAMM.
+
+Extends :class:`IndexMarketCapPool` with a HODLing regime: reserves are only
+rebalanced via on-chain G3M arbitrage during a short interpolation window at
+the start of each chunk period, and frozen (HODLed) otherwise. This models
+the behaviour of an AMM-based index product that limits rebalancing frequency
+to reduce impermanent loss.
+"""
 # again, this only works on startup!
 from jax import config
 
@@ -49,7 +57,7 @@ from quantammsim import data
 
 from pathlib import Path
 
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_weights
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weights,
 )
@@ -404,8 +412,31 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
 
 class HodlingIndexPool(IndexMarketCapPool):
     """
-    A variant of IndexMarketCapPool that HODLs between index updates.
-    Calculates market cap weights at specified intervals, then HODLs reserves until next update.
+    Market-cap index pool that HODLs reserves between weight updates.
+
+    Unlike the base ``IndexMarketCapPool``, which allows continuous
+    arbitrage-driven rebalancing at every timestep, this variant only
+    permits trades during a ``weight_interpolation_period`` window at the
+    start of each ``chunk_period``. Outside that window the pool's
+    reserves are frozen (HODLed), so the portfolio drifts with market
+    prices rather than being continuously rebalanced.
+
+    Reserve calculations use the on-chain QuantAMM arbitrage mechanics
+    (optimal-trade sifter with swap fees), matching what would happen
+    on an actual G3M AMM deployment. The ``do_trades`` mask passed to
+    the reserve calculator encodes which timesteps fall inside the
+    active rebalancing window.
+
+    Inherits weight calculation logic (market-cap weighting) from
+    ``IndexMarketCapPool`` and overrides ``calculate_reserves_with_fees``
+    and ``calculate_reserves_zero_fees`` to implement the HODLing
+    behaviour.
+
+    See Also
+    --------
+    IndexMarketCapPool : Continuously-rebalanced base class.
+    TradHodlingIndexPool : Off-chain (CEX) variant with realistic
+        trading costs instead of on-chain AMM mechanics.
     """
 
     @partial(jit, static_argnums=(2))

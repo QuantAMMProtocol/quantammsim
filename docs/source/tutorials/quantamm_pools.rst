@@ -46,7 +46,7 @@ The exact mapping between :math:`\lambda` and the memory length varies from esti
 For a pool in the QuantAMM protocol (and in the hosted frontend for the simulator at `app.quantamm.fi <https://app.quantamm.fi>`_) :math:`\lambda` can be set per-asset or the pool creator can choose a single "universal" value.
 Here in the backend, :math:`\lambda` is always per-asset, though of course it can contain repeated values giving it identical behaviour to a "universal" setting.
 
-The estimators implement the same mathematics that is described in `the fronend simulator documentation <https://app.quantamm.fi/documentation>`_ (see pages "Estimating Gradients" and "Estimating Covariances").
+The estimators implement the same mathematics that is described in `the frontend simulator documentation <https://app.quantamm.fi/documentation>`_ (see pages "Estimating Gradients" and "Estimating Covariances").
 They are written in JAX code that is optimized for performance.
 So for running on CPU they run using loops and their implementation is straightforward, clearly matching line-for-line the mathematics.
 For GPU acceleration, however, we perform different-looking but actually-equivalent calculations using convolution operations, thus avoiding having to run loops on the GPU.
@@ -287,3 +287,47 @@ Two memory lenghts, analogous to Difference Momentum Pool.
 * Uses JAX-accelerated variance calculations
 
 For implementation, see :class:`quantammsim.pools.MinVariancePool`.
+
+
+Triple Threat Mean Reversion Channel Pool
+""""""""""""""""""""""""""""""""""""""""""
+
+Extends the Mean Reversion Channel Pool with three signal components:
+
+1. **Channel mean reversion**: The standard MRC response to price changes
+   within/outside the channel
+2. **Trend following**: A direct momentum component for sustained moves
+3. **Interaction term**: A cross-term between channel and trend signals that
+   captures non-linear regime transitions
+
+The three components are combined as a weighted sum, with the weighting
+controlled by trainable parameters.  This gives the optimiser more degrees
+of freedom to capture complex market dynamics at the cost of additional
+parameters and overfitting risk.
+
+For implementation, see :class:`quantammsim.pools.TripleThreatMeanReversionChannelPool`.
+
+
+HODLing Index Pool
+""""""""""""""""""
+
+Implements a HODLing-style index that tracks a basket of assets with periodic
+weight rebalancing.  Uses on-chain reserve mechanics: weight changes are
+realised via simulated trades against the pool's reserves, incurring
+slippage and fees.
+
+This pool is designed for index-fund-style products where the goal is to
+track a target allocation rather than actively trade.
+
+For implementation, see :class:`quantammsim.pools.HodlingIndexPool`.
+
+
+Traditional HODLing Index Pool
+""""""""""""""""""""""""""""""
+
+A variant of the HODLing Index Pool that uses a traditional (off-chain,
+CEX-style) trading model instead of AMM-based reserve mechanics.  Weight
+rebalancing incurs proportional trading costs rather than AMM slippage,
+making it suitable for modelling traditional portfolio rebalancing.
+
+For implementation, see :class:`quantammsim.pools.TradHodlingIndexPool`.

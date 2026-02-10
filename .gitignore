@@ -33,6 +33,10 @@ Thumbs.db
 *.msgpack
 *.html
 
+# Exception: allow test data files (tracked via Git LFS)
+!tests/data/*.parquet
+!tests/data/*.csv
+
 # ignore compiled files
 *.com
 *.class
@@ -156,3 +160,4 @@ target/
 # IPython
 profile_default/
 ipython_config.py
+docs/source/api/core/generated/

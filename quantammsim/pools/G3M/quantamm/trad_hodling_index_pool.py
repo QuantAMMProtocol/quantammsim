@@ -1,3 +1,11 @@
+"""Traditional (off-chain) HODLing index pool for QuantAMM.
+
+Extends :class:`IndexMarketCapPool` with periodic rebalancing and realistic
+centralised-exchange (CEX) execution costs: proportional trading fees
+(``cex_tau``), bid-ask spread, and an annual streaming/management fee. Reserves
+are HODLed between rebalancing windows, modelling a traditional index fund that
+incurs real-world trading frictions on each rebalance.
+"""
 # again, this only works on startup!
 from jax import config
 
@@ -41,7 +49,7 @@ from importlib import resources as impresources
 from quantammsim import data
 from pathlib import Path
 from copy import deepcopy
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_weights
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weights,
 )
@@ -437,8 +445,36 @@ def _jax_calc_lvr_reserve_change(initial_reserves, weights, prices, do_trade, ga
 
 class TradHodlingIndexPool(IndexMarketCapPool):
     """
-    A variant of IndexMarketCapPool that HODLs between index updates.
-    Calculates market cap weights at specified intervals, then HODLs reserves until next update.
+    Market-cap index pool simulating traditional (off-chain) rebalancing.
+
+    Like ``HodlingIndexPool``, this variant only rebalances during the
+    ``weight_interpolation_period`` window at the start of each
+    ``chunk_period`` and HODLs reserves otherwise. The key difference is
+    that reserve updates model **centralised-exchange (CEX) execution
+    costs** rather than on-chain AMM swap mechanics:
+
+    - **CEX fees** (``cex_tau``): flat proportional fee on sold tokens.
+    - **Bid-ask spread** (``cex_spread``): per-asset half-spread cost.
+    - **Market impact** (Grinold-alpha model, currently commented out):
+      square-root impact scaled by volatility and volume.
+
+    An ``annual_streaming_fee`` (default 4 %) is also compounded into
+    a per-step multiplicative fee applied to reserves at each active
+    trading step, modelling the management fee charged by traditional
+    index products.
+
+    This pool loads auxiliary market-microstructure data (volatility,
+    volume, spread) via ``get_data_dict`` at reserve-calculation time,
+    so it requires the full historic data pipeline to be available.
+
+    Inherits weight calculation logic (market-cap weighting) from
+    ``IndexMarketCapPool`` and overrides ``calculate_reserves_with_fees``
+    and ``calculate_reserves_zero_fees``.
+
+    See Also
+    --------
+    HodlingIndexPool : On-chain AMM variant (uses G3M swap-fee mechanics).
+    IndexMarketCapPool : Continuously-rebalanced base class.
     """
 
     @partial(jit, static_argnums=(2))

@@ -1,3 +1,30 @@
+"""Backpropagation pipeline for gradient-based strategy optimisation.
+
+This module provides the factory functions that construct the JAX computation
+graph for training: objective construction, gradient computation, and
+parameter updates.  The key abstraction is a three-stage pipeline:
+
+1. **Batching** — ``batched_partial_training_step_factory`` vmaps a single
+   forward-pass function over a batch of randomly-sampled time windows.
+2. **Objective** — ``batched_objective_factory`` reduces the batch to a
+   scalar (mean) suitable for differentiation; an optional Hessian-trace
+   regularisation variant is available via
+   ``batched_objective_with_hessian_factory``.
+3. **Update** — ``update_factory`` / ``update_factory_with_optax`` close
+   over ``value_and_grad`` and the chosen optimiser to produce a single
+   JIT-compiled training step.
+
+Two high-level entry points compose these stages automatically:
+
+- :func:`update_from_partial_training_step_factory` — vanilla SGD updates.
+- :func:`update_from_partial_training_step_factory_with_optax` — Optax-based
+  updates (Adam, AdamW, SGD with schedules).
+
+The :func:`create_optimizer_chain` function builds an Optax optimizer from
+``run_fingerprint["optimisation_settings"]``, supporting learning-rate
+schedules, plateau-based decay, gradient clipping, and weight decay.
+"""
+
 import os
 import glob
 
@@ -511,7 +538,25 @@ def update_from_partial_training_step_factory_with_optax(
 
 
 def create_opt_state_in_axes_dict(opt_state):
-    """Create in_axes dict for optimizer state based on its actual structure."""
+    """Create a ``vmap`` in_axes specification mirroring an optimizer state pytree.
+
+    When training multiple parameter sets in parallel via ``vmap``, the
+    optimizer state must be mapped over its first (batch) dimension.  This
+    function inspects every leaf of the pytree and returns ``0`` for
+    array-like leaves with a non-trivial first dimension, and ``None``
+    for scalars and empty containers (which should be broadcast).
+
+    Parameters
+    ----------
+    opt_state : pytree
+        An Optax optimizer state (e.g., from ``optimizer.init(params)``).
+
+    Returns
+    -------
+    pytree
+        A pytree of the same structure containing ``0`` or ``None`` for
+        each leaf, suitable for passing as ``in_axes`` to ``jax.vmap``.
+    """
 
     def _create_axes_for_leaf(leaf):
         # Handle empty lists specifically - they should not be vmapped over
@@ -533,11 +578,24 @@ def create_opt_state_in_axes_dict(opt_state):
     return tree_map(_create_axes_for_leaf, opt_state)
 
 
-def _create_base_optimizer(optimizer_type, learning_rate):
-    """Create a base optimizer with the given learning rate."""
-    # note that learning_rate can be a float or a schedule
+def _create_base_optimizer(optimizer_type, learning_rate, weight_decay=0.0):
+    """Create a base optimizer with the given learning rate.
+
+    Parameters
+    ----------
+    optimizer_type : str
+        One of "adam", "adamw", or "sgd"
+    learning_rate : float or optax schedule
+        Learning rate or schedule
+    weight_decay : float
+        Weight decay coefficient for adamw (default 0.0)
+    """
     if optimizer_type == "adam":
         return optax.adam(learning_rate=learning_rate)
+    elif optimizer_type == "adamw":
+        # AdamW applies weight decay directly to weights, not through gradients
+        # This is more principled than L2 reg with Adam
+        return optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
     elif optimizer_type == "sgd":
         return optax.sgd(learning_rate=learning_rate)
     else:
@@ -545,16 +603,33 @@ def _create_base_optimizer(optimizer_type, learning_rate):
 
 
 def _create_lr_schedule(settings):
-    """Create a learning rate schedule based on settings."""
+    """Create a learning rate schedule based on settings.
+
+    Supports two ways to specify the minimum LR for decay schedules:
+    - lr_decay_ratio: min_lr = base_lr / lr_decay_ratio (preferred, scale-invariant)
+    - min_lr: absolute minimum LR (fallback for backwards compatibility)
+
+    If both are provided, lr_decay_ratio takes precedence.
+    """
     base_lr = settings.get("base_lr", 0.001)
-    min_lr = settings.get("min_lr", 1e-6)
     n_iterations = settings.get("n_iterations", 1000)
     schedule_type = settings.get("lr_schedule_type", "constant")
+
+    # Compute min_lr: prefer lr_decay_ratio if provided, else use min_lr directly
+    if "lr_decay_ratio" in settings:
+        min_lr = base_lr / settings["lr_decay_ratio"]
+    else:
+        min_lr = settings.get("min_lr", 1e-6)
+        # Safety check: ensure min_lr < base_lr for decay schedules
+        if schedule_type != "constant" and min_lr >= base_lr:
+            min_lr = base_lr / 100  # Fallback to 100:1 ratio
 
     if schedule_type == "constant":
         return optax.constant_schedule(base_lr)
 
     elif schedule_type == "cosine":
+        if n_iterations <= 0:
+            raise ValueError(f"cosine schedule requires positive n_iterations, got {n_iterations}")
         return optax.cosine_decay_schedule(
             init_value=base_lr,
             decay_steps=n_iterations,  # Use n_iterations
@@ -562,24 +637,33 @@ def _create_lr_schedule(settings):
         )
 
     elif schedule_type == "exponential":
-        # Calculate decay_rate from decay_lr_ratio
-        # If we want to decay from base_lr to min_lr over n_iterations steps
-        # with exponential decay, we need to solve: min_lr = base_lr * (decay_rate)^n_iterations
+        if n_iterations <= 0:
+            raise ValueError(f"exponential schedule requires positive n_iterations, got {n_iterations}")
+        # Decay from base_lr to min_lr over n_iterations steps.
+        # Formula: LR(step) = base_lr * decay_rate^step
+        # At step=n_iterations: min_lr = base_lr * decay_rate^n_iterations
         # So: decay_rate = (min_lr / base_lr)^(1/n_iterations)
         decay_rate = (min_lr / base_lr) ** (1.0 / n_iterations)
         return optax.exponential_decay(
-            init_value=base_lr, 
-            transition_steps=n_iterations,  # Use n_iterations
+            init_value=base_lr,
+            transition_steps=1,  # Apply decay at every step
             decay_rate=decay_rate
         )
 
     elif schedule_type == "warmup_cosine":
+        if n_iterations <= 0:
+            raise ValueError(f"warmup_cosine schedule requires positive n_iterations, got {n_iterations}")
         warmup_steps = settings["warmup_steps"]
+        if warmup_steps >= n_iterations:
+            raise ValueError(
+                f"warmup_steps ({warmup_steps}) must be less than n_iterations ({n_iterations}). "
+                f"Use warmup_fraction in HyperparamSpace to avoid this."
+            )
         return optax.warmup_cosine_decay_schedule(
             init_value=min_lr,
             peak_value=base_lr,
             warmup_steps=warmup_steps,
-            decay_steps=n_iterations,  # Use n_iterations
+            decay_steps=n_iterations,
             end_value=min_lr,
         )
 
@@ -588,11 +672,51 @@ def _create_lr_schedule(settings):
 
 
 def create_optimizer_chain(run_fingerprint):
-    settings = run_fingerprint["optimisation_settings"]
-    base_lr = settings["base_lr"]
+    """Build an Optax optimizer chain from run fingerprint settings.
 
-    # Create base optimizer with lr=base_lr (will be scaled by schedule)
-    base_optimizer = _create_base_optimizer(settings["optimiser"], base_lr)
+    Constructs a composite ``optax.GradientTransformation`` by chaining:
+
+    1. **Gradient clipping** (optional) — global-norm clipping via
+       ``optax.clip_by_global_norm`` when ``use_gradient_clipping`` is True.
+    2. **Base optimizer** — one of ``adam``, ``adamw``, or ``sgd``, selected
+       by ``optimiser``.
+    3. **Learning-rate schedule** — constant, cosine, exponential, or
+       warmup-cosine, selected by ``lr_schedule_type``.
+    4. **Plateau reduction** (optional) — ``optax.contrib.reduce_on_plateau``
+       when ``use_plateau_decay`` is True, reducing LR by ``decay_lr_ratio``
+       after ``decay_lr_plateau`` steps without improvement.
+
+    Parameters
+    ----------
+    run_fingerprint : dict
+        Must contain an ``"optimisation_settings"`` sub-dict with keys:
+
+        - ``optimiser`` : str — ``"adam"``, ``"adamw"``, or ``"sgd"``
+        - ``base_lr`` : float — peak / initial learning rate
+        - ``n_iterations`` : int — total training iterations (for schedules)
+        - ``lr_schedule_type`` : str — ``"constant"``, ``"cosine"``,
+          ``"exponential"``, or ``"warmup_cosine"``
+        - ``use_plateau_decay`` : bool
+        - ``decay_lr_ratio`` : float — multiplicative factor on plateau
+        - ``decay_lr_plateau`` : int — patience in iterations
+        - ``use_gradient_clipping`` : bool
+        - ``clip_norm`` : float — max global gradient norm
+        - ``weight_decay`` : float, optional — for AdamW (default 0.0)
+        - ``lr_decay_ratio`` : float, optional — ``min_lr = base_lr / lr_decay_ratio``
+        - ``min_lr`` : float, optional — absolute minimum LR (fallback)
+        - ``warmup_steps`` : int — required when ``lr_schedule_type="warmup_cosine"``
+
+    Returns
+    -------
+    optax.GradientTransformation
+        The composed optimizer chain, ready to pass to
+        :func:`update_from_partial_training_step_factory_with_optax`.
+    """
+    settings = run_fingerprint["optimisation_settings"]
+    weight_decay = settings.get("weight_decay", 0.0)  # Default to no weight decay
+
+    # Create base optimizer with lr=1.0 - the schedule will control the actual LR
+    base_optimizer = _create_base_optimizer(settings["optimiser"], 1.0, weight_decay)
 
     # Create vanilla LR schedule
     lr_schedule = _create_lr_schedule(settings)
@@ -602,9 +726,14 @@ def create_optimizer_chain(run_fingerprint):
 
     # Add plateau reduction if enabled
     if settings["use_plateau_decay"]:
+        # Use atol (absolute tolerance) instead of default rtol (relative tolerance)
+        # because we pass -objective_value (negative values) for maximization.
+        # rtol compares value < best * (1 - rtol) which misbehaves for negative values.
         plateau_reduction = optax.contrib.reduce_on_plateau(
             factor=settings["decay_lr_ratio"],
             patience=settings["decay_lr_plateau"],
+            rtol=0.0,
+            atol=1e-4,
         )
         optimizer_chain = optax.chain(optimizer_chain, plateau_reduction)
 

@@ -94,6 +94,7 @@ def start_and_end_calcs(
     else:
         start_idx = 0
         end_idx = len(prices)
+        remainder_idx = 0  # No alignment needed when no dates provided
 
     bout_length = end_idx - start_idx
     return (
@@ -1298,6 +1299,7 @@ def get_data_dict(
     return_supply=False,
     price_data=None,
     do_test_period=False,
+    preslice_burnin=True,
 ):
 
     if return_slippage:
@@ -1409,6 +1411,48 @@ def get_data_dict(
     if start_idx / 1440 < max_memory_days:
         max_memory_days = start_idx / 1440 - 1.0
 
+    # Pre-slice optimization: remove excess data before the burn-in period and after training
+    # This reduces memory usage by keeping only:
+    # - max_memory_days worth of burn-in data before start_idx
+    # - the full training period (start_idx to end_idx)
+    # - when do_test_period=True, also includes test period (no back trim)
+    # Controlled by preslice_burnin parameter (default True)
+    # Disabled when using slippage/gas/supply features (they use original arrays)
+    if preslice_burnin and not (return_slippage or return_gas_prices or return_supply):
+        # Round up max_memory_days to ensure sufficient burn-in, then convert to minutes
+        burn_in_days = int(np.ceil(max_memory_days))
+        burn_in_minutes = burn_in_days * 1440  # Always aligned to day boundaries
+
+        # Calculate minimum required start index (aligned down to day boundary)
+        min_required_idx = max(0, start_idx - burn_in_minutes)
+        min_required_idx = (min_required_idx // 1440) * 1440
+
+        # Calculate maximum required end index (aligned up to day boundary)
+        # Add one extra chunk (day) because gradient/ewma calculations return n_chunks-1 elements,
+        # so we need one extra day of data for the slicing to work correctly
+        max_required_idx = ((end_idx + 1439) // 1440) * 1440 + 1440  # +1440 for extra day
+        max_required_idx = min(max_required_idx, len(prices_rebased))
+
+        # Only slice if there's data to remove
+        needs_front_trim = min_required_idx > 0
+        # When do_test_period=True, don't trim the back - we need data for the test period
+        # The continuous forward pass needs prices covering both training and test
+        needs_back_trim = (not do_test_period) and (max_required_idx < len(prices_rebased))
+        if needs_back_trim is False:
+            max_required_idx = len(prices_rebased)
+        if needs_front_trim or needs_back_trim:
+            # Pre-slice arrays
+            prices_rebased = prices_rebased[min_required_idx:max_required_idx]
+            unix_values_rebased = unix_values_rebased[min_required_idx:max_required_idx]
+            if oracle_values_rebased is not None:
+                oracle_values_rebased = oracle_values_rebased[min_required_idx:max_required_idx]
+
+            # Adjust indices to reflect new array positions (only affected by front trim)
+            if needs_front_trim:
+                start_idx = start_idx - min_required_idx
+                end_idx = end_idx - min_required_idx
+            # Note: bout_length is unchanged (still end_idx - start_idx)
+
     if data_kind == "step":
         # Create test pattern: all tokens = 1.0, except first token steps to 10.0 halfway
         # Useful for testing/visualizing strategy responses to sharp price movements
@@ -1417,8 +1461,11 @@ def get_data_dict(
         prices_rebased[mid_point:, 0] = 10.0  # Step up first token halfway through bout
         if return_slippage or return_gas_prices or return_supply:
             print("Warning: Using step data with slippage/gas/supply may not be meaningful")
-    # n_chunks = (len(prices) - remainder_idx) / chunk_period
-    n_chunks = int((len(prices) - remainder_idx) / 1440) * 1440 / chunk_period
+    # n_chunks calculation: use prices_rebased which has been trimmed by remainder_idx
+    # and potentially pre-sliced. This ensures day-aligned chunking.
+    # Note: len(prices_rebased) == len(prices) - remainder_idx before pre-slicing,
+    # but after pre-slicing it's shorter, so we must use prices_rebased directly.
+    n_chunks = int(len(prices_rebased) / 1440) * 1440 / chunk_period
     # check that we can cleanly divide data into 'chunk_period' units
     # if not, we will remove off the last little bit of the dataset.
     # (note that this doesn't interefere with the above burnin manipulations
@@ -1570,6 +1617,10 @@ def get_data_dict(
                 start_date=startDateTest,
                 end_date=endDateTest,
             )
+
+            # Preslice test prices to only include the test period (remove data after test end)
+            price_values_test = price_values_test[:end_idx_test]
+            unix_values_test = unix_values_test[:end_idx_test]
 
             data_dict["prices_test"] = price_values_test
             data_dict["start_idx_test"] = start_idx_test

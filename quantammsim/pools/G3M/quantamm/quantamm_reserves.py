@@ -60,14 +60,14 @@ def _jax_calc_quantAMM_reserve_ratio(prev_weights, prev_prices, weights, prices)
     # Weights Constant, Prices Change, appendix B1 of QuantAMM whitepaper
     # from the change in prices over the course of the block
     price_change_ratio = prices / prev_prices
-    price_product_change_ratio = jnp.prod(price_change_ratio**prev_weights)
+    price_product_change_ratio = jnp.exp(jnp.sum(prev_weights * jnp.log(price_change_ratio)))
     reserves_ratios_from_price_change = price_product_change_ratio / price_change_ratio
     # second do part of change in reserves that corresponds to
     # Weights Change, Prices Constant, appendix B2of QuantAMM whitepaper
     # this is, in effect, at start of a block where we are quoting
     # new weights, creating an arb opportunity
     weight_change_ratio = weights / prev_weights
-    weight_product_change_ratio = jnp.prod(weight_change_ratio**weights)
+    weight_product_change_ratio = jnp.exp(jnp.sum(weights * jnp.log(weight_change_ratio)))
     reserves_ratio_from_weight_change = (
         weight_change_ratio / weight_product_change_ratio
     )
@@ -300,7 +300,7 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     quoted_prices = current_value * prev_weights / prev_reserves
 
     price_change_ratio = prices / quoted_prices
-    price_product_change_ratio = jnp.prod(price_change_ratio**prev_weights)
+    price_product_change_ratio = jnp.exp(jnp.sum(prev_weights * jnp.log(price_change_ratio)))
     reserves_ratios_from_price_change = price_product_change_ratio / price_change_ratio
 
     post_price_reserves_zero_fees = prev_reserves * reserves_ratios_from_price_change
@@ -358,7 +358,7 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     quoted_prices = current_value * weights / reserves
 
     price_change_ratio = prices / quoted_prices
-    price_product_change_ratio = jnp.prod(price_change_ratio**weights)
+    price_product_change_ratio = jnp.exp(jnp.sum(weights * jnp.log(price_change_ratio)))
     reserves_ratios_from_weight_change = price_product_change_ratio / price_change_ratio
 
     post_weight_reserves_zero_fees = reserves_ratios_from_weight_change * reserves
@@ -486,8 +486,6 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     jnp.ndarray
         Array of reserves changes.
     """
-    # NOTE: MAYBE THIS SHOULD BE DONE IN LOG SPACE?
-
     # arb_fees = 0.0002
     # carry_list[0] is previous weights
     prev_weights = carry_list[0]
@@ -540,7 +538,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     quoted_prices = current_value * prev_weights / prev_reserves
 
     price_change_ratio = prices / quoted_prices
-    price_product_change_ratio = jnp.prod(price_change_ratio**prev_weights)
+    price_product_change_ratio = jnp.exp(jnp.sum(prev_weights * jnp.log(price_change_ratio)))
     reserves_ratios_from_price_change = price_product_change_ratio / price_change_ratio
 
     post_price_reserves_zero_fees = prev_reserves * reserves_ratios_from_price_change
@@ -617,7 +615,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     #     weight_change_ratio / weight_product_change_ratio
     # )
     price_change_ratio = prices / quoted_prices
-    price_product_change_ratio = jnp.prod(price_change_ratio**weights)
+    price_product_change_ratio = jnp.exp(jnp.sum(weights * jnp.log(price_change_ratio)))
     reserves_ratios_from_weight_change = price_product_change_ratio / price_change_ratio
 
     post_weight_reserves_zero_fees = reserves_ratios_from_weight_change * reserves

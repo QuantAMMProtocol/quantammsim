@@ -41,16 +41,16 @@ Here's how to create and simulate a basic Balancer pool:
     # Configure a 80/20 BTC/USDC pool
     run_fingerprint = {
         'tokens': ['BTC', 'USDC'],
-        'pool_type': 'balancer',
+        'rule': 'balancer',
         'initial_pool_value': 1000000.0,  # $1M initial pool value
         'fees': 0.002,                   # 0.2% trading fee
         'gas_cost': 0.0001,              # Minimum profit threshold for arbitrage
         'arb_frequency': 1,              # How often arbitrageurs can act
         'do_arb': True                   # Enable arbitrage simulation
     }
-    
+
     params = {
-       "initial_weights": jnp.log(jnp.array([0.8, 0.2])),
+       "initial_weights": jnp.array([0.8, 0.2]),
     }
 
     # Run simulation
@@ -70,14 +70,14 @@ Geometric mean market maker pools can have two or more tokens (the Balancer prot
     # Create a three-token pool
     run_fingerprint = {
         'tokens': ['ETH', 'BTC', 'USDC'],
-        'pool_type': 'balancer',
+        'rule': 'balancer',
         'initial_pool_value': 1000000.0,
         'fees': 0.002,
         'do_arb': True
     }
 
     params = {
-       "initial_weights": jnp.log(jnp.array([0.4, 0.4, 0.2])),
+       "initial_weights": jnp.array([0.4, 0.4, 0.2]),
     }
 
     # Run simulation

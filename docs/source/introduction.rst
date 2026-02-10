@@ -41,10 +41,10 @@ Runners are high-level interfaces that handle the execution of simulations. They
 * Simulation execution
 * Result collection and analysis
 
-The can also handle a wide variety of different choices of pool fees, the gas cost paid by arbitrageurs,
+They can also handle a wide variety of different choices of pool fees, the gas cost paid by arbitrageurs,
 and other simulation choices.
 
-As well as simple backtest simulations, the package also supports the training of pool to improve
+As well as simple backtest simulations, the package also supports the training of pools to improve
 their performance on historic or synthetic data. This is most relevant for QuantAMM pools, as they
 themselves *run* strategies and those strategies include parameters that must be chosen by a pool creator. For 
 example, using the appropriate runner, a user could tune a QuantAMM pool that implements a momentum strategy
@@ -76,8 +76,13 @@ Key Features
 
 * Simulation of multiple AMM protocols (Balancer, QuantAMM, CowAMM and Gyroscope)
 * Various weight-updating strategies for QuantAMM pools
-* Historical data analysis
-* Performance metrics calculation
+* Historical data analysis and backtesting
+* ~30 financial metrics for training and evaluation (Sharpe, Calmar, Sterling, VaR, etc.)
+* Walk-forward validation for out-of-sample robustness assessment
+* Ensemble training with structured initialisation (LHS, Sobol, grid)
+* Hyperparameter tuning using Optuna with walk-forward objectives
+* Robustness features: early stopping, SWA, price noise augmentation, Rademacher complexity
+* Composable hook system for custom fee logic, weight bounds, and performance tracking
 
 Quick Start
 ~~~~~~~~~~~
@@ -95,13 +100,13 @@ Quick Start
        'endDateString': '2024-06-15 00:00:00',
    }
    
-    # Initialise pool parameters, equal weights. Equivalent to a Uniswap v2 poo;
-    params = {
+   # Initialise pool parameters, equal weights. Equivalent to a Uniswap v2 pool
+   params = {
        "initial_weights": jnp.array([0.5, 0.5]),
-    }
+   }
 
-    # Run simulation
-    result = do_run_on_historic_data(run_fingerprint, params, verbose=True)
+   # Run simulation
+   result = do_run_on_historic_data(run_fingerprint, params, verbose=True)
 
 .. _this paper: https://arxiv.org/abs/2307.02074
 .. _the TFMM litepaper: https://cdn.prod.website-files.com/6616670ddddc931f1dd3aa73/6617c4c2381409947dc42c7a_TFMM_litepaper.pdf

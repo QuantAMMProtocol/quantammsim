@@ -1,3 +1,10 @@
+"""Contrarian (anti-momentum) pool for QuantAMM.
+
+Extends :class:`MomentumPool` by negating the momentum sensitivity factor ``k``,
+producing a mean-reversion strategy that overweights recently declining assets
+and underweights recently appreciating ones. Shares all parameters and EWMA
+estimator infrastructure with the momentum pool.
+"""
 # again, this only works on startup!
 from jax import config
 
@@ -30,12 +37,13 @@ from quantammsim.core_simulator.param_utils import (
     calc_lamb,
 )
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import calc_gradients, calc_k
+from quantammsim.core_simulator.param_schema import ParamSpec, OptunaRange
 
 from typing import Dict, Any, Optional
 from functools import partial
 
 
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_themselves_weights
 # as this is False for momentum pools --- the strategy outputs weight _changes_
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weight_changes,
@@ -54,7 +62,7 @@ class AntiMomentumPool(MomentumPool):
 
     Methods
     -------
-    calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
+    calculate_rule_outputs(params, run_fingerprint, prices, additional_oracle_input)
         Calculate the raw weight outputs based on mean-reversion signals.
 
     Notes
@@ -64,6 +72,9 @@ class AntiMomentumPool(MomentumPool):
     The class provides methods to calculate raw weight outputs based on these signals and refine them
     into final asset weights, taking into account various parameters and constraints defined in the pool setup.
     """
+
+    # AntiMomentum uses same params as Momentum (just negates k internally)
+    # Inherits PARAM_SCHEMA from MomentumPool
 
     def __init__(self):
         """
@@ -76,7 +87,7 @@ class AntiMomentumPool(MomentumPool):
         super().__init__()
 
     @partial(jit, static_argnums=(2))
-    def calculate_raw_weights_outputs(
+    def calculate_rule_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -129,8 +140,8 @@ class AntiMomentumPool(MomentumPool):
             run_fingerprint["use_alt_lamb"],
             cap_lamb=True,
         )
-        raw_weight_outputs = _jax_momentum_weight_update(gradients, -k)
-        return raw_weight_outputs
+        rule_outputs = _jax_momentum_weight_update(gradients, -k)
+        return rule_outputs
 
 tree_util.register_pytree_node(
     AntiMomentumPool, AntiMomentumPool._tree_flatten, AntiMomentumPool._tree_unflatten

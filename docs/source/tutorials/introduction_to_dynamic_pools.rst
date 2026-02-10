@@ -42,7 +42,7 @@ When a pool's actual token composition differs from its weight vector, it create
 5. These trades naturally move the pool's composition toward its target weights.
 
 Example:
-   If :math:`\mathbf{w} = (0.6, 0.4)` but the pool acutal, empirical holdings means the pool holds equal values of tokens, arbitrageurs will:
+   If :math:`\mathbf{w} = (0.6, 0.4)` but the pool's actual holdings are equal values of tokens, arbitrageurs will:
 
    - sell token 1 to the pool, and
    - buy token 2 from the pool until the value ratio matches 60:40.
@@ -126,4 +126,4 @@ Implementation
 ~~~~~~~~~~~~~~
 
 The TFMM base class, :class:`~quantammsim.pools.TFMMBasePool` implements the logic needed for the application of guardrails and for weight change interpolation.
-This means that QuantAMM pools can be created by simply subclassing :class:`~quantammsim.pools.TFMMBasePool` and implementing the update rule as the method :meth:`~quantammsim.pools.TFMMBasePool.calculate_raw_weights_outputs` (plus a few helper methods for initialising/handling the particular parameters the pool's strategy needs).
+This means that QuantAMM pools can be created by simply subclassing :class:`~quantammsim.pools.TFMMBasePool` and implementing the update rule as the method :meth:`~quantammsim.pools.TFMMBasePool.calculate_rule_outputs` (plus a few helper methods for initialising/handling the particular parameters the pool's strategy needs).

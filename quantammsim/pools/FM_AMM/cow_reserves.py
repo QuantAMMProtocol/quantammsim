@@ -1,3 +1,10 @@
+"""Reserve calculations for CoW AMM (FM-AMM) pools.
+
+Provides JAX-based functions for computing CoW AMM reserves over time,
+following the FM-AMM paper. Includes perfect-arbitrage and single-
+arbitrageur rebalancing models, with support for fees, arbitrage
+thresholds, noise traders, and dynamic inputs via ``jax.lax.scan``.
+"""
 from functools import partial
 
 import math

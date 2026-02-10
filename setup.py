@@ -5,7 +5,7 @@ setup(
     version="0.1.0",
     packages=find_packages(),
     install_requires=[
-        "jax==0.5.3",
+        "jax>=0.4.27",
         "jaxlib",  # Required for JAX to work
         "numpy>=1.21.0",
         "pandas>=1.3.0",
@@ -42,5 +42,5 @@ setup(
             "sphinx-rtd-theme",
         ],
     },
-    python_requires=">=3.8",
+    python_requires=">=3.9",
 )

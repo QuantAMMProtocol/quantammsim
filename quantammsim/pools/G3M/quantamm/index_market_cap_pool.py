@@ -1,3 +1,12 @@
+"""Market-capitalisation weighted index pool for QuantAMM.
+
+Computes pool weights proportional to each asset's market capitalisation,
+loaded from historical data via the data pipeline. This is the base index
+strategy: weights are derived directly from market-cap ratios (optionally
+softmax-normalised) and output as absolute weights rather than weight changes.
+Serves as the parent class for :class:`HodlingIndexPool` and
+:class:`TradHodlingIndexPool`.
+"""
 # again, this only works on startup!
 from jax import config
 
@@ -39,7 +48,7 @@ from quantammsim import data
 
 from pathlib import Path
 
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_themselves_weights
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weights,
 )
@@ -60,9 +69,9 @@ class IndexMarketCapPool(TFMMBasePool):
 
     Methods
     -------
-    calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
+    calculate_rule_outputs(params, run_fingerprint, prices, additional_oracle_input)
         Calculate the raw weight outputs based on market cap signals.
-    fine_weight_output(raw_weight_output, initial_weights, run_fingerprint, params)
+    calculate_fine_weights(rule_output, initial_weights, run_fingerprint, params)
         Refine the raw weight outputs to produce final weights.
     calculate_weights(params, run_fingerprint, prices, additional_oracle_input)
         Orchestrate the weight calculation process.
@@ -84,7 +93,7 @@ class IndexMarketCapPool(TFMMBasePool):
         super().__init__()
 
     @partial(jit, static_argnums=(2))
-    def calculate_raw_weights_outputs(
+    def calculate_rule_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -93,7 +102,7 @@ class IndexMarketCapPool(TFMMBasePool):
     ) -> jnp.ndarray:
 
         # Calculate the proportional weights of the market caps
-        # return self.calculate_raw_weights_outputs_nojit(params, run_fingerprint, prices, additional_oracle_input)
+        # return self.calculate_rule_outputs_nojit(params, run_fingerprint, prices, additional_oracle_input)
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
         sorted_tokens = sorted(run_fingerprint["tokens"])
 
@@ -136,14 +145,14 @@ class IndexMarketCapPool(TFMMBasePool):
 
         market_cap = chunkwise_price_values * chunkwise_supply_values
         total_market_cap = jnp.sum(market_cap, axis=-1, keepdims=True)
-        raw_weight_outputs = market_cap / total_market_cap
+        rule_outputs = market_cap / total_market_cap
 
         if run_fingerprint.get("cap_weights") is not None:
-            raw_weight_outputs = self._cap_and_redistribute_weights(
-                raw_weight_outputs, run_fingerprint["cap_weights"]
+            rule_outputs = self._cap_and_redistribute_weights(
+                rule_outputs, run_fingerprint["cap_weights"]
             )
 
-        return raw_weight_outputs
+        return rule_outputs
 
     @partial(jit, static_argnums=(0))
     def _cap_and_redistribute_weights(
@@ -196,7 +205,7 @@ class IndexMarketCapPool(TFMMBasePool):
 
         return final_weights
 
-    def calculate_raw_weights_outputs_nojit(
+    def calculate_rule_outputs_nojit(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -208,14 +217,14 @@ class IndexMarketCapPool(TFMMBasePool):
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
         market_cap = chunkwise_price_values
         total_market_cap = jnp.sum(market_cap, axis=-1, keepdims=True)
-        raw_weight_outputs = market_cap / total_market_cap
+        rule_outputs = market_cap / total_market_cap
 
-        return raw_weight_outputs
+        return rule_outputs
 
     @partial(jit, static_argnums=(3))
-    def fine_weight_output(
+    def calculate_fine_weights(
         self,
-        raw_weight_output: jnp.ndarray,
+        rule_output: jnp.ndarray,
         initial_weights: jnp.ndarray,
         run_fingerprint: Dict[str, Any],
         params: Dict[str, Any],
@@ -229,7 +238,7 @@ class IndexMarketCapPool(TFMMBasePool):
 
         Parameters
         ----------
-        raw_weight_output : jnp.ndarray
+        rule_output : jnp.ndarray
             Raw weight changes or outputs from market cap calculations.
         initial_weights : jnp.ndarray
             Initial weights of assets in the pool.
@@ -255,7 +264,7 @@ class IndexMarketCapPool(TFMMBasePool):
         ):
             params["logit_delta_lamb"] = jnp.zeros_like(params["logit_lamb"])
         return calc_fine_weight_output_from_weights(
-            raw_weight_output, initial_weights, run_fingerprint, params
+            rule_output, initial_weights, run_fingerprint, params
         )
 
     def init_base_parameters(

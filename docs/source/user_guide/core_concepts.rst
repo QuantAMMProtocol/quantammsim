@@ -21,6 +21,10 @@ For modelling QuantAMM pools, the library supports multiple different strategies
 * Anti-Momentum
 * Power Channel
 * Mean Reversion Channel
+* Triple Threat Mean Reversion Channel
+* Difference Momentum (MACD-like)
+* Min Variance
+* HODLing Index / Traditional HODLing Index
 
 Understanding Pool Parameters
 -----------------------------
@@ -73,6 +77,13 @@ While the examples above show scalar (universal) parameters, both :math:`k` and 
 * Scalar (universal) parameters: Same value applies to all assets
 * Vector parameters: Different values for each asset
 
+For example, in a BTC/ETH/USDC pool::
+
+    run_fingerprint = {
+        'initial_k_per_day': [30, 20, 10],  # More aggressive for BTC, less for USDC
+        'initial_memory_length': [5.0, 7.0, 10.0],  # Shorter memory for BTC
+    }
+
 This allows fine-tuning of how aggressively each asset's weight responds to market conditions. Common use cases include:
 
 * Different rebalancing speeds for volatile vs stable assets
@@ -80,3 +91,28 @@ This allows fine-tuning of how aggressively each asset's weight responds to mark
 * Custom parameter sets for different market regimes
 
 Note that when using vector parameters, the length must match the number of assets in the pool.
+quantammsim natively supports vector parameters.
+
+Training Robustness
+-------------------
+
+Optimising strategy parameters on historical data risks overfitting — the
+strategy memorises the training period rather than learning generalisable
+signals.  quantammsim provides a multi-level approach to address this:
+
+* **Walk-forward validation**: Train on rolling windows and evaluate on
+  subsequent out-of-sample periods.  The Walk-Forward Efficiency (WFE)
+  metric quantifies generalisation quality.  See
+  :doc:`../tutorials/walk_forward_analysis`.
+
+* **Ensemble training**: Train multiple parameter sets and average their
+  outputs for implicit regularisation.  See
+  :doc:`../tutorials/ensemble_training`.
+
+* **Hyperparameter tuning**: Optimise training hyperparameters (learning
+  rate, regularisation strength, etc.) using OOS metrics as the objective,
+  not in-sample performance.  See :doc:`../tutorials/hyperparameter_tuning`.
+
+* **Regularisation features**: Early stopping, SWA, price noise
+  augmentation, turnover penalty, and weight decay.  See
+  :doc:`robustness_features`.

@@ -37,7 +37,7 @@ from functools import partial
 from abc import abstractmethod
 import numpy as np
 
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_themselves_weights
 # as this is False for momentum pools --- the strategy outputs weight _changes_
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weight_changes,
@@ -94,9 +94,9 @@ class IndexPool(TFMMBasePool):
 
     Methods
     -------
-    calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
+    calculate_rule_outputs(params, run_fingerprint, prices, additional_oracle_input)
         Calculate the raw weight outputs based on momentum signals.
-    fine_weight_output(raw_weight_output, initial_weights, run_fingerprint, params)
+    calculate_fine_weights(rule_output, initial_weights, run_fingerprint, params)
         Refine the raw weight outputs to produce final weights.
     calculate_weights(params, run_fingerprint, prices, additional_oracle_input)
         Orchestrate the weight calculation process.
@@ -118,7 +118,7 @@ class IndexPool(TFMMBasePool):
         super().__init__()
 
     @partial(jit, static_argnums=(2))
-    def calculate_raw_weights_outputs(
+    def calculate_rule_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -128,14 +128,14 @@ class IndexPool(TFMMBasePool):
        
         # Calculate the proportional weights of the market caps
         total_market_cap = jnp.sum(prices, axis=-1, keepdims=True)
-        raw_weight_outputs = prices / total_market_cap
+        rule_outputs = prices / total_market_cap
 
-        return raw_weight_outputs
+        return rule_outputs
 
     @partial(jit, static_argnums=(3))
-    def fine_weight_output(
+    def calculate_fine_weights(
         self,
-        raw_weight_output: jnp.ndarray,
+        rule_output: jnp.ndarray,
         initial_weights: jnp.ndarray,
         run_fingerprint: Dict[str, Any],
         params: Dict[str, Any],
@@ -149,7 +149,7 @@ class IndexPool(TFMMBasePool):
 
         Parameters
         ----------
-        raw_weight_output : jnp.ndarray
+        rule_output : jnp.ndarray
             Raw weight changes or outputs from momentum calculations.
         initial_weights : jnp.ndarray
             Initial weights of assets in the pool.
@@ -170,7 +170,7 @@ class IndexPool(TFMMBasePool):
         interpolation, maximum change limits, and ensuring weights sum to 1.
         """
         return calc_fine_weight_output_from_weight_changes(
-            raw_weight_output, initial_weights, run_fingerprint, params
+            rule_output, initial_weights, run_fingerprint, params
         )
 
     def init_base_parameters(

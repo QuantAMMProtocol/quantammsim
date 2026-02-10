@@ -1,3 +1,12 @@
+"""Minimum-variance portfolio pool for QuantAMM.
+
+Allocates weights inversely proportional to each asset's EWMA return variance
+(diagonal-covariance minimum-variance portfolio). The strategy outputs weights
+directly rather than weight changes, producing a risk-parity-like allocation
+that tilts toward lower-volatility assets.
+
+Key parameters: ``logit_lamb`` (EWMA decay for variance estimation).
+"""
 # again, this only works on startup!
 from jax import config
 
@@ -35,7 +44,7 @@ from functools import partial
 from abc import abstractmethod
 import numpy as np
 
-# import the fine weight output function which has pre-set argument raw_weight_outputs_are_themselves_weights
+# import the fine weight output function which has pre-set argument rule_outputs_are_weights
 # as this is True for min variance pools --- the strategy outputs weights themselves, not changes
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_from_weights,
@@ -64,9 +73,9 @@ class MinVariancePool(TFMMBasePool):
 
     Methods
     -------
-    calculate_raw_weights_outputs(params, run_fingerprint, prices, additional_oracle_input)
+    calculate_rule_outputs(params, run_fingerprint, prices, additional_oracle_input)
         Calculate the raw weight outputs based on min variance calculations.
-    fine_weight_output(raw_weight_output, initial_weights, run_fingerprint, params)
+    calculate_fine_weights(rule_output, initial_weights, run_fingerprint, params)
         Refine the raw weight outputs to produce final weights.
     calculate_weights(params, run_fingerprint, prices, additional_oracle_input)
         Orchestrate the weight calculation process.
@@ -79,16 +88,12 @@ class MinVariancePool(TFMMBasePool):
 
     def __init__(self):
         """
-        Initialize a new MomentumPool instance.
-
-        Parameters
-        ----------
-        None
+        Initialize a new MinVariancePool instance.
         """
         super().__init__()
 
     @partial(jit, static_argnums=(2))
-    def calculate_raw_weights_outputs(
+    def calculate_rule_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -96,49 +101,49 @@ class MinVariancePool(TFMMBasePool):
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         """
-        Calculate the raw weight outputs based on momentum signals.
+        Calculate the raw weight outputs based on minimum variance optimization.
 
-        This method computes the raw weight adjustments for the momentum strategy. It processes
-        the input prices to calculate gradients, which are then used to determine weight updates.
+        This method computes target weights that minimize portfolio variance. It processes
+        the input prices to calculate return variances, which are then used to determine
+        inverse-variance weighted allocations.
 
         Parameters
         ----------
         params : Dict[str, Any]
-            A dictionary of strategy parameters.
+            A dictionary of strategy parameters including lambda values.
         run_fingerprint : Dict[str, Any]
-            A dictionary containing run-specific settings.
+            A dictionary containing run-specific settings including chunk_period
+            and max_memory_days.
         prices : jnp.ndarray
             An array of asset prices over time.
         additional_oracle_input : Optional[jnp.ndarray], optional
-            Additional input data, if any.
+            Additional input data, if any. Not used in this implementation.
 
         Returns
         -------
         jnp.ndarray
-            Raw weight outputs representing the suggested weight adjustments.
+            Raw weight outputs representing the target minimum variance weights.
 
         Notes
         -----
         The method performs the following steps:
-        1. Calculates the memory days based on the lambda parameter.
-        2. Computes the 'k' factor which scales the weight updates.
-        3. Extracts chunkwise price values from the input prices.
-        4. Calculates price gradients using the calc_gradients function.
-        5. Applies the momentum weight update formula to get raw weight outputs.
+        1. Extracts chunkwise price values from the input prices.
+        2. Calculates return variances using an EWMA estimator.
+        3. Computes inverse-variance weights via the min variance formula.
 
-        The raw weight outputs are not the final weights, but rather the changes
-        to be applied to the previous weights. These will be refined in subsequent steps.
+        Unlike momentum-based rules, these outputs represent target weights directly,
+        not weight changes to be applied incrementally.
         """
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
         variances = calc_return_variances(params, chunkwise_price_values, run_fingerprint["chunk_period"], run_fingerprint["max_memory_days"], cap_lamb=True)
-        raw_weight_outputs = _jax_min_variance_weights(variances)
+        rule_outputs = _jax_min_variance_weights(variances)
 
-        return raw_weight_outputs
+        return rule_outputs
 
     @partial(jit, static_argnums=(3))
-    def fine_weight_output(
+    def calculate_fine_weights(
         self,
-        raw_weight_output: jnp.ndarray,
+        rule_output: jnp.ndarray,
         initial_weights: jnp.ndarray,
         run_fingerprint: Dict[str, Any],
         params: Dict[str, Any],
@@ -152,7 +157,7 @@ class MinVariancePool(TFMMBasePool):
 
         Parameters
         ----------
-        raw_weight_output : jnp.ndarray
+        rule_output : jnp.ndarray
             Raw weight changes or outputs from momentum calculations.
         initial_weights : jnp.ndarray
             Initial weights of assets in the pool.
@@ -173,7 +178,7 @@ class MinVariancePool(TFMMBasePool):
         interpolation, maximum change limits, and ensuring weights sum to 1.
         """
         return calc_fine_weight_output_from_weights(
-            raw_weight_output, initial_weights, run_fingerprint, params
+            rule_output, initial_weights, run_fingerprint, params
         )
 
     def init_base_parameters(
