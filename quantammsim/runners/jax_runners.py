@@ -88,6 +88,9 @@ from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.utils.post_train_analysis import (
     calculate_period_metrics,
     calculate_continuous_test_metrics,
+    _compute_all_metrics_batched,
+    _METRIC_KEYS,
+    metrics_arr_to_dicts,
 )
 import jax.numpy as jnp
 
@@ -685,61 +688,43 @@ def train_on_historic_data(
                 data_dict["prices"],
             )
 
-            # Process each parameter set individually
-            # (metric functions expect single parameter set, not batched)
-            train_metrics_list = []
-            continuous_test_metrics_list = []
+            # Batched metric computation — one vmapped dispatch per metric type
+            # replaces the per-param-set Python loop that was O(n_parameter_sets) dispatches.
+            # Batch-slice train period: (n_param_sets, bout_length, ...)
+            train_values = continuous_outputs["value"][:, :data_dict["bout_length"]]
+            train_reserves = continuous_outputs["reserves"][:, :data_dict["bout_length"], :]
+            train_metrics_arr, train_daily_ret = _compute_all_metrics_batched(
+                train_values, train_reserves, train_prices
+            )
 
-            for param_idx in range(n_parameter_sets):
-                # Extract outputs for this parameter set
-                # After indexing: value (time_steps,), reserves (time_steps, n_assets)
-                param_value = continuous_outputs["value"][param_idx]
-                param_reserves = continuous_outputs["reserves"][param_idx]
+            # Continuous test metrics: slice test period from continuous outputs
+            test_start = original_bout_length
+            test_end = original_bout_length + data_dict["bout_length_test"]
+            test_values = continuous_outputs["value"][:, test_start:test_end]
+            test_reserves = continuous_outputs["reserves"][:, test_start:test_end, :]
+            test_prices_slice = continuous_prices[test_start:test_end]
+            cont_test_metrics_arr, cont_test_daily_ret = _compute_all_metrics_batched(
+                test_values, test_reserves, test_prices_slice
+            )
 
-                # Slice train period (uses effective_train_length when val_fraction > 0)
-                train_dict = {
-                    "value": param_value[:data_dict["bout_length"]],
-                    "reserves": param_reserves[:data_dict["bout_length"]],
-                }
-
-                # Create continuous dict for test metrics
-                # continuous_test_metrics computes metrics on test slice from continuous simulation
-                param_continuous_dict = {
-                    "value": param_value,
-                    "reserves": param_reserves,
-                }
-
-                # Calculate metrics
-                train_metrics = calculate_period_metrics(train_dict, train_prices)
-                continuous_test_metrics = calculate_continuous_test_metrics(
-                    param_continuous_dict,
-                    original_bout_length,  # Use original length as train/test boundary
-                    data_dict["bout_length_test"],
-                    continuous_prices
-                )
-
-                train_metrics_list.append(train_metrics)
-                continuous_test_metrics_list.append(continuous_test_metrics)
+            # Convert to list-of-dicts for downstream compatibility
+            # (BestParamsTracker, display, save — all expect dict-per-param-set)
+            train_metrics_list = metrics_arr_to_dicts(train_metrics_arr, train_daily_ret)
+            continuous_test_metrics_list = metrics_arr_to_dicts(cont_test_metrics_arr, cont_test_daily_ret)
 
             # Compute validation metrics if val_fraction > 0 (for early stopping and saving)
             if val_fraction > 0:
-                val_metrics_list = []
-                for param_idx in range(n_parameter_sets):
-                    # Validation period: from effective_train_length to original_bout_length
-                    val_dict = {
-                        "value": continuous_outputs["value"][param_idx, data_dict["bout_length"]:original_bout_length],
-                        "reserves": continuous_outputs["reserves"][param_idx, data_dict["bout_length"]:original_bout_length, :],
-                    }
-
-                    val_metrics = calculate_period_metrics(val_dict, val_prices)
-                    val_metrics_list.append(val_metrics)
+                val_values = continuous_outputs["value"][:, data_dict["bout_length"]:original_bout_length]
+                val_reserves = continuous_outputs["reserves"][:, data_dict["bout_length"]:original_bout_length, :]
+                val_metrics_arr, val_daily_ret = _compute_all_metrics_batched(
+                    val_values, val_reserves, val_prices
+                )
+                val_metrics_list = metrics_arr_to_dicts(val_metrics_arr, val_daily_ret)
                 # Collect validation metrics for saving
                 validationSteps.append(val_metrics_list)
-                # Compute current_val_metric for early stopping
-                val_metrics_per_set = jnp.array([
-                    t.get(selection_metric, jnp.nan) for t in val_metrics_list
-                ])
-                current_val_metric = jnp.nanmean(val_metrics_per_set)
+                # Compute current_val_metric for early stopping — direct array indexing
+                sel_idx = _METRIC_KEYS.index(selection_metric)
+                current_val_metric = jnp.nanmean(val_metrics_arr[:, sel_idx])
             else:
                 val_metrics_list = None
                 current_val_metric = None
@@ -787,9 +772,8 @@ def train_on_historic_data(
                     current_early_stopping_metric = current_val_metric
                     metric_source = "validation"
                 elif continuous_test_metrics_list:
-                    current_early_stopping_metric = jnp.nanmean(jnp.array([
-                        t.get(selection_metric, jnp.nan) for t in continuous_test_metrics_list
-                    ]))
+                    sel_idx = _METRIC_KEYS.index(selection_metric)
+                    current_early_stopping_metric = jnp.nanmean(cont_test_metrics_arr[:, sel_idx])
                     metric_source = "continuous_test"
                 else:
                     current_early_stopping_metric = -jnp.inf
@@ -855,26 +839,23 @@ def train_on_historic_data(
                     obj_val = float(np.mean(objective_value)) if hasattr(objective_value, '__len__') else float(objective_value)
                     print(f"\n[Iter {step}] objective={obj_val:.4f}")
 
-                    # Training metrics (in-sample)
-                    if train_metrics_list:
-                        train_sharpes = [t.get("sharpe", np.nan) for t in train_metrics_list]
-                        train_rohs = [t.get("returns_over_uniform_hodl", np.nan) for t in train_metrics_list]
-                        print(f"  Train (IS):  sharpe={np.nanmean(train_sharpes):+.4f}  ret_over_hodl={np.nanmean(train_rohs):+.4f}")
+                    # Training metrics (in-sample) — use arrays directly
+                    sharpe_idx = _METRIC_KEYS.index("sharpe")
+                    roh_idx = _METRIC_KEYS.index("returns_over_uniform_hodl")
+                    print(f"  Train (IS):  sharpe={float(jnp.nanmean(train_metrics_arr[:, sharpe_idx])):+.4f}"
+                          f"  ret_over_hodl={float(jnp.nanmean(train_metrics_arr[:, roh_idx])):+.4f}")
 
                     # Validation metrics (if using validation holdout)
                     if val_fraction > 0 and val_metrics_list:
-                        val_sharpe = np.nanmean([t.get("sharpe", np.nan) for t in val_metrics_list])
-                        val_roh = np.nanmean([t.get("returns_over_uniform_hodl", np.nan) for t in val_metrics_list])
-                        print(f"  Val:         sharpe={val_sharpe:+.4f}  ret_over_hodl={val_roh:+.4f}")
+                        print(f"  Val:         sharpe={float(jnp.nanmean(val_metrics_arr[:, sharpe_idx])):+.4f}"
+                              f"  ret_over_hodl={float(jnp.nanmean(val_metrics_arr[:, roh_idx])):+.4f}")
                         if use_early_stopping:
                             print(f"  Early stop:  {selection_metric}={current_early_stopping_metric:+.4f} "
                                   f"(best={best_early_stopping_metric:+.4f}, wait={iterations_since_early_stopping_improvement}/{early_stopping_patience})")
 
                     # Continuous test metrics (out-of-sample, from continuous forward pass)
-                    if continuous_test_metrics_list:
-                        test_sharpes = [t.get("sharpe", np.nan) for t in continuous_test_metrics_list]
-                        test_rohs = [t.get("returns_over_uniform_hodl", np.nan) for t in continuous_test_metrics_list]
-                        print(f"  Test (OOS):  sharpe={np.nanmean(test_sharpes):+.4f}  ret_over_hodl={np.nanmean(test_rohs):+.4f}")
+                    print(f"  Test (OOS):  sharpe={float(jnp.nanmean(cont_test_metrics_arr[:, sharpe_idx])):+.4f}"
+                          f"  ret_over_hodl={float(jnp.nanmean(cont_test_metrics_arr[:, roh_idx])):+.4f}")
 
             # Early stopping break check — placed after display so the float()
             # calls above materialise the graph first (free ride for this bool()).

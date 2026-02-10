@@ -9,7 +9,7 @@ Includes:
 
 import numpy as np
 import jax.numpy as jnp
-from jax import jit
+from jax import jit, vmap
 from typing import Dict, List, Tuple, Optional
 from scipy import stats
 from quantammsim.core_simulator.forward_pass import (
@@ -101,6 +101,31 @@ def _compute_all_metrics_jit(value, reserves, prices):
     ])
 
     return scalars, daily_returns
+
+
+# Vmapped version: one dispatch computes metrics for all param sets.
+# in_axes=(0, 0, None) — batch value & reserves over param sets, broadcast prices.
+# Returns: ((n_param_sets, 12), (n_param_sets, n_days))
+_compute_all_metrics_batched = jit(vmap(
+    _compute_all_metrics_jit,
+    in_axes=(0, 0, None),
+))
+
+
+def metrics_arr_to_dicts(metrics_arr, daily_returns_arr=None):
+    """Convert (n_param_sets, 12) metrics array to list of dicts.
+
+    Used at display/save boundaries where downstream code expects the
+    original dict-per-param-set format.
+    """
+    n = metrics_arr.shape[0]
+    result = []
+    for i in range(n):
+        d = {k: metrics_arr[i, j] for j, k in enumerate(_METRIC_KEYS)}
+        if daily_returns_arr is not None:
+            d["daily_returns"] = daily_returns_arr[i]
+        result.append(d)
+    return result
 
 
 def calculate_period_metrics(results_dict, prices=None):
