@@ -1087,3 +1087,127 @@ class TestMeanReversionTrainingRegression:
             rtol=RTOL,
             err_msg="Mean reversion training objective drifted from pinned value",
         )
+
+
+class TestTrainingMetadataRegression:
+    """Pin exact numeric metadata values from train_on_historic_data.
+
+    The scan refactor must reproduce these values exactly.  Structural
+    checks alone are insufficient — if the tracker updates in the wrong
+    order, or metrics are sliced from the wrong indices, the structure
+    looks identical but values differ.
+
+    Uses _make_training_fingerprint() which has val_fraction=0.2 via
+    defaults, so selection_method is "best_val" and selection_metric
+    is "daily_log_sharpe".
+    """
+
+    # Pinned from current (pre-scan) code.  Any change here means the
+    # scan path diverged and must be investigated.
+    PINNED_BEST_ITERATION = 1
+    PINNED_BEST_PARAM_IDX = 1
+    PINNED_BEST_METRIC_VALUE = 2.5226193487027584  # val daily_log_sharpe
+    PINNED_EPOCHS_TRAINED = 4
+    PINNED_SELECTION_METHOD = "best_val"
+    PINNED_SELECTION_METRIC = "daily_log_sharpe"
+
+    # Pinned per-param-set train sharpe at best iteration
+    PINNED_BEST_TRAIN_SHARPE = [11.75967433, 11.16980874]
+    # Pinned per-param-set continuous test sharpe at best iteration
+    PINNED_BEST_TEST_SHARPE = [-5.35491442, -6.18003213]
+    # Pinned final reserves at best iteration, selected param set
+    PINNED_BEST_FINAL_RESERVES = [57.8402976, 26.09061835]
+
+    @pytest.fixture(scope="class")
+    def training_metadata(self):
+        """Run training once, reuse across all tests in class."""
+        from quantammsim.runners.jax_runners import train_on_historic_data
+        _, metadata = train_on_historic_data(
+            _make_training_fingerprint(),
+            root=str(TEST_DATA_DIR),
+            verbose=False,
+            force_init=True,
+            return_training_metadata=True,
+            iterations_per_print=999999,
+        )
+        return metadata
+
+    def test_epochs_trained_pinned(self, training_metadata):
+        assert training_metadata["epochs_trained"] == self.PINNED_EPOCHS_TRAINED
+
+    def test_best_iteration_pinned(self, training_metadata):
+        np.testing.assert_equal(
+            int(training_metadata["best_iteration"]),
+            self.PINNED_BEST_ITERATION,
+        )
+
+    def test_best_param_idx_pinned(self, training_metadata):
+        np.testing.assert_equal(
+            int(training_metadata["best_param_idx"]),
+            self.PINNED_BEST_PARAM_IDX,
+        )
+
+    def test_best_metric_value_pinned(self, training_metadata):
+        np.testing.assert_allclose(
+            float(training_metadata["best_metric_value"]),
+            self.PINNED_BEST_METRIC_VALUE,
+            rtol=RTOL,
+            err_msg="best_metric_value drifted",
+        )
+
+    def test_selection_method_pinned(self, training_metadata):
+        assert training_metadata["selection_method"] == self.PINNED_SELECTION_METHOD
+
+    def test_selection_metric_pinned(self, training_metadata):
+        assert training_metadata["selection_metric"] == self.PINNED_SELECTION_METRIC
+
+    def test_best_train_sharpe_pinned(self, training_metadata):
+        """Pin per-param-set training sharpe at best iteration."""
+        best_sharpes = [
+            float(m["sharpe"]) for m in training_metadata["best_train_metrics"]
+        ]
+        np.testing.assert_allclose(
+            best_sharpes, self.PINNED_BEST_TRAIN_SHARPE, rtol=RTOL,
+            err_msg="best_train sharpe drifted",
+        )
+
+    def test_best_test_sharpe_pinned(self, training_metadata):
+        """Pin per-param-set continuous test sharpe at best iteration."""
+        test_sharpes = [
+            float(m["sharpe"]) for m in training_metadata["best_continuous_test_metrics"]
+        ]
+        np.testing.assert_allclose(
+            test_sharpes, self.PINNED_BEST_TEST_SHARPE, rtol=RTOL,
+            err_msg="best_continuous_test sharpe drifted",
+        )
+
+    def test_best_final_reserves_pinned(self, training_metadata):
+        np.testing.assert_allclose(
+            np.asarray(training_metadata["best_final_reserves"]),
+            self.PINNED_BEST_FINAL_RESERVES,
+            rtol=RTOL,
+            err_msg="best_final_reserves drifted",
+        )
+
+    def test_final_objective_matches_existing_pin(self, training_metadata):
+        """Cross-check: final_objective must still match PINNED_TRAINING_OBJECTIVE."""
+        np.testing.assert_allclose(
+            training_metadata["final_objective"],
+            PINNED_TRAINING_OBJECTIVE,
+            rtol=RTOL,
+        )
+
+    def test_last_train_metrics_are_from_final_iteration(self, training_metadata):
+        """last_train_metrics should differ from best_train_metrics when
+        best_iteration != last iteration (which is the case here)."""
+        last_sharpes = [
+            float(m["sharpe"]) for m in training_metadata["last_train_metrics"]
+        ]
+        best_sharpes = [
+            float(m["sharpe"]) for m in training_metadata["best_train_metrics"]
+        ]
+        # best_iteration=1, last_iteration=3, so they must differ
+        assert last_sharpes != best_sharpes, (
+            "last and best train sharpe are identical — "
+            "tracker may not be storing last-iteration state"
+        )

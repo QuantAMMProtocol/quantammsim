@@ -29,7 +29,7 @@ import gc
 import os
 import optuna
 from jax.tree_util import Partial
-from jax import jit, vmap, random
+from jax import jit, vmap, random, lax
 from jax import clear_caches
 from jax.tree_util import tree_map
 
@@ -80,6 +80,10 @@ from quantammsim.runners.jax_runner_utils import (
     get_sig_variations,
     BestParamsTracker,
     SELECTION_METHODS,
+    init_tracker_state,
+    update_tracker_state,
+    generate_nan_bank,
+    nan_reinit_from_bank,
 )
 
 from quantammsim.pools.creator import create_pool
@@ -630,15 +634,6 @@ def train_on_historic_data(
         elif run_fingerprint["optimisation_settings"]["optimiser"] != "sgd":
             raise NotImplementedError
 
-        paramSteps = []
-        trainingSteps = []
-        continuousTestSteps = []
-        validationSteps = []  # Collect validation metrics when val_fraction > 0
-        objectiveSteps = []
-        learningRateSteps = []
-        interationsSinceImprovementSteps = []
-        stepSteps = []
-
         train_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"]]
         continuous_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + original_bout_length + data_dict["bout_length_test"]]
         val_prices = data_dict["prices"][
@@ -646,248 +641,424 @@ def train_on_historic_data(
             data_dict["start_idx"] + original_bout_length
         ]
 
-        for i in range(run_fingerprint["optimisation_settings"]["n_iterations"] + 1):
-            step = i + offset
-            start_indexes, random_key = get_indices(
-                start_index=data_dict["start_idx"],
+        # ── Pre-generate NaN replacement bank for scan-compatible reinit ──
+        nan_bank = generate_nan_bank(
+            pool, initial_params, run_fingerprint, n_tokens,
+            n_parameter_sets,
+        )
+
+        # ── Selection metric index (Python int, baked into closures) ──
+        sel_metric_idx = _METRIC_KEYS.index(selection_metric)
+        use_val_for_selection = val_fraction > 0
+        # Early stopping metric source (resolved at Python time)
+        if use_early_stopping:
+            if use_validation_for_early_stopping:
+                metric_source = "validation"
+            else:
+                metric_source = "continuous_test"
+
+        # ── Scan carry: static indices for slicing ──
+        _start_idx = data_dict["start_idx"]
+        _bout_length = data_dict["bout_length"]
+        _bout_length_test = data_dict["bout_length_test"]
+        _test_start = original_bout_length
+        _test_end = original_bout_length + _bout_length_test
+
+        # ── Build the scan body ──────────────────────────────────────────
+        is_optax = run_fingerprint["optimisation_settings"]["optimiser"] in ["adam", "adamw"]
+        _optim_settings = run_fingerprint["optimisation_settings"]
+        _swa_start_step = int(n_iterations * swa_start_frac)
+
+        def scan_body(carry, _):
+            """One training iteration — pure JAX, no Python side effects."""
+            # 1. Sample indices — get_indices splits the key internally
+            #    and returns the advanced key, matching the original loop exactly.
+            start_indexes, key = get_indices(
+                start_index=_start_idx,
                 bout_length=bout_length_window,
-                len_prices=sampling_end_idx,  # Limited to not overlap with validation
-                key=random_key,
-                optimisation_settings=run_fingerprint["optimisation_settings"],
-            )
-            if run_fingerprint["optimisation_settings"]["optimiser"] in [
-                "adam",
-                "adamw",
-            ]:
-                # Adam update with state maintenance
-                params, objective_value, old_params, grads, opt_state, has_nan = update(
-                    params, start_indexes, local_learning_rate, opt_state
-                )
-            else:
-                # Regular SGD update
-                params, objective_value, old_params, grads, has_nan = update(
-                    params, start_indexes, local_learning_rate
-                )
-            params = nan_param_reinit_vectorized(
-                params,
-                has_nan,
-                pool,
-                initial_params,
-                run_fingerprint,
-                n_tokens,
-                n_parameter_sets,
+                len_prices=sampling_end_idx,
+                key=carry["random_key"],
+                optimisation_settings=_optim_settings,
             )
 
-            # Run continuous forward pass covering train + test period
-            # This is vmapped over parameter sets, so outputs have shape:
-            # - value: (n_parameter_sets, time_steps)
-            # - reserves: (n_parameter_sets, time_steps, n_assets)
+            # 2. Gradient update
+            if is_optax:
+                new_params, obj, old_params, grads, new_opt_state, has_nan = update(
+                    carry["params"], start_indexes, carry["lr"], carry["opt_state"],
+                )
+            else:
+                new_params, obj, old_params, grads, has_nan = update(
+                    carry["params"], start_indexes, carry["lr"],
+                )
+                new_opt_state = None
+
+            # 3. NaN reinit from bank
+            new_params, nan_count = nan_reinit_from_bank(
+                new_params, has_nan, nan_bank, carry["nan_count"],
+            )
+
+            # 4. Continuous forward pass (full eval every iteration)
             continuous_outputs = partial_forward_pass_nograd_continuous(
-                params,
-                (data_dict["start_idx"], 0),
-                data_dict["prices"],
+                new_params, (_start_idx, 0), data_dict["prices"],
             )
 
-            # Batched metric computation — one vmapped dispatch per metric type
-            # replaces the per-param-set Python loop that was O(n_parameter_sets) dispatches.
-            # Batch-slice train period: (n_param_sets, bout_length, ...)
-            train_values = continuous_outputs["value"][:, :data_dict["bout_length"]]
-            train_reserves = continuous_outputs["reserves"][:, :data_dict["bout_length"], :]
-            train_metrics_arr, train_daily_ret = _compute_all_metrics_batched(
-                train_values, train_reserves, train_prices
+            # 5. Batched metrics — train
+            train_values = continuous_outputs["value"][:, :_bout_length]
+            train_reserves = continuous_outputs["reserves"][:, :_bout_length, :]
+            train_metrics_arr, _ = _compute_all_metrics_batched(
+                train_values, train_reserves, train_prices,
             )
 
-            # Continuous test metrics: slice test period from continuous outputs
-            test_start = original_bout_length
-            test_end = original_bout_length + data_dict["bout_length_test"]
-            test_values = continuous_outputs["value"][:, test_start:test_end]
-            test_reserves = continuous_outputs["reserves"][:, test_start:test_end, :]
-            test_prices_slice = continuous_prices[test_start:test_end]
-            cont_test_metrics_arr, cont_test_daily_ret = _compute_all_metrics_batched(
-                test_values, test_reserves, test_prices_slice
+            # 5b. Batched metrics — test
+            test_values = continuous_outputs["value"][:, _test_start:_test_end]
+            test_reserves = continuous_outputs["reserves"][:, _test_start:_test_end, :]
+            test_prices_slice = continuous_prices[_test_start:_test_end]
+            cont_test_metrics_arr, _ = _compute_all_metrics_batched(
+                test_values, test_reserves, test_prices_slice,
             )
 
-            # Convert to list-of-dicts for downstream compatibility
-            # (BestParamsTracker, display, save — all expect dict-per-param-set)
-            train_metrics_list = metrics_arr_to_dicts(train_metrics_arr, train_daily_ret)
-            continuous_test_metrics_list = metrics_arr_to_dicts(cont_test_metrics_arr, cont_test_daily_ret)
-
-            # Compute validation metrics if val_fraction > 0 (for early stopping and saving)
+            # 5c. Batched metrics — val (always compute; zeros if unused)
             if val_fraction > 0:
-                val_values = continuous_outputs["value"][:, data_dict["bout_length"]:original_bout_length]
-                val_reserves = continuous_outputs["reserves"][:, data_dict["bout_length"]:original_bout_length, :]
-                val_metrics_arr, val_daily_ret = _compute_all_metrics_batched(
-                    val_values, val_reserves, val_prices
+                val_values = continuous_outputs["value"][:, _bout_length:original_bout_length]
+                val_reserves = continuous_outputs["reserves"][:, _bout_length:original_bout_length, :]
+                val_metrics_arr, _ = _compute_all_metrics_batched(
+                    val_values, val_reserves, val_prices,
                 )
-                val_metrics_list = metrics_arr_to_dicts(val_metrics_arr, val_daily_ret)
-                # Collect validation metrics for saving
-                validationSteps.append(val_metrics_list)
-                # Compute current_val_metric for early stopping — direct array indexing
-                sel_idx = _METRIC_KEYS.index(selection_metric)
-                current_val_metric = jnp.nanmean(val_metrics_arr[:, sel_idx])
             else:
-                val_metrics_list = None
-                current_val_metric = None
+                val_metrics_arr = jnp.zeros_like(train_metrics_arr)
 
-            # Update BestParamsTracker - handles both best_train and best_val selection
-            tracker_improved = params_tracker.update(
-                iteration=step,
-                params=params,
-                continuous_outputs=continuous_outputs,
-                train_metrics_list=train_metrics_list,
-                val_metrics_list=val_metrics_list,
-                continuous_test_metrics_list=continuous_test_metrics_list,
+            # 6. Tracker update (pure function, small carry)
+            tracker, improved = update_tracker_state(
+                carry["tracker"], carry["step"], new_params,
+                train_metrics_arr, val_metrics_arr, cont_test_metrics_arr,
+                sel_metric_idx=sel_metric_idx,
+                use_val=use_val_for_selection,
+                use_test=False,
             )
 
-            # Track iterations since improvement for learning rate decay
-            # Branchless via jnp.where — no device→host sync needed
-            iterations_since_improvement = jnp.where(
-                tracker_improved, 0, iterations_since_improvement + 1
-            )
-            should_decay = iterations_since_improvement > max_iterations_with_no_improvement
-            local_learning_rate = jnp.where(
+            # 7. LR decay (branchless)
+            iters_since = jnp.where(improved, jnp.int32(0), carry["iters_since_improvement"] + 1)
+            should_decay = iters_since > max_iterations_with_no_improvement
+            lr = jnp.where(
                 should_decay,
-                jnp.maximum(local_learning_rate * decay_lr_ratio, min_lr),
-                local_learning_rate,
+                jnp.maximum(carry["lr"] * decay_lr_ratio, min_lr),
+                carry["lr"],
             )
-            iterations_since_improvement = jnp.where(should_decay, 0, iterations_since_improvement)
+            iters_since = jnp.where(should_decay, jnp.int32(0), iters_since)
 
-            # Save step data for checkpointing
-            paramSteps.append(dict(params))
-            trainingSteps.append(train_metrics_list)
-            continuousTestSteps.append(continuous_test_metrics_list)
-            objectiveSteps.append(objective_value)
-            learningRateSteps.append(local_learning_rate)
-            interationsSinceImprovementSteps.append(iterations_since_improvement)
-            stepSteps.append(step)
-
-            # Early stopping based on validation or test metrics
-            # Note: Early stopping only controls WHEN to stop training.
-            # Final param selection is handled by params_tracker.
-            # Early stopping: branchless patience tracking (no device→host sync).
-            # The break check is deferred to after the display block so it
-            # piggybacks on the float() syncs that materialise the graph.
+            # 8. Early stopping state (branchless)
             if use_early_stopping:
-                if use_validation_for_early_stopping and val_metrics_list:
-                    current_early_stopping_metric = current_val_metric
-                    metric_source = "validation"
-                elif continuous_test_metrics_list:
-                    sel_idx = _METRIC_KEYS.index(selection_metric)
-                    current_early_stopping_metric = jnp.nanmean(cont_test_metrics_arr[:, sel_idx])
-                    metric_source = "continuous_test"
+                if use_validation_for_early_stopping:
+                    es_metric = jnp.nanmean(val_metrics_arr[:, sel_metric_idx])
                 else:
-                    current_early_stopping_metric = -jnp.inf
-                    metric_source = "none"
+                    es_metric = jnp.nanmean(cont_test_metrics_arr[:, sel_metric_idx])
+                es_improved = es_metric > carry["es_metric"]
+                new_es_metric = jnp.where(es_improved, es_metric, carry["es_metric"])
+                new_es_counter = jnp.where(es_improved, jnp.int32(0), carry["es_counter"] + 1)
+            else:
+                new_es_metric = carry["es_metric"]
+                new_es_counter = carry["es_counter"]
 
-                metric_improved = (current_early_stopping_metric * metric_direction) > (best_early_stopping_metric * metric_direction)
-                best_early_stopping_metric = jnp.where(
-                    metric_improved, current_early_stopping_metric, best_early_stopping_metric
+            # 9. SWA accumulator
+            if use_swa:
+                should_swa = (carry["step"] >= _swa_start_step) & (carry["step"] % swa_freq == 0)
+                swa_sum = tree_map(
+                    lambda s, p: jnp.where(should_swa, s + p, s),
+                    carry["swa_sum"], new_params,
                 )
-                iterations_since_early_stopping_improvement = jnp.where(
-                    metric_improved, 0, iterations_since_early_stopping_improvement + 1
+                swa_count = carry["swa_count"] + should_swa.astype(jnp.int32)
+            else:
+                swa_sum = carry["swa_sum"]
+                swa_count = carry["swa_count"]
+
+            new_carry = {
+                "params": new_params,
+                "random_key": key,
+                "lr": lr,
+                "iters_since_improvement": iters_since,
+                "tracker": tracker,
+                "es_metric": new_es_metric,
+                "es_counter": new_es_counter,
+                "nan_count": nan_count,
+                "swa_sum": swa_sum,
+                "swa_count": swa_count,
+                "step": carry["step"] + 1,
+            }
+            if is_optax:
+                new_carry["opt_state"] = new_opt_state
+
+            per_step = {
+                "objective": obj,
+                "train_metrics": train_metrics_arr,
+                "test_metrics": cont_test_metrics_arr,
+                "val_metrics": val_metrics_arr,
+                "lr": lr,
+                "iters_since_improvement": iters_since,
+                "params": new_params,
+            }
+            return new_carry, per_step
+
+        # ── Initialize carry ─────────────────────────────────────────────
+        carry = {
+            "params": params,
+            "random_key": random_key,
+            "lr": jnp.array(local_learning_rate),
+            "iters_since_improvement": jnp.int32(0),
+            "tracker": init_tracker_state(params, n_parameter_sets),
+            "es_metric": jnp.array(-jnp.inf),
+            "es_counter": jnp.int32(0),
+            "nan_count": jnp.int32(0),
+            "swa_sum": tree_map(jnp.zeros_like, params),
+            "swa_count": jnp.int32(0),
+            "step": jnp.int32(offset),
+        }
+        if is_optax:
+            carry["opt_state"] = opt_state
+
+        # ── Outer loop: scan in chunks, Python between chunks ────────────
+        total_iterations = n_iterations + 1  # 0..n_iterations inclusive
+        chunk_size = max(iterations_per_print, 1)
+        remaining = total_iterations
+        completed = 0
+        last_objective_value = None
+
+        # Accumulators for save_multi_params (filled from per-step outputs)
+        paramSteps = []
+        trainingSteps = []
+        continuousTestSteps = []
+        validationSteps = []
+        objectiveSteps = []
+        learningRateSteps = []
+        interationsSinceImprovementSteps = []
+        stepSteps = []
+
+        while remaining > 0:
+            actual = min(chunk_size, remaining)
+
+            if actual < chunk_size:
+                # Partial last chunk: run Python loop to avoid recompilation
+                # at a different scan length
+                all_per_steps = {
+                    "objective": [],
+                    "train_metrics": [],
+                    "test_metrics": [],
+                    "val_metrics": [],
+                    "lr": [],
+                    "iters_since_improvement": [],
+                    "params": {k: [] for k in carry["params"]},
+                }
+                for _ in range(actual):
+                    carry, step_out = scan_body(carry, None)
+                    all_per_steps["objective"].append(step_out["objective"])
+                    all_per_steps["train_metrics"].append(step_out["train_metrics"])
+                    all_per_steps["test_metrics"].append(step_out["test_metrics"])
+                    all_per_steps["val_metrics"].append(step_out["val_metrics"])
+                    all_per_steps["lr"].append(step_out["lr"])
+                    all_per_steps["iters_since_improvement"].append(step_out["iters_since_improvement"])
+                    for k in step_out["params"]:
+                        all_per_steps["params"][k].append(step_out["params"][k])
+                # Stack into arrays with leading chunk dim
+                history = {
+                    "objective": jnp.stack(all_per_steps["objective"]),
+                    "train_metrics": jnp.stack(all_per_steps["train_metrics"]),
+                    "test_metrics": jnp.stack(all_per_steps["test_metrics"]),
+                    "val_metrics": jnp.stack(all_per_steps["val_metrics"]),
+                    "lr": jnp.stack(all_per_steps["lr"]),
+                    "iters_since_improvement": jnp.stack(all_per_steps["iters_since_improvement"]),
+                    "params": {
+                        k: jnp.stack(v) if v and hasattr(v[0], 'shape') else v
+                        for k, v in all_per_steps["params"].items()
+                    },
+                }
+            else:
+                carry, history = lax.scan(scan_body, carry, None, length=actual)
+
+            remaining -= actual
+            completed += actual
+            last_objective_value = history["objective"][-1]
+
+            # ── Python-side: accumulate save data ────────────────────
+            def _extract_params_at(params_tree, j):
+                """Extract params at step j, handling empty-list pytree leaves."""
+                return {
+                    k: v[j] if hasattr(v, '__getitem__') and not isinstance(v, list) else v
+                    for k, v in params_tree.items()
+                }
+
+            for j in range(actual):
+                step_j = int(carry["step"]) - actual + j
+                p_j = _extract_params_at(history["params"], j)
+                paramSteps.append(p_j)
+                trainingSteps.append(
+                    metrics_arr_to_dicts(history["train_metrics"][j])
                 )
-
-            # SWA: collect parameters after swa_start_frac of training
-            if use_swa and i >= int(n_iterations * swa_start_frac) and i % swa_freq == 0:
-                swa_params_list.append(deepcopy(params))
-
-            # Checkpoint tracking for Rademacher complexity
-            # Save DAILY EXCESS returns (vs uniform HODL) at checkpoint intervals
-            # Daily aggregation gives more meaningful Rademacher values
-            if track_checkpoints and i % checkpoint_interval == 0:
-                # Extract values and prices from the training period
-                # continuous_outputs["value"] has shape (n_parameter_sets, time_steps)
-                train_values = continuous_outputs["value"][:, :data_dict["bout_length"]]
-                train_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"]]
-
-                # Compute uniform HODL benchmark (equal weight, no rebalancing)
-                # Price ratio for each asset: p_t / p_0
-                price_ratios = train_prices / (train_prices[0:1] + 1e-10)  # (T, n_assets)
-                # Uniform HODL value = initial_value * mean(price_ratios across assets)
-                uniform_hodl_value = price_ratios.mean(axis=-1)  # (T,)
-
-                # Compute log returns for model and benchmark
-                # Shape: (n_parameter_sets, bout_length - 1)
-                model_log_returns = jnp.diff(jnp.log(train_values + 1e-10), axis=-1)
-                hodl_log_returns = jnp.diff(jnp.log(uniform_hodl_value + 1e-10))  # (bout_length - 1,)
-
-                # Excess returns = model returns - benchmark returns
-                excess_returns = model_log_returns - hodl_log_returns[None, :]
-
-                # Take mean across parameter sets (they're independent runs)
-                # Shape: (bout_length - 1,)
-                checkpoint_excess_returns = np.array(excess_returns.mean(axis=0))
-
-                # Aggregate to daily resolution (1440 minutes per day)
-                # This gives more meaningful Rademacher values
-                minutes_per_day = 1440
-                n_full_days = len(checkpoint_excess_returns) // minutes_per_day
-                if n_full_days > 0:
-                    # Sum minute returns to get daily returns (log returns are additive)
-                    daily_excess = checkpoint_excess_returns[:n_full_days * minutes_per_day]
-                    daily_excess = daily_excess.reshape(n_full_days, minutes_per_day).sum(axis=1)
-
-                    # Only save if no NaN values (training didn't explode)
-                    if not np.isnan(daily_excess).any():
-                        checkpoint_returns_list.append(daily_excess)
-
-            if step % iterations_per_print == 0:
-                if verbose:
-                    # Format metrics for display — these float() calls materialise the
-                    # computation graph; all subsequent bool()/float() in this iteration
-                    # are effectively free (values already on host).
-                    obj_val = float(np.mean(objective_value)) if hasattr(objective_value, '__len__') else float(objective_value)
-                    print(f"\n[Iter {step}] objective={obj_val:.4f}")
-
-                    # Training metrics (in-sample) — use arrays directly
-                    sharpe_idx = _METRIC_KEYS.index("sharpe")
-                    roh_idx = _METRIC_KEYS.index("returns_over_uniform_hodl")
-                    print(f"  Train (IS):  sharpe={float(jnp.nanmean(train_metrics_arr[:, sharpe_idx])):+.4f}"
-                          f"  ret_over_hodl={float(jnp.nanmean(train_metrics_arr[:, roh_idx])):+.4f}")
-
-                    # Validation metrics (if using validation holdout)
-                    if val_fraction > 0 and val_metrics_list:
-                        print(f"  Val:         sharpe={float(jnp.nanmean(val_metrics_arr[:, sharpe_idx])):+.4f}"
-                              f"  ret_over_hodl={float(jnp.nanmean(val_metrics_arr[:, roh_idx])):+.4f}")
-                        if use_early_stopping:
-                            print(f"  Early stop:  {selection_metric}={current_early_stopping_metric:+.4f} "
-                                  f"(best={best_early_stopping_metric:+.4f}, wait={iterations_since_early_stopping_improvement}/{early_stopping_patience})")
-
-                    # Continuous test metrics (out-of-sample, from continuous forward pass)
-                    print(f"  Test (OOS):  sharpe={float(jnp.nanmean(cont_test_metrics_arr[:, sharpe_idx])):+.4f}"
-                          f"  ret_over_hodl={float(jnp.nanmean(cont_test_metrics_arr[:, roh_idx])):+.4f}")
-                save_multi_params(
-                    deepcopy(run_fingerprint),
-                    paramSteps,
-                    continuousTestSteps,  # Used as test_objective for backward compat
-                    trainingSteps,
-                    objectiveSteps,
-                    learningRateSteps,
-                    interationsSinceImprovementSteps,
-                    stepSteps,
-                    continuousTestSteps,
-                    validation_metrics=validationSteps if validationSteps else None,
-                    sorted_tokens=True,
+                continuousTestSteps.append(
+                    metrics_arr_to_dicts(history["test_metrics"][j])
                 )
+                objectiveSteps.append(history["objective"][j])
+                learningRateSteps.append(history["lr"][j])
+                interationsSinceImprovementSteps.append(
+                    history["iters_since_improvement"][j]
+                )
+                stepSteps.append(step_j)
+                if val_fraction > 0:
+                    validationSteps.append(
+                        metrics_arr_to_dicts(history["val_metrics"][j])
+                    )
 
-                paramSteps = []
-                trainingSteps = []
-                continuousTestSteps = []
-                validationSteps = []
-                objectiveSteps = []
-                learningRateSteps = []
-                interationsSinceImprovementSteps = []
-                stepSteps = []
+            # ── Python-side: checkpoint tracking ─────────────────────
+            if track_checkpoints:
+                for j in range(actual):
+                    global_step = int(carry["step"]) - actual + j
+                    if global_step % checkpoint_interval == 0:
+                        ckpt_params = _extract_params_at(history["params"], j)
+                        ckpt_outputs = partial_forward_pass_nograd_continuous(
+                            ckpt_params, (_start_idx, 0), data_dict["prices"],
+                        )
+                        ckpt_train_values = ckpt_outputs["value"][:, :_bout_length]
+                        ckpt_train_prices = data_dict["prices"][_start_idx:_start_idx + _bout_length]
+                        price_ratios = ckpt_train_prices / (ckpt_train_prices[0:1] + 1e-10)
+                        uniform_hodl_value = price_ratios.mean(axis=-1)
+                        model_log_returns = jnp.diff(jnp.log(ckpt_train_values + 1e-10), axis=-1)
+                        hodl_log_returns = jnp.diff(jnp.log(uniform_hodl_value + 1e-10))
+                        excess_returns = model_log_returns - hodl_log_returns[None, :]
+                        checkpoint_excess_returns = np.array(excess_returns.mean(axis=0))
+                        minutes_per_day = 1440
+                        n_full_days = len(checkpoint_excess_returns) // minutes_per_day
+                        if n_full_days > 0:
+                            daily_excess = checkpoint_excess_returns[:n_full_days * minutes_per_day]
+                            daily_excess = daily_excess.reshape(n_full_days, minutes_per_day).sum(axis=1)
+                            if not np.isnan(daily_excess).any():
+                                checkpoint_returns_list.append(daily_excess)
 
-            # Early stopping break check — placed after display so the float()
-            # calls above materialise the graph first (free ride for this bool()).
-            if use_early_stopping and bool(iterations_since_early_stopping_improvement >= early_stopping_patience):
+            # ── Python-side: display ─────────────────────────────────
+            if verbose:
+                last_train = history["train_metrics"][-1]
+                last_test = history["test_metrics"][-1]
+                obj_val = float(np.mean(np.array(last_objective_value)))
+                current_step = int(carry["step"]) - 1
+                print(f"\n[Iter {current_step}] objective={obj_val:.4f}")
+
+                sharpe_idx = _METRIC_KEYS.index("sharpe")
+                roh_idx = _METRIC_KEYS.index("returns_over_uniform_hodl")
+                print(f"  Train (IS):  sharpe={float(jnp.nanmean(last_train[:, sharpe_idx])):+.4f}"
+                      f"  ret_over_hodl={float(jnp.nanmean(last_train[:, roh_idx])):+.4f}")
+
+                if val_fraction > 0:
+                    last_val = history["val_metrics"][-1]
+                    print(f"  Val:         sharpe={float(jnp.nanmean(last_val[:, sharpe_idx])):+.4f}"
+                          f"  ret_over_hodl={float(jnp.nanmean(last_val[:, roh_idx])):+.4f}")
+                    if use_early_stopping:
+                        print(f"  Early stop:  {selection_metric}={float(carry['es_metric']):+.4f} "
+                              f"(wait={int(carry['es_counter'])}/{early_stopping_patience})")
+
+                print(f"  Test (OOS):  sharpe={float(jnp.nanmean(last_test[:, sharpe_idx])):+.4f}"
+                      f"  ret_over_hodl={float(jnp.nanmean(last_test[:, roh_idx])):+.4f}")
+
+            # ── Python-side: save checkpoint ─────────────────────────
+            save_multi_params(
+                deepcopy(run_fingerprint),
+                paramSteps,
+                continuousTestSteps,
+                trainingSteps,
+                objectiveSteps,
+                learningRateSteps,
+                interationsSinceImprovementSteps,
+                stepSteps,
+                continuousTestSteps,
+                validation_metrics=validationSteps if validationSteps else None,
+                sorted_tokens=True,
+            )
+            paramSteps = []
+            trainingSteps = []
+            continuousTestSteps = []
+            validationSteps = []
+            objectiveSteps = []
+            learningRateSteps = []
+            interationsSinceImprovementSteps = []
+            stepSteps = []
+
+            # ── Python-side: early stopping break ────────────────────
+            if use_early_stopping and bool(carry["es_counter"] >= early_stopping_patience):
                 if verbose:
                     print(f"\n[Early stopping] No {metric_source} {selection_metric} improvement for {early_stopping_patience} iterations")
-                    print(f"  Stopped at iteration {step}, best {selection_metric}={float(best_early_stopping_metric):+.4f}")
+                    print(f"  Stopped at iteration {int(carry['step']) - 1}, best {selection_metric}={float(carry['es_metric']):+.4f}")
                 break
-        # Get results from tracker (includes both last and best state)
+
+        # ── Post-loop: reconstruct results via BestParamsTracker ─────
+        # Reconstruct continuous_outputs for best and last params
+        # (not stored in carry to keep carry small)
+        best_continuous_outputs = partial_forward_pass_nograd_continuous(
+            carry["tracker"]["best_params"], (_start_idx, 0), data_dict["prices"],
+        )
+        last_continuous_outputs = partial_forward_pass_nograd_continuous(
+            carry["params"], (_start_idx, 0), data_dict["prices"],
+        )
+
+        # Convert tracker metric arrays to list-of-dicts for compatibility
+        best_train_metrics_list = metrics_arr_to_dicts(carry["tracker"]["best_train_metrics"])
+        best_test_metrics_list = metrics_arr_to_dicts(carry["tracker"]["best_test_metrics"])
+        best_val_metrics_list = metrics_arr_to_dicts(carry["tracker"]["best_val_metrics"]) if val_fraction > 0 else None
+
+        # Compute last-iteration metrics from one more forward pass
+        last_train_values = last_continuous_outputs["value"][:, :_bout_length]
+        last_train_reserves = last_continuous_outputs["reserves"][:, :_bout_length, :]
+        last_train_arr, last_train_dr = _compute_all_metrics_batched(last_train_values, last_train_reserves, train_prices)
+        last_train_metrics_list = metrics_arr_to_dicts(last_train_arr, last_train_dr)
+
+        last_test_values = last_continuous_outputs["value"][:, _test_start:_test_end]
+        last_test_reserves = last_continuous_outputs["reserves"][:, _test_start:_test_end, :]
+        last_test_arr, last_test_dr = _compute_all_metrics_batched(last_test_values, last_test_reserves, continuous_prices[_test_start:_test_end])
+        last_test_metrics_list = metrics_arr_to_dicts(last_test_arr, last_test_dr)
+
+        if val_fraction > 0:
+            last_val_values = last_continuous_outputs["value"][:, _bout_length:original_bout_length]
+            last_val_reserves = last_continuous_outputs["reserves"][:, _bout_length:original_bout_length, :]
+            last_val_arr, last_val_dr = _compute_all_metrics_batched(last_val_values, last_val_reserves, val_prices)
+            last_val_metrics_list = metrics_arr_to_dicts(last_val_arr, last_val_dr)
+        else:
+            last_val_metrics_list = None
+
+        # Populate BestParamsTracker for get_results() compatibility
+        params_tracker.best_params = carry["tracker"]["best_params"]
+        params_tracker.best_metric_value = carry["tracker"]["best_metric_value"]
+        params_tracker.best_iteration = carry["tracker"]["best_iteration"]
+        params_tracker.best_param_idx = carry["tracker"]["best_param_idx"]
+        params_tracker.best_train_metrics = best_train_metrics_list
+        params_tracker.best_continuous_test_metrics = best_test_metrics_list
+        params_tracker.best_val_metrics = best_val_metrics_list
+        params_tracker.best_continuous_outputs = {
+            "reserves": best_continuous_outputs["reserves"],
+            "weights": best_continuous_outputs["weights"],
+        }
+
+        params_tracker.last_params = carry["params"]
+        params_tracker.last_iteration = int(carry["step"]) - 1
+        params_tracker.last_param_idx = carry["tracker"]["best_param_idx"]  # Use best as proxy for last selection
+        params_tracker.last_train_metrics = last_train_metrics_list
+        params_tracker.last_continuous_test_metrics = last_test_metrics_list
+        params_tracker.last_val_metrics = last_val_metrics_list
+        params_tracker.last_continuous_outputs = {
+            "reserves": last_continuous_outputs["reserves"],
+            "weights": last_continuous_outputs["weights"],
+        }
+
+        # Compute last_param_idx properly for last iteration
+        from quantammsim.runners.jax_runner_utils import compute_selection_metric
+        _, last_param_idx = compute_selection_metric(
+            last_train_metrics_list,
+            last_val_metrics_list,
+            last_test_metrics_list,
+            method=tracker_selection_method,
+            metric=selection_metric,
+        )
+        params_tracker.last_param_idx = last_param_idx
+
         tracker_results = params_tracker.get_results(n_parameter_sets, original_bout_length)
+
+        # Update objective_value and i for post-loop code
+        objective_value = last_objective_value
+        i = completed - 1
 
         if verbose:
             obj_val = float(np.mean(objective_value)) if hasattr(objective_value, '__len__') else float(objective_value)
@@ -947,16 +1118,17 @@ def train_on_historic_data(
         # SWA averages params across TIME (different training iterations), not across param sets.
         # After SWA averaging, we still have n_parameter_sets param sets - we then select the
         # best one based on the tracker's best_param_idx.
-        if use_swa and len(swa_params_list) > 0 and val_fraction == 0:
+        if use_swa and int(carry["swa_count"]) > 0 and val_fraction == 0:
             if verbose:
-                print(f"Applying SWA: averaging {len(swa_params_list)} parameter snapshots across time")
-            swa_params = {}
-            for key in swa_params_list[0].keys():
-                if key == "subsidary_params":
-                    swa_params[key] = swa_params_list[-1][key]
-                else:
-                    stacked = jnp.stack([p[key] for p in swa_params_list], axis=0)
-                    swa_params[key] = jnp.mean(stacked, axis=0)
+                print(f"Applying SWA: averaged {int(carry['swa_count'])} parameter snapshots")
+            swa_params = tree_map(
+                lambda s: s / carry["swa_count"],
+                carry["swa_sum"],
+            )
+            # Handle scalars: use last params for scalar keys
+            for key in swa_params:
+                if hasattr(swa_params[key], 'shape') and swa_params[key].ndim == 0:
+                    swa_params[key] = carry["params"][key]
             # Select param set using tracker's best_param_idx
             selected_params = params_tracker.select_param_set(swa_params, tracker_results["best_param_idx"], n_parameter_sets)
             if return_training_metadata:

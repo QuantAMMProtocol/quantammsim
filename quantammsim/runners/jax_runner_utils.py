@@ -1781,6 +1781,214 @@ def _nanargmax_jnp(arr):
     return jnp.argmax(jnp.where(jnp.isnan(arr), -jnp.inf, arr))
 
 
+# =============================================================================
+# Scan-compatible pure-function tracker
+# =============================================================================
+
+
+def init_tracker_state(params, n_parameter_sets, n_metrics=12):
+    """Create initial tracker carry state for jax.lax.scan.
+
+    All fields are JAX arrays (no None) so the pytree structure is fixed
+    from iteration 0.  ``best_params`` is initialised to ``params`` so
+    the leaf structure matches on every iteration.
+
+    Parameters
+    ----------
+    params : dict
+        Batched strategy parameters, shape ``(n_parameter_sets, ...)``
+        per key.
+    n_parameter_sets : int
+        Number of parallel parameter sets.
+    n_metrics : int
+        Number of scalar metrics per param set (default 12, matching
+        ``_METRIC_KEYS``).
+
+    Returns
+    -------
+    dict
+        Carry-compatible tracker state.
+    """
+    return {
+        "best_metric_value": jnp.array(-jnp.inf),
+        "best_iteration": jnp.array(0, dtype=jnp.int32),
+        "best_param_idx": jnp.array(0, dtype=jnp.int32),
+        "best_params": tree_map(lambda x: x.copy(), params),
+        "best_train_metrics": jnp.full((n_parameter_sets, n_metrics), jnp.nan),
+        "best_val_metrics": jnp.full((n_parameter_sets, n_metrics), jnp.nan),
+        "best_test_metrics": jnp.full((n_parameter_sets, n_metrics), jnp.nan),
+    }
+
+
+def update_tracker_state(
+    tracker_state, iteration, params,
+    train_metrics_arr, val_metrics_arr, test_metrics_arr,
+    sel_metric_idx, use_val, use_test,
+):
+    """Pure-function tracker update for jax.lax.scan.
+
+    Replaces ``BestParamsTracker.update()`` inside the scan body.
+    All operations are JAX — no Python control flow that depends on
+    runtime values.
+
+    The selection source (train vs val vs test) is controlled by
+    ``use_val`` and ``use_test`` which are Python bools resolved at
+    trace time.  Inside the scan body they are constants baked into
+    the closure by the factory.
+
+    Parameters
+    ----------
+    tracker_state : dict
+        Current tracker carry (from ``init_tracker_state``).
+    iteration : jnp.int32
+        Current iteration index.
+    params : dict
+        Current batched params.
+    train_metrics_arr : jnp.ndarray
+        Shape ``(n_parameter_sets, n_metrics)``.
+    val_metrics_arr : jnp.ndarray
+        Shape ``(n_parameter_sets, n_metrics)``.  Zeros if unused.
+    test_metrics_arr : jnp.ndarray
+        Shape ``(n_parameter_sets, n_metrics)``.  Zeros if unused.
+    sel_metric_idx : int
+        Column index into the metrics array for selection (Python int,
+        resolved at trace time).
+    use_val : bool
+        If True, select on ``val_metrics_arr``.  Python bool.
+    use_test : bool
+        If True, select on ``test_metrics_arr``.  Python bool.
+        ``use_val`` takes precedence if both are True.
+
+    Returns
+    -------
+    (new_tracker_state, improved) : tuple
+        ``improved`` is a JAX boolean scalar.
+    """
+    # Pick selection source — Python if at trace time
+    if use_val:
+        sel_arr = val_metrics_arr[:, sel_metric_idx]
+    elif use_test:
+        sel_arr = test_metrics_arr[:, sel_metric_idx]
+    else:
+        sel_arr = train_metrics_arr[:, sel_metric_idx]
+
+    selection_value = jnp.nanmean(sel_arr)
+    param_idx = _nanargmax_jnp(sel_arr).astype(jnp.int32)
+
+    improved = selection_value > tracker_state["best_metric_value"]
+
+    new_state = {
+        "best_metric_value": jnp.where(
+            improved, selection_value, tracker_state["best_metric_value"],
+        ),
+        "best_iteration": jnp.where(
+            improved, iteration, tracker_state["best_iteration"],
+        ),
+        "best_param_idx": jnp.where(
+            improved, param_idx, tracker_state["best_param_idx"],
+        ),
+        "best_params": tree_map(
+            lambda new, old: jnp.where(improved, new, old),
+            params, tracker_state["best_params"],
+        ),
+        "best_train_metrics": jnp.where(
+            improved, train_metrics_arr, tracker_state["best_train_metrics"],
+        ),
+        "best_val_metrics": jnp.where(
+            improved, val_metrics_arr, tracker_state["best_val_metrics"],
+        ),
+        "best_test_metrics": jnp.where(
+            improved, test_metrics_arr, tracker_state["best_test_metrics"],
+        ),
+    }
+    return new_state, improved
+
+
+# =============================================================================
+# Scan-compatible NaN reinit from pre-generated bank
+# =============================================================================
+
+NAN_BANK_SIZE = 32
+
+
+def generate_nan_bank(pool, initial_params, run_fingerprint, n_tokens,
+                      n_parameter_sets, bank_size=NAN_BANK_SIZE):
+    """Pre-generate a bank of replacement params for NaN reinit.
+
+    Called once before the scan loop.  Each bank entry has shape
+    ``(n_parameter_sets, ...)``, so simultaneous NaN across param sets
+    still gets distinct replacements.
+
+    Parameters
+    ----------
+    pool : AbstractPool
+        Pool instance (for ``init_parameters``).
+    initial_params : dict
+        Initial param config passed to ``pool.init_parameters``.
+    run_fingerprint : dict
+        Run configuration.
+    n_tokens : int
+        Number of tokens/assets.
+    n_parameter_sets : int
+        Batch size for parameter sets.
+    bank_size : int
+        Number of replacement entries in the bank.
+
+    Returns
+    -------
+    dict
+        ``{key: jnp.ndarray of shape (bank_size, n_parameter_sets, ...)}``
+        for each non-excluded param key.
+    """
+    bank = {}
+    for _ in range(bank_size):
+        new_params = pool.init_parameters(
+            initial_params, run_fingerprint, n_tokens, n_parameter_sets,
+        )
+        for key in new_params:
+            if key not in NAN_EXCLUDED_PARAM_KEYS:
+                if hasattr(new_params[key], 'shape'):
+                    bank.setdefault(key, []).append(new_params[key])
+    return {k: jnp.stack(v) for k, v in bank.items()}
+
+
+def nan_reinit_from_bank(params, has_nan, nan_bank, nan_count):
+    """Replace NaN param sets using a pre-generated bank.
+
+    Scan-compatible: no Python calls to ``pool.init_parameters``,
+    only ``jnp.where`` indexing into the bank.
+
+    Parameters
+    ----------
+    params : dict
+        Current batched params.
+    has_nan : jnp.ndarray
+        Boolean ``(n_parameter_sets,)`` from the update function.
+    nan_bank : dict
+        Pre-generated bank from ``generate_nan_bank``.
+    nan_count : jnp.int32
+        Running counter of NaN events (for bank index cycling).
+
+    Returns
+    -------
+    (new_params, new_count) : tuple
+    """
+    any_nan = jnp.any(has_nan)
+    bank_size = jnp.array(list(nan_bank.values())[0].shape[0])
+    bank_idx = nan_count % bank_size
+    new_count = nan_count + any_nan.astype(jnp.int32)
+
+    new_params = {}
+    for key in params:
+        if key in nan_bank:
+            replacement = nan_bank[key][bank_idx]
+            mask = has_nan.reshape(-1, *([1] * (params[key].ndim - 1)))
+            new_params[key] = jnp.where(mask, replacement, params[key])
+        else:
+            new_params[key] = params[key]
+    return new_params, new_count
+
+
 def compute_selection_metric(
     train_metrics: List[Dict],
     val_metrics: Optional[List[Dict]] = None,
