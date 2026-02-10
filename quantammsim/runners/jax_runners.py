@@ -818,6 +818,15 @@ def train_on_historic_data(
         # ── Outer loop: scan in chunks, Python between chunks ────────────
         total_iterations = n_iterations + 1  # 0..n_iterations inclusive
         chunk_size = max(iterations_per_print, 1)
+
+        # ── JIT-compile the scan chunk ──────────────────────────────────
+        # lax.scan in eager mode just loops in Python — no fusion benefit.
+        # Wrapping in jit compiles the entire chunk (fwd+bwd+optax+metrics+
+        # tracker+NaN reinit × chunk_size iterations) into one XLA program.
+        # This eliminates all Python dispatch overhead between iterations.
+        @jit
+        def _run_scan_chunk(carry):
+            return lax.scan(scan_body, carry, None, length=chunk_size)
         remaining = total_iterations
         completed = 0
         last_objective_value = None
@@ -871,7 +880,7 @@ def train_on_historic_data(
                     },
                 }
             else:
-                carry, history = lax.scan(scan_body, carry, None, length=actual)
+                carry, history = _run_scan_chunk(carry)
 
             remaining -= actual
             completed += actual
