@@ -42,6 +42,7 @@ QUANTAMM_POOL_TYPES = [
     "anti_momentum",
     "power_channel",
     "mean_reversion_channel",
+    "flexible_channel",
     "difference_momentum",
     "min_variance",
 ]
@@ -175,6 +176,7 @@ class TestReservesNoLookahead:
             # Common params
             "initial_weights_logits": jnp.zeros(2),
             "logit_lamb": jnp.array([0.0, 0.0]),
+            "logit_delta_lamb": jnp.array([0.0, 0.0]),
             "log_k": jnp.array([10.0, 10.0]),
             "memory_days_1": jnp.array([1.0, 1.0]),
             "memory_days_2": jnp.array([1.0, 1.0]),
@@ -184,6 +186,16 @@ class TestReservesNoLookahead:
             "raw_width": jnp.array([0.0, 0.0]),
             "raw_exponents": jnp.array([1.0, 1.0]),
             "raw_pre_exp_scaling": jnp.array([1.0, 1.0]),
+            # Flexible channel specific params
+            "raw_alpha": jnp.array([0.0, 0.0]),
+            "raw_exponents_up": jnp.array([1.0, 1.0]),
+            "raw_exponents_down": jnp.array([1.0, 1.0]),
+            "logit_lamb_drawdown": jnp.array([0.0, 0.0]),
+            "logit_risk_off": jnp.array([0.0, 0.0]),
+            "logit_risk_on": jnp.array([0.0, 0.0]),
+            "raw_kelly_kappa": jnp.array([0.0, 0.0]),
+            "logit_lamb_vol": jnp.array([0.0, 0.0]),
+            "raw_entropy_floor": jnp.array([0.0]),
         }
 
     @pytest.mark.parametrize("pool_type", QUANTAMM_POOL_TYPES)

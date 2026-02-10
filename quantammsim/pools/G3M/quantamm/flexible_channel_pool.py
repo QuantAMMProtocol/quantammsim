@@ -113,10 +113,10 @@ class FlexibleChannelPool(MomentumPool):
         super().__init__()
 
     # ─────────────────────────────────────────────────────────────────────────────
-    #  calculate_raw_weights_outputs (history-aware, causal version)
+    #  calculate_rule_outputs (history-aware, causal version)
     # ─────────────────────────────────────────────────────────────────────────────
     @partial(jit, static_argnums=(2,))
-    def calculate_raw_weights_outputs(
+    def calculate_rule_outputs(
         self,
         params: Dict[str, Any],
         run_fingerprint: Dict[str, Any],
@@ -373,6 +373,18 @@ class FlexibleChannelPool(MomentumPool):
 
         _, shrunk = lax.scan(shrink, prev0, raw_ts)  # (Tʹ-1, N)
         return shrunk
+
+    # Backwards-compatible alias for older callers that still use the legacy name.
+    def calculate_raw_weights_outputs(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+    ) -> jnp.ndarray:
+        return self.calculate_rule_outputs(
+            params, run_fingerprint, prices, additional_oracle_input
+        )
 
     # ─────────────────────────────────────────────────────────────────
     #  init_base_parameters   (fully fixed; unchanged)

@@ -552,6 +552,12 @@ class TestPoolCreator:
         pool = create_pool("mean_reversion_channel")
         assert isinstance(pool, MeanReversionChannelPool)
 
+    def test_create_flexible_channel_pool(self):
+        """Test creating flexible channel pool."""
+        from quantammsim.pools.G3M.quantamm.flexible_channel_pool import FlexibleChannelPool
+        pool = create_pool("flexible_channel")
+        assert isinstance(pool, FlexibleChannelPool)
+
     def test_invalid_pool_name_raises(self):
         """Test that invalid pool name raises exception."""
         with pytest.raises(Exception):
