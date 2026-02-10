@@ -15,14 +15,45 @@ from quantammsim.core_simulator.forward_pass import _calculate_return_value
 
 
 def calculate_period_metrics(results_dict, prices=None):
-    """Calculate performance metrics for a given period.
-    
+    """Calculate comprehensive performance metrics for a simulation period.
+
+    Computes Sharpe ratios (minute-resolution, daily arithmetic, daily log),
+    return metrics (absolute, vs HODL, vs uniform HODL, annualised variants),
+    drawdown metrics (Calmar, Sterling), and the Ulcer Index.
+
     Parameters
     ----------
     results_dict : dict
-        Dictionary containing reserves and value data
+        Simulation output containing:
+
+        - ``"reserves"`` : array of shape ``(T, n_assets)``
+        - ``"value"`` : array of shape ``(T,)``
+        - ``"prices"`` : array of shape ``(T, n_assets)``, optional if
+          ``prices`` kwarg is provided
+
     prices : array-like, optional
-        Price data. If not provided, will look for prices in results_dict
+        Price data of shape ``(T, n_assets)``.  Overrides
+        ``results_dict["prices"]`` when provided.
+
+    Returns
+    -------
+    dict
+        Metric dictionary with keys:
+
+        - ``"sharpe"`` : daily arithmetic-return Sharpe (annualised)
+        - ``"jax_sharpe"`` : minute-resolution Sharpe from forward pass
+        - ``"daily_log_sharpe"`` : daily log-return Sharpe (annualised)
+        - ``"return"`` : total cumulative return
+        - ``"returns_over_hodl"`` : return relative to initial-reserve HODL
+        - ``"returns_over_uniform_hodl"`` : return relative to equal-value HODL
+        - ``"annualised_returns"`` : annualised total return
+        - ``"annualised_returns_over_hodl"`` : annualised return vs HODL
+        - ``"annualised_returns_over_uniform_hodl"`` : annualised return vs uniform HODL
+        - ``"ulcer"`` : negated Ulcer Index (higher = less pain)
+        - ``"calmar"`` : Calmar ratio (return / max drawdown)
+        - ``"sterling"`` : Sterling ratio (return / avg drawdown)
+        - ``"daily_returns"`` : ``numpy.ndarray`` of daily arithmetic returns
+          (used downstream for bootstrap CIs and DSR)
     """
     # Use provided prices if available, otherwise get from results_dict
     price_data = prices if prices is not None else results_dict["prices"]
@@ -129,18 +160,29 @@ def calculate_period_metrics(results_dict, prices=None):
     }
 
 def calculate_continuous_test_metrics(continuous_results, train_len, test_len, prices):
-    """Calculate metrics for continuous test period.
-    
+    """Calculate metrics for the test portion of a continuous simulation.
+
+    Slices the test period from a train+test forward pass and delegates
+    to :func:`calculate_period_metrics`.  The continuous forward pass
+    avoids pool re-initialisation at the train/test boundary.
+
     Parameters
-    ----------  
+    ----------
     continuous_results : dict
-        Results from continuous simulation
+        Output from a forward pass spanning train + test, with keys
+        ``"value"`` and ``"reserves"``.
     train_len : int
-        Length of training period
+        Number of timesteps in the training period (used as slice offset).
     test_len : int
-        Length of test period
+        Number of timesteps in the test period.
     prices : array-like
-        Price data for continuous period
+        Price data covering the full train + test window.
+
+    Returns
+    -------
+    dict
+        Same keys as :func:`calculate_period_metrics`, computed on the
+        test slice only.
     """
     # Extract test period portion
 

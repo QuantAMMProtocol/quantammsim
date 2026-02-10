@@ -163,6 +163,112 @@ Enable checkpoint tracking and Rademacher computation:
     )
 
 
+Deflated Sharpe Ratio
+---------------------
+
+When evaluating many strategies (e.g. via Optuna), the best observed Sharpe
+ratio is inflated by selection bias.  The **Deflated Sharpe Ratio** (Bailey &
+Lopez de Prado, 2014) corrects for this multiple-testing effect by comparing
+the observed SR against the expected maximum SR under the null hypothesis that
+all strategies are noise.
+
+.. code-block:: python
+
+    from quantammsim.utils.post_train_analysis import deflated_sharpe_ratio
+
+    dsr = deflated_sharpe_ratio(
+        observed_sr=1.2,   # best OOS Sharpe
+        n_trials=50,       # number of Optuna trials tested
+        T=365,             # number of OOS daily observations
+    )
+
+    if dsr["significant"]:
+        print("Strategy is significant at 95% confidence")
+    else:
+        print(f"DSR = {dsr['dsr']:.3f} — likely selection bias")
+
+DSR is intended for use after hyperparameter tuning — pass
+``n_trials`` from the Optuna study and the best trial's OOS Sharpe.
+
+
+Block Bootstrap Confidence Intervals
+-------------------------------------
+
+Standard confidence intervals for Sharpe ratios assume i.i.d. returns, which
+is violated in practice (autocorrelation from market microstructure, regime
+persistence, etc.).  **Block bootstrap** preserves the autocorrelation
+structure by resampling contiguous blocks of returns.
+
+.. code-block:: python
+
+    from quantammsim.utils.post_train_analysis import block_bootstrap_sharpe_ci
+
+    ci = block_bootstrap_sharpe_ci(
+        daily_returns=oos_daily_returns,
+        block_length=10,    # 10 days captures weekly autocorrelation
+        n_bootstrap=10000,
+        confidence=0.95,
+    )
+    print(f"Sharpe 95% CI: [{ci['lower']:.2f}, {ci['upper']:.2f}]")
+
+The evaluator automatically concatenates OOS daily returns across walk-forward
+cycles and computes bootstrap CIs on the aggregate.
+
+
+Return Decomposition
+--------------------
+
+Pool returns can be decomposed into four components:
+
+.. math::
+
+   r_{\text{pool}} = r_{\text{hodl}} + \Delta_{\text{divergence}} + f_{\text{fees}} + \alpha_{\text{strategy}}
+
+where:
+
+* **HODL return** — what the initial reserves would be worth at final prices
+* **Divergence loss** — the cost of continuous rebalancing in a constant-weight
+  AMM (always ≤ 0 for G3M pools)
+* **Fee income** — revenue from swap fees (external input)
+* **Strategy alpha** — residual value from dynamic weight changes
+
+.. code-block:: python
+
+    from quantammsim.utils.post_train_analysis import decompose_pool_returns
+
+    decomp = decompose_pool_returns(
+        values=result["value"],
+        reserves=result["reserves"],
+        prices=result["prices"],
+    )
+
+This decomposition answers: *"Is the strategy actually generating alpha, or
+is performance just from HODL returns in a bull market?"*
+
+
+Regime-Tagged Evaluation
+------------------------
+
+Each walk-forward cycle is automatically tagged with the OOS period's
+**volatility regime** (low / medium / high) and **trend direction**
+(bull / bear / sideways).  This allows post-hoc analysis of strategy
+robustness across market conditions:
+
+.. code-block:: python
+
+    result = evaluator.evaluate(run_fingerprint)
+
+    for cycle in result.cycles:
+        print(f"Cycle {cycle.cycle_number}: "
+              f"{cycle.volatility_regime} / {cycle.trend_regime} "
+              f"→ OOS Sharpe = {cycle.oos_sharpe:.3f}")
+
+Regime classification uses the mean of daily log returns across all assets:
+
+* **Volatility**: annualised vol < 0.4 = low, < 0.8 = medium, ≥ 0.8 = high
+* **Trend**: cumulative log return > 0.1 = bull, < −0.1 = bear, else sideways
+
+
 Recommended Workflow
 --------------------
 
@@ -173,3 +279,8 @@ Recommended Workflow
 5. **If overfitting persists**: Add ensemble training, SWA, or weight decay.
 6. **Use hyperparameter tuning**: Optimise robustness metrics (WFE, adjusted
    Sharpe) rather than just IS performance.
+7. **Validate statistically**: Use the Deflated Sharpe Ratio to check
+   whether performance survives multiple-testing correction, and bootstrap
+   CIs to quantify uncertainty.
+8. **Decompose returns**: Use return decomposition to verify that alpha
+   comes from dynamic weight management, not just holding in a bull market.
