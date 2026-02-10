@@ -753,7 +753,7 @@ def train_on_historic_data(
             iterations_since_improvement = jnp.where(should_decay, 0, iterations_since_improvement)
 
             # Save step data for checkpointing
-            paramSteps.append(deepcopy(params))
+            paramSteps.append(dict(params))
             trainingSteps.append(train_metrics_list)
             continuousTestSteps.append(continuous_test_metrics_list)
             objectiveSteps.append(objective_value)
@@ -856,14 +856,6 @@ def train_on_historic_data(
                     # Continuous test metrics (out-of-sample, from continuous forward pass)
                     print(f"  Test (OOS):  sharpe={float(jnp.nanmean(cont_test_metrics_arr[:, sharpe_idx])):+.4f}"
                           f"  ret_over_hodl={float(jnp.nanmean(cont_test_metrics_arr[:, roh_idx])):+.4f}")
-
-            # Early stopping break check — placed after display so the float()
-            # calls above materialise the graph first (free ride for this bool()).
-            if use_early_stopping and bool(iterations_since_early_stopping_improvement >= early_stopping_patience):
-                if verbose:
-                    print(f"\n[Early stopping] No {metric_source} {selection_metric} improvement for {early_stopping_patience} iterations")
-                    print(f"  Stopped at iteration {step}, best {selection_metric}={float(best_early_stopping_metric):+.4f}")
-                break
                 save_multi_params(
                     deepcopy(run_fingerprint),
                     paramSteps,
@@ -886,6 +878,14 @@ def train_on_historic_data(
                 learningRateSteps = []
                 interationsSinceImprovementSteps = []
                 stepSteps = []
+
+            # Early stopping break check — placed after display so the float()
+            # calls above materialise the graph first (free ride for this bool()).
+            if use_early_stopping and bool(iterations_since_early_stopping_improvement >= early_stopping_patience):
+                if verbose:
+                    print(f"\n[Early stopping] No {metric_source} {selection_metric} improvement for {early_stopping_patience} iterations")
+                    print(f"  Stopped at iteration {step}, best {selection_metric}={float(best_early_stopping_metric):+.4f}")
+                break
         # Get results from tracker (includes both last and best state)
         tracker_results = params_tracker.get_results(n_parameter_sets, original_bout_length)
 
