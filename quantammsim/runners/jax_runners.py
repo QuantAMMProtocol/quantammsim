@@ -884,7 +884,15 @@ def train_on_historic_data(
 
             remaining -= actual
             completed += actual
-            last_objective_value = history["objective"][-1]
+
+            # ── Bulk device→host transfer ─────────────────────────────
+            # Transfer entire scan output to host once, avoiding hundreds
+            # of small per-step device→host round trips.
+            host_history = tree_map(
+                lambda x: np.asarray(x) if hasattr(x, 'shape') else x,
+                history,
+            )
+            last_objective_value = host_history["objective"][-1]
 
             # ── Python-side: accumulate save data ────────────────────
             def _extract_params_at(params_tree, j):
@@ -896,23 +904,23 @@ def train_on_historic_data(
 
             for j in range(actual):
                 step_j = int(carry["step"]) - actual + j
-                p_j = _extract_params_at(history["params"], j)
+                p_j = _extract_params_at(host_history["params"], j)
                 paramSteps.append(p_j)
                 trainingSteps.append(
-                    metrics_arr_to_dicts(history["train_metrics"][j])
+                    metrics_arr_to_dicts(host_history["train_metrics"][j])
                 )
                 continuousTestSteps.append(
-                    metrics_arr_to_dicts(history["test_metrics"][j])
+                    metrics_arr_to_dicts(host_history["test_metrics"][j])
                 )
-                objectiveSteps.append(history["objective"][j])
-                learningRateSteps.append(history["lr"][j])
+                objectiveSteps.append(host_history["objective"][j])
+                learningRateSteps.append(host_history["lr"][j])
                 interationsSinceImprovementSteps.append(
-                    history["iters_since_improvement"][j]
+                    host_history["iters_since_improvement"][j]
                 )
                 stepSteps.append(step_j)
                 if val_fraction > 0:
                     validationSteps.append(
-                        metrics_arr_to_dicts(history["val_metrics"][j])
+                        metrics_arr_to_dicts(host_history["val_metrics"][j])
                     )
 
             # ── Python-side: checkpoint tracking ─────────────────────
@@ -920,7 +928,7 @@ def train_on_historic_data(
                 for j in range(actual):
                     global_step = int(carry["step"]) - actual + j
                     if global_step % checkpoint_interval == 0:
-                        ckpt_params = _extract_params_at(history["params"], j)
+                        ckpt_params = _extract_params_at(host_history["params"], j)
                         ckpt_outputs = partial_forward_pass_nograd_continuous(
                             ckpt_params, (_start_idx, 0), data_dict["prices"],
                         )
@@ -942,27 +950,27 @@ def train_on_historic_data(
 
             # ── Python-side: display ─────────────────────────────────
             if verbose:
-                last_train = history["train_metrics"][-1]
-                last_test = history["test_metrics"][-1]
-                obj_val = float(np.mean(np.array(last_objective_value)))
+                last_train = host_history["train_metrics"][-1]
+                last_test = host_history["test_metrics"][-1]
+                obj_val = float(np.mean(last_objective_value))
                 current_step = int(carry["step"]) - 1
                 print(f"\n[Iter {current_step}] objective={obj_val:.4f}")
 
                 sharpe_idx = _METRIC_KEYS.index("sharpe")
                 roh_idx = _METRIC_KEYS.index("returns_over_uniform_hodl")
-                print(f"  Train (IS):  sharpe={float(jnp.nanmean(last_train[:, sharpe_idx])):+.4f}"
-                      f"  ret_over_hodl={float(jnp.nanmean(last_train[:, roh_idx])):+.4f}")
+                print(f"  Train (IS):  sharpe={float(np.nanmean(last_train[:, sharpe_idx])):+.4f}"
+                      f"  ret_over_hodl={float(np.nanmean(last_train[:, roh_idx])):+.4f}")
 
                 if val_fraction > 0:
-                    last_val = history["val_metrics"][-1]
-                    print(f"  Val:         sharpe={float(jnp.nanmean(last_val[:, sharpe_idx])):+.4f}"
-                          f"  ret_over_hodl={float(jnp.nanmean(last_val[:, roh_idx])):+.4f}")
+                    last_val = host_history["val_metrics"][-1]
+                    print(f"  Val:         sharpe={float(np.nanmean(last_val[:, sharpe_idx])):+.4f}"
+                          f"  ret_over_hodl={float(np.nanmean(last_val[:, roh_idx])):+.4f}")
                     if use_early_stopping:
                         print(f"  Early stop:  {selection_metric}={float(carry['es_metric']):+.4f} "
                               f"(wait={int(carry['es_counter'])}/{early_stopping_patience})")
 
-                print(f"  Test (OOS):  sharpe={float(jnp.nanmean(last_test[:, sharpe_idx])):+.4f}"
-                      f"  ret_over_hodl={float(jnp.nanmean(last_test[:, roh_idx])):+.4f}")
+                print(f"  Test (OOS):  sharpe={float(np.nanmean(last_test[:, sharpe_idx])):+.4f}"
+                      f"  ret_over_hodl={float(np.nanmean(last_test[:, roh_idx])):+.4f}")
 
             # ── Python-side: save checkpoint ─────────────────────────
             save_multi_params(
