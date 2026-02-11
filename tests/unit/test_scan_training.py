@@ -473,3 +473,31 @@ class TestScanEquivalence:
             TMR.PINNED_BEST_METRIC_VALUE,
             rtol=RTOL,
         )
+
+    def test_scan_infrastructure_cached_across_calls(self):
+        """Second call with same config must reuse cached scan infra."""
+        from quantammsim.runners.jax_runners import (
+            train_on_historic_data,
+            _scan_infra_cache,
+        )
+        _scan_infra_cache.clear()
+        fp = _make_training_fingerprint()
+        train_on_historic_data(
+            fp, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=999999,
+        )
+        assert len(_scan_infra_cache) == 1
+        cached_key = list(_scan_infra_cache.keys())[0]
+        cached_fn = _scan_infra_cache[cached_key][0]
+
+        # Second call — same config, fresh fingerprint copy
+        fp2 = _make_training_fingerprint()
+        train_on_historic_data(
+            fp2, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=999999,
+        )
+        # Cache should still have exactly 1 entry (same key hit)
+        assert len(_scan_infra_cache) == 1
+        assert _scan_infra_cache[cached_key][0] is cached_fn

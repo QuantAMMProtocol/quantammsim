@@ -54,11 +54,16 @@ from quantammsim.core_simulator.forward_pass import (
 )
 from quantammsim.core_simulator.windowing_utils import get_indices, filter_coarse_weights_by_data_indices
 
+import hashlib
+import json as _json
+
 from quantammsim.training.backpropagation import (
     update_from_partial_training_step_factory,
     update_from_partial_training_step_factory_with_optax,
     create_opt_state_in_axes_dict,
     create_optimizer_chain,
+    build_scan_update_with_optax,
+    build_scan_update_sgd,
 )
 from quantammsim.core_simulator.param_utils import (
     recursive_default_set,
@@ -107,6 +112,209 @@ from quantammsim.utils.post_train_analysis import (
     metrics_arr_to_dicts,
 )
 import jax.numpy as jnp
+
+
+# ── Scan infrastructure cache ─────────────────────────────────────────────
+#
+# Each call to train_on_historic_data used to create fresh closures for the
+# scan body → fresh @jit function → ~52 s recompilation on GPU.  By caching
+# the scan infrastructure (update fn, forward fn, scan body, JIT wrapper)
+# keyed on a config hash, the same function identity is reused → JIT cache
+# hit → zero recompilation from the 2nd call onward.
+#
+# Varying data (prices, nan_bank) flows through the scan carry, not
+# closures, so the compiled XLA program is correct for any price input
+# with matching shapes.
+
+_scan_infra_cache = {}
+
+
+def _scan_config_key(run_fingerprint, chunk_size, original_bout_length, bout_length_test):
+    """Compute a hash key capturing everything that affects the compiled scan."""
+    fp_str = _json.dumps(run_fingerprint, sort_keys=True, default=str)
+    raw = f"{fp_str}|{chunk_size}|{original_bout_length}|{bout_length_test}"
+    return hashlib.sha256(raw.encode(), usedforsecurity=False).hexdigest()[:16]
+
+
+def _build_scan_infrastructure(
+    chunk_size,
+    # Pool / forward-pass config (cached, don't vary between calls)
+    partial_step_no_prices,        # Partial(forward_pass, static_dict=…, pool=…)
+    forward_nograd_continuous,     # jit(vmap(Partial(forward_pass_nograd, …)))
+    vmapped_update,                # from build_scan_update_*
+    # Slicing indices (baked as constants in the trace)
+    start_idx, bout_length, bout_length_test,
+    original_bout_length, bout_length_window, sampling_end_idx,
+    # Config flags (control Python-level if branches at trace time)
+    is_optax, optim_settings,
+    sel_metric_idx, use_val_for_selection, val_fraction,
+    use_early_stopping, use_validation_for_early_stopping,
+    max_iterations_with_no_improvement, decay_lr_ratio, min_lr,
+    use_swa, swa_start_step, swa_freq,
+    n_parameter_sets,
+):
+    """Build scan body + JIT wrapper.  Prices/nan_bank flow through carry.
+
+    All returned callables have **stable identity** and can be cached across
+    ``train_on_historic_data`` calls.  The only data that changes between
+    calls (prices, nan_bank, initial params) is in the carry dict.
+
+    Returns
+    -------
+    run_scan_chunk : callable
+        ``@jit`` wrapped ``lax.scan(scan_body, carry, None, length=chunk_size)``.
+    scan_body : callable
+        The raw scan body (for partial-chunk Python fallback).
+    """
+    # Local aliases for closed-over constants
+    _start_idx = start_idx
+    _bout_length = bout_length
+    _bout_length_test = bout_length_test
+    _test_start = original_bout_length
+    _test_end = original_bout_length + bout_length_test
+    _optim_settings = optim_settings
+
+    def scan_body(carry, _):
+        """One training iteration.  Prices & nan_bank from carry, not closures."""
+        prices = carry["_prices"]
+
+        # 1. Sample indices
+        start_indexes, key = get_indices(
+            start_index=_start_idx,
+            bout_length=bout_length_window,
+            len_prices=sampling_end_idx,
+            key=carry["random_key"],
+            optimisation_settings=_optim_settings,
+        )
+
+        # 2. Gradient update — prices passed explicitly
+        if is_optax:
+            new_params, obj, old_params, grads, new_opt_state, has_nan = vmapped_update(
+                carry["params"], start_indexes, carry["lr"], carry["opt_state"], prices,
+            )
+        else:
+            new_params, obj, old_params, grads, has_nan = vmapped_update(
+                carry["params"], start_indexes, carry["lr"], prices,
+            )
+            new_opt_state = None
+
+        # 3. NaN reinit from bank (bank in carry)
+        new_params, nan_count = nan_reinit_from_bank(
+            new_params, has_nan, carry["_nan_bank"], carry["nan_count"],
+        )
+
+        # 4. Continuous forward pass — prices passed explicitly
+        continuous_outputs = forward_nograd_continuous(
+            new_params, (_start_idx, 0), prices,
+        )
+
+        # 5a. Metrics — train
+        train_values = continuous_outputs["value"][:, :_bout_length]
+        train_reserves = continuous_outputs["reserves"][:, :_bout_length, :]
+        train_metrics_arr, _ = _compute_all_metrics_batched(
+            train_values, train_reserves, carry["_train_prices"],
+        )
+
+        # 5b. Metrics — test
+        test_values = continuous_outputs["value"][:, _test_start:_test_end]
+        test_reserves = continuous_outputs["reserves"][:, _test_start:_test_end, :]
+        test_prices_slice = carry["_continuous_prices"][_test_start:_test_end]
+        cont_test_metrics_arr, _ = _compute_all_metrics_batched(
+            test_values, test_reserves, test_prices_slice,
+        )
+
+        # 5c. Metrics — val
+        if val_fraction > 0:
+            val_values = continuous_outputs["value"][:, _bout_length:original_bout_length]
+            val_reserves = continuous_outputs["reserves"][:, _bout_length:original_bout_length, :]
+            val_metrics_arr, _ = _compute_all_metrics_batched(
+                val_values, val_reserves, carry["_val_prices"],
+            )
+        else:
+            val_metrics_arr = jnp.zeros_like(train_metrics_arr)
+
+        # 6. Tracker update
+        tracker, improved = update_tracker_state(
+            carry["tracker"], carry["step"], new_params,
+            train_metrics_arr, val_metrics_arr, cont_test_metrics_arr,
+            sel_metric_idx=sel_metric_idx,
+            use_val=use_val_for_selection,
+            use_test=False,
+        )
+
+        # 7. LR decay
+        iters_since = jnp.where(improved, jnp.int32(0), carry["iters_since_improvement"] + 1)
+        should_decay = iters_since > max_iterations_with_no_improvement
+        lr = jnp.where(
+            should_decay,
+            jnp.maximum(carry["lr"] * decay_lr_ratio, min_lr),
+            carry["lr"],
+        )
+        iters_since = jnp.where(should_decay, jnp.int32(0), iters_since)
+
+        # 8. Early stopping state
+        if use_early_stopping:
+            if use_validation_for_early_stopping:
+                es_metric = jnp.nanmean(val_metrics_arr[:, sel_metric_idx])
+            else:
+                es_metric = jnp.nanmean(cont_test_metrics_arr[:, sel_metric_idx])
+            es_improved = es_metric > carry["es_metric"]
+            new_es_metric = jnp.where(es_improved, es_metric, carry["es_metric"])
+            new_es_counter = jnp.where(es_improved, jnp.int32(0), carry["es_counter"] + 1)
+        else:
+            new_es_metric = carry["es_metric"]
+            new_es_counter = carry["es_counter"]
+
+        # 9. SWA accumulator
+        if use_swa:
+            should_swa = (carry["step"] >= swa_start_step) & (carry["step"] % swa_freq == 0)
+            swa_sum = tree_map(
+                lambda s, p: jnp.where(should_swa, s + p, s),
+                carry["swa_sum"], new_params,
+            )
+            swa_count = carry["swa_count"] + should_swa.astype(jnp.int32)
+        else:
+            swa_sum = carry["swa_sum"]
+            swa_count = carry["swa_count"]
+
+        new_carry = {
+            "params": new_params,
+            "random_key": key,
+            "lr": lr,
+            "iters_since_improvement": iters_since,
+            "tracker": tracker,
+            "es_metric": new_es_metric,
+            "es_counter": new_es_counter,
+            "nan_count": nan_count,
+            "swa_sum": swa_sum,
+            "swa_count": swa_count,
+            "step": carry["step"] + 1,
+            # Pass through static data unchanged
+            "_prices": prices,
+            "_train_prices": carry["_train_prices"],
+            "_continuous_prices": carry["_continuous_prices"],
+            "_val_prices": carry["_val_prices"],
+            "_nan_bank": carry["_nan_bank"],
+        }
+        if is_optax:
+            new_carry["opt_state"] = new_opt_state
+
+        per_step = {
+            "objective": obj,
+            "train_metrics": train_metrics_arr,
+            "test_metrics": cont_test_metrics_arr,
+            "val_metrics": val_metrics_arr,
+            "lr": lr,
+            "iters_since_improvement": iters_since,
+            "params": new_params,
+        }
+        return new_carry, per_step
+
+    @jit
+    def _run_scan_chunk(carry):
+        return lax.scan(scan_body, carry, None, length=chunk_size)
+
+    return _run_scan_chunk, scan_body
 
 
 def train_on_historic_data(
@@ -595,220 +803,115 @@ def train_on_historic_data(
         )
 
     if run_fingerprint["optimisation_settings"]["method"] == "gradient_descent":
-        if run_fingerprint["optimisation_settings"]["optimiser"] in ["adam", "adamw"]:
+        is_optax = run_fingerprint["optimisation_settings"]["optimiser"] in ["adam", "adamw"]
+
+        if is_optax:
             import optax
 
-            # Create Adam optimizer with the specified learning rate
             optimizer = create_optimizer_chain(run_fingerprint)
-
-            # Initialize optimizer state for each parameter set
-            # For multiple parameter sets, each needs its own optimizer state
-            # if n_parameter_sets > 1:
-            # Use vmap to vectorize optimizer initialization over parameter sets
             init_optimizer = lambda params: optimizer.init(params)
             batched_init = vmap(init_optimizer, in_axes=[params_in_axes_dict])
             opt_state = batched_init(params)
-            # else:
-            # opt_state = optimizer.init(params)
-
             opt_state_in_axes_dict = create_opt_state_in_axes_dict(opt_state)
-            # Use optax-based update function
-            update_batch = update_from_partial_training_step_factory_with_optax(
-                partial_training_step,
-                optimizer,
-                run_fingerprint["optimisation_settings"]["train_on_hessian_trace"],
-                partial_fixed_training_step,
-            )
-            update = jit(
-                vmap(
-                    update_batch,
-                    in_axes=[params_in_axes_dict, None, None, opt_state_in_axes_dict],
-                )
-            )
 
         elif run_fingerprint["optimisation_settings"]["optimiser"] == "sgd":
-
-            update_batch = update_from_partial_training_step_factory(
-                partial_training_step,
-                run_fingerprint["optimisation_settings"]["train_on_hessian_trace"],
-                partial_fixed_training_step,
-            )
-
-            update = jit(
-                vmap(
-                    update_batch,
-                    in_axes=[params_in_axes_dict, None, None],
-                )
-            )
-
-        elif run_fingerprint["optimisation_settings"]["optimiser"] != "sgd":
+            optimizer = None
+            opt_state = None
+            opt_state_in_axes_dict = None
+        else:
             raise NotImplementedError
 
-        train_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"]]
-        continuous_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + original_bout_length + data_dict["bout_length_test"]]
-        val_prices = data_dict["prices"][
-            data_dict["start_idx"] + data_dict["bout_length"]:
-            data_dict["start_idx"] + original_bout_length
-        ]
-
-        # ── Pre-generate NaN replacement bank for scan-compatible reinit ──
-        nan_bank = generate_nan_bank(
-            pool, initial_params, run_fingerprint, n_tokens,
-            n_parameter_sets,
-        )
-
-        # ── Selection metric index (Python int, baked into closures) ──
-        sel_metric_idx = _METRIC_KEYS.index(selection_metric)
-        use_val_for_selection = val_fraction > 0
-        # Early stopping metric source (resolved at Python time)
-        if use_early_stopping:
-            if use_validation_for_early_stopping:
-                metric_source = "validation"
-            else:
-                metric_source = "continuous_test"
-
-        # ── Scan carry: static indices for slicing ──
+        # ── Price slices for metrics (put into carry, not closures) ──
         _start_idx = data_dict["start_idx"]
         _bout_length = data_dict["bout_length"]
         _bout_length_test = data_dict["bout_length_test"]
         _test_start = original_bout_length
         _test_end = original_bout_length + _bout_length_test
 
-        # ── Build the scan body ──────────────────────────────────────────
-        is_optax = run_fingerprint["optimisation_settings"]["optimiser"] in ["adam", "adamw"]
-        _optim_settings = run_fingerprint["optimisation_settings"]
+        train_prices = data_dict["prices"][_start_idx:_start_idx + _bout_length]
+        continuous_prices = data_dict["prices"][_start_idx:_start_idx + original_bout_length + _bout_length_test]
+        val_prices = data_dict["prices"][
+            _start_idx + _bout_length:
+            _start_idx + original_bout_length
+        ]
+
+        # ── Pre-generate NaN replacement bank ──
+        nan_bank = generate_nan_bank(
+            pool, initial_params, run_fingerprint, n_tokens,
+            n_parameter_sets,
+        )
+
+        # ── Selection metric index ──
+        sel_metric_idx = _METRIC_KEYS.index(selection_metric)
+        use_val_for_selection = val_fraction > 0
+        if use_early_stopping:
+            if use_validation_for_early_stopping:
+                metric_source = "validation"
+            else:
+                metric_source = "continuous_test"
+
         _swa_start_step = int(n_iterations * swa_start_frac)
 
-        def scan_body(carry, _):
-            """One training iteration — pure JAX, no Python side effects."""
-            # 1. Sample indices — get_indices splits the key internally
-            #    and returns the advanced key, matching the original loop exactly.
-            start_indexes, key = get_indices(
-                start_index=_start_idx,
-                bout_length=bout_length_window,
-                len_prices=sampling_end_idx,
-                key=carry["random_key"],
-                optimisation_settings=_optim_settings,
-            )
+        # ── Outer loop: scan in chunks, Python between chunks ────────────
+        total_iterations = n_iterations + 1  # 0..n_iterations inclusive
+        chunk_size = min(max(iterations_per_print, 1), total_iterations)
 
-            # 2. Gradient update
+        # ── Get or build cached scan infrastructure ──────────────────────
+        # The scan function, update chain, and forward pass are cached by
+        # config hash so the same JIT'd function is reused across calls.
+        # Only prices and nan_bank (in carry) change between calls.
+        config_key = _scan_config_key(
+            run_fingerprint, chunk_size, original_bout_length, _bout_length_test,
+        )
+
+        if config_key in _scan_infra_cache:
+            _run_scan_chunk, scan_body = _scan_infra_cache[config_key]
+        else:
+            # Build scan-compatible update (prices as explicit arg, not closure)
+            partial_step_no_prices = Partial(
+                forward_pass,
+                static_dict=Hashabledict(base_static_dict),
+                pool=pool,
+            )
             if is_optax:
-                new_params, obj, old_params, grads, new_opt_state, has_nan = update(
-                    carry["params"], start_indexes, carry["lr"], carry["opt_state"],
+                vmapped_update = build_scan_update_with_optax(
+                    partial_step_no_prices, optimizer,
+                    params_in_axes_dict, opt_state_in_axes_dict,
                 )
             else:
-                new_params, obj, old_params, grads, has_nan = update(
-                    carry["params"], start_indexes, carry["lr"],
+                vmapped_update = build_scan_update_sgd(
+                    partial_step_no_prices, params_in_axes_dict,
                 )
-                new_opt_state = None
 
-            # 3. NaN reinit from bank
-            new_params, nan_count = nan_reinit_from_bank(
-                new_params, has_nan, nan_bank, carry["nan_count"],
-            )
-
-            # 4. Continuous forward pass (full eval every iteration)
-            continuous_outputs = partial_forward_pass_nograd_continuous(
-                new_params, (_start_idx, 0), data_dict["prices"],
-            )
-
-            # 5. Batched metrics — train
-            train_values = continuous_outputs["value"][:, :_bout_length]
-            train_reserves = continuous_outputs["reserves"][:, :_bout_length, :]
-            train_metrics_arr, _ = _compute_all_metrics_batched(
-                train_values, train_reserves, train_prices,
-            )
-
-            # 5b. Batched metrics — test
-            test_values = continuous_outputs["value"][:, _test_start:_test_end]
-            test_reserves = continuous_outputs["reserves"][:, _test_start:_test_end, :]
-            test_prices_slice = continuous_prices[_test_start:_test_end]
-            cont_test_metrics_arr, _ = _compute_all_metrics_batched(
-                test_values, test_reserves, test_prices_slice,
-            )
-
-            # 5c. Batched metrics — val (always compute; zeros if unused)
-            if val_fraction > 0:
-                val_values = continuous_outputs["value"][:, _bout_length:original_bout_length]
-                val_reserves = continuous_outputs["reserves"][:, _bout_length:original_bout_length, :]
-                val_metrics_arr, _ = _compute_all_metrics_batched(
-                    val_values, val_reserves, val_prices,
-                )
-            else:
-                val_metrics_arr = jnp.zeros_like(train_metrics_arr)
-
-            # 6. Tracker update (pure function, small carry)
-            tracker, improved = update_tracker_state(
-                carry["tracker"], carry["step"], new_params,
-                train_metrics_arr, val_metrics_arr, cont_test_metrics_arr,
+            _run_scan_chunk, scan_body = _build_scan_infrastructure(
+                chunk_size,
+                partial_step_no_prices=partial_step_no_prices,
+                forward_nograd_continuous=partial_forward_pass_nograd_continuous,
+                vmapped_update=vmapped_update,
+                start_idx=_start_idx,
+                bout_length=_bout_length,
+                bout_length_test=_bout_length_test,
+                original_bout_length=original_bout_length,
+                bout_length_window=bout_length_window,
+                sampling_end_idx=sampling_end_idx,
+                is_optax=is_optax,
+                optim_settings=run_fingerprint["optimisation_settings"],
                 sel_metric_idx=sel_metric_idx,
-                use_val=use_val_for_selection,
-                use_test=False,
+                use_val_for_selection=use_val_for_selection,
+                val_fraction=val_fraction,
+                use_early_stopping=use_early_stopping,
+                use_validation_for_early_stopping=use_validation_for_early_stopping,
+                max_iterations_with_no_improvement=max_iterations_with_no_improvement,
+                decay_lr_ratio=decay_lr_ratio,
+                min_lr=min_lr,
+                use_swa=use_swa,
+                swa_start_step=_swa_start_step,
+                swa_freq=swa_freq,
+                n_parameter_sets=n_parameter_sets,
             )
+            _scan_infra_cache[config_key] = (_run_scan_chunk, scan_body)
 
-            # 7. LR decay (branchless)
-            iters_since = jnp.where(improved, jnp.int32(0), carry["iters_since_improvement"] + 1)
-            should_decay = iters_since > max_iterations_with_no_improvement
-            lr = jnp.where(
-                should_decay,
-                jnp.maximum(carry["lr"] * decay_lr_ratio, min_lr),
-                carry["lr"],
-            )
-            iters_since = jnp.where(should_decay, jnp.int32(0), iters_since)
-
-            # 8. Early stopping state (branchless)
-            if use_early_stopping:
-                if use_validation_for_early_stopping:
-                    es_metric = jnp.nanmean(val_metrics_arr[:, sel_metric_idx])
-                else:
-                    es_metric = jnp.nanmean(cont_test_metrics_arr[:, sel_metric_idx])
-                es_improved = es_metric > carry["es_metric"]
-                new_es_metric = jnp.where(es_improved, es_metric, carry["es_metric"])
-                new_es_counter = jnp.where(es_improved, jnp.int32(0), carry["es_counter"] + 1)
-            else:
-                new_es_metric = carry["es_metric"]
-                new_es_counter = carry["es_counter"]
-
-            # 9. SWA accumulator
-            if use_swa:
-                should_swa = (carry["step"] >= _swa_start_step) & (carry["step"] % swa_freq == 0)
-                swa_sum = tree_map(
-                    lambda s, p: jnp.where(should_swa, s + p, s),
-                    carry["swa_sum"], new_params,
-                )
-                swa_count = carry["swa_count"] + should_swa.astype(jnp.int32)
-            else:
-                swa_sum = carry["swa_sum"]
-                swa_count = carry["swa_count"]
-
-            new_carry = {
-                "params": new_params,
-                "random_key": key,
-                "lr": lr,
-                "iters_since_improvement": iters_since,
-                "tracker": tracker,
-                "es_metric": new_es_metric,
-                "es_counter": new_es_counter,
-                "nan_count": nan_count,
-                "swa_sum": swa_sum,
-                "swa_count": swa_count,
-                "step": carry["step"] + 1,
-            }
-            if is_optax:
-                new_carry["opt_state"] = new_opt_state
-
-            per_step = {
-                "objective": obj,
-                "train_metrics": train_metrics_arr,
-                "test_metrics": cont_test_metrics_arr,
-                "val_metrics": val_metrics_arr,
-                "lr": lr,
-                "iters_since_improvement": iters_since,
-                "params": new_params,
-            }
-            return new_carry, per_step
-
-        # ── Initialize carry ─────────────────────────────────────────────
+        # ── Initialize carry (prices & nan_bank in carry, not closures) ──
         carry = {
             "params": params,
             "random_key": random_key,
@@ -821,22 +924,16 @@ def train_on_historic_data(
             "swa_sum": tree_map(jnp.zeros_like, params),
             "swa_count": jnp.int32(0),
             "step": jnp.int32(offset),
+            # Static data — passed through carry unchanged each iteration.
+            # XLA optimises these as aliases (no per-iteration copy).
+            "_prices": jnp.asarray(data_dict["prices"]),
+            "_train_prices": jnp.asarray(train_prices),
+            "_continuous_prices": jnp.asarray(continuous_prices),
+            "_val_prices": jnp.asarray(val_prices),
+            "_nan_bank": nan_bank,
         }
         if is_optax:
             carry["opt_state"] = opt_state
-
-        # ── Outer loop: scan in chunks, Python between chunks ────────────
-        total_iterations = n_iterations + 1  # 0..n_iterations inclusive
-        chunk_size = min(max(iterations_per_print, 1), total_iterations)
-
-        # ── JIT-compile the scan chunk ──────────────────────────────────
-        # lax.scan in eager mode just loops in Python — no fusion benefit.
-        # Wrapping in jit compiles the entire chunk (fwd+bwd+optax+metrics+
-        # tracker+NaN reinit × chunk_size iterations) into one XLA program.
-        # This eliminates all Python dispatch overhead between iterations.
-        @jit
-        def _run_scan_chunk(carry):
-            return lax.scan(scan_body, carry, None, length=chunk_size)
         remaining = total_iterations
         completed = 0
         last_objective_value = None
