@@ -501,3 +501,161 @@ class TestScanEquivalence:
         # Cache should still have exactly 1 entry (same key hit)
         assert len(_scan_infra_cache) == 1
         assert _scan_infra_cache[cached_key][0] is cached_fn
+
+    def test_cache_hit_produces_identical_results(self):
+        """Cache-hit (2nd call) must produce bit-identical output to cache-miss (1st call).
+
+        This catches subtle bugs where cached closures silently reference stale state.
+        """
+        from quantammsim.runners.jax_runners import (
+            train_on_historic_data,
+            _scan_infra_cache,
+        )
+        _scan_infra_cache.clear()
+
+        fp1 = _make_training_fingerprint()
+        _, meta1 = train_on_historic_data(
+            fp1, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=999999,
+        )
+        fp2 = _make_training_fingerprint()
+        _, meta2 = train_on_historic_data(
+            fp2, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=999999,
+        )
+        # Numerical output must be identical
+        np.testing.assert_equal(
+            meta1["final_objective"], meta2["final_objective"],
+        )
+        np.testing.assert_equal(
+            meta1["best_metric_value"], meta2["best_metric_value"],
+        )
+        assert meta1["best_iteration"] == meta2["best_iteration"]
+        assert meta1["best_param_idx"] == meta2["best_param_idx"]
+        assert meta1["epochs_trained"] == meta2["epochs_trained"]
+        # Reserves and weights
+        np.testing.assert_array_equal(
+            np.asarray(meta1["best_final_reserves"]),
+            np.asarray(meta2["best_final_reserves"]),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(meta1["best_final_weights"]),
+            np.asarray(meta2["best_final_weights"]),
+        )
+
+    def test_multi_chunk_matches_single_chunk(self):
+        """Multi-chunk (iterations_per_print=2) must match single-chunk (999999).
+
+        This exercises:
+        1. The outer while loop with multiple scan chunks
+        2. The partial-chunk Python fallback (4 iterations, chunk_size=2 → no remainder,
+           but with chunk_size=3 → 1 remaining → partial fallback)
+        3. Per-chunk save accumulation and reset
+        """
+        from quantammsim.runners.jax_runners import train_on_historic_data
+
+        # Single chunk baseline
+        fp_single = _make_training_fingerprint()
+        _, meta_single = train_on_historic_data(
+            fp_single, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=999999,
+        )
+        # Multi-chunk: iterations_per_print=2, n_iterations=3 → total=4
+        # chunk_size=2 → 2 full chunks of 2 each
+        fp_multi = _make_training_fingerprint()
+        _, meta_multi = train_on_historic_data(
+            fp_multi, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=2,
+        )
+
+        np.testing.assert_allclose(
+            meta_multi["final_objective"],
+            meta_single["final_objective"],
+            rtol=RTOL,
+            err_msg="Multi-chunk vs single-chunk: final objective diverged",
+        )
+        np.testing.assert_allclose(
+            meta_multi["best_metric_value"],
+            meta_single["best_metric_value"],
+            rtol=RTOL,
+        )
+        assert meta_multi["best_iteration"] == meta_single["best_iteration"]
+        assert meta_multi["best_param_idx"] == meta_single["best_param_idx"]
+        assert meta_multi["epochs_trained"] == meta_single["epochs_trained"]
+
+    def test_partial_last_chunk_matches(self):
+        """Partial last chunk (Python fallback) must match full scan.
+
+        iterations_per_print=3, n_iterations=3 → total=4
+        chunk_size=3 → first chunk: 3 via lax.scan, second chunk: 1 via Python loop
+        """
+        from quantammsim.runners.jax_runners import train_on_historic_data
+
+        fp_single = _make_training_fingerprint()
+        _, meta_single = train_on_historic_data(
+            fp_single, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=999999,
+        )
+
+        fp_partial = _make_training_fingerprint()
+        _, meta_partial = train_on_historic_data(
+            fp_partial, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=3,  # 4 total: chunk of 3 + partial chunk of 1
+        )
+
+        np.testing.assert_allclose(
+            meta_partial["final_objective"],
+            meta_single["final_objective"],
+            rtol=RTOL,
+            err_msg="Partial-chunk vs single-chunk: final objective diverged",
+        )
+        np.testing.assert_allclose(
+            meta_partial["best_metric_value"],
+            meta_single["best_metric_value"],
+            rtol=RTOL,
+        )
+        assert meta_partial["best_iteration"] == meta_single["best_iteration"]
+        assert meta_partial["best_param_idx"] == meta_single["best_param_idx"]
+
+    def test_chunk_size_1_matches(self):
+        """iterations_per_print=1: every iteration is a separate scan chunk.
+
+        This is the most stressful multi-chunk test — 4 separate scan(length=1)
+        calls with Python accumulation between each. Also exercises the
+        save_multi_params accumulator reset path 4 times.
+        """
+        from quantammsim.runners.jax_runners import train_on_historic_data
+
+        fp_single = _make_training_fingerprint()
+        _, meta_single = train_on_historic_data(
+            fp_single, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=999999,
+        )
+
+        fp_chunk1 = _make_training_fingerprint()
+        _, meta_chunk1 = train_on_historic_data(
+            fp_chunk1, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=1,
+        )
+
+        np.testing.assert_allclose(
+            meta_chunk1["final_objective"],
+            meta_single["final_objective"],
+            rtol=RTOL,
+            err_msg="chunk_size=1 vs single-chunk: final objective diverged",
+        )
+        np.testing.assert_allclose(
+            meta_chunk1["best_metric_value"],
+            meta_single["best_metric_value"],
+            rtol=RTOL,
+        )
+        assert meta_chunk1["best_iteration"] == meta_single["best_iteration"]
+        assert meta_chunk1["best_param_idx"] == meta_single["best_param_idx"]
