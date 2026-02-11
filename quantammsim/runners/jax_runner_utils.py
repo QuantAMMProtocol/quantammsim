@@ -3,6 +3,7 @@ import pandas as pd
 
 import json
 import hashlib
+import warnings
 
 # again, this only works on startup!
 from jax import config, jit
@@ -647,6 +648,17 @@ _TRAINING_ONLY_FIELDS = frozenset({
     "subsidary_pools",  # Handled separately
     "bout_offset",  # Training sampling config
     "freq",  # Data frequency string
+    # Parameter initialization values — used to build initial_params dict,
+    # never read from static_dict during forward passes.
+    # NB: initial_pool_value is NOT here because pools read it from static_dict.
+    "initial_weights_logits",
+    "initial_memory_length",
+    "initial_memory_length_delta",
+    "initial_k_per_day",
+    "initial_log_amplitude",
+    "initial_raw_width",
+    "initial_raw_exponents",
+    "initial_pre_exp_scaling",
 })
 
 
@@ -746,6 +758,18 @@ def create_static_dict(
     # Apply overrides
     if overrides:
         static.update(overrides)
+
+    # Guard: arrays are unhashable and will crash Hashabledict/JIT caching.
+    # Drop offending keys with a warning so the simulation still runs.
+    array_keys = [k for k, v in static.items() if isinstance(v, (np.ndarray, jnp.ndarray))]
+    for k in array_keys:
+        warnings.warn(
+            f"create_static_dict: dropping array-valued key '{k}' "
+            f"(type {type(static[k]).__name__}). Add it to _TRAINING_ONLY_FIELDS "
+            f"or convert to a hashable type.",
+            stacklevel=2,
+        )
+        del static[k]
 
     return NestedHashabledict(static)
 
