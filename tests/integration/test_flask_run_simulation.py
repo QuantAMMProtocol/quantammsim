@@ -2,10 +2,26 @@
 Full e2e tests for the /api/runSimulation code path.
 
 Two levels of coverage:
-  1. DTO → run_pool_simulation  (tests the DTO parsing + full simulation)
-  2. HTTP POST → Flask endpoint  (tests the complete HTTP round-trip)
+  1. DTO -> run_pool_simulation  (tests the DTO parsing + full simulation)
+  2. HTTP POST -> Flask endpoint (tests the complete HTTP round-trip)
 
-Both levels patch `get_historic_parquet_data` to use test-data parquet files.
+Both levels patch ``get_historic_parquet_data`` to use test-data parquet
+files and ``filter_dtb3_values`` to avoid needing the untracked DTB3.csv.
+
+Note on end time
+----------------
+END uses 23:59 rather than midnight.  This matches the frontend behaviour
+and sidesteps an off-by-one in ``create_daily_unix_array`` /
+``filter_dtb3_values`` which both use inclusive-endpoint date ranges while
+the simulation output has one fewer daily row.
+
+Note on response keys
+---------------------
+``run_pool_simulation`` returns ``{"resultTimeSteps": ..., "analysis": ...}``.
+``SimulationResult.__init__`` renames the key: ``self.timeSteps = result["resultTimeSteps"]``.
+After jsonpickle serialisation the Flask response therefore contains
+``"timeSteps"`` (not ``"resultTimeSteps"``).  The DTO-level tests assert on
+``"resultTimeSteps"``; the Flask-level tests assert on ``"timeSteps"``.
 """
 
 import json
@@ -14,6 +30,7 @@ from unittest.mock import patch
 
 import pytest
 import numpy as np
+import pandas as pd
 
 from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
     SimulationRunDto,
@@ -38,9 +55,18 @@ _DTB3_PATCH_TARGET = (
     ".param_financial_calculator.filter_dtb3_values"
 )
 
+START = "2023-01-01 00:00:00"
+END = "2023-05-31 23:59:00"
 
-def _get_test_parquet_data(list_of_tickers, cols=["close"], root=None, **kwargs):
+
+# ---------------------------------------------------------------------------
+# Patch helpers
+# ---------------------------------------------------------------------------
+
+def _get_test_parquet_data(list_of_tickers, cols=None, root=None, **kwargs):
     """Redirect get_historic_parquet_data to test data directory."""
+    if cols is None:
+        cols = ["close"]
     return get_historic_parquet_data(
         list_of_tickers, cols=cols, root=str(TEST_DATA_DIR), **kwargs
     )
@@ -49,20 +75,69 @@ def _get_test_parquet_data(list_of_tickers, cols=["close"], root=None, **kwargs)
 def _mock_filter_dtb3_values(filename, start_date, end_date, **kwargs):
     """Return a constant risk-free rate array for the date range.
 
-    DTB3.csv is not tracked in the repo so we mock it with a flat 5% annual rate.
-    Mimics the real filter_dtb3_values: truncate to midnight, inclusive endpoints.
+    DTB3.csv is not tracked in the repo so we mock it with a flat 5%
+    annual rate.  Must replicate the real ``filter_dtb3_values`` date
+    semantics: truncate to midnight, inclusive of both endpoints.
     """
-    import pandas as pd
-
     start = pd.to_datetime(start_date).normalize()
     end = pd.to_datetime(end_date).normalize()
-    n_days = (end - start).days + 1  # inclusive of both endpoints
-    return np.full(n_days, 0.05)  # 5% annual rate
+    n_days = (end - start).days + 1
+    return np.full(n_days, 0.05)
+
+
+def _patches():
+    """Context manager stacking both patches needed by run_pool_simulation."""
+    return (
+        patch(_PARQUET_PATCH_TARGET, side_effect=_get_test_parquet_data),
+        patch(_DTB3_PATCH_TARGET, side_effect=_mock_filter_dtb3_values),
+    )
 
 
 # ---------------------------------------------------------------------------
 # JSON request body builders
 # ---------------------------------------------------------------------------
+
+def _make_static_pool_json(rule, tokens, start, end):
+    """Build a JSON dict for a static (constant-weight) pool request.
+
+    Works for both ``"balancer"`` and ``"cow"``.
+    """
+    n = len(tokens)
+    equal_value = 1_000_000.0 / n
+    return {
+        "startUnix": 0,
+        "endUnix": 0,
+        "startDateString": start,
+        "endDateString": end,
+        "pool": {
+            "id": f"test-{rule}",
+            "poolConstituents": [
+                {
+                    "coinCode": tok,
+                    "marketValue": equal_value,
+                    "currentPrice": 1.0,
+                    "amount": equal_value,
+                    "weight": 1.0 / n,
+                }
+                for tok in tokens
+            ],
+            "updateRule": {
+                "name": rule,
+                "UpdateRuleParameters": [
+                    {"name": "chunk_period", "value": [1440]},
+                    {"name": "weight_interpolation_period", "value": [1440]},
+                    {"name": "arb_quality", "value": [1.0]},
+                    {"name": "noise_trader_ratio", "value": [0.0]},
+                ],
+            },
+            "enableAutomaticArbBots": True,
+            "poolNumeraireCoinCode": None,
+        },
+        "feeHooks": [],
+        "swapImports": [],
+        "gasPriceImports": [],
+    }
+
 
 def _make_momentum_json(tokens, start, end, memory_days=10.0, k_per_day=20.0):
     """Build a JSON dict for a momentum pool request."""
@@ -105,61 +180,22 @@ def _make_momentum_json(tokens, start, end, memory_days=10.0, k_per_day=20.0):
     }
 
 
-def _make_balancer_json(tokens, start, end):
-    """Build a JSON dict for a balancer pool request."""
-    n = len(tokens)
-    equal_value = 1_000_000.0 / n
-    return {
-        "startUnix": 0,
-        "endUnix": 0,
-        "startDateString": start,
-        "endDateString": end,
-        "pool": {
-            "id": "test-balancer",
-            "poolConstituents": [
-                {
-                    "coinCode": tok,
-                    "marketValue": equal_value,
-                    "currentPrice": 1.0,
-                    "amount": equal_value,
-                    "weight": 1.0 / n,
-                }
-                for tok in tokens
-            ],
-            "updateRule": {
-                "name": "balancer",
-                "UpdateRuleParameters": [
-                    {"name": "chunk_period", "value": [1440]},
-                    {"name": "weight_interpolation_period", "value": [1440]},
-                    {"name": "arb_quality", "value": [1.0]},
-                    {"name": "noise_trader_ratio", "value": [0.0]},
-                ],
-            },
-            "enableAutomaticArbBots": True,
-            "poolNumeraireCoinCode": None,
-        },
-        "feeHooks": [],
-        "swapImports": [],
-        "gasPriceImports": [],
-    }
-
-
 # ---------------------------------------------------------------------------
-# Helpers
+# Execution helpers
 # ---------------------------------------------------------------------------
 
 def _run_via_dto(json_body):
     """Parse JSON into a SimulationRunDto and call run_pool_simulation."""
     dto = SimulationRunDto(json_body)
-    with patch(_PARQUET_PATCH_TARGET, side_effect=_get_test_parquet_data), \
-         patch(_DTB3_PATCH_TARGET, side_effect=_mock_filter_dtb3_values):
+    p1, p2 = _patches()
+    with p1, p2:
         return run_pool_simulation(dto)
 
 
 def _post_via_flask(client, json_body):
     """POST to the Flask endpoint and return parsed response."""
-    with patch(_PARQUET_PATCH_TARGET, side_effect=_get_test_parquet_data), \
-         patch(_DTB3_PATCH_TARGET, side_effect=_mock_filter_dtb3_values):
+    p1, p2 = _patches()
+    with p1, p2:
         resp = client.post(
             "/api/runSimulation",
             data=json.dumps(json_body),
@@ -174,104 +210,170 @@ def _post_via_flask(client, json_body):
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Module-scoped fixtures — each simulation runs once, shared across tests
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def client():
+@pytest.fixture(scope="module")
+def flask_client():
     app.config["TESTING"] = True
     with app.test_client() as c:
         yield c
 
 
-START = "2023-01-01 00:00:00"
-END = "2023-05-31 23:59:00"
+# DTO-level results
+@pytest.fixture(scope="module")
+def dto_momentum_2():
+    return _run_via_dto(_make_momentum_json(["BTC", "ETH"], START, END))
+
+
+@pytest.fixture(scope="module")
+def dto_momentum_3():
+    return _run_via_dto(_make_momentum_json(["BTC", "ETH", "SOL"], START, END))
+
+
+@pytest.fixture(scope="module")
+def dto_balancer_2():
+    return _run_via_dto(_make_static_pool_json("balancer", ["BTC", "ETH"], START, END))
+
+
+@pytest.fixture(scope="module")
+def dto_balancer_3():
+    return _run_via_dto(
+        _make_static_pool_json("balancer", ["BTC", "ETH", "SOL"], START, END)
+    )
+
+
+@pytest.fixture(scope="module")
+def dto_cow_2():
+    return _run_via_dto(_make_static_pool_json("cow", ["BTC", "ETH"], START, END))
+
+
+# Flask-level results
+@pytest.fixture(scope="module")
+def flask_momentum_2(flask_client):
+    return _post_via_flask(
+        flask_client, _make_momentum_json(["BTC", "ETH"], START, END)
+    )
+
+
+@pytest.fixture(scope="module")
+def flask_momentum_3(flask_client):
+    return _post_via_flask(
+        flask_client, _make_momentum_json(["BTC", "ETH", "SOL"], START, END)
+    )
+
+
+@pytest.fixture(scope="module")
+def flask_balancer_2(flask_client):
+    return _post_via_flask(
+        flask_client,
+        _make_static_pool_json("balancer", ["BTC", "ETH"], START, END),
+    )
+
+
+@pytest.fixture(scope="module")
+def flask_balancer_3(flask_client):
+    return _post_via_flask(
+        flask_client,
+        _make_static_pool_json("balancer", ["BTC", "ETH", "SOL"], START, END),
+    )
+
+
+@pytest.fixture(scope="module")
+def flask_cow_2(flask_client):
+    return _post_via_flask(
+        flask_client,
+        _make_static_pool_json("cow", ["BTC", "ETH"], START, END),
+    )
 
 
 # ===================================================================
-# PART 1 — DTO-level tests (SimulationRunDto → run_pool_simulation)
+# PART 1 — DTO-level tests (SimulationRunDto -> run_pool_simulation)
 # ===================================================================
 
 class TestDtoMomentumPool:
     """Exercise the DTO parsing + run_pool_simulation for momentum."""
 
-    def test_result_has_timesteps_and_analysis(self):
-        result = _run_via_dto(_make_momentum_json(["BTC", "ETH"], START, END))
-        assert "resultTimeSteps" in result
-        assert "analysis" in result
-        assert len(result["resultTimeSteps"]) > 0
+    def test_result_has_timesteps_and_analysis(self, dto_momentum_2):
+        assert "resultTimeSteps" in dto_momentum_2
+        assert "analysis" in dto_momentum_2
+        assert len(dto_momentum_2["resultTimeSteps"]) > 0
 
-    def test_analysis_final_weights(self):
-        result = _run_via_dto(_make_momentum_json(["BTC", "ETH"], START, END))
-        analysis = result["analysis"]
-
-        assert "final_weights" in analysis
-        assert "final_weights_strings" in analysis
+    def test_analysis_final_weights(self, dto_momentum_2):
+        analysis = dto_momentum_2["analysis"]
         assert len(analysis["final_weights"]) == 2
         assert len(analysis["final_weights_strings"]) == 2
         assert abs(sum(analysis["final_weights"]) - 1.0) < 0.01
 
-    def test_analysis_jax_parameters(self):
-        result = _run_via_dto(_make_momentum_json(["BTC", "ETH"], START, END))
-        jax_params = result["analysis"]["jax_parameters"]
-        assert "logit_lamb" in jax_params
+    def test_analysis_jax_parameters(self, dto_momentum_2):
+        assert "logit_lamb" in dto_momentum_2["analysis"]["jax_parameters"]
 
-    def test_analysis_smart_contract_parameters(self):
-        result = _run_via_dto(_make_momentum_json(["BTC", "ETH"], START, END))
-        sc = result["analysis"]["smart_contract_parameters"]
+    def test_analysis_smart_contract_parameters(self, dto_momentum_2):
+        sc = dto_momentum_2["analysis"]["smart_contract_parameters"]
         assert "values" in sc
         assert "strings" in sc
 
-    def test_3_asset_pool(self):
-        result = _run_via_dto(
-            _make_momentum_json(["BTC", "ETH", "SOL"], START, END)
-        )
-        assert len(result["analysis"]["final_weights"]) == 3
-        assert len(result["analysis"]["final_weights_strings"]) == 3
+    def test_3_asset_pool(self, dto_momentum_3):
+        assert len(dto_momentum_3["analysis"]["final_weights"]) == 3
+        assert len(dto_momentum_3["analysis"]["final_weights_strings"]) == 3
 
-    def test_final_weights_strings_are_bd18(self):
-        result = _run_via_dto(_make_momentum_json(["BTC", "ETH"], START, END))
-        for s in result["analysis"]["final_weights_strings"]:
+    def test_final_weights_strings_are_bd18(self, dto_momentum_2):
+        for s in dto_momentum_2["analysis"]["final_weights_strings"]:
             assert isinstance(s, str)
             assert s.isdigit() or s == "0"
 
 
-class TestDtoBalancerPool:
-    """DTO-level tests for Balancer — the pool type that crashed with 0-d arrays."""
+class TestDtoStaticPools:
+    """DTO-level tests for static pools (Balancer, CowPool).
 
-    def test_does_not_crash(self):
-        """The 0-d array TypeError must not occur."""
-        result = _run_via_dto(_make_balancer_json(["BTC", "ETH"], START, END))
-        assert "analysis" in result
+    These are the pool types that return 1-D weights from
+    calculate_weights, which previously caused a 0-d array crash
+    when run_pool_simulation indexed weights[-1].
+    """
 
-    def test_final_weights_equal(self):
-        result = _run_via_dto(_make_balancer_json(["BTC", "ETH"], START, END))
-        analysis = result["analysis"]
+    def test_balancer_does_not_crash(self, dto_balancer_2):
+        assert "analysis" in dto_balancer_2
+
+    def test_balancer_final_weights_equal(self, dto_balancer_2):
+        analysis = dto_balancer_2["analysis"]
         assert len(analysis["final_weights"]) == 2
         np.testing.assert_allclose(
             analysis["final_weights"], [0.5, 0.5], atol=0.01,
         )
 
-    def test_final_weights_strings_valid(self):
-        result = _run_via_dto(_make_balancer_json(["BTC", "ETH"], START, END))
-        for s in result["analysis"]["final_weights_strings"]:
+    def test_balancer_final_weights_strings_valid(self, dto_balancer_2):
+        for s in dto_balancer_2["analysis"]["final_weights_strings"]:
             assert isinstance(s, str)
             assert s.isdigit() or s == "0"
 
-    def test_3_asset_balancer(self):
-        result = _run_via_dto(
-            _make_balancer_json(["BTC", "ETH", "SOL"], START, END)
-        )
-        assert len(result["analysis"]["final_weights"]) == 3
+    def test_balancer_3_asset(self, dto_balancer_3):
+        assert len(dto_balancer_3["analysis"]["final_weights"]) == 3
         np.testing.assert_allclose(
-            result["analysis"]["final_weights"],
+            dto_balancer_3["analysis"]["final_weights"],
             [1.0 / 3, 1.0 / 3, 1.0 / 3],
             atol=0.01,
         )
 
-    def test_has_timesteps(self):
-        result = _run_via_dto(_make_balancer_json(["BTC", "ETH"], START, END))
-        assert len(result["resultTimeSteps"]) > 0
+    def test_balancer_has_timesteps(self, dto_balancer_2):
+        assert len(dto_balancer_2["resultTimeSteps"]) > 0
+
+    def test_cow_does_not_crash(self, dto_cow_2):
+        assert "analysis" in dto_cow_2
+
+    def test_cow_final_weights_equal(self, dto_cow_2):
+        analysis = dto_cow_2["analysis"]
+        assert len(analysis["final_weights"]) == 2
+        np.testing.assert_allclose(
+            analysis["final_weights"], [0.5, 0.5], atol=0.01,
+        )
+
+    def test_cow_final_weights_strings_valid(self, dto_cow_2):
+        for s in dto_cow_2["analysis"]["final_weights_strings"]:
+            assert isinstance(s, str)
+            assert s.isdigit() or s == "0"
+
+    def test_cow_has_timesteps(self, dto_cow_2):
+        assert len(dto_cow_2["resultTimeSteps"]) > 0
 
 
 # ===================================================================
@@ -281,66 +383,64 @@ class TestDtoBalancerPool:
 class TestFlaskMomentumPool:
     """Full HTTP round-trip for momentum pool."""
 
-    def test_returns_200(self, client):
-        body = _make_momentum_json(["BTC", "ETH"], START, END)
-        result = _post_via_flask(client, body)
-        assert "timeSteps" in result
-        assert "analysis" in result
+    def test_returns_200(self, flask_momentum_2):
+        # SimulationResult renames "resultTimeSteps" -> "timeSteps"
+        assert "timeSteps" in flask_momentum_2
+        assert "analysis" in flask_momentum_2
 
-    def test_analysis_has_final_weights(self, client):
-        result = _post_via_flask(
-            client, _make_momentum_json(["BTC", "ETH"], START, END)
-        )
-        analysis = result["analysis"]
+    def test_analysis_has_final_weights(self, flask_momentum_2):
+        analysis = flask_momentum_2["analysis"]
         assert len(analysis["final_weights"]) == 2
         assert len(analysis["final_weights_strings"]) == 2
         assert abs(sum(analysis["final_weights"]) - 1.0) < 0.01
 
-    def test_analysis_has_financial_metrics(self, client):
-        result = _post_via_flask(
-            client, _make_momentum_json(["BTC", "ETH"], START, END)
-        )
-        analysis = result["analysis"]
+    def test_analysis_has_financial_metrics(self, flask_momentum_2):
+        analysis = flask_momentum_2["analysis"]
         assert "return_analysis" in analysis
         metric_names = {m["metricName"] for m in analysis["return_analysis"]}
-        for name in ["Sharpe Ratio", "Absolute Return (%)", "Daily Returns Maximum Drawdown"]:
+        for name in [
+            "Sharpe Ratio",
+            "Absolute Return (%)",
+            "Daily Returns Maximum Drawdown",
+        ]:
             assert name in metric_names, f"Missing metric: {name}"
 
-    def test_3_asset_pool(self, client):
-        result = _post_via_flask(
-            client, _make_momentum_json(["BTC", "ETH", "SOL"], START, END)
-        )
-        assert len(result["analysis"]["final_weights"]) == 3
+    def test_3_asset_pool(self, flask_momentum_3):
+        assert len(flask_momentum_3["analysis"]["final_weights"]) == 3
 
 
-class TestFlaskBalancerPool:
-    """Full HTTP round-trip for Balancer — the 0-d array crash scenario."""
+class TestFlaskStaticPools:
+    """Full HTTP round-trip for static pools (Balancer, CowPool)."""
 
-    def test_returns_200(self, client):
-        """Balancer pool must not 500."""
-        result = _post_via_flask(
-            client, _make_balancer_json(["BTC", "ETH"], START, END)
-        )
-        assert "analysis" in result
+    def test_balancer_returns_200(self, flask_balancer_2):
+        assert "analysis" in flask_balancer_2
 
-    def test_final_weights_equal(self, client):
-        result = _post_via_flask(
-            client, _make_balancer_json(["BTC", "ETH"], START, END)
-        )
+    def test_balancer_final_weights_equal(self, flask_balancer_2):
         np.testing.assert_allclose(
-            result["analysis"]["final_weights"], [0.5, 0.5], atol=0.01,
+            flask_balancer_2["analysis"]["final_weights"],
+            [0.5, 0.5],
+            atol=0.01,
         )
 
-    def test_final_weights_strings_valid(self, client):
-        result = _post_via_flask(
-            client, _make_balancer_json(["BTC", "ETH"], START, END)
-        )
-        for s in result["analysis"]["final_weights_strings"]:
+    def test_balancer_final_weights_strings_valid(self, flask_balancer_2):
+        for s in flask_balancer_2["analysis"]["final_weights_strings"]:
             assert isinstance(s, str)
             assert s.isdigit() or s == "0"
 
-    def test_3_asset_balancer(self, client):
-        result = _post_via_flask(
-            client, _make_balancer_json(["BTC", "ETH", "SOL"], START, END)
+    def test_balancer_3_asset(self, flask_balancer_3):
+        assert len(flask_balancer_3["analysis"]["final_weights"]) == 3
+
+    def test_cow_returns_200(self, flask_cow_2):
+        assert "analysis" in flask_cow_2
+
+    def test_cow_final_weights_equal(self, flask_cow_2):
+        np.testing.assert_allclose(
+            flask_cow_2["analysis"]["final_weights"],
+            [0.5, 0.5],
+            atol=0.01,
         )
-        assert len(result["analysis"]["final_weights"]) == 3
+
+    def test_cow_final_weights_strings_valid(self, flask_cow_2):
+        for s in flask_cow_2["analysis"]["final_weights_strings"]:
+            assert isinstance(s, str)
+            assert s.isdigit() or s == "0"

@@ -288,19 +288,24 @@ class TestBalancerFlaskPath:
 
 
 class TestStaticPoolFinalWeightsConversion:
-    """Test that final weights from static pools can be serialized.
+    """Defensive test: converters handle 0-d arrays from static pools.
 
-    Static pools (Balancer, etc.) return a 1-D weights array from
-    calculate_weights, so weights[-1] produces a 0-d scalar.
-    The _to_bd18_string_list and _to_float64_list converters must
-    handle this without raising TypeError.
+    Static pools (Balancer, CowPool) return 1-D weights from
+    ``calculate_weights``, so ``weights[-1]`` produces a 0-d scalar.
+    ``_to_bd18_string_list`` and ``_to_float64_list`` must handle this
+    without crashing.
 
-    This reproduces the run_pool_simulation crash at
-    param_financial_calculator.py:313.
+    The production-path fix (ndim guard in ``run_pool_simulation``) is
+    covered by ``test_flask_run_simulation.py::TestDtoStaticPools``.
     """
 
-    def test_balancer_final_weights_to_bd18(self):
-        """Balancer weights[-1] should be convertible to BD18 strings."""
+    def test_converters_handle_0d_scalar(self):
+        """_to_bd18_string_list must not crash on 0-d input.
+
+        This is the defensive fix: even though the production code now
+        avoids producing 0-d arrays, the converter should still handle
+        them gracefully.
+        """
         from quantammsim.core_simulator.param_utils import (
             _to_bd18_string_list,
             _to_float64_list,
@@ -327,13 +332,13 @@ class TestStaticPoolFinalWeightsConversion:
             root=TEST_DATA_DIR,
         )
 
-        # For Balancer, calculate_weights returns 1-D (n_assets,).
-        # weights[-1] is a 0-d scalar. The converters must handle this.
-        final_weights = result["weights"][-1]
+        # Balancer returns 1-D weights; [-1] gives 0-d scalar
+        raw_last = result["weights"][-1]
+        assert np.asarray(raw_last).ndim == 0
 
-        float_list = _to_float64_list(final_weights)
-        assert len(float_list) >= 1
+        # Converters must handle this without TypeError
+        assert len(_to_float64_list(raw_last)) == 1
+        bd18 = _to_bd18_string_list(raw_last)
+        assert len(bd18) == 1
+        assert isinstance(bd18[0], str)
 
-        bd18_list = _to_bd18_string_list(final_weights)
-        assert len(bd18_list) >= 1
-        assert all(isinstance(s, str) for s in bd18_list)
