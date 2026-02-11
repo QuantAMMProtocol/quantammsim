@@ -285,3 +285,55 @@ class TestBalancerFlaskPath:
                 err_msg=f"Balancer weights at step {i} differ from step 0"
             )
         assert result["final_value"] > 0
+
+
+class TestStaticPoolFinalWeightsConversion:
+    """Test that final weights from static pools can be serialized.
+
+    Static pools (Balancer, etc.) return a 1-D weights array from
+    calculate_weights, so weights[-1] produces a 0-d scalar.
+    The _to_bd18_string_list and _to_float64_list converters must
+    handle this without raising TypeError.
+
+    This reproduces the run_pool_simulation crash at
+    param_financial_calculator.py:313.
+    """
+
+    def test_balancer_final_weights_to_bd18(self):
+        """Balancer weights[-1] should be convertible to BD18 strings."""
+        from quantammsim.core_simulator.param_utils import (
+            _to_bd18_string_list,
+            _to_float64_list,
+        )
+
+        fingerprint = {
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-06-01 00:00:00",
+            "tokens": ["BTC", "ETH"],
+            "rule": "balancer",
+            "chunk_period": 1440,
+            "weight_interpolation_period": 1440,
+            "initial_pool_value": 1000000.0,
+            "do_arb": True,
+            "initial_weights_logits": jnp.array([0.0, 0.0]),
+        }
+        params = {
+            "initial_weights_logits": jnp.array([0.0, 0.0]),
+        }
+
+        result = do_run_on_historic_data(
+            run_fingerprint=fingerprint,
+            params=params,
+            root=TEST_DATA_DIR,
+        )
+
+        # For Balancer, calculate_weights returns 1-D (n_assets,).
+        # weights[-1] is a 0-d scalar. The converters must handle this.
+        final_weights = result["weights"][-1]
+
+        float_list = _to_float64_list(final_weights)
+        assert len(float_list) >= 1
+
+        bd18_list = _to_bd18_string_list(final_weights)
+        assert len(bd18_list) >= 1
+        assert all(isinstance(s, str) for s in bd18_list)
