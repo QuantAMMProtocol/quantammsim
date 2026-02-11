@@ -28,6 +28,16 @@ import math
 import gc
 import os
 import optuna
+
+# Enable JAX persistent compilation cache so that the fused scan program
+# (which takes ~26s to compile) is cached on disk across calls.  Without
+# this, each train_on_historic_data call recompiles from scratch because
+# the JIT'd scan closure is a new Python function object every time.
+if "JAX_COMPILATION_CACHE_DIR" not in os.environ:
+    _cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "jax-compilation")
+    os.makedirs(_cache_dir, exist_ok=True)
+    os.environ["JAX_COMPILATION_CACHE_DIR"] = _cache_dir
+
 from jax.tree_util import Partial
 from jax import jit, vmap, random, lax
 from jax import clear_caches
