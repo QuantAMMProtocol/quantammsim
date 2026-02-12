@@ -298,7 +298,7 @@ class BoundedWeightsHook:
 
     Usage
     -----
-    Create a bounded pool via the pool creator with the "bounded__" prefix::
+    Create a bounded pool via the pool creator with the ``bounded__`` prefix::
 
         from quantammsim.pools.creator import create_pool
 

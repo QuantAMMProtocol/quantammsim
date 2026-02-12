@@ -1,3 +1,13 @@
+"""Trend-following (momentum) pool for QuantAMM.
+
+Implements an EWMA-based momentum strategy that computes exponentially weighted
+price gradients and converts them into zero-sum weight changes via a learnable
+sensitivity factor ``k``. Overweights assets with positive recent price trends
+and underweights those with negative trends.
+
+Key parameters: ``log_k`` (momentum sensitivity), ``logit_lamb`` (EWMA decay /
+memory length), ``logit_delta_lamb`` (alternative memory offset).
+"""
 # again, this only works on startup!
 from jax import config
 

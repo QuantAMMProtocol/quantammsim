@@ -46,7 +46,7 @@ The exact mapping between :math:`\lambda` and the memory length varies from esti
 For a pool in the QuantAMM protocol (and in the hosted frontend for the simulator at `app.quantamm.fi <https://app.quantamm.fi>`_) :math:`\lambda` can be set per-asset or the pool creator can choose a single "universal" value.
 Here in the backend, :math:`\lambda` is always per-asset, though of course it can contain repeated values giving it identical behaviour to a "universal" setting.
 
-The estimators implement the same mathematics that is described in `the fronend simulator documentation <https://app.quantamm.fi/documentation>`_ (see pages "Estimating Gradients" and "Estimating Covariances").
+The estimators implement the same mathematics that is described in `the frontend simulator documentation <https://app.quantamm.fi/documentation>`_ (see pages "Estimating Gradients" and "Estimating Covariances").
 They are written in JAX code that is optimized for performance.
 So for running on CPU they run using loops and their implementation is straightforward, clearly matching line-for-line the mathematics.
 For GPU acceleration, however, we perform different-looking but actually-equivalent calculations using convolution operations, thus avoiding having to run loops on the GPU.

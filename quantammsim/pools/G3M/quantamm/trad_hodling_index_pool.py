@@ -1,3 +1,11 @@
+"""Traditional (off-chain) HODLing index pool for QuantAMM.
+
+Extends :class:`IndexMarketCapPool` with periodic rebalancing and realistic
+centralised-exchange (CEX) execution costs: proportional trading fees
+(``cex_tau``), bid-ask spread, and an annual streaming/management fee. Reserves
+are HODLed between rebalancing windows, modelling a traditional index fund that
+incurs real-world trading frictions on each rebalance.
+"""
 # again, this only works on startup!
 from jax import config
 

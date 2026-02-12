@@ -1,3 +1,14 @@
+"""Mean-reversion channel pool for QuantAMM.
+
+Implements a channel-based mean-reversion strategy where weight updates are
+driven by a Gaussian-enveloped, power-law-exponentiated price gradient signal.
+Inside the channel (small price deviations) the strategy reverts; outside
+(large deviations) the response saturates smoothly.
+
+Key parameters: ``width`` (channel half-width), ``amplitude`` (reversion
+strength), ``exponents`` (per-asset power-law shaping), ``logit_lamb`` (EWMA
+memory length).
+"""
 # again, this only works on startup!
 from jax import config
 

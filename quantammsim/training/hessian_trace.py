@@ -4,6 +4,26 @@ from jax import hessian
 
 
 def make_flat_fn(params_dict, func):
+    """Create a flat-parameter wrapper around a dict-parameterised function.
+
+    Uses :func:`jax.flatten_util.ravel_pytree` to flatten ``params_dict``
+    into a 1-D array and returns a closure that unflattens before calling
+    ``func``.  This is needed because :func:`jax.hessian` operates on a
+    single array argument.
+
+    Parameters
+    ----------
+    params_dict : dict
+        Parameter pytree (e.g. ``{"logit_lamb": ..., "k": ...}``).
+    func : callable
+        Scalar-valued function that takes a parameter dict.
+
+    Returns
+    -------
+    callable
+        ``flat_fn(flat_params) -> scalar``, suitable for passing to
+        :func:`jax.hessian`.
+    """
     flat_params, tree_structure = ravel_pytree(params_dict)
 
     def flat_fn(flat_params_dict):
@@ -45,10 +65,47 @@ def flat_hessian(params_dict, func, exclude_params=None):
 
 
 def hessian_trace(params_dict, func, exclude_params=None):
+    """Compute the trace of the Hessian of ``func`` at ``params_dict``.
+
+    Flattens the parameter dict, computes the full Hessian matrix via
+    :func:`jax.hessian`, and returns its trace.  The trace of the Hessian
+    measures the total curvature of the loss landscape and can be used as
+    a regulariser or as a diagnostic for training stability.
+
+    Parameters
+    ----------
+    params_dict : dict
+        Parameter pytree to evaluate at.
+    func : callable
+        Scalar-valued function that takes a parameter dict.
+    exclude_params : list of str, optional
+        Parameter keys to hold fixed (excluded from Hessian computation).
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar trace of the Hessian.
+    """
     hess = flat_hessian(params_dict, func, exclude_params=exclude_params)
     return jnp.trace(hess)
 
 
 def hessian_frobenius(params_dict, func, exclude_params=None):
+    """Compute the Frobenius norm of the Hessian of ``func`` at ``params_dict``.
+
+    Parameters
+    ----------
+    params_dict : dict
+        Parameter pytree to evaluate at.
+    func : callable
+        Scalar-valued function that takes a parameter dict.
+    exclude_params : list of str, optional
+        Parameter keys to hold fixed (excluded from Hessian computation).
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar Frobenius norm of the Hessian.
+    """
     hess = flat_hessian(params_dict, func, exclude_params=exclude_params)
     return jnp.linalg.norm(hess, ord="fro")
