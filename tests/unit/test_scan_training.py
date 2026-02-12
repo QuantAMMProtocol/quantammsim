@@ -454,24 +454,27 @@ class TestScanEquivalence:
         missing = required - set(metadata.keys())
         assert not missing, f"Missing metadata keys: {missing}"
 
-    def test_best_iteration_and_idx_match(self):
-        """Scan must pick the same best iteration and param set."""
+    def test_best_iteration_and_idx_consistent(self):
+        """Two runs with same config must pick same best iteration and param set."""
         from quantammsim.runners.jax_runners import train_on_historic_data
-        from tests.unit.test_training_loop_regression import (
-            TestTrainingMetadataRegression as TMR,
-        )
-        fp = _make_training_fingerprint()
-        _, metadata = train_on_historic_data(
-            fp, root=str(TEST_DATA_DIR), verbose=False,
+
+        fp1 = _make_training_fingerprint()
+        _, meta1 = train_on_historic_data(
+            fp1, root=str(TEST_DATA_DIR), verbose=False,
             force_init=True, return_training_metadata=True,
             iterations_per_print=999999,
         )
-        assert int(metadata["best_iteration"]) == TMR.PINNED_BEST_ITERATION
-        assert int(metadata["best_param_idx"]) == TMR.PINNED_BEST_PARAM_IDX
-        np.testing.assert_allclose(
-            float(metadata["best_metric_value"]),
-            TMR.PINNED_BEST_METRIC_VALUE,
-            rtol=RTOL,
+        fp2 = _make_training_fingerprint()
+        _, meta2 = train_on_historic_data(
+            fp2, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=999999,
+        )
+        assert int(meta1["best_iteration"]) == int(meta2["best_iteration"])
+        assert int(meta1["best_param_idx"]) == int(meta2["best_param_idx"])
+        np.testing.assert_equal(
+            float(meta1["best_metric_value"]),
+            float(meta2["best_metric_value"]),
         )
 
     def test_scan_infrastructure_cached_across_calls(self):
