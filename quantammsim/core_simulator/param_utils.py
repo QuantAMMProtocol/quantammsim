@@ -2243,7 +2243,15 @@ def _to_bd18_string_list(values):
     Uses string manipulation to avoid overflow from multiplication by 1e18.
     Formats each value with 18 decimal places, then removes the decimal point
     and strips leading zeros.
+
+    Accepts arrays (including 0-d), scalars, lists, and tuples — consistent
+    with :func:`_to_float64_list`.
     """
+    # Normalise to an iterable of scalars (handles 0-d arrays and bare floats)
+    if isinstance(values, (jnp.ndarray, np.ndarray)):
+        values = np.array(values).flatten()
+    elif not isinstance(values, (list, tuple)):
+        values = [values]
     result = []
     for x in values:
         # Format with 18 decimal places, then remove decimal point

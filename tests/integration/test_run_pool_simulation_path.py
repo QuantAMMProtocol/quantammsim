@@ -285,3 +285,60 @@ class TestBalancerFlaskPath:
                 err_msg=f"Balancer weights at step {i} differ from step 0"
             )
         assert result["final_value"] > 0
+
+
+class TestStaticPoolFinalWeightsConversion:
+    """Defensive test: converters handle 0-d arrays from static pools.
+
+    Static pools (Balancer, CowPool) return 1-D weights from
+    ``calculate_weights``, so ``weights[-1]`` produces a 0-d scalar.
+    ``_to_bd18_string_list`` and ``_to_float64_list`` must handle this
+    without crashing.
+
+    The production-path fix (ndim guard in ``run_pool_simulation``) is
+    covered by ``test_flask_run_simulation.py::TestDtoStaticPools``.
+    """
+
+    def test_converters_handle_0d_scalar(self):
+        """_to_bd18_string_list must not crash on 0-d input.
+
+        This is the defensive fix: even though the production code now
+        avoids producing 0-d arrays, the converter should still handle
+        them gracefully.
+        """
+        from quantammsim.core_simulator.param_utils import (
+            _to_bd18_string_list,
+            _to_float64_list,
+        )
+
+        fingerprint = {
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-06-01 00:00:00",
+            "tokens": ["BTC", "ETH"],
+            "rule": "balancer",
+            "chunk_period": 1440,
+            "weight_interpolation_period": 1440,
+            "initial_pool_value": 1000000.0,
+            "do_arb": True,
+            "initial_weights_logits": jnp.array([0.0, 0.0]),
+        }
+        params = {
+            "initial_weights_logits": jnp.array([0.0, 0.0]),
+        }
+
+        result = do_run_on_historic_data(
+            run_fingerprint=fingerprint,
+            params=params,
+            root=TEST_DATA_DIR,
+        )
+
+        # Balancer returns 1-D weights; [-1] gives 0-d scalar
+        raw_last = result["weights"][-1]
+        assert np.asarray(raw_last).ndim == 0
+
+        # Converters must handle this without TypeError
+        assert len(_to_float64_list(raw_last)) == 1
+        bd18 = _to_bd18_string_list(raw_last)
+        assert len(bd18) == 1
+        assert isinstance(bd18[0], str)
+
