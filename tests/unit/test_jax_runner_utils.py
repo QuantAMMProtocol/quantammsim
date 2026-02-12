@@ -8,6 +8,8 @@ Covers:
 - Permutation utilities: invert_permutation, permute_list_of_params
 """
 
+import warnings
+
 import pytest
 import numpy as np
 import jax.numpy as jnp
@@ -67,6 +69,113 @@ class TestHashabledict:
         d1 = Hashabledict({"a": 1, "nested": {"x": 10, "y": 20}})
         d2 = Hashabledict({"a": 1, "nested": {"y": 20, "x": 10}})
         assert hash(d1) == hash(d2)
+
+
+class TestCreateStaticDictExcludesParamInitFields:
+    """Regression tests: create_static_dict must exclude parameter-init fields.
+
+    The flask /api/runSimulation endpoint crashed with
+    'unhashable type: jaxlib.xla_extension.ArrayImpl' because
+    initial_weights_logits (a JAX array) leaked through create_static_dict
+    into a Hashabledict. These fields are only used to build initial_params,
+    never read from static_dict during forward passes.
+    """
+
+    def _make_fingerprint(self, **overrides):
+        """Minimal run_fingerprint with param-init fields set to JAX arrays."""
+        fp = {
+            "tokens": ["ETH", "USDC"],
+            "n_assets": 2,
+            "rule": "balancer",
+            "chunk_period": 1440,
+            "weight_interpolation_period": 1440,
+            "initial_pool_value": 60000000,
+            "fees": 0.0,
+            "arb_fees": 0.0,
+            "gas_cost": 0.0,
+            "maximum_change": 0.0003,
+            "do_arb": True,
+            "arb_frequency": 1,
+            "use_alt_lamb": False,
+            "use_pre_exp_scaling": True,
+            "max_memory_days": 365,
+            # param-init fields that should NOT appear in static_dict
+            "initial_weights_logits": jnp.array([-0.69314718, -0.69314718]),
+            "initial_memory_length": 10.0,
+            "initial_memory_length_delta": 0.0,
+            "initial_k_per_day": 20,
+            "initial_log_amplitude": 0.0,
+            "initial_raw_width": 0.0,
+            "initial_raw_exponents": 0.0,
+            "initial_pre_exp_scaling": 0.5,
+        }
+        fp.update(overrides)
+        return fp
+
+    def test_initial_weights_logits_excluded(self):
+        """initial_weights_logits must not leak into static_dict."""
+        from quantammsim.runners.jax_runner_utils import create_static_dict
+
+        fp = self._make_fingerprint()
+        static = create_static_dict(fp, bout_length=10080)
+        assert "initial_weights_logits" not in static
+
+    def test_all_param_init_fields_excluded(self):
+        """All initial_* param-init fields must be excluded from static_dict."""
+        from quantammsim.runners.jax_runner_utils import create_static_dict
+
+        fp = self._make_fingerprint()
+        static = create_static_dict(fp, bout_length=10080)
+
+        param_init_fields = [
+            "initial_weights_logits",
+            "initial_memory_length",
+            "initial_memory_length_delta",
+            "initial_k_per_day",
+            "initial_log_amplitude",
+            "initial_raw_width",
+            "initial_raw_exponents",
+            "initial_pre_exp_scaling",
+        ]
+        for field in param_init_fields:
+            assert field not in static, f"{field} should be excluded from static_dict"
+
+    def test_initial_pool_value_preserved(self):
+        """initial_pool_value IS used by pool classes and must stay."""
+        from quantammsim.runners.jax_runner_utils import create_static_dict
+
+        fp = self._make_fingerprint()
+        static = create_static_dict(fp, bout_length=10080)
+        assert "initial_pool_value" in static
+        assert static["initial_pool_value"] == 60000000
+
+    def test_static_dict_is_hashable_with_real_fingerprint(self):
+        """End-to-end: static_dict from a realistic fingerprint must be hashable."""
+        from quantammsim.runners.jax_runner_utils import create_static_dict, Hashabledict
+
+        fp = self._make_fingerprint()
+        static = create_static_dict(fp, bout_length=10080)
+        hd = Hashabledict(static)
+        h = hash(hd)
+        assert isinstance(h, int)
+
+    def test_unknown_array_fields_dropped_with_warning(self):
+        """Arrays not in _TRAINING_ONLY_FIELDS are dropped with a warning.
+
+        Ensures the guard in create_static_dict catches future array-typed
+        fields that aren't yet in the exclusion list.
+        """
+        from quantammsim.runners.jax_runner_utils import create_static_dict
+
+        fp = self._make_fingerprint()
+        fp["surprise_array"] = jnp.array([1.0, 2.0])
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            static = create_static_dict(fp, bout_length=10080)
+
+        assert "surprise_array" not in static
+        assert any("surprise_array" in str(warning.message) for warning in w)
 
 
 class TestNestedHashabledict:

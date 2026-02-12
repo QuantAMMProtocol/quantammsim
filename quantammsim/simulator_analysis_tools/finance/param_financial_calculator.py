@@ -300,9 +300,14 @@ def run_pool_simulation(simulationRunDto):
         fees_df=fee_steps_df,
     )
 
-    # Extract final weights from the result
+    # Extract final weights from the result.
+    # Dynamic pools (TFMM etc.) return 2-D weights (timesteps, n_assets),
+    # so [-1] gives the last row.  Static pools (Balancer, CowPool) return
+    # 1-D weights (n_assets,), so [-1] would incorrectly pick the last
+    # *element* as a 0-d scalar.  Guard on ndim to handle both cases.
     if "weights" in final_weights_output and len(final_weights_output["weights"]) > 0:
-        final_weights = final_weights_output["weights"][-1]
+        w = final_weights_output["weights"]
+        final_weights = w if np.asarray(w).ndim == 1 else w[-1]
     else:
         # Fallback to equal weights if weights not available
         n_tokens = len(tokens)
