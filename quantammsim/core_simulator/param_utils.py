@@ -217,6 +217,9 @@ class NumpyEncoder(json.JSONEncoder):
             return float(o)
         elif isinstance(o, np.ndarray):
             return o.tolist()
+        elif hasattr(o, "dtype") and hasattr(o, "tolist"):
+            # JAX ArrayImpl (and any other array-like with .tolist())
+            return o.tolist()
         return json.JSONEncoder.default(self, o)
 
 

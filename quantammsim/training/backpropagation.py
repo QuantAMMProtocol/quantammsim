@@ -73,6 +73,28 @@ np.seterr(under="print")
 
 # TODO above is all from jax utils, tidy up required
 
+# Keys excluded from NaN checking (matches has_nan_params in jax_runner_utils.py)
+_NAN_EXCLUDED_KEYS = frozenset([
+    "initial_weights", "initial_weights_logits", "subsidary_params",
+])
+
+
+def _has_nan_in_params(params):
+    """Check if any non-excluded param has NaN. JIT- and vmap-compatible.
+
+    Under vmap this operates on a single param set; the vmapped result
+    is a per-set boolean array of shape (n_parameter_sets,).
+    """
+    nan_checks = []
+    for k in sorted(params.keys()):
+        if k not in _NAN_EXCLUDED_KEYS:
+            v = params[k]
+            if hasattr(v, "dtype"):  # skip non-array values (e.g. [])
+                nan_checks.append(jnp.any(jnp.isnan(v)))
+    if nan_checks:
+        return jnp.any(jnp.stack(nan_checks))
+    return jnp.bool_(False)
+
 
 def objective_factor(partial_training_step):
     """Creates a JIT-compiled objective function from a partial training step.
@@ -220,11 +242,13 @@ def update_factory(batched_objective):
     @jit
     def update(params, start_indexes, learning_rate):
         objective_value, grads = value_and_grad(batched_objective)(params, start_indexes)
+        new_params = tree_map(lambda p, g: p + learning_rate * g, params, grads)
         return (
-            tree_map(lambda p, g: p + learning_rate * g, params, grads),
+            new_params,
             objective_value,
             params,
             grads,
+            _has_nan_in_params(new_params),
         )
 
     return update
@@ -255,11 +279,13 @@ def update_with_hessian_factory(batched_objective_with_hessian):
     @jit
     def update_with_hessian(params, start_indexes, learning_rate):
         objective_value, grads = value_and_grad(batched_objective_with_hessian)(params, start_indexes)
+        new_params = tree_map(lambda p, g: p + learning_rate * g, params, grads)
         return (
-            tree_map(lambda p, g: p + learning_rate * g, params, grads),
+            new_params,
             objective_value,
             params,
             grads,
+            _has_nan_in_params(new_params),
         )
 
     return update_with_hessian
@@ -434,6 +460,7 @@ def update_factory_with_optax(batched_objective, optimizer):
             params,
             grads,
             new_opt_state,
+            _has_nan_in_params(new_params),
         )
 
     return update
@@ -488,6 +515,7 @@ def update_with_hessian_factory_with_optax(batched_objective_with_hessian, optim
             params,
             grads,
             new_opt_state,
+            _has_nan_in_params(new_params),
         )
 
     return update_with_hessian
@@ -744,3 +772,120 @@ def create_optimizer_chain(run_fingerprint):
         )
 
     return optimizer_chain
+
+
+# ── Scan-compatible update factories ──────────────────────────────────────
+#
+# These variants take ``prices`` as an explicit argument rather than closing
+# over it via ``partial_training_step``.  This allows the returned functions
+# to be **cached across calls** to ``train_on_historic_data`` — price data
+# (the only thing that varies between calls with the same config) flows
+# through function arguments, not closures.
+#
+# Without this, every ``train_on_historic_data`` call creates a new closure
+# chain → new JIT function → ~52 s recompilation on GPU.  With caching the
+# JIT'd scan function has stable identity → compilation happens once.
+
+
+def build_scan_update_with_optax(
+    partial_step_no_prices,
+    optimizer,
+    params_in_axes_dict,
+    opt_state_in_axes_dict,
+):
+    """Build a vmapped Optax update where ``prices`` is an explicit arg.
+
+    Unlike :func:`update_from_partial_training_step_factory_with_optax`,
+    the returned function does **not** close over price data.  ``prices``
+    is the 5th positional argument, making this function safe to cache
+    across ``train_on_historic_data`` calls.
+
+    Parameters
+    ----------
+    partial_step_no_prices : callable
+        ``Partial(forward_pass, static_dict=…, pool=…)`` with prices
+        **not** bound.  Signature: ``(params, start_index, prices=…) → scalar``.
+    optimizer : optax.GradientTransformation
+        The Optax optimizer (Adam / AdamW / SGD-with-schedule).
+    params_in_axes_dict : dict
+        ``vmap`` in_axes for the parameter-set dimension.
+    opt_state_in_axes_dict : pytree
+        ``vmap`` in_axes for the optimizer state.
+
+    Returns
+    -------
+    callable
+        ``(params, start_indexes, lr, opt_state, prices)``
+        → ``(new_params, obj, old_params, grads, new_opt_state, has_nan)``
+        vmapped over the parameter-set dimension.
+    """
+    # Batch the forward pass over start_indexes (for a single param set).
+    batched_step = vmap(
+        lambda params, si, prices: partial_step_no_prices(
+            params, si, prices=prices
+        ),
+        in_axes=(None, 0, None),
+    )
+
+    def _update_single(params, start_indexes, learning_rate, opt_state, prices):
+        def _objective(p):
+            return jnp.mean(batched_step(p, start_indexes, prices))
+
+        objective_value, grads = value_and_grad(_objective)(params)
+        neg_grads = tree_map(lambda g: -g, grads)
+        updates, new_opt_state = optimizer.update(
+            neg_grads,
+            opt_state,
+            params,
+            value=jnp.array(-objective_value, dtype=jnp.float32),
+        )
+        new_params = optax.apply_updates(params, updates)
+        has_nan = _has_nan_in_params(new_params)
+        return new_params, objective_value, params, grads, new_opt_state, has_nan
+
+    return vmap(
+        _update_single,
+        in_axes=[params_in_axes_dict, None, None, opt_state_in_axes_dict, None],
+    )
+
+
+def build_scan_update_sgd(
+    partial_step_no_prices,
+    params_in_axes_dict,
+):
+    """Build a vmapped SGD update where ``prices`` is an explicit arg.
+
+    Parameters
+    ----------
+    partial_step_no_prices : callable
+        ``Partial(forward_pass, static_dict=…, pool=…)`` — prices not bound.
+    params_in_axes_dict : dict
+        ``vmap`` in_axes for the parameter-set dimension.
+
+    Returns
+    -------
+    callable
+        ``(params, start_indexes, lr, prices)``
+        → ``(new_params, obj, old_params, grads, has_nan)``
+        vmapped over the parameter-set dimension.
+    """
+    batched_step = vmap(
+        lambda params, si, prices: partial_step_no_prices(
+            params, si, prices=prices
+        ),
+        in_axes=(None, 0, None),
+    )
+
+    def _update_single(params, start_indexes, learning_rate, prices):
+        def _objective(p):
+            return jnp.mean(batched_step(p, start_indexes, prices))
+
+        objective_value, grads = value_and_grad(_objective)(params)
+        new_params = tree_map(lambda p, g: p + learning_rate * g, params, grads)
+        has_nan = _has_nan_in_params(new_params)
+        return new_params, objective_value, params, grads, has_nan
+
+    return vmap(
+        _update_single,
+        in_axes=[params_in_axes_dict, None, None, None],
+    )

@@ -479,7 +479,7 @@ def multi_period_sgd_training(
     local_lr = run_fingerprint["optimisation_settings"]["base_lr"]
 
     for epoch in range(max_epochs):
-        params, objective_value, old_params, grads, opt_state = update_fn(
+        params, objective_value, old_params, grads, opt_state, _has_nan = update_fn(
             params, start_indexes, local_lr, opt_state
         )
 
