@@ -947,7 +947,7 @@ def plot_drawdown_charts(analysis_result, run_name):
 
 def retrieve_mc_param_financial_results(run_fingerprint, params, testEndDateString):
     results = []
-    price_data_cache = {}
+    price_data_cache = []
     for token in run_fingerprint["tokens"]:
         newTokens = []
         if token == "DAI":
@@ -959,7 +959,7 @@ def retrieve_mc_param_financial_results(run_fingerprint, params, testEndDateStri
                 price_data_cache.append(get_data_dict(token + str(i), "DAI", "1h"))
         results.append(newTokens)
 
-    mc_variations = generate_interarray_permutations(*results)
+    mc_variations = list(product(*results))
 
     mc_results = []
 

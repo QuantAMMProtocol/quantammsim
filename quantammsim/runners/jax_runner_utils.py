@@ -877,11 +877,13 @@ def nan_rollback(grads, params, old_params):
     >>> old_params = {"log_k": jnp.array([[0.05, 0.15], [0.25, 0.35]])}
     >>> rolled_back = nan_rollback(grads, params, old_params)
     """
-    for key in["log_k", "logit_lamb"]:
+    for key in ["log_k", "logit_lamb"]:
         if key in grads:
             bool_idx = jnp.sum(jnp.isnan(grads[key]), axis=-1, keepdims=True) > 0
             params = tree_map(
-                lambda p, old_p: jnp.where(bool_idx, old_p, p), params, old_params
+                lambda p, old_p, _bi=bool_idx: jnp.where(_bi, old_p, p),
+                params,
+                old_params,
             )
 
     return params

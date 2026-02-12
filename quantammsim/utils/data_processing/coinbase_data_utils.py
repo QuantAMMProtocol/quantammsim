@@ -280,12 +280,12 @@ def fill_missing_rows_with_coinbase_data(concatenated_df, token1, root):
     )
     if not plot_success:
         print(
-            f"Warning: Could not create visualization for {token1} {prefix.strip('_')} data"
+            f"Warning: Could not create visualization for {token1} Coinbase data"
         )
 
     missing_timestamps = coinbase_data.index.difference(concatenated_df.index)
     if missing_timestamps.empty:
-        print(f"No missing timestamps to fill from {prefix.strip('_')}")
+        print(f"No missing timestamps to fill from Coinbase")
         return concatenated_df, None
 
     filled_in_df = pd.concat([concatenated_df, coinbase_data.loc[missing_timestamps]])

@@ -135,16 +135,16 @@ def plot_pool_returns(
     plot_data = np.array(plot_data).T
     df = pd.DataFrame(
         plot_data / plot_data[0],
-        columns=["$$\mathrm{" + name + "}$$" for name in names],
+        columns=[r"$$\mathrm{" + name + r"}$$" for name in names],
     )
     df = df.set_index([pd.Index(np.arange(len(df)) / 30)])
     fig, ax = plt.subplots()
     sns.lineplot(data=df, ax=ax).set_title(
-        "$$\mathrm{QuantAMM} \,|\, \mathrm{Balancer}  \,|\, \mathrm{HODL}\,\,\mathrm{value} \,\,\mathrm{over}\,\, \mathrm{Market}\,\,\mathrm{Supercycle}$$"
+        r"$$\mathrm{QuantAMM} \,|\, \mathrm{Balancer}  \,|\, \mathrm{HODL}\,\,\mathrm{value} \,\,\mathrm{over}\,\, \mathrm{Market}\,\,\mathrm{Supercycle}$$"
     )
     plt.legend(prop={"size": 10})
-    plt.xlabel("$$\mathrm{Time}\,\mathrm{(/months)}$$")
-    plt.ylabel("$$\mathrm{Value}$$")
+    plt.xlabel(r"$$\mathrm{Time}\,\mathrm{(/months)}$$")
+    plt.ylabel(r"$$\mathrm{Value}$$")
     ax.set_facecolor("#0F0614")
 
     raw_ticks = [t for t in ax.get_xticklabels(which="major")]
@@ -186,16 +186,15 @@ def plot_pool_returns_trad(
     ]
 
     # names = ["QuantAMM", "CEX\,rebalancing", "HODL"]
-    names = ["QuantAMM\,Fund", "Fund\,on\,CEX"]
+    names = [r"QuantAMM\,Fund", r"Fund\,on\,CEX"]
 
     new_colors_order = sns.color_palette()
     new_colors_order[0], new_colors_order[1] = new_colors_order[1], new_colors_order[0]
 
     plot_data = np.array(plot_data).T
-    plot_data = plot_data
     df = pd.DataFrame(
         100.0 * (plot_data / plot_data[0] - 1.0),
-        columns=["$$\mathrm{" + name + "}$$" for name in names],
+        columns=[r"$$\mathrm{" + name + r"}$$" for name in names],
     )
     df = df.set_index([pd.Index(np.arange(len(df)) * 7 / (30))])
     fig, ax = plt.subplots()
@@ -204,8 +203,8 @@ def plot_pool_returns_trad(
     # "$$\mathrm{QuantAMM} \,|\, \mathrm{CEX}  \,\mathrm{value} \,\,\mathrm{over}\,\, \mathrm{Market}\,\,\mathrm{Supercycle}$$"
     # )
     plt.legend(prop={"size": 10})
-    plt.xlabel("$$\mathrm{Time}\,\mathrm{(/months)}$$")
-    plt.ylabel("$$\mathrm{Return}$$")
+    plt.xlabel(r"$$\mathrm{Time}\,\mathrm{(/months)}$$")
+    plt.ylabel(r"$$\mathrm{Return}$$")
     ax.set_facecolor("#0F0614")
 
     raw_ticks = [t for t in ax.get_xticklabels(which="major")]
@@ -223,7 +222,7 @@ def plot_pool_returns_trad(
         [raw_ticks[1].get_position()[0], 12.0, 7 * len(df) / (30)],
         [start_date_latex, "$$12$$", end_date_latex],
     )
-    y_value = ["$$+" + "{:,.1f}".format(x) + "\%$$" for x in ax.get_yticks()]
+    y_value = ["$$+" + "{:,.1f}".format(x) + r"\%$$" for x in ax.get_yticks()]
     y_value[1] = "$$0\\%$$"
     ax.set_yticklabels(y_value)
     plt.savefig(
@@ -284,13 +283,13 @@ def plot_vals(
     if plot_type == "alpha":
         title_prefix = "$\\alpha"
     elif plot_type == "returns":
-        title_prefix = "$\\mathrm{TFMM}\\,\mathrm{returns}"
+        title_prefix = r"$\mathrm{TFMM}\,\mathrm{returns}"
     elif plot_type == "dp_difference":
         title_prefix = "$\\mathrm{Difference}\\,\\,\\mathrm{in}\\,\\,\\mathrm{returns}"
     elif plot_type == "trad_difference":
         title_prefix = "$\\mathrm{RVR}\\,\\,(\\mathrm{difference}\\,\\,\\mathrm{in}\\,\\,\\mathrm{returns})"
     elif plot_type == "volume":
-        title_prefix = "$\\mathrm{Average}\\,\\,\\mathrm{monthly}\\,\\,\\mathrm{volume}\\,\\,(\mathrm{USD})"
+        title_prefix = r"$\mathrm{Average}\,\,\mathrm{monthly}\,\,\mathrm{volume}\,\,(\mathrm{USD})"
     else:
         raise NotImplementedError
     df = pd.DataFrame(plot_values, columns=cols)
@@ -442,7 +441,7 @@ def plot_vals(
             if plot_type != "volume":
                 ticks[i] += "\\%"
             else:
-                ticks[i] += "\mathrm{M}"
+                ticks[i] += r"\mathrm{M}"
                 ticks[i] = ticks[i][1:]
         ax.collections[0].colorbar.set_ticklabels(["$" + str(t) + "$" for t in ticks])
         if exp_xaxis:
@@ -483,7 +482,7 @@ def plot_vals(
             if plot_type != "volume":
                 ticks[i] += "\\%"
             else:
-                ticks[i] += "\mathrm{M}\\,(\mathrm{USD})"
+                ticks[i] += r"\mathrm{M}\,(\mathrm{USD})"
         ticks[0] += "\\,\\mathrm{or}\\,\\mathrm{lower}"
         # print("ticks: ", ticks)
         ax.collections[0].colorbar.set_ticklabels(["$" + str(t) + "$" for t in ticks])
@@ -705,12 +704,14 @@ def calc_values_from_results(
     balancer_results_list,
     hodl_values,
     chunk_period,
-    keepcols=["k", "lamb"],
+    keepcols=None,
     pre_agg=False,
     round_window=True,
     value="alpha",
     annual_risk_free_rate=0.0,
 ):
+    if keepcols is None:
+        keepcols = ["k", "lamb"]
     results_to_return = list()
     for i in range(len(list_of_results)):
         results_to_return.append([])
@@ -826,7 +827,7 @@ def plot_lineplot(
     if symlog:
         plt.xscale("symlog")
     if y_percentage:
-        y_value = ["$$+" + "{:,.1f}".format(x) + "\%$$" for x in ax.get_yticks()]
+        y_value = ["$$+" + "{:,.1f}".format(x) + r"\%$$" for x in ax.get_yticks()]
         y_value = [yv.replace("$$+0\\%$$", "$$0\\%$$") for yv in y_value]
         ax.set_yticklabels(y_value)
     plt.savefig(save_location, dpi=700, bbox_inches="tight")

@@ -331,7 +331,7 @@ def _jax_covariance_at_infinity_via_conv(arr_in, ewma, kernel, lamb):
     outer = jnp.einsum("...i,...j->...ij", diff_old, diff_new)
     a = conv_vmap(outer, kernel)
     cov = a[: len(outer)] * (1 - lamb)
-    return jnp.concatenate([np.zeros((1, n, n), dtype=jnp.float64), cov], axis=0)
+    return jnp.concatenate([jnp.zeros((1, n, n), dtype=jnp.float64), cov], axis=0)
 
 
 # _jax_covariance_at_infinity_via_conv = vmap(

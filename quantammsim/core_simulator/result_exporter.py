@@ -22,7 +22,7 @@ def get_run_location(run_fingerprint):
 
     The function takes a dictionary representing the run fingerprint, converts it to a JSON string,
     and then computes its SHA-256 hash. The resulting hash is used to create a unique identifier
-    string with a "run\_" prefix.
+    string with a ``run_`` prefix.
 
     Parameters
     ----------
@@ -32,7 +32,7 @@ def get_run_location(run_fingerprint):
     Returns
     -------
     str
-        A unique identifier string formatted as "run\_" followed by a SHA-256 hash
+        A unique identifier string formatted as ``run_`` followed by a SHA-256 hash
     """
     run_location = "run_" + str(
         hashlib.sha256(

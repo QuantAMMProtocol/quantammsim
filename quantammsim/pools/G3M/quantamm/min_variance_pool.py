@@ -306,6 +306,7 @@ class MinVariancePool(TFMMBasePool):
     def process_parameters(cls, update_rule_parameters, run_fingerprint):
         """Process Min Variance pool parameters from web interface input."""
         result = {}
+        n_assets = len(run_fingerprint["tokens"])
 
         # Find memory_days parameter
         for urp in update_rule_parameters:
@@ -313,8 +314,8 @@ class MinVariancePool(TFMMBasePool):
                 memory_days = []
                 for tokenValue in urp.value:
                     memory_days.append(tokenValue)
-                if len(memory_days) != len(run_fingerprint["tokens"]):
-                    memory_days = [memory_days[0]] * len(run_fingerprint["tokens"])
+                if len(memory_days) != n_assets:
+                    memory_days = [memory_days[0]] * n_assets
                 memory_days = np.array(memory_days)
                 # Set both memory_days parameters to the same value
                 result["memory_days_1"] = memory_days  # for variance calculation

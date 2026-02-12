@@ -1442,9 +1442,6 @@ class TFMMBasePool(AbstractPool):
         if initial_weights is None:
             initial_weights = self.calculate_initial_weights(params)
 
-        rule_outputs_cpu = device_put(rule_outputs, CPU_DEVICE)
-        initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
-
         actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
             rule_outputs,
             initial_weights,
@@ -1457,4 +1454,4 @@ class TFMMBasePool(AbstractPool):
             False,
         )
 
-        return weights
+        return target_weights_cpu

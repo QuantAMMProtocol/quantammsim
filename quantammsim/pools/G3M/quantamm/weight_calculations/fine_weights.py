@@ -445,7 +445,7 @@ def calc_fine_weight_output(
     n_assets = run_fingerprint["n_assets"]
     ste_max_change = run_fingerprint["ste_max_change"]
     ste_min_max_weight = run_fingerprint["ste_min_max_weight"]
-    if minimum_weight == None:
+    if minimum_weight is None:
         minimum_weight = 0.1 / n_assets
 
     # Get per-asset bounds from params (only used if use_per_asset_bounds=True)

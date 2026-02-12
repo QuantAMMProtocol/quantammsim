@@ -1860,7 +1860,7 @@ def train_on_historic_data(
 
 def do_run_on_historic_data(
     run_fingerprint,
-    params={},
+    params=None,
     root=None,
     price_data=None,
     verbose=False,
@@ -1937,6 +1937,8 @@ def do_run_on_historic_data(
         For multiple parameter sets, each value in the dict is a list
         (one entry per parameter set).
     """
+    if params is None:
+        params = {}
 
     # Set default values for run_fingerprint and its optimisation_settings
     recursive_default_set(run_fingerprint, run_fingerprint_defaults)
@@ -2127,7 +2129,7 @@ def do_run_on_historic_data(
 def do_run_on_historic_data_with_provided_coarse_weights(
     run_fingerprint,
     coarse_weights,
-    params={},
+    params=None,
     root=None,
     price_data=None,
     verbose=False,
@@ -2194,6 +2196,8 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     dict or tuple[dict, dict]
         Same structure as :func:`do_run_on_historic_data`.
     """
+    if params is None:
+        params = {}
     from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
         _jax_calc_coarse_weights,
         _jax_fine_weights_from_actual_starts_and_diffs,
