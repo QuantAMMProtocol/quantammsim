@@ -527,8 +527,6 @@ class TradHodlingIndexPool(IndexMarketCapPool):
             chunk_positions = full_timeline % chunk_period
             full_mask = chunk_positions < weight_interpolation_period
 
-            # calculate what proportion of the time the reserve are being updated
-            reserve_update_frequency = weight_interpolation_period / chunk_period
 
             # calculate the number of reserve updates per year
             minutes_per_year = 525960
@@ -541,12 +539,8 @@ class TradHodlingIndexPool(IndexMarketCapPool):
 
             # Apply arb_frequency to weights, prices, and mask
             if run_fingerprint["arb_frequency"] != 1:
-                arb_acted_upon_weights = weights[::run_fingerprint["arb_frequency"]]
-                arb_acted_upon_local_prices = local_prices[::run_fingerprint["arb_frequency"]]
                 interpolation_mask = full_mask[::run_fingerprint["arb_frequency"]]
             else:
-                arb_acted_upon_weights = weights
-                arb_acted_upon_local_prices = local_prices
                 interpolation_mask = full_mask
 
             # Calculate reserve ratios

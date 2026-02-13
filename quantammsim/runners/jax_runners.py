@@ -395,16 +395,7 @@ def train_on_historic_data(
     if verbose:
         print("Run Fingerprint: ", run_fingerprint)
     rule = run_fingerprint["rule"]
-    chunk_period = run_fingerprint["chunk_period"]
-    weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
-    use_alt_lamb = run_fingerprint["use_alt_lamb"]
-    use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-    fees = run_fingerprint["fees"]
-    arb_fees = run_fingerprint["arb_fees"]
-    gas_cost = run_fingerprint["gas_cost"]
     n_parameter_sets = run_fingerprint["optimisation_settings"]["n_parameter_sets"]
-    weight_interpolation_method = run_fingerprint["weight_interpolation_method"]
-    arb_frequency = run_fingerprint["arb_frequency"]
     random_key = random.key(
         run_fingerprint["optimisation_settings"]["initial_random_key"]
     )
@@ -664,31 +655,9 @@ def train_on_historic_data(
         },
     )
 
-    partial_training_step = Partial(
-        forward_pass,
-        prices=data_dict["prices"],
-        static_dict=Hashabledict(base_static_dict),
-        pool=pool,
-    )
-    partial_forward_pass_nograd_batch = Partial(
-        forward_pass_nograd,
-        prices=data_dict["prices"],
-        static_dict=Hashabledict(base_static_dict),
-        pool=pool,
-    )
-
     # Note: Validation and test metrics are now computed by slicing from the continuous
     # forward pass (which covers train + validation + test) rather than running separate
     # passes. This ensures metrics reflect continuous simulation state.
-
-    returns_train_static_dict = base_static_dict.copy()
-    returns_train_static_dict["return_val"] = "returns"
-    returns_train_static_dict["bout_length"] = data_dict["bout_length"]
-    partial_forward_pass_nograd_batch_returns_train = Partial(
-        forward_pass_nograd,
-        static_dict=Hashabledict(returns_train_static_dict),
-        pool=pool,
-    )
 
     # Create continuous forward pass that covers train + validation + test period
     # Use original_bout_length to include validation period when val_fraction > 0
@@ -703,12 +672,6 @@ def train_on_historic_data(
 
     nograd_in_axes = [params_in_axes_dict, None, None]
 
-    partial_forward_pass_nograd_returns_train = jit(
-        vmap(
-            partial_forward_pass_nograd_batch_returns_train,
-            in_axes=nograd_in_axes,
-        )
-    )
     partial_forward_pass_nograd_continuous = jit(
         vmap(
             partial_forward_pass_nograd_batch_continuous,
@@ -716,12 +679,7 @@ def train_on_historic_data(
         )
     )
 
-    partial_fixed_training_step = Partial(
-        partial_training_step, start_index=(data_dict["start_idx"], 0)
-    )
-
     local_learning_rate = run_fingerprint["optimisation_settings"]["base_lr"]
-    iterations_since_improvement = 0
 
     max_iterations_with_no_improvement = run_fingerprint["optimisation_settings"][
         "decay_lr_plateau"
@@ -753,15 +711,7 @@ def train_on_historic_data(
             f"early_stopping_metric '{selection_metric}' is not valid. "
             f"Must be one of: {valid_metrics}"
         )
-    metric_direction = 1  # All metrics: higher = better
-
-    # Early stopping state (only used when use_early_stopping=True)
-    # Early stopping only controls WHEN to stop, not WHAT params to return.
-    # Final param selection is handled by BestParamsTracker.
-    best_early_stopping_metric = jnp.where(metric_direction == -1, jnp.inf, -jnp.inf)
-    iterations_since_early_stopping_improvement = jnp.int32(0)
     use_validation_for_early_stopping = val_fraction > 0
-    warned_about_nan = False  # Track if we've already warned about NaN metrics
 
     # Initialize BestParamsTracker for unified param selection
     # Selection method depends on whether validation is enabled
@@ -776,7 +726,6 @@ def train_on_historic_data(
     use_swa = run_fingerprint["optimisation_settings"].get("use_swa", False)
     swa_start_frac = run_fingerprint["optimisation_settings"].get("swa_start_frac", 0.75)
     swa_freq = run_fingerprint["optimisation_settings"].get("swa_freq", 10)
-    swa_params_list = []  # Will collect parameters for averaging
     n_iterations = run_fingerprint["optimisation_settings"]["n_iterations"]
 
     # Checkpoint tracking for Rademacher complexity
@@ -1327,17 +1276,6 @@ def train_on_historic_data(
             Partial(
                 forward_pass_nograd,
                 static_dict=Hashabledict(reserves_values_train_static_dict),
-                pool=pool,
-            )
-        )
-
-        reserves_values_test_static_dict = base_static_dict.copy()
-        reserves_values_test_static_dict["return_val"] = "reserves_and_values"
-        reserves_values_test_static_dict["bout_length"] = data_dict["bout_length_test"]
-        partial_forward_pass_nograd_batch_reserves_values_test = jit(
-            Partial(
-                forward_pass_nograd,
-                static_dict=Hashabledict(reserves_values_test_static_dict),
                 pool=pool,
             )
         )
@@ -1935,12 +1873,6 @@ def do_run_on_historic_data(
     # Set default values for run_fingerprint and its optimisation_settings
     recursive_default_set(run_fingerprint, run_fingerprint_defaults)
     # Extract various settings from run_fingerprint
-    chunk_period = run_fingerprint["chunk_period"]
-    weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
-    use_alt_lamb = run_fingerprint["use_alt_lamb"]
-    use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-    weight_interpolation_method = run_fingerprint["weight_interpolation_method"]
-    arb_frequency = run_fingerprint["arb_frequency"]
     rule = run_fingerprint["rule"]
 
     # Create a list of unique tokens
@@ -2202,12 +2134,6 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     recursive_default_set(run_fingerprint, run_fingerprint_defaults)
     # Extract various settings from run_fingerprint
     chunk_period = run_fingerprint["chunk_period"]
-    weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
-    use_alt_lamb = run_fingerprint["use_alt_lamb"]
-    use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-    weight_interpolation_method = run_fingerprint["weight_interpolation_method"]
-    arb_frequency = run_fingerprint["arb_frequency"]
-    rule = run_fingerprint["rule"]
 
     # Create a list of unique tokens
     unique_tokens = get_unique_tokens(run_fingerprint)
@@ -2259,9 +2185,6 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         # TODO: Handle MC data for post-training analysis
         raise NotImplementedError
 
-    # create pool
-    pool = create_pool(rule)
-
     # Create static dict using helper - with run-specific overrides
     base_static_dict = create_static_dict(
         run_fingerprint,
@@ -2287,10 +2210,8 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     static_dict["return_val"] = "reserves_and_values"
     static_dict["bout_length"] = data_dict["bout_length"]
 
-    training_data_kind = static_dict["training_data_kind"]
     minimum_weight = static_dict.get("minimum_weight")
     n_assets = static_dict["n_assets"]
-    return_val = static_dict["return_val"]
     bout_length = static_dict["bout_length"]
 
     # filter coarse weights using the start and end indices
@@ -2326,15 +2247,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     # undo padding
     weights = weights[: (-1 * chunk_period + 1)]
 
-    # Check that weights[::chunk_period] matches coarse_weights["weights"]
-    # Get weights at coarse timesteps
-    coarse_timestep_weights = weights[::chunk_period]
     weights = weights[:-1]
-
-    # Compare with original coarse weights
-    weights_match = jnp.allclose(
-        coarse_timestep_weights, coarse_weights["weights"], rtol=1e-10
-    )
 
     start_index = data_dict["start_idx"]
     end_index = data_dict["end_idx"] - 1

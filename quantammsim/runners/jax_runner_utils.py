@@ -1456,8 +1456,7 @@ def optimized_output_conversion(simulationRunDto, outputDict, tokens):
     # Convert outputDict data to pandas DataFrame for efficient slicing
     prices_df = pd.DataFrame(outputDict["prices"])[::1440]
     reserves_df = pd.DataFrame(outputDict["reserves"])[::1440]
-    values_df = pd.DataFrame(outputDict["value"])[::1440]
-    
+
     # note that the returned weights are empirical weights, not calculated weights
     # this is because the calculated weights are not returned in the outputDict as
     # they are not guaranteed to exist for all possible pool types

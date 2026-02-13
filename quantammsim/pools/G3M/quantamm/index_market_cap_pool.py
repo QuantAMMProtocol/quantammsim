@@ -96,7 +96,6 @@ class IndexMarketCapPool(TFMMBasePool):
         # Calculate the proportional weights of the market caps
         # return self.calculate_rule_outputs_nojit(params, run_fingerprint, prices, additional_oracle_input)
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
-        sorted_tokens = sorted(run_fingerprint["tokens"])
 
         # # Match circulating supply values for tokens in run_fingerprint
         # # JAX array version

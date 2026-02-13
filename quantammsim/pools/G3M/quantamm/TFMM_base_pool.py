@@ -483,7 +483,6 @@ class TFMMBasePool(AbstractPool):
             Raw weight outputs with same shape and values as calculate_rule_outputs
         """
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
-        n_assets = chunkwise_price_values.shape[1]
 
         # Initialize carry from first price
         initial_carry = self.get_initial_rule_state(
@@ -1143,8 +1142,6 @@ class TFMMBasePool(AbstractPool):
         # if the chunk period is not a divisor of bout_length, we need to pad the rule_outputs.
         # this can require more data to be available, potentially beyond the end of the bout.
         raw_weight_additional_offset = jnp.where(bout_length % chunk_period != 0, 1, 0).astype("int64")
-        from jax.lax import slice as jax_slice
-        alt_slice = jax_slice(rule_outputs, start_index_coarse, int((len(prices)/chunk_period), n_assets))
 
         rule_outputs = dynamic_slice(
             rule_outputs,
@@ -1324,7 +1321,6 @@ class TFMMBasePool(AbstractPool):
         for urp in update_rule_parameters:
             if urp.name == "memory_days":
                 logit_lamb_vals = []
-                memory_days_values = urp.value
                 for tokenValue in urp.value:
                     initial_lamb = memory_days_to_lamb(tokenValue, chunk_period)
                     logit_lamb = np.log(initial_lamb / (1.0 - initial_lamb))
@@ -1424,7 +1420,6 @@ class TFMMBasePool(AbstractPool):
         -------
             jnp.ndarray: Calculated weights for each asset in the pool.
         """
-        n_assets = prices.shape[1]
         local_fingerprint = {
             "chunk_period": 1,
             "weight_interpolation_period": 1,

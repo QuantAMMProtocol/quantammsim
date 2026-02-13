@@ -357,12 +357,6 @@ def retrieve_simulation_run_analysis_results(
     run_fingerprint, params, portfolio_result, price_data=None, btc_price_data=None
 ):
 
-    minute_index = pd.date_range(
-        start=run_fingerprint["startDateString"],
-        periods=len(portfolio_result["value"]),
-        freq="T",
-    )
-
     hodl_params = copy.deepcopy(params)
     hodl_fingerprint = copy.deepcopy(run_fingerprint)
     hodl_fingerprint["rule"] = "hodl"
@@ -625,7 +619,7 @@ def retrieve_param_and_mc_financial_analysis_results(
         hodl_result,
     )
 
-    mc_results = retrieve_mc_param_financial_results(
+    retrieve_mc_param_financial_results(
         run_fingerprint, params, testEndDateString
     )
 

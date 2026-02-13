@@ -737,9 +737,7 @@ def update_historic_data(token, root):
         root (str): Root directory path
     """
     outputPath = root + "combined_data/"
-    outputMinutePath = outputPath + token + "_USD.csv"
     parquetPath = outputPath + token + "_USD.parquet"
-    path = root + "concat_binance_data/" + token + "_USD.csv"
     minutePath = outputPath + token + "_USD.csv"
     dailyPath = outputPath + token + "_USD_daily.csv"
     hourlyPath = outputPath + token + "_USD_hourly.csv"
@@ -787,7 +785,6 @@ def update_historic_data(token, root):
         )
         if historical_years:
             print(f"Found historical data years for {token}: {historical_years}")
-            available_years = historical_years
             concated_df = import_crypto_historical_data(
                 token, root + "historical_data/"
             )
@@ -1737,7 +1734,6 @@ def get_historic_data(
     )
 
     cleaned_data = []
-    raise_exception = 0
     for d in data:
         # make array of times as timestamps
         unix_timestamps = pddatetime_to_unixtimestamp(d.index)
@@ -1751,6 +1747,5 @@ def get_historic_data(
                 period=period,
             )
         )
-        raise_exception = 1
 
     return np.array(cleaned_data).T

@@ -69,8 +69,6 @@ def load_run_fingerprints(results_dir):
     """
     json_files = glob.glob(os.path.join(results_dir, "*.json"))
     run_fingerprints = []
-    n_files = len(json_files)
-    counter = 0
     json_files.sort()
     for json_file in json_files:
         with open(json_file) as f:
@@ -117,7 +115,6 @@ def load_price_data_if_fingerprints_match(
         unique_tokens = list(set(all_tokens))
         unique_tokens.sort()
 
-        max_memory_days = 365.0
         np.random.seed(0)
         if verbose:
             print("loading data for all run fingerprints")

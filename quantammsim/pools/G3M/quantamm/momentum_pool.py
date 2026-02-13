@@ -286,11 +286,6 @@ class MomentumPool(TFMMBasePool):
         chunk_period = run_fingerprint["chunk_period"]
         bout_length = run_fingerprint["bout_length"]
         n_assets = run_fingerprint["n_assets"]
-        memory_days = lamb_to_memory_days_clipped(
-            calc_lamb(params),
-            run_fingerprint["chunk_period"],
-            run_fingerprint["max_memory_days"],
-        )
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
         gradients_dict = calc_gradients_with_readout(
             params,

@@ -308,7 +308,6 @@ def _jax_calc_coarse_weights(
     target_weights : jnp.ndarray, shape (T_coarse, n_assets)
         The guardrailed target weights before ``maximum_change`` capping.
     """
-    n = rule_outputs.shape[0] + 1
     n_assets = rule_outputs.shape[1]
     asset_arange = jnp.arange(n_assets)
 
@@ -583,13 +582,11 @@ def _jax_fine_weights_from_actual_starts_and_diffs(
     jnp.ndarray, shape (T_coarse * (num - 1), n_assets)
         Concatenated fine weight trajectory across all coarse intervals.
     """
-    initial_weights = intial_weights
     # initial_i = 0
     n_assets = len(intial_weights)
 
     interpol_arange = jnp.expand_dims(jnp.arange(start=0, stop=interpol_num), 1)
     fine_ones = jnp.ones((num - 1, n_assets))
-    array_of_trues = jnp.ones((n_assets,), dtype=bool)
 
     if method == "linear":
         partial_jax_calc_interpolation_block = Partial(
@@ -844,7 +841,6 @@ def _jax_calc_coarse_weight_scan_function(
     ## if any values are too small
     idx = normed_weight_update < minimum_weight
     n_less_than_min = jnp.sum(idx)
-    idy = normed_weight_update > maximum_weight
 
     if ste_min_max_weight:
         normed_weight_update = ste_clip(

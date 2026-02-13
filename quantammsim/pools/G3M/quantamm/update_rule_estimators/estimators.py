@@ -380,7 +380,6 @@ def calc_gradients_with_readout(
     if cap_lamb:
         capped_lamb = jnp.clip(lamb, min=0.0, max=max_lamb)
         lamb = capped_lamb
-    safety_margin_max_memory_days = max_memory_days * 5.0
     gradients_dict = _jax_gradients_at_infinity_via_scan_with_readout(
         chunkwise_price_values, lamb
     )

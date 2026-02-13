@@ -727,7 +727,6 @@ class BoundedWeightsHook:
         """
         min_w = np.asarray(min_weights)
         max_w = np.asarray(max_weights)
-        n_assets = len(min_w)
 
         # min_budget: sum of minimums
         min_sum = np.sum(min_w)

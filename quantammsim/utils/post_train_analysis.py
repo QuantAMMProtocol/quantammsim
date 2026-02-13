@@ -536,9 +536,6 @@ def decompose_pool_returns(
     reserves = np.asarray(reserves, dtype=np.float64)
     prices = np.asarray(prices, dtype=np.float64)
 
-    T = len(values)
-    n_assets = reserves.shape[1] if reserves.ndim > 1 else 1
-
     # Pool return
     pool_return = values[-1] / values[0] - 1.0
 

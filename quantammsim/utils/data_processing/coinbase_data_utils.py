@@ -54,9 +54,6 @@ def import_historic_coinbase_data(
     start_time_as_unix_timestamp = datetime_to_unixtimestamp(
         start_time, str_format="%Y-%m-%d-%H-%M"
     )
-    end_time_as_unix_timestamp = datetime_to_unixtimestamp(
-        end_time, str_format="%Y-%m-%d-%H-%M"
-    )
 
     prevRow = retrievedData.iloc[0]
     prevIndex = start_time_as_unix_timestamp * 1000
@@ -183,7 +180,6 @@ def import_clean_historic_coinbase_dataframe(
 
     cleaned_data = []
     unix_timestamps = []
-    raise_exception = 0
     for d in data:
         # make array of times as timestamps
         unix_timestamps = pddatetime_to_unixtimestamp(d.index)
@@ -197,7 +193,6 @@ def import_clean_historic_coinbase_dataframe(
                 period=period,
             )
         )
-        raise_exception = 1
 
     return unix_timestamps, np.array(cleaned_data).T
 

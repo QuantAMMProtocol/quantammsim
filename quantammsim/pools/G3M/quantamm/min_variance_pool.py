@@ -259,7 +259,6 @@ class MinVariancePool(TFMMBasePool):
         )
 
         logit_lamb_np = np.log(initial_lamb / (1.0 - initial_lamb))
-        logit_lamb = np.array([[logit_lamb_np] * n_assets] * n_parameter_sets)
 
         # lamb delta is the difference in lamb needed for
         # lamb + delta lamb to give a final memory length
@@ -273,10 +272,7 @@ class MinVariancePool(TFMMBasePool):
         logit_lamb_plus_delta_lamb_np = np.log(
             initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
         )
-        logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np
-        logit_delta_lamb = np.array(
-            [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
-        )
+        logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np  # noqa: F841
 
         memory_days_1 = process_initial_values(
             initial_values_dict, "initial_memory_length", n_assets, n_parameter_sets

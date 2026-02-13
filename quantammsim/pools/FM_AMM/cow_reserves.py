@@ -322,7 +322,6 @@ def _jax_calc_cowamm_reserves_with_fees(
     n_assets = prices.shape[1]
     assert n_assets == 2
 
-    n = prices.shape[0]
 
     initial_prices = prices[0]
 
@@ -494,7 +493,6 @@ def _jax_calc_cowamm_reserves_one_arb_with_fees(
     n_assets = prices.shape[1]
     assert n_assets == 2
 
-    n = prices.shape[0]
 
     initial_prices = prices[0]
 
@@ -557,7 +555,6 @@ def _jax_calc_cowamm_reserves_one_arb_zero_fees_scan_function(
     prev_reserves = carry_list[0]
 
     # first find quoted price
-    current_price = prev_reserves[1] / prev_reserves[0]
 
     prev_product = prev_reserves[0] * prev_reserves[1]
 
@@ -622,7 +619,6 @@ def _jax_calc_cowamm_reserves_one_arb_zero_fees(
     n_assets = prices.shape[1]
     assert n_assets == 2
 
-    initial_prices = prices[0]
 
     scan_fn = Partial(
         _jax_calc_cowamm_reserves_one_arb_zero_fees_scan_function,
@@ -724,8 +720,6 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
         Array of reserves.
     """
 
-    # carry_list[0] is previous prices
-    prev_prices = carry_list[0]
 
     # carry_list[1] is previous reserves
     prev_reserves = carry_list[1]
