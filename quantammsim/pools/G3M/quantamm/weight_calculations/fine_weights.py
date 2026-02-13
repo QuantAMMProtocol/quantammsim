@@ -34,7 +34,7 @@ config.update("jax_enable_x64", True)
 # config.update("jax_debug_nans", True)
 # config.update('jax_disable_jit', True)
 from jax import default_backend
-from jax import local_device_count, devices
+from jax import devices
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]

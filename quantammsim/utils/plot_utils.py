@@ -2,8 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from matplotlib.ticker import MultipleLocator
-from datetime import datetime, timezone
+from datetime import datetime
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -322,7 +321,8 @@ def plot_vals(
                 ["$" + str(item) + "$" for item in df_wide.index],
                 name=df_wide.index.name,
             )
-        rounding_axes_fn = lambda x: int(x) if x % 1 == 0 else x
+        def rounding_axes_fn(x):
+            return int(x) if x % 1 == 0 else x
         if window_size_estimate_xaxis:
             # cut last column of datafram
             if crop_heatmap:
@@ -352,7 +352,7 @@ def plot_vals(
                 ["$2^{" + str(int(float(item))) + "}$" for item in df_wide.columns],
                 name=df_wide.columns.name,
             )
-        elif log_xaxis == False and window_size_estimate_xaxis == False:
+        elif not log_xaxis and not window_size_estimate_xaxis:
             x_axis_labels = [item for item in df_wide.columns]
             rounding_degree = (
                 int(np.ceil(-np.log10(x_axis_labels[1] - x_axis_labels[0]))) + 1
@@ -380,7 +380,7 @@ def plot_vals(
                 ],
                 name="$\\log " + df_wide.index.name[1:],
             )
-        elif log_yaxis == False and window_size_estimate_yaxis == False:
+        elif not log_yaxis and not window_size_estimate_yaxis:
             y_axis_labels = [item for item in df_wide.index]
             rounding_degree = int(
                 np.ceil(-np.log10(y_axis_labels[1] - y_axis_labels[0]))
@@ -430,7 +430,7 @@ def plot_vals(
     if max(raw_ticks) > 0 and abs(max(raw_ticks)) > abs(min(raw_ticks)):
         capout = False
 
-    if capout == False:
+    if not capout:
         ticks = [
             (lambda x: "+" if x > 0 else "")(t) + str(np.around(t, 2))
             for t in ax.collections[0].colorbar.get_ticks()
@@ -449,7 +449,7 @@ def plot_vals(
                 item.set_rotation(0)
         for item in ax.get_yticklabels():
             item.set_rotation(0)
-        if litepaper_plot == True:
+        if litepaper_plot:
             ax.set(yticklabels=[])
             ax.set(xticklabels=[])
             ax.set(
@@ -491,7 +491,7 @@ def plot_vals(
                 item.set_rotation(0)
         for item in ax.get_yticklabels():
             item.set_rotation(0)
-        if litepaper_plot == True:
+        if litepaper_plot:
             ax.set(yticklabels=[])
             ax.set(xticklabels=[])
             ax.set(
@@ -532,7 +532,7 @@ def plot_vals(
             item.set_rotation(0)
     for item in ax.get_yticklabels():
         item.set_rotation(0)
-    if litepaper_plot == True:
+    if litepaper_plot:
         ax.set(yticklabels=[])
         ax.set(xticklabels=[])
         ax.set(

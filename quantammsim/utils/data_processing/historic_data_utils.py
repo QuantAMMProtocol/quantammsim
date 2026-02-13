@@ -2,12 +2,11 @@ import numpy as np
 import pandas as pd
 import os.path
 import os
-import pyarrow as pa
 import matplotlib.pyplot as plt
 import dask.dataframe as dd
 
 from Historic_Crypto import Cryptocurrencies, HistoricalData
-from datetime import datetime, timezone
+from datetime import datetime
 from importlib import resources as impresources
 from quantammsim import data
 from pathlib import Path
@@ -41,9 +40,6 @@ from quantammsim.utils.data_processing.minute_daily_conversion_utils import (
 )
 from quantammsim.utils.data_processing.datetime_utils import (
     datetime_to_unixtimestamp,
-    unixtimestamp_to_datetime,
-    unixtimestamp_to_minute_datetime,
-    unixtimestamp_to_midnight_datetime,
     unixtimestamp_to_precise_datetime,
     pddatetime_to_unixtimestamp,
 )

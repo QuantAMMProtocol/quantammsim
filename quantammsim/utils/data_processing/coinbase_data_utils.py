@@ -247,7 +247,7 @@ def _cleaned_up_coinbase_data(
             raw_data_index += 1
             print("correct")
         else:
-            if i < initial_gap_in_rows and have_backfilled == True:
+            if i < initial_gap_in_rows and have_backfilled:
                 pass
             else:
                 cleaned_prices[i] = cleaned_prices[i - 1]
@@ -285,7 +285,7 @@ def fill_missing_rows_with_coinbase_data(concatenated_df, token1, root):
 
     missing_timestamps = coinbase_data.index.difference(concatenated_df.index)
     if missing_timestamps.empty:
-        print(f"No missing timestamps to fill from Coinbase")
+        print("No missing timestamps to fill from Coinbase")
         return concatenated_df, None
 
     filled_in_df = pd.concat([concatenated_df, coinbase_data.loc[missing_timestamps]])

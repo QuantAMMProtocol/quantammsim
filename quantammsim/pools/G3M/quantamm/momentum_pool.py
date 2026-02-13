@@ -13,7 +13,7 @@ from jax import config
 
 config.update("jax_enable_x64", True)
 from jax import default_backend
-from jax import local_device_count, devices
+from jax import devices
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -25,10 +25,10 @@ else:
     config.update("jax_platform_name", "cpu")
 
 import jax.numpy as jnp
-from jax import jit, vmap
-from jax import devices, device_put
+from jax import jit
+from jax import devices
 from jax import tree_util
-from jax.lax import stop_gradient, dynamic_slice
+from jax.lax import dynamic_slice
 
 from quantammsim.pools.G3M.quantamm.TFMM_base_pool import TFMMBasePool
 from quantammsim.core_simulator.param_utils import (
@@ -48,15 +48,11 @@ from quantammsim.core_simulator.param_utils import jax_memory_days_to_lamb
 from quantammsim.core_simulator.param_schema import (
     ParamSpec,
     OptunaRange,
-    get_param_value,
-    get_optuna_range,
-    sample_in_range,
     COMMON_PARAM_SCHEMA,
 )
 
 from typing import Dict, Any, Optional
 from functools import partial
-from abc import abstractmethod
 import numpy as np
 
 # import the fine weight output function which has pre-set argument rule_outputs_are_themselves_weights

@@ -49,17 +49,14 @@ import optuna
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner, PercentilePruner, HyperbandPruner, SuccessiveHalvingPruner
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Tuple, Callable, Union
+from typing import Dict, List, Optional, Any, Tuple, Callable
 from copy import deepcopy
 from datetime import datetime
-import json
-import warnings
 import traceback
 
 from quantammsim.runners.training_evaluator import (
     TrainingEvaluator,
     EvaluationResult,
-    ExistingRunnerWrapper,
 )
 from quantammsim.core_simulator.param_utils import recursive_default_set
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults

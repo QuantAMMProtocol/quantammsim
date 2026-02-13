@@ -58,8 +58,6 @@ import hashlib
 import json as _json
 
 from quantammsim.training.backpropagation import (
-    update_from_partial_training_step_factory,
-    update_from_partial_training_step_factory_with_optax,
     create_opt_state_in_axes_dict,
     create_optimizer_chain,
     build_scan_update_with_optax,
@@ -80,12 +78,7 @@ from quantammsim.core_simulator.result_exporter import (
 )
 
 from quantammsim.runners.jax_runner_utils import (
-    nan_param_reinit,
-    nan_param_reinit_vectorized,
-    has_nan_grads,
     Hashabledict,
-    NestedHashabledict,
-    HashableArrayWrapper,
     get_trades_and_fees,
     get_unique_tokens,
     OptunaManager,
@@ -94,18 +87,17 @@ from quantammsim.runners.jax_runner_utils import (
     create_static_dict,
     get_sig_variations,
     BestParamsTracker,
-    SELECTION_METHODS,
     init_tracker_state,
     update_tracker_state,
     generate_nan_bank,
     nan_reinit_from_bank,
+    nan_param_reinit,  # noqa: F401  — re-exported to multi_period_sgd
 )
 
 from quantammsim.pools.creator import create_pool
 
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.utils.post_train_analysis import (
-    calculate_period_metrics,
     calculate_continuous_test_metrics,
     _compute_all_metrics_batched,
     _METRIC_KEYS,
@@ -539,7 +531,7 @@ def train_on_historic_data(
         loaded = True
     else:
         if force_init and os.path.isfile(run_location) and verbose:
-            print(f"[Cache] force_init=True, ignoring cached file")
+            print("[Cache] force_init=True, ignoring cached file")
         loaded = False
     # Create pool
     pool = create_pool(rule)
@@ -624,7 +616,7 @@ def train_on_historic_data(
                 value_per_asset = initial_pool_value / n_assets_local
                 fresh_reserves = value_per_asset / start_prices
                 if verbose:
-                    print(f"[Warm-start] Using previous params with equal weights")
+                    print("[Warm-start] Using previous params with equal weights")
 
             params["initial_reserves"] = jnp.stack([fresh_reserves] * n_parameter_sets, axis=0)
 
@@ -806,10 +798,10 @@ def train_on_historic_data(
         is_optax = run_fingerprint["optimisation_settings"]["optimiser"] in ["adam", "adamw"]
 
         if is_optax:
-            import optax
 
             optimizer = create_optimizer_chain(run_fingerprint)
-            init_optimizer = lambda params: optimizer.init(params)
+            def init_optimizer(params):
+                return optimizer.init(params)
             batched_init = vmap(init_optimizer, in_axes=[params_in_axes_dict])
             opt_state = batched_init(params)
             opt_state_in_axes_dict = create_opt_state_in_axes_dict(opt_state)
@@ -1649,7 +1641,7 @@ def train_on_historic_data(
             n_failed = n_total - n_completed - n_pruned
 
             print(f"\n{'='*60}")
-            print(f"OPTUNA OPTIMIZATION COMPLETE")
+            print("OPTUNA OPTIMIZATION COMPLETE")
             print(f"{'='*60}")
             print(f"Trials: {n_completed} completed, {n_pruned} pruned, {n_failed} failed (of {n_total} total)")
 
@@ -1801,7 +1793,7 @@ def train_on_historic_data(
 
                 if verbose:
                     # Print continuous test metrics (computed from actual forward pass)
-                    print(f"\nContinuous test metrics (from forward pass):")
+                    print("\nContinuous test metrics (from forward pass):")
                     print(f"  Best trial #{best_trial.number}:")
                     print(f"    Train (IS):  sharpe={best_train_metrics.get('sharpe', 0):+.4f}  "
                           f"ret_over_hodl={best_train_metrics.get('returns_over_hodl', 0):+.4f}")

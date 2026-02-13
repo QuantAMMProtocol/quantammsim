@@ -1,4 +1,4 @@
-import sys, os
+import os
 import numpy as np
 import jax.numpy as jnp
 import pandas as pd
@@ -32,9 +32,7 @@ from quantammsim.core_simulator.param_utils import (
     _to_float64_list,
 )
 from quantammsim.utils.data_processing.datetime_utils import (
-    unixtimestamp_to_precise_datetime,
     unixtimestamp_to_midnight_datetime,
-    datetime_to_unixtimestamp,
 )
 from quantammsim.utils.data_processing.dtb3_data_utils import filter_dtb3_values
 from quantammsim.utils.data_processing.historic_data_utils import (
@@ -774,13 +772,6 @@ def calculate_daily_returns(minute_values, startDateString, name):
     daily_return_array = np.insert(daily_return_array, 0, 0)
 
     return daily_return_array
-
-
-def calculate_daily_old_returns(minute_values):
-
-    daily_values = minute_values[::1440]
-
-    return np.array(jnp.diff(daily_values) / daily_values[:-1])
 
 
 def calculate_daily_old_returns(minute_values):

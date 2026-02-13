@@ -3,7 +3,7 @@ from jax import config
 
 config.update("jax_enable_x64", True)
 from jax import default_backend
-from jax import local_device_count, devices
+from jax import devices
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -15,9 +15,9 @@ else:
     config.update("jax_platform_name", "cpu")
 
 import jax.numpy as jnp
-from jax import jit, vmap
+from jax import jit
 from jax import devices, device_put
-from jax.lax import stop_gradient, dynamic_slice, scan, fori_loop
+from jax.lax import dynamic_slice, scan, fori_loop
 from jax.tree_util import Partial
 
 from quantammsim.pools.base_pool import AbstractPool
@@ -29,8 +29,6 @@ from quantammsim.pools.G3M.quantamm.quantamm_reserves import (
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     _jax_calc_coarse_weights,
     _jax_calc_coarse_weight_scan_function,
-    scale_diff,
-    ste,
 )
 from quantammsim.pools.G3M.quantamm.weight_calculations.linear_interpolation import (
     _jax_calc_linear_interpolation_block,

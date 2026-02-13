@@ -4,7 +4,7 @@ import numpy as np
 # again, this only works on startup!
 from jax import config, devices, tree_util
 import jax.numpy as jnp
-from jax.lax import stop_gradient, dynamic_slice
+from jax.lax import dynamic_slice
 from jax import default_backend
 
 from quantammsim.pools.base_pool import AbstractPool

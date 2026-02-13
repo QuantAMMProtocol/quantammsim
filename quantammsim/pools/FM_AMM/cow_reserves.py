@@ -13,12 +13,11 @@ import numpy as np
 
 
 # again, this only works on startup!
-from jax import config, jit, vmap
+from jax import jit, vmap
 import jax.numpy as jnp
 from jax.lax import scan
 from jax.tree_util import Partial
 
-from functools import partial
 
 from quantammsim.pools.FM_AMM.FMAMM_trades import jitted_FMAMM_cond_trade
 from quantammsim.pools.noise_trades import calculate_reserves_after_noise_trade

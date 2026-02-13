@@ -22,14 +22,10 @@ from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
 
 config.update("jax_enable_x64", True)
 
-import os
 import optuna
 import logging
 from datetime import datetime
 from pathlib import Path
-import plotly.graph_objects as go
-from optuna.visualization import plot_optimization_history, plot_param_importances
-import numpy as np
 
 
 from typing import Dict, Any, Generic, TypeVar, List, Optional, Tuple
@@ -1552,7 +1548,6 @@ def probe_max_n_parameter_sets(
     - The forward pass (without gradients) is used for probing, so gradient
       computation may require ~2x more memory. Hence the safety_margin.
     """
-    from copy import deepcopy
     from jax import clear_caches
     from jax.tree_util import Partial
     import jax.numpy as jnp
@@ -1709,7 +1704,7 @@ def probe_max_n_parameter_sets(
     }
 
     if verbose:
-        print(f"\nMemory probe results:")
+        print("\nMemory probe results:")
         print(f"  Max n_parameter_sets: {best}")
         print(f"  Recommended (with {safety_margin:.0%} margin): {recommended}")
 

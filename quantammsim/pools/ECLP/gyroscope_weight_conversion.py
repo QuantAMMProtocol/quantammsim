@@ -7,7 +7,7 @@ grid search followed by gradient descent in an unconstrained (softplus)
 parameter space.
 """
 from jax import numpy as jnp
-from jax import jit, grad, value_and_grad
+from jax import jit, value_and_grad
 from typing import Tuple
 from quantammsim.pools.ECLP.gyroscope_reserves import initialise_gyroscope_reserves_given_value
 import jax

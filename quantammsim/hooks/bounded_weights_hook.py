@@ -17,7 +17,6 @@ from jax.lax import stop_gradient
 
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_bounded_from_weight_changes,
-    calc_fine_weight_output_bounded_from_weights,
     _jax_calc_coarse_weight_scan_function,
 )
 
