@@ -19,6 +19,7 @@ from quantammsim.pools.G3M.quantamm.min_variance_pool import MinVariancePool
 from quantammsim.pools.hodl_pool import HODLPool
 from quantammsim.pools.FM_AMM.cow_pool import CowPool
 from quantammsim.pools.ECLP.gyroscope import GyroscopePool
+from quantammsim.pools.reCLAMM.reclamm import ReClammPool
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.hooks.versus_rebalancing import (
     CalculateLossVersusRebalancing,
@@ -228,6 +229,8 @@ def create_pool(rule):
         base_pool = CowPool()
     elif base_rule == "gyroscope":
         base_pool = GyroscopePool()
+    elif base_rule == "reclamm":
+        base_pool = ReClammPool()
     else:
         raise NotImplementedError(f"Unknown base pool type: {base_rule}")
 
