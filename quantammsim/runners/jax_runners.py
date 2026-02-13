@@ -1854,6 +1854,244 @@ def train_on_historic_data(
                     "checkpoint_returns": None,
                 }
             return None
+    elif run_fingerprint["optimisation_settings"]["method"] == "bfgs":
+        from jax.flatten_util import ravel_pytree
+        from jax.scipy.optimize import minimize as jax_minimize
+        from quantammsim.training.backpropagation import (
+            batched_partial_training_step_factory,
+            batched_objective_factory,
+        )
+
+        bfgs_settings = run_fingerprint["optimisation_settings"]["bfgs_settings"]
+        maxiter = bfgs_settings["maxiter"]
+        tol = bfgs_settings["tol"]
+        n_eval_points = bfgs_settings["n_evaluation_points"]
+
+        # Generate fixed evaluation points (same approach as optuna)
+        min_spacing = data_dict["bout_length"] // 2
+        evaluation_starts = generate_evaluation_points(
+            data_dict["start_idx"],
+            sampling_end_idx,
+            bout_length_window,
+            n_eval_points,
+            min_spacing,
+            run_fingerprint["optimisation_settings"]["initial_random_key"],
+        )
+        fixed_start_indexes = jnp.array(
+            [(s, 0) for s in evaluation_starts], dtype=jnp.int32
+        )
+
+        if verbose:
+            print(f"[BFGS] {len(evaluation_starts)} evaluation points, maxiter={maxiter}, tol={tol}")
+            print(f"[BFGS] {n_parameter_sets} parameter sets (multi-start)")
+
+        # Build deterministic objective: params -> scalar (mean over eval points)
+        batched_pts = batched_partial_training_step_factory(partial_training_step)
+        batched_obj = batched_objective_factory(batched_pts)
+
+        # Extract single-set params (index 0) to get the pytree structure and unravel_fn
+        params_single = {}
+        for k, v in params.items():
+            if k == "subsidary_params":
+                params_single[k] = v
+            elif hasattr(v, "shape") and v.ndim >= 1 and v.shape[0] == n_parameter_sets:
+                params_single[k] = v[0]
+            else:
+                params_single[k] = v
+
+        flat_x0_template, unravel_fn = ravel_pytree(params_single)
+        n_flat = flat_x0_template.shape[0]
+
+        if verbose:
+            print(f"[BFGS] {n_flat} flat parameters per set")
+
+        # Build flat objective: flat_x -> scalar (negated for minimization)
+        def neg_objective(flat_x):
+            p = unravel_fn(flat_x)
+            return -batched_obj(p, fixed_start_indexes)
+
+        # Flatten all parameter sets into (n_parameter_sets, n_flat)
+        all_flat_x0 = []
+        for i in range(n_parameter_sets):
+            ps = {}
+            for k, v in params.items():
+                if k == "subsidary_params":
+                    ps[k] = v
+                elif hasattr(v, "shape") and v.ndim >= 1 and v.shape[0] == n_parameter_sets:
+                    ps[k] = v[i]
+                else:
+                    ps[k] = v
+            flat_xi, _ = ravel_pytree(ps)
+            all_flat_x0.append(flat_xi)
+        all_flat_x0 = jnp.stack(all_flat_x0)  # (n_parameter_sets, n_flat)
+
+        # vmap minimize over parameter sets
+        def solve_single(flat_x0):
+            result = jax_minimize(
+                neg_objective, flat_x0, method="BFGS",
+                options={"maxiter": maxiter},
+                tol=tol,
+            )
+            return result.x, result.fun, result.status
+
+        vmapped_solve = jit(vmap(solve_single))
+
+        if verbose:
+            print("[BFGS] Running optimization (JIT-compiling + solving)...")
+
+        all_x_opt, all_fun, all_status = vmapped_solve(all_flat_x0)
+
+        if verbose:
+            for i in range(n_parameter_sets):
+                obj_val = -float(all_fun[i])
+                status = int(all_status[i])
+                status_str = "converged" if status == 0 else f"status={status}"
+                print(f"  Set {i}: objective={obj_val:+.6f} ({status_str})")
+
+        # Unflatten optimized params and stack back into batched form
+        optimized_params_list = [unravel_fn(all_x_opt[i]) for i in range(n_parameter_sets)]
+        optimized_params = {}
+        for k in optimized_params_list[0].keys():
+            if k == "subsidary_params":
+                optimized_params[k] = optimized_params_list[0][k]
+            else:
+                optimized_params[k] = jnp.stack(
+                    [optimized_params_list[i][k] for i in range(n_parameter_sets)]
+                )
+
+        # Compute metrics using the shared continuous forward pass
+        continuous_outputs = partial_forward_pass_nograd_continuous(
+            optimized_params,
+            (data_dict["start_idx"], 0),
+            data_dict["prices"],
+        )
+
+        train_prices = data_dict["prices"][
+            data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"]
+        ]
+        continuous_prices = data_dict["prices"][
+            data_dict["start_idx"]:data_dict["start_idx"] + original_bout_length + data_dict["bout_length_test"]
+        ]
+
+        train_metrics_list = []
+        continuous_test_metrics_list = []
+        for param_idx in range(n_parameter_sets):
+            param_value = continuous_outputs["value"][param_idx]
+            param_reserves = continuous_outputs["reserves"][param_idx]
+
+            train_dict = {
+                "value": param_value[:data_dict["bout_length"]],
+                "reserves": param_reserves[:data_dict["bout_length"]],
+            }
+            param_continuous_dict = {
+                "value": param_value,
+                "reserves": param_reserves,
+            }
+
+            train_metrics = calculate_period_metrics(train_dict, train_prices)
+            continuous_test_metrics = calculate_continuous_test_metrics(
+                param_continuous_dict,
+                original_bout_length,
+                data_dict["bout_length_test"],
+                continuous_prices,
+            )
+
+            train_metrics_list.append(train_metrics)
+            continuous_test_metrics_list.append(continuous_test_metrics)
+
+        # Compute validation metrics if val_fraction > 0
+        if val_fraction > 0:
+            val_prices = data_dict["prices"][
+                data_dict["start_idx"] + data_dict["bout_length"]:
+                data_dict["start_idx"] + original_bout_length
+            ]
+            val_metrics_list = []
+            for param_idx in range(n_parameter_sets):
+                val_dict = {
+                    "value": continuous_outputs["value"][param_idx, data_dict["bout_length"]:original_bout_length],
+                    "reserves": continuous_outputs["reserves"][param_idx, data_dict["bout_length"]:original_bout_length, :],
+                }
+                val_metrics = calculate_period_metrics(val_dict, val_prices)
+                val_metrics_list.append(val_metrics)
+        else:
+            val_metrics_list = None
+
+        # Use BestParamsTracker to select best param set
+        params_tracker.update(
+            iteration=0,
+            params=optimized_params,
+            continuous_outputs=continuous_outputs,
+            train_metrics_list=train_metrics_list,
+            val_metrics_list=val_metrics_list,
+            continuous_test_metrics_list=continuous_test_metrics_list,
+        )
+        tracker_results = params_tracker.get_results(n_parameter_sets, original_bout_length)
+        best_idx = tracker_results["best_param_idx"]
+        best_params = tracker_results["best_params"]
+
+        if verbose:
+            print(f"\n{'='*60}")
+            print(f"BFGS OPTIMIZATION COMPLETE")
+            print(f"{'='*60}")
+            print(f"Best param set: {best_idx}")
+            if tracker_results["best_train_metrics"]:
+                best_train = tracker_results["best_train_metrics"][best_idx]
+                print(f"  Train (IS):  sharpe={best_train.get('sharpe', np.nan):+.4f}  "
+                      f"ret_over_hodl={best_train.get('returns_over_uniform_hodl', np.nan):+.4f}")
+            if tracker_results["best_continuous_test_metrics"]:
+                best_test = tracker_results["best_continuous_test_metrics"][best_idx]
+                print(f"  Test (OOS):  sharpe={best_test.get('sharpe', np.nan):+.4f}  "
+                      f"ret_over_hodl={best_test.get('returns_over_uniform_hodl', np.nan):+.4f}")
+            print(f"{'='*60}")
+
+        selected_params = params_tracker.select_param_set(best_params, best_idx, n_parameter_sets)
+
+        if return_training_metadata:
+            metadata = {
+                "method": "bfgs",
+                "epochs_trained": int(maxiter),
+
+                # Best metrics (from tracker)
+                "best_train_metrics": tracker_results["best_train_metrics"],
+                "best_continuous_test_metrics": tracker_results["best_continuous_test_metrics"],
+                "best_val_metrics": tracker_results["best_val_metrics"],
+                "best_param_idx": best_idx,
+                "best_iteration": 0,
+                "best_metric_value": tracker_results["best_metric_value"],
+                "best_final_reserves": tracker_results["best_final_reserves"][best_idx] if tracker_results["best_final_reserves"] is not None else None,
+                "best_final_weights": tracker_results["best_final_weights"][best_idx] if tracker_results["best_final_weights"] is not None else None,
+
+                # Last = best for BFGS (single optimization call)
+                "last_train_metrics": tracker_results["best_train_metrics"],
+                "last_continuous_test_metrics": tracker_results["best_continuous_test_metrics"],
+                "last_val_metrics": tracker_results["best_val_metrics"],
+                "last_param_idx": best_idx,
+                "last_final_reserves": tracker_results["best_final_reserves"][best_idx] if tracker_results["best_final_reserves"] is not None else None,
+                "last_final_weights": tracker_results["best_final_weights"][best_idx] if tracker_results["best_final_weights"] is not None else None,
+
+                # Selection info
+                "selection_method": tracker_results["selection_method"],
+                "selection_metric": tracker_results["selection_metric"],
+
+                # Legacy fields
+                "final_objective": float(-jnp.min(all_fun)),
+                "final_train_metrics": tracker_results["best_train_metrics"],
+                "final_continuous_test_metrics": tracker_results["best_continuous_test_metrics"],
+                "final_weights": tracker_results["best_final_weights"][best_idx] if tracker_results["best_final_weights"] is not None else None,
+                "final_reserves": tracker_results["best_final_reserves"][best_idx] if tracker_results["best_final_reserves"] is not None else None,
+
+                # Provenance
+                "run_location": run_location,
+                "run_fingerprint": deepcopy(run_fingerprint),
+                "checkpoint_returns": None,
+
+                # BFGS-specific
+                "status_per_set": [int(all_status[i]) for i in range(n_parameter_sets)],
+                "objective_per_set": [float(-all_fun[i]) for i in range(n_parameter_sets)],
+            }
+            return selected_params, metadata
+        return selected_params
+
     else:
         raise NotImplementedError
 
