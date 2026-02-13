@@ -3,7 +3,7 @@ QuantAMMSim: Quantitative AMM Simulator
 """
 
 try:
-    import numpy as np
+    import numpy as np  # noqa: F401
 except ImportError as e:
     raise ImportError(
         "NumPy is required for QuantAMMSim. Please install numpy."

@@ -17,7 +17,6 @@ from jax.lax import stop_gradient
 
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     calc_fine_weight_output_bounded_from_weight_changes,
-    calc_fine_weight_output_bounded_from_weights,
     _jax_calc_coarse_weight_scan_function,
 )
 
@@ -728,7 +727,6 @@ class BoundedWeightsHook:
         """
         min_w = np.asarray(min_weights)
         max_w = np.asarray(max_weights)
-        n_assets = len(min_w)
 
         # min_budget: sum of minimums
         min_sum = np.sum(min_w)

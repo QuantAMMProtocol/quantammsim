@@ -6,7 +6,7 @@ import numpy as np
 from jax import config, devices, jit, tree_util
 from jax import default_backend
 import jax.numpy as jnp
-from jax.lax import stop_gradient, dynamic_slice
+from jax.lax import dynamic_slice
 
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.pools.G3M.balancer.balancer_reserves import (

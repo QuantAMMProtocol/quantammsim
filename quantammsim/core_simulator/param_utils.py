@@ -2059,7 +2059,7 @@ def split_param_combinations(param_combinations):
 
 
 def make_vmap_in_axes_dict(
-    input_dict, in_axes, keys_to_recur_on, keys_with_no_vamp=[], n_repeats_of_recurred=0
+    input_dict, in_axes, keys_to_recur_on, keys_with_no_vamp=None, n_repeats_of_recurred=0
 ):
     """Create a ``vmap`` in_axes specification dict matching a parameter dict structure.
 
@@ -2088,6 +2088,8 @@ def make_vmap_in_axes_dict(
         or None for each leaf.
     """
 
+    if keys_with_no_vamp is None:
+        keys_with_no_vamp = []
     in_axes_dict = dict()
     for key, _ in input_dict.items():
         in_axes_dict[key] = in_axes

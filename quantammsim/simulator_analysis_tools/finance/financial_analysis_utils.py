@@ -1,5 +1,3 @@
-import numpy as np
-from scipy.stats import kurtosis, skew, linregress
 import pandas as pd
 import csv
 

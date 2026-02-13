@@ -25,8 +25,6 @@ The :func:`create_optimizer_chain` function builds an Optax optimizer from
 schedules, plateau-based decay, gradient clipping, and weight decay.
 """
 
-import os
-import glob
 
 # BATCH_SIZE=32
 # os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count='+str(BATCH_SIZE)
@@ -38,7 +36,7 @@ config.update("jax_enable_x64", True)
 # config.update("jax_debug_nans", True)
 # config.update('jax_disable_jit', True)
 from jax import default_backend
-from jax import local_device_count, devices
+from jax import devices
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -54,11 +52,10 @@ else:
 
 import jax.numpy as jnp
 from jax import grad, value_and_grad, jit, vmap
-from jax.tree_util import tree_map, tree_flatten, tree_unflatten
+from jax.tree_util import tree_map
 from jax import jacfwd, jacrev, jvp
 from jax import devices
 
-import sys
 
 import numpy as np
 

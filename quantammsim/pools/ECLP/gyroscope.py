@@ -11,7 +11,7 @@ from jax import config
 
 config.update("jax_enable_x64", True)
 from jax import default_backend
-from jax import local_device_count, devices
+from jax import devices
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -23,14 +23,13 @@ else:
     config.update("jax_platform_name", "cpu")
 
 import jax.numpy as jnp
-from jax import jit, vmap
-from jax import device_put
+from jax import jit
 from jax import tree_util
-from jax.lax import stop_gradient, dynamic_slice
+from jax.lax import dynamic_slice
 
 from functools import partial
 
-from typing import Dict, Any, Optional, Callable, Tuple
+from typing import Dict, Any, Optional, Tuple
 import numpy as np
 
 from quantammsim.pools.base_pool import AbstractPool
