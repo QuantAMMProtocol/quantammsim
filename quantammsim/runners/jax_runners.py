@@ -1936,6 +1936,9 @@ def train_on_historic_data(
 
         vmapped_solve = jit(vmap(solve_single))
 
+        # Keep a copy of initial params for saving alongside optimized params
+        initial_params = deepcopy(params)
+
         if verbose:
             print("[BFGS] Running optimization (JIT-compiling + solving)...")
 
@@ -2028,6 +2031,82 @@ def train_on_historic_data(
         tracker_results = params_tracker.get_results(n_parameter_sets, original_bout_length)
         best_idx = tracker_results["best_param_idx"]
         best_params = tracker_results["best_params"]
+
+        # --- Save initial (step 0) and optimized (step 1) params ---
+        # Compute initial metrics for the pre-optimization params
+        initial_continuous_outputs = partial_forward_pass_nograd_continuous(
+            initial_params,
+            (data_dict["start_idx"], 0),
+            data_dict["prices"],
+        )
+
+        param_steps = []
+        train_obj_steps = []
+        obj_steps = []
+        test_steps = []
+        step_numbers = []
+
+        for pidx in range(n_parameter_sets):
+            # Step 0: initial params
+            ps_init = {}
+            for k, v in initial_params.items():
+                if k == "subsidary_params":
+                    ps_init[k] = v
+                elif hasattr(v, "shape") and v.ndim >= 1 and v.shape[0] == n_parameter_sets:
+                    ps_init[k] = v[pidx]
+                else:
+                    ps_init[k] = v
+
+            init_train_dict = {
+                "value": initial_continuous_outputs["value"][pidx, :data_dict["bout_length"]],
+                "reserves": initial_continuous_outputs["reserves"][pidx, :data_dict["bout_length"]],
+            }
+            init_cont_dict = {
+                "value": initial_continuous_outputs["value"][pidx],
+                "reserves": initial_continuous_outputs["reserves"][pidx],
+            }
+            init_train_m = calculate_period_metrics(init_train_dict, train_prices)
+            init_test_m = calculate_continuous_test_metrics(
+                init_cont_dict, original_bout_length, data_dict["bout_length_test"], continuous_prices,
+            )
+            init_obj = init_train_m.get(run_fingerprint["return_val"], 0.0)
+
+            param_steps.append(ps_init)
+            train_obj_steps.append(init_obj)
+            obj_steps.append(init_obj)
+            test_steps.append(init_test_m)
+            step_numbers.append(0)
+
+            # Step 1: optimized params
+            ps_opt = {}
+            for k, v in optimized_params.items():
+                if k == "subsidary_params":
+                    ps_opt[k] = v
+                elif hasattr(v, "shape") and v.ndim >= 1 and v.shape[0] == n_parameter_sets:
+                    ps_opt[k] = v[pidx]
+                else:
+                    ps_opt[k] = v
+
+            opt_train_obj = train_metrics_list[pidx].get(run_fingerprint["return_val"], 0.0)
+
+            param_steps.append(ps_opt)
+            train_obj_steps.append(opt_train_obj)
+            obj_steps.append(opt_train_obj)
+            test_steps.append(continuous_test_metrics_list[pidx])
+            step_numbers.append(1)
+
+        save_multi_params(
+            deepcopy(run_fingerprint),
+            param_steps,
+            test_steps,
+            train_obj_steps,
+            obj_steps,
+            [0.0] * len(param_steps),       # local_learning_rate (N/A for BFGS)
+            [0] * len(param_steps),          # iterations_since_improvement (N/A)
+            step_numbers,
+            test_steps,
+            sorted_tokens=True,
+        )
 
         if verbose:
             print(f"\n{'='*60}")
