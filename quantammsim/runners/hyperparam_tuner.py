@@ -583,6 +583,7 @@ def create_objective(
             "clip_norm", "n_cycles", "lr_schedule_type", "lr_decay_ratio",
             "early_stopping_patience", "noise_scale",
             "sample_method", "parameter_init_method",
+            "n_parameter_sets",
         ]
 
         # Parameters that go directly in run_fingerprint (not optimisation_settings)
@@ -630,6 +631,19 @@ def create_objective(
                 if "optuna_settings" not in fp["optimisation_settings"]:
                     fp["optimisation_settings"]["optuna_settings"] = {}
                 fp["optimisation_settings"]["optuna_settings"]["n_trials"] = int(value)
+            # Inner BFGS settings (for method="bfgs")
+            elif key == "bfgs_maxiter":
+                if "bfgs_settings" not in fp["optimisation_settings"]:
+                    fp["optimisation_settings"]["bfgs_settings"] = {}
+                fp["optimisation_settings"]["bfgs_settings"]["maxiter"] = int(value)
+            elif key == "bfgs_n_evaluation_points":
+                if "bfgs_settings" not in fp["optimisation_settings"]:
+                    fp["optimisation_settings"]["bfgs_settings"] = {}
+                fp["optimisation_settings"]["bfgs_settings"]["n_evaluation_points"] = int(value)
+            elif key == "bfgs_tol":
+                if "bfgs_settings" not in fp["optimisation_settings"]:
+                    fp["optimisation_settings"]["bfgs_settings"] = {}
+                fp["optimisation_settings"]["bfgs_settings"]["tol"] = float(value)
             # Skip control params that aren't real hyperparams (handled above)
             elif key in ["use_weight_decay", "weight_decay", "use_early_stopping",
                          "val_fraction", "training_objective"]:
