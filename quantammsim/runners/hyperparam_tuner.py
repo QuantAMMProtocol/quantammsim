@@ -431,7 +431,7 @@ class HyperparamSpace:
         for name, spec in self.params.items():
             if "conditional_on" in spec:
                 continue  # Handle in second pass
-            suggested[name] = self._suggest_param(trial, name, spec)
+            suggested[name] = self._suggest_param(trial, name, spec, suggested)
 
         # Second pass: sample conditional params based on parent values
         for name, spec in self.params.items():
@@ -449,12 +449,18 @@ class HyperparamSpace:
                 should_sample = (parent_value != spec["conditional_value_not"])
 
             if should_sample:
-                suggested[name] = self._suggest_param(trial, name, spec)
+                suggested[name] = self._suggest_param(trial, name, spec, suggested)
             # If condition not met, param is not suggested (not in dict)
 
         return suggested
 
-    def _suggest_param(self, trial: optuna.Trial, name: str, spec: Dict[str, Any]) -> Any:
+    def _suggest_param(
+        self,
+        trial: optuna.Trial,
+        name: str,
+        spec: Dict[str, Any],
+        suggested: Dict[str, Any] = None,
+    ) -> Any:
         """Suggest a single parameter value from an Optuna trial.
 
         Dispatches to ``trial.suggest_categorical``, ``trial.suggest_int``,
@@ -470,21 +476,30 @@ class HyperparamSpace:
             Parameter specification with keys ``"choices"`` (categorical),
             ``"type": "int"`` (integer), or ``"low"``/``"high"`` (float).
             Optional ``"log": True`` for log-uniform sampling.
+            Optional ``"dynamic_high"`` callable ``(suggested) -> number``
+            to compute the upper bound from already-suggested params.
+        suggested : Dict[str, Any], optional
+            Already-suggested params (for dynamic_high computation).
 
         Returns
         -------
         Any
             Sampled parameter value.
         """
+        high = spec.get("high")
+        if "dynamic_high" in spec and suggested is not None:
+            high = spec["dynamic_high"](suggested)
+            high = max(spec.get("low", high), high)  # ensure high >= low
+
         if "choices" in spec:
             return trial.suggest_categorical(name, spec["choices"])
         elif spec.get("type") == "int":
             return trial.suggest_int(
-                name, spec["low"], spec["high"], log=spec.get("log", False)
+                name, spec["low"], high, log=spec.get("log", False)
             )
         else:
             return trial.suggest_float(
-                name, spec["low"], spec["high"], log=spec.get("log", False)
+                name, spec["low"], high, log=spec.get("log", False)
             )
 
 
