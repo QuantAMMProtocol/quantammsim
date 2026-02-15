@@ -102,7 +102,7 @@ STUDY_NAME = "eth_usdc_innerbfgs_v1"
 # Search Space
 # =============================================================================
 
-def create_search_space(cycle_days: int = 180) -> HyperparamSpace:
+def create_search_space(cycle_days: int = 180, bfgs_budget: int = None) -> HyperparamSpace:
     """
     Create search space for BFGS inner optimization of power_channel.
 
@@ -122,6 +122,14 @@ def create_search_space(cycle_days: int = 180) -> HyperparamSpace:
     We search over initial values for the 4 most impactful ones
     (k, memory, exponents, pre_exp_scaling). delta_lamb and
     weights_logits are left at defaults (0 and equal weight).
+
+    Parameters
+    ----------
+    cycle_days : int
+        WFA cycle length in days (for bout_offset range).
+    bfgs_budget : int or None
+        Max concurrent forward passes available (from memory probe).
+        Constrains n_parameter_sets × n_eval_points. If None, no constraint.
     """
     space = HyperparamSpace()
 
@@ -133,8 +141,21 @@ def create_search_space(cycle_days: int = 180) -> HyperparamSpace:
     # the bias-variance trade-off of the objective surface.
     # Low (5-10) = cheap, noisy, risk of overfitting to specific timing
     # High (30-50) = smooth but expensive, may wash out useful structure
+    min_eval_points = 5
+    max_eval_points = 50
+    max_param_sets = 4
+    if bfgs_budget is not None:
+        # Cap individual ranges so worst-case product stays within budget.
+        # n_parameter_sets × n_eval_points ≤ bfgs_budget.
+        # The per-trial product cap in the BFGS branch (via memory_budget)
+        # is the real safety net; these range caps just keep Optuna from
+        # wasting trials on configurations that will be capped anyway.
+        max_eval_points = min(max_eval_points, bfgs_budget)
+        # Worst case: max eval points chosen, so param sets must fit within that
+        max_param_sets = min(max_param_sets, max(1, bfgs_budget // max_eval_points))
+
     space.params["bfgs_n_evaluation_points"] = {
-        "low": 5, "high": 50, "log": False, "type": "int",
+        "low": 5, "high": max_eval_points, "log": False, "type": "int",
     }
 
     # maxiter: convergence budget. BFGS usually converges in 30-80 iters
@@ -149,10 +170,10 @@ def create_search_space(cycle_days: int = 180) -> HyperparamSpace:
     # ======================================================================
     # n_parameter_sets: multi-start restarts. Each starts from a different
     # noisy initialization and converges independently. Best is selected
-    # by BestParamsTracker. Memory-constrained (each set multiplies peak
-    # memory by ~n_evaluation_points * 2).
+    # by BestParamsTracker. Memory-constrained: total concurrent forward
+    # passes = n_parameter_sets × n_eval_points, capped by bfgs_budget.
     space.params["n_parameter_sets"] = {
-        "low": 1, "high": 4, "log": False, "type": "int",
+        "low": 1, "high": max_param_sets, "log": False, "type": "int",
     }
 
     # noise_scale: std of Gaussian perturbation to initial params for
@@ -309,7 +330,22 @@ def run_tuning(
     cycle_days = int(training_days / n_wfa_cycles)
 
     base_fp = create_base_fingerprint()
-    search_space = create_search_space(cycle_days=cycle_days)
+
+    # --- Probe GPU memory budget once, constrain search space ---
+    from quantammsim.runners.jax_runner_utils import probe_max_n_parameter_sets
+    probe_result = probe_max_n_parameter_sets(base_fp, verbose=True)
+    max_forward_sets = probe_result["recommended_n_parameter_sets"]
+    # BFGS memory ≈ n_parameter_sets × n_eval_points × 2 (grad overhead)
+    # Budget: n_parameter_sets × n_eval_points ≤ max_forward_sets / 2
+    bfgs_budget = max(1, max_forward_sets // 2)
+    print(f"\n[Memory] Forward-pass budget: {max_forward_sets}")
+    print(f"[Memory] BFGS budget (with grad overhead): {bfgs_budget}")
+    print(f"[Memory] Constraint: n_parameter_sets × n_eval_points ≤ {bfgs_budget}")
+
+    # Pass budget through to the BFGS branch for per-trial product capping
+    base_fp["optimisation_settings"]["bfgs_settings"]["memory_budget"] = bfgs_budget
+
+    search_space = create_search_space(cycle_days=cycle_days, bfgs_budget=bfgs_budget)
 
     storage_path = STUDY_DIR / f"{STUDY_NAME}.db"
     storage = f"sqlite:///{storage_path}"

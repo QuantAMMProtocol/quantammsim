@@ -1867,6 +1867,27 @@ def train_on_historic_data(
         tol = bfgs_settings["tol"]
         n_eval_points = bfgs_settings["n_evaluation_points"]
 
+        # Memory guard: enforce product constraint if budget is specified.
+        # bfgs_memory_budget = max concurrent forward passes (from probe).
+        # BFGS needs n_eval_points × n_parameter_sets × ~2 (grad overhead).
+        bfgs_budget = bfgs_settings.get("memory_budget")
+        if bfgs_budget is not None:
+            max_safe_sets = max(1, bfgs_budget // n_eval_points)
+            if n_parameter_sets > max_safe_sets:
+                if verbose:
+                    print(
+                        f"[BFGS] Memory guard: capping n_parameter_sets "
+                        f"{n_parameter_sets} → {max_safe_sets} "
+                        f"(budget={bfgs_budget}, n_eval={n_eval_points})"
+                    )
+                # Slice params down to the capped number of sets
+                for k, v in params.items():
+                    if k == "subsidary_params":
+                        continue
+                    if hasattr(v, "shape") and v.ndim >= 1 and v.shape[0] == n_parameter_sets:
+                        params[k] = v[:max_safe_sets]
+                n_parameter_sets = max_safe_sets
+
         # Generate fixed evaluation points (same approach as optuna)
         min_spacing = data_dict["bout_length"] // 2
         evaluation_starts = generate_evaluation_points(
@@ -1883,7 +1904,7 @@ def train_on_historic_data(
 
         if verbose:
             print(f"[BFGS] {len(evaluation_starts)} evaluation points, maxiter={maxiter}, tol={tol}")
-            print(f"[BFGS] {n_parameter_sets} parameter sets (multi-start)")
+            print(f"[BFGS] {n_parameter_sets} parameter sets")
 
         # Build deterministic objective: params -> scalar (mean over eval points)
         batched_pts = batched_partial_training_step_factory(partial_training_step)

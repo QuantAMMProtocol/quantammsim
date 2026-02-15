@@ -1638,12 +1638,12 @@ def probe_max_n_parameter_sets(
             )
 
             vmapped_forward = jit(
-                vmap(partial_forward, in_axes=[params_in_axes_dict, None, None])
+                vmap(partial_forward, in_axes=[params_in_axes_dict, None])
             )
 
             # Run forward pass
             start_index = (data_dict["start_idx"], 0)
-            _ = vmapped_forward(params, start_index, None)
+            _ = vmapped_forward(params, start_index)
 
             # Force computation to complete
             jnp.zeros(1).block_until_ready()
