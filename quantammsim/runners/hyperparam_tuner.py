@@ -261,7 +261,16 @@ class HyperparamSpace:
                 "n_iterations": {"low": 50, "high": 200, "log": True, "type": "int"},
             })
 
-        max_bout_days = max(1, int(cycle_days * 0.9))  # Ensure at least 1 day
+        # val_fraction: how much of training to hold out for early stopping / validation.
+        # Unconditional — early stopping is always on (fixed from domain knowledge).
+        # Defined first because bout_offset range depends on it.
+        val_fraction_spec = {"low": 0.1, "high": 0.3, "log": False}
+
+        # bout_offset must fit within training period after val holdout.
+        # At worst case (max val_fraction), effective training is
+        # cycle_days * (1 - max_val_fraction). Keep 90% of that.
+        max_bout_days = max(1, int(cycle_days * (1 - val_fraction_spec["high"]) * 0.9))
+
         # LR ranges calibrated for each optimizer:
         # - SGD: typically needs higher LR (1e-3 to 1.0)
         # - Adam/AdamW: typically needs lower LR (1e-5 to 1e-1), with 3e-4 being common default
@@ -293,9 +302,7 @@ class HyperparamSpace:
                 "bout_offset_days": {"low": bout_offset_low, "high": max_bout_days, "log": True, "type": "int"},
             }
 
-        # val_fraction: how much of training to hold out for early stopping / validation.
-        # Unconditional — early stopping is always on (fixed from domain knowledge).
-        params["val_fraction"] = {"low": 0.1, "high": 0.3, "log": False}
+        params["val_fraction"] = val_fraction_spec
 
         # Training objective: controls BOTH return_val (what gradients optimize) AND
         # early_stopping_metric (what decides when to stop / which params to select)

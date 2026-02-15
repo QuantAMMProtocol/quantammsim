@@ -84,7 +84,9 @@ def create_search_space(cycle_days: int = 180) -> HyperparamSpace:
     # ==========================================================================
     # Bout offset (days from cycle start to begin training)
     # Affects which market regimes the model sees during training
-    max_offset = max(1, 4 * cycle_days // 5)
+    # Must fit within training period after val holdout (worst case: val_fraction=0.3)
+    max_val_fraction = 0.3
+    max_offset = max(1, int(cycle_days * (1 - max_val_fraction) * 4 / 5))
     space.params["bout_offset_days"] = {"low": 0, "high": max_offset, "log": False, "type": "int"}
 
     # ==========================================================================
@@ -93,7 +95,7 @@ def create_search_space(cycle_days: int = 180) -> HyperparamSpace:
     # Validation fraction: how much training data to hold out for validation
     # Lower = more training data but less reliable validation signal
     # Higher = better validation estimate but less training data
-    space.params["val_fraction"] = {"low": 0.1, "high": 0.3, "log": False, "type": "float"}
+    space.params["val_fraction"] = {"low": 0.1, "high": max_val_fraction, "log": False, "type": "float"}
 
     # Overfitting penalty: penalize train/val gap in inner Optuna objective
     # 0.0 = pure training performance, higher = more regularization

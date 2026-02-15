@@ -85,8 +85,8 @@ class TestHyperparamSpace:
         assert bout_spec["low"] == 7, \
             f"bout_offset_days min should be 7 days, got {bout_spec['low']}"
 
-        # Maximum should be ~90% of 180 days = 162 days
-        expected_max = int(180 * 0.9)
+        # Maximum accounts for worst-case val_fraction (0.3) then 90% of remainder
+        expected_max = int(180 * 0.7 * 0.9)
         assert bout_spec["high"] == expected_max, \
             f"bout_offset_days max should be {expected_max}, got {bout_spec['high']}"
 
@@ -101,11 +101,11 @@ class TestHyperparamSpace:
         space_90 = HyperparamSpace.default_sgd_space(cycle_days=90)
         space_365 = HyperparamSpace.default_sgd_space(cycle_days=365)
 
-        # 90-day cycle: max = 90 * 0.9 = 81 days
-        assert space_90.params["bout_offset_days"]["high"] == int(90 * 0.9)
+        # 90-day cycle: max = 90 * 0.7 * 0.9 = 56 days
+        assert space_90.params["bout_offset_days"]["high"] == int(90 * 0.7 * 0.9)
 
-        # 365-day cycle: max = 365 * 0.9 = 328 days
-        assert space_365.params["bout_offset_days"]["high"] == int(365 * 0.9)
+        # 365-day cycle: max = 365 * 0.7 * 0.9 = 229 days
+        assert space_365.params["bout_offset_days"]["high"] == int(365 * 0.7 * 0.9)
 
     def test_lr_schedule_params_fixed_not_searched(self):
         """lr_schedule_type and warmup_fraction should be fixed, not in search space."""
@@ -135,7 +135,7 @@ class TestHyperparamSpace:
         # Check bout_offset_days scaling (in days)
         # train_on_historic_data uses low=7, multi_period_sgd uses low=1
         assert space.params["bout_offset_days"]["low"] == 7
-        assert space.params["bout_offset_days"]["high"] == int(120 * 0.9)
+        assert space.params["bout_offset_days"]["high"] == int(120 * 0.7 * 0.9)
 
         # These are now fixed, not searched
         assert "lr_schedule_type" not in space.params

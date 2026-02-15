@@ -190,13 +190,17 @@ def create_search_space(cycle_days: int = 180, bfgs_budget: int = None) -> Hyper
     # ======================================================================
     # Training window / constraints
     # ======================================================================
-    max_offset = max(1, 4 * cycle_days // 5)
+    max_val_fraction = 0.3
+    # bout_offset must fit within the training period after val holdout.
+    # Worst case: val_fraction = max_val_fraction, so effective train
+    # days = cycle_days * (1 - max_val_fraction). Keep 4/5 of that.
+    max_offset = max(1, int(cycle_days * (1 - max_val_fraction) * 4 / 5))
     space.params["bout_offset_days"] = {
         "low": 0, "high": max_offset, "log": False, "type": "int",
     }
 
     space.params["val_fraction"] = {
-        "low": 0.1, "high": 0.3, "log": False, "type": "float",
+        "low": 0.1, "high": max_val_fraction, "log": False, "type": "float",
     }
 
     space.params["maximum_change"] = {

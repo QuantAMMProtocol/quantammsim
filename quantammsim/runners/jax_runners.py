@@ -2084,18 +2084,15 @@ def train_on_historic_data(
             )
 
         return_val = run_fingerprint["return_val"]
+        # objective: per-param-set scalar values (same role as carry["objective"] in SGD)
+        init_obj = [m.get(return_val, 0.0) for m in init_train_metrics_list]
+        opt_obj = [float(-all_fun[i]) for i in range(n_parameter_sets)]
         save_multi_params(
             deepcopy(run_fingerprint),
             [deepcopy(initial_params), deepcopy(optimized_params)],
             [init_test_metrics_list, continuous_test_metrics_list],
-            [
-                [m.get(return_val, 0.0) for m in init_train_metrics_list],
-                [m.get(return_val, 0.0) for m in train_metrics_list],
-            ],
-            [
-                [m.get(return_val, 0.0) for m in init_train_metrics_list],
-                [m.get(return_val, 0.0) for m in train_metrics_list],
-            ],
+            [init_train_metrics_list, train_metrics_list],  # train_objective: metric dicts (matches SGD)
+            [init_obj, opt_obj],                            # objective: per-set scalars
             [0.0, 0.0],          # local_learning_rate (N/A for BFGS)
             [0, 0],              # iterations_since_improvement (N/A)
             [0, 1],              # step numbers
