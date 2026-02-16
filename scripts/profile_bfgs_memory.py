@@ -7,9 +7,24 @@ with and without jax.checkpoint. Designed to validate that checkpointing
 trades compute for memory and to find the new parallelism ceiling.
 
 Approach:
-  - Background thread polls nvidia-smi at ~200ms intervals
-  - Each trial: clear caches → run BFGS for a few iterations → record peak stats
+  - Queries JAX's internal memory_stats() for peak_bytes_in_use (actual
+    allocation peaks inside the memory pool — not the pool size itself)
+  - Background thread polls nvidia-smi for power/utilisation
+  - Each trial: clear caches → run BFGS for a few iterations → record stats
   - Sweep n_parameter_sets with checkpoint on/off to map the frontier
+
+Note on memory measurement:
+  JAX pre-allocates a GPU memory pool (typically 75%+ of VRAM), so nvidia-smi
+  always shows ~the same number regardless of actual usage. We use two
+  complementary approaches:
+
+  1. JAX memory_stats()["peak_bytes_in_use"] — actual peak within the pool.
+     Available without any env vars. This is the primary metric.
+
+  2. --no-pool mode (XLA_PYTHON_CLIENT_ALLOCATOR=platform) — disables JAX's
+     pool allocator so nvidia-smi shows true allocation. Slower but lets you
+     see real nvidia-smi numbers. Must be set BEFORE jax import, so the script
+     re-execs itself with the env var.
 
 Usage (on GPU box):
     # Quick comparison: checkpoint on vs off at default size
@@ -21,6 +36,9 @@ Usage (on GPU box):
     # Custom sweep range
     python scripts/profile_bfgs_memory.py --sweep --min-sets 1 --max-sets 32
 
+    # Disable JAX memory pool for accurate nvidia-smi readings
+    python scripts/profile_bfgs_memory.py --no-pool
+
     # Longer window (more memory pressure from larger arrays)
     python scripts/profile_bfgs_memory.py --months 6
 
@@ -31,6 +49,13 @@ from __future__ import annotations
 
 import sys
 import os
+
+# ── --no-pool handling: must set env var BEFORE importing jax ─────────────────
+# Parse just this flag early, re-exec if needed.
+if "--no-pool" in sys.argv and "XLA_PYTHON_CLIENT_ALLOCATOR" not in os.environ:
+    os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
 import time
 import argparse
 import gc
@@ -38,13 +63,45 @@ import json
 import subprocess
 import threading
 from copy import deepcopy
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import jax
 import jax.numpy as jnp
+
+
+# ── JAX memory stats ─────────────────────────────────────────────────────────
+
+def get_jax_memory_stats() -> dict:
+    """Query JAX's internal memory tracking for the first GPU device.
+
+    Returns dict with keys like peak_bytes_in_use, bytes_in_use, etc.
+    Returns empty dict on CPU or if stats are unavailable.
+    """
+    try:
+        device = jax.local_devices()[0]
+        stats = device.memory_stats()
+        if stats is None:
+            return {}
+        return stats
+    except Exception:
+        return {}
+
+
+def reset_jax_peak_memory():
+    """Clear JAX caches and force GC to get a clean baseline.
+
+    Note: JAX doesn't expose a "reset peak counter" API. The best we can do
+    is clear caches + GC so that the peak from here forward is meaningful.
+    We record baseline bytes_in_use so we can report delta.
+    """
+    jax.clear_caches()
+    gc.collect()
+    # Force a sync to ensure all pending frees are processed
+    jnp.zeros(1).block_until_ready()
+    return get_jax_memory_stats()
 
 
 # ── nvidia-smi poller ─────────────────────────────────────────────────────────
@@ -61,14 +118,19 @@ class GpuSnapshot:
 @dataclass
 class GpuStats:
     """Aggregated stats from a monitoring window."""
-    peak_memory_mb: float = 0.0
+    # nvidia-smi stats (pool-level; only meaningful with --no-pool)
+    smi_peak_memory_mb: float = 0.0
+    smi_min_memory_mb: float = 0.0
     memory_total_mb: float = 0.0
     mean_power_w: float = 0.0
     peak_power_w: float = 0.0
     mean_utilisation_pct: float = 0.0
     peak_utilisation_pct: float = 0.0
-    n_samples: int = 0
-    snapshots: List[GpuSnapshot] = field(default_factory=list)
+    n_smi_samples: int = 0
+    # JAX-internal stats (actual allocations within the pool)
+    jax_peak_bytes: int = 0
+    jax_baseline_bytes: int = 0
+    jax_peak_delta_mb: float = 0.0
 
 
 def query_nvidia_smi() -> Optional[GpuSnapshot]:
@@ -84,7 +146,6 @@ def query_nvidia_smi() -> Optional[GpuSnapshot]:
         )
         if result.returncode != 0:
             return None
-        # Parse first GPU line
         parts = result.stdout.strip().split("\n")[0].split(",")
         return GpuSnapshot(
             timestamp=time.monotonic(),
@@ -136,14 +197,14 @@ class GpuMonitor:
         pows = [s.power_draw_w for s in self._snapshots]
         utils = [s.utilisation_pct for s in self._snapshots]
         return GpuStats(
-            peak_memory_mb=max(mems),
+            smi_peak_memory_mb=max(mems),
+            smi_min_memory_mb=min(mems),
             memory_total_mb=self._snapshots[0].memory_total_mb,
             mean_power_w=sum(pows) / len(pows),
             peak_power_w=max(pows),
             mean_utilisation_pct=sum(utils) / len(utils),
             peak_utilisation_pct=max(utils),
-            n_samples=len(self._snapshots),
-            snapshots=self._snapshots,
+            n_smi_samples=len(self._snapshots),
         )
 
 
@@ -241,9 +302,9 @@ def run_trial(
         months=months,
     )
 
-    # Clear before run
-    clear_caches()
-    gc.collect()
+    # Reset memory and get baseline
+    baseline_stats = reset_jax_peak_memory()
+    baseline_bytes = baseline_stats.get("bytes_in_use", 0)
 
     result = TrialResult(
         n_parameter_sets=n_parameter_sets,
@@ -279,6 +340,13 @@ def run_trial(
     finally:
         result.gpu = gpu_monitor.stop()
 
+    # Read JAX peak memory (cumulative peak since process start, unfortunately)
+    post_stats = get_jax_memory_stats()
+    peak_bytes = post_stats.get("peak_bytes_in_use", 0)
+    result.gpu.jax_peak_bytes = peak_bytes
+    result.gpu.jax_baseline_bytes = baseline_bytes
+    result.gpu.jax_peak_delta_mb = (peak_bytes - baseline_bytes) / (1024 * 1024)
+
     # Clear after run
     clear_caches()
     gc.collect()
@@ -288,24 +356,35 @@ def run_trial(
 
 # ── Display ───────────────────────────────────────────────────────────────────
 
+NO_POOL_MODE = os.environ.get("XLA_PYTHON_CLIENT_ALLOCATOR") == "platform"
+
+
 def print_result_row(r: Optional[TrialResult] = None, header: bool = False):
     """Print one row of results."""
     if header:
+        mem_label = "smi_pk" if NO_POOL_MODE else "jax_pk"
         print(f"{'ckpt':>5} {'n_sets':>6} {'n_eval':>6} "
-              f"{'peak_MB':>8} {'mean_W':>7} {'peak_W':>7} "
+              f"{mem_label + '_MB':>10} "
+              f"{'mean_W':>7} {'peak_W':>7} "
               f"{'mean_%':>7} {'peak_%':>7} {'time_s':>7} {'status':>8}")
-        print("-" * 80)
+        print("-" * 84)
         return
 
     ckpt = "ON" if r.gradient_checkpointing else "OFF"
+    # Use nvidia-smi peak in no-pool mode, JAX peak otherwise
+    if NO_POOL_MODE:
+        mem_mb = r.gpu.smi_peak_memory_mb
+    else:
+        mem_mb = r.gpu.jax_peak_bytes / (1024 * 1024) if r.gpu.jax_peak_bytes else 0
+
     if r.success:
         print(f"{ckpt:>5} {r.n_parameter_sets:>6} {r.n_eval_points:>6} "
-              f"{r.gpu.peak_memory_mb:>8.0f} {r.gpu.mean_power_w:>7.1f} "
+              f"{mem_mb:>10.0f} {r.gpu.mean_power_w:>7.1f} "
               f"{r.gpu.peak_power_w:>7.1f} {r.gpu.mean_utilisation_pct:>7.1f} "
               f"{r.gpu.peak_utilisation_pct:>7.1f} {r.wall_time_s:>7.1f} {'OK':>8}")
     else:
         print(f"{ckpt:>5} {r.n_parameter_sets:>6} {r.n_eval_points:>6} "
-              f"{r.gpu.peak_memory_mb:>8.0f} {'':>7} {'':>7} "
+              f"{mem_mb:>10.0f} {'':>7} {'':>7} "
               f"{'':>7} {'':>7} {r.wall_time_s:>7.1f} {r.error:>8}")
 
 
@@ -314,20 +393,34 @@ def print_comparison(results: List[TrialResult]):
     on = [r for r in results if r.gradient_checkpointing]
     off = [r for r in results if not r.gradient_checkpointing]
 
-    if on and off and on[0].success and off[0].success:
-        mem_on = on[0].gpu.peak_memory_mb
-        mem_off = off[0].gpu.peak_memory_mb
-        if mem_off > 0:
-            reduction = (1 - mem_on / mem_off) * 100
-            print(f"\n  Memory reduction: {mem_off:.0f} MB → {mem_on:.0f} MB "
+    if not (on and off and on[0].success and off[0].success):
+        return
+
+    # Use JAX peak_bytes_in_use as primary metric
+    mem_on = on[0].gpu.jax_peak_bytes / (1024 * 1024)
+    mem_off = off[0].gpu.jax_peak_bytes / (1024 * 1024)
+
+    if mem_off > 0 and mem_on > 0:
+        reduction = (1 - mem_on / mem_off) * 100
+        print(f"\n  JAX peak memory:  {mem_off:.0f} MB → {mem_on:.0f} MB "
+              f"({reduction:+.1f}%)")
+    elif mem_off == 0 and mem_on == 0:
+        print(f"\n  JAX memory_stats not available (CPU backend?)")
+
+    if NO_POOL_MODE:
+        smi_on = on[0].gpu.smi_peak_memory_mb
+        smi_off = off[0].gpu.smi_peak_memory_mb
+        if smi_off > 0:
+            reduction = (1 - smi_on / smi_off) * 100
+            print(f"  nvidia-smi peak:  {smi_off:.0f} MB → {smi_on:.0f} MB "
                   f"({reduction:+.1f}%)")
 
-        time_on = on[0].wall_time_s
-        time_off = off[0].wall_time_s
-        if time_off > 0:
-            slowdown = (time_on / time_off - 1) * 100
-            print(f"  Time change:      {time_off:.1f}s → {time_on:.1f}s "
-                  f"({slowdown:+.1f}%)")
+    time_on = on[0].wall_time_s
+    time_off = off[0].wall_time_s
+    if time_off > 0:
+        slowdown = (time_on / time_off - 1) * 100
+        print(f"  Wall time:        {time_off:.1f}s → {time_on:.1f}s "
+              f"({slowdown:+.1f}%)")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -350,6 +443,9 @@ def main():
                         help="BFGS iterations per trial (default: 3)")
     parser.add_argument("--months", type=int, default=3,
                         help="Training window in months (default: 3)")
+    parser.add_argument("--no-pool", action="store_true",
+                        help="Disable JAX memory pool (XLA_PYTHON_CLIENT_ALLOCATOR=platform). "
+                             "Slower but nvidia-smi shows true allocations.")
     parser.add_argument("--root", type=str, default=None,
                         help="Data root directory")
     parser.add_argument("--json", type=str, default=None,
@@ -358,34 +454,37 @@ def main():
 
     # Setup
     gpu_monitor = GpuMonitor()
-    has_gpu = gpu_monitor.available
+    has_smi = gpu_monitor.available
+    has_jax_stats = bool(get_jax_memory_stats())
 
-    print(f"{'=' * 80}")
+    allocator = os.environ.get("XLA_PYTHON_CLIENT_ALLOCATOR", "default (pool)")
+
+    print(f"{'=' * 84}")
     print(f"  BFGS Gradient Checkpointing Memory Profiler")
-    print(f"{'=' * 80}")
-    print(f"  JAX backend:   {jax.default_backend()}")
-    print(f"  JAX devices:   {jax.devices()}")
-    print(f"  nvidia-smi:    {'available' if has_gpu else 'NOT FOUND (no GPU stats)'}")
-    print(f"  n_eval_points: {args.n_eval}")
-    print(f"  maxiter:       {args.maxiter}")
-    print(f"  months:        {args.months}")
+    print(f"{'=' * 84}")
+    print(f"  JAX backend:    {jax.default_backend()}")
+    print(f"  JAX devices:    {jax.devices()}")
+    print(f"  Allocator:      {allocator}")
+    print(f"  JAX mem stats:  {'available' if has_jax_stats else 'NOT AVAILABLE'}")
+    print(f"  nvidia-smi:     {'available' if has_smi else 'NOT FOUND'}")
+    print(f"  n_eval_points:  {args.n_eval}")
+    print(f"  maxiter:        {args.maxiter}")
+    print(f"  months:         {args.months}")
     if args.root:
-        print(f"  data root:     {args.root}")
-    print(f"{'=' * 80}")
+        print(f"  data root:      {args.root}")
+    print(f"{'=' * 84}")
 
-    if not has_gpu:
-        print("\n  WARNING: nvidia-smi not available. GPU memory/power stats will be zeros.")
-        print("  The script will still run and measure wall-clock time.\n")
+    if not has_jax_stats and not NO_POOL_MODE:
+        print("\n  NOTE: JAX memory_stats not available. For accurate memory measurement,")
+        print("  use --no-pool to disable JAX's memory pool allocator.\n")
 
     results = []
 
     if args.sweep:
-        # Sweep n_parameter_sets with checkpoint on, find OOM ceiling
-        # Then do the same with checkpoint off for comparison
         for ckpt in [False, True]:
             label = "checkpoint ON" if ckpt else "checkpoint OFF"
             print(f"\n--- Sweep: {label} ---")
-            print_result_row(None, header=True)
+            print_result_row(header=True)
 
             n = args.min_sets
             while n <= args.max_sets:
@@ -405,16 +504,13 @@ def main():
                     print(f"  → OOM at n_parameter_sets={n}, stopping sweep")
                     break
 
-                # Double until we hit ceiling, then we've bracketed it
                 n *= 2
 
-            # Find max successful
             successes = [r.n_parameter_sets for r in results
                          if r.gradient_checkpointing == ckpt and r.success]
             if successes:
                 print(f"  → Max successful: n_parameter_sets={max(successes)}")
 
-        # Summary
         on_max = max(
             (r.n_parameter_sets for r in results
              if r.gradient_checkpointing and r.success),
@@ -425,19 +521,18 @@ def main():
              if not r.gradient_checkpointing and r.success),
             default=0,
         )
-        print(f"\n{'=' * 80}")
+        print(f"\n{'=' * 84}")
         print(f"  SWEEP SUMMARY")
-        print(f"{'=' * 80}")
+        print(f"{'=' * 84}")
         print(f"  Max n_parameter_sets (checkpoint OFF): {off_max}")
         print(f"  Max n_parameter_sets (checkpoint ON):  {on_max}")
         if off_max > 0:
-            print(f"  Parallelism gain: {on_max / off_max:.1f}×")
-        print(f"{'=' * 80}")
+            print(f"  Parallelism gain: {on_max / off_max:.1f}x")
+        print(f"{'=' * 84}")
 
     else:
-        # Single comparison: same n_parameter_sets, checkpoint on vs off
         print(f"\n--- Comparison at n_parameter_sets={args.n_sets} ---")
-        print_result_row(None, header=True)
+        print_result_row(header=True)
 
         for ckpt in [False, True]:
             r = run_trial(
@@ -465,13 +560,17 @@ def main():
                 "success": r.success,
                 "wall_time_s": r.wall_time_s,
                 "error": r.error,
-                "peak_memory_mb": r.gpu.peak_memory_mb,
+                "smi_peak_memory_mb": r.gpu.smi_peak_memory_mb,
                 "memory_total_mb": r.gpu.memory_total_mb,
+                "jax_peak_bytes": r.gpu.jax_peak_bytes,
+                "jax_baseline_bytes": r.gpu.jax_baseline_bytes,
+                "jax_peak_delta_mb": r.gpu.jax_peak_delta_mb,
                 "mean_power_w": r.gpu.mean_power_w,
                 "peak_power_w": r.gpu.peak_power_w,
                 "mean_utilisation_pct": r.gpu.mean_utilisation_pct,
                 "peak_utilisation_pct": r.gpu.peak_utilisation_pct,
-                "n_gpu_samples": r.gpu.n_samples,
+                "n_smi_samples": r.gpu.n_smi_samples,
+                "allocator": allocator,
             }
             out.append(d)
         with open(args.json, "w") as f:
