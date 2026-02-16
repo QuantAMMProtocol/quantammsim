@@ -111,6 +111,7 @@ from quantammsim.utils.post_train_analysis import (
     _METRIC_KEYS,
     metrics_arr_to_dicts,
 )
+from jax import checkpoint as jax_checkpoint
 import jax.numpy as jnp
 
 
@@ -1902,12 +1903,21 @@ def train_on_historic_data(
             [(s, 0) for s in evaluation_starts], dtype=jnp.int32
         )
 
+        use_grad_ckpt = bfgs_settings.get("gradient_checkpointing", True)
+
         if verbose:
             print(f"[BFGS] {len(evaluation_starts)} evaluation points, maxiter={maxiter}, tol={tol}")
             print(f"[BFGS] {n_parameter_sets} parameter sets")
+            print(f"[BFGS] gradient checkpointing: {'ON' if use_grad_ckpt else 'OFF'}")
 
         # Build deterministic objective: params -> scalar (mean over eval points)
-        batched_pts = batched_partial_training_step_factory(partial_training_step)
+        if use_grad_ckpt:
+            # Gradient checkpointing: discard forward-pass intermediates, recompute
+            # during backward pass. Trades ~2x forward compute for reduced VRAM.
+            step_fn = jax_checkpoint(partial_training_step, prevent_cse=True)
+        else:
+            step_fn = partial_training_step
+        batched_pts = batched_partial_training_step_factory(step_fn)
         batched_obj = batched_objective_factory(batched_pts)
 
         # Extract single-set params (index 0) to get the pytree structure and unravel_fn
