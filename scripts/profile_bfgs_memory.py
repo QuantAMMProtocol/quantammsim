@@ -279,9 +279,9 @@ def compile_bfgs(
     flat_x0_template, unravel_fn = ravel_pytree(params_single)
 
     def neg_objective(flat_x):
-        if compute_dtype != jnp.float64:
-            flat_x = flat_x.astype(compute_dtype)
         p = unravel_fn(flat_x)
+        if compute_dtype != jnp.float64:
+            p = jax.tree.map(lambda x: x.astype(compute_dtype), p)
         obj = -batched_obj(p, fixed_start_indexes)
         return obj.astype(jnp.float64) if compute_dtype != jnp.float64 else obj
 
