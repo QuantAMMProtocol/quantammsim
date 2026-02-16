@@ -1905,16 +1905,35 @@ def train_on_historic_data(
 
         use_grad_ckpt = bfgs_settings.get("gradient_checkpointing", True)
 
+        # Resolve compute dtype for BFGS forward pass
+        compute_dtype_str = bfgs_settings.get("compute_dtype", "float64")
+        compute_dtype = jnp.float32 if compute_dtype_str == "float32" else jnp.float64
+
+        if compute_dtype != jnp.float64:
+            # Re-create partial with cast prices for reduced-precision forward pass.
+            # Prices are cast here; params are cast inside neg_objective so the
+            # BFGS optimizer itself iterates in float64 (stable Hessian updates).
+            bfgs_prices = data_dict["prices"].astype(compute_dtype)
+            bfgs_training_step = Partial(
+                forward_pass,
+                prices=bfgs_prices,
+                static_dict=Hashabledict(base_static_dict),
+                pool=pool,
+            )
+        else:
+            bfgs_training_step = partial_training_step
+
         if verbose:
             print(f"[BFGS] {len(evaluation_starts)} evaluation points, maxiter={maxiter}, tol={tol}")
             print(f"[BFGS] {n_parameter_sets} parameter sets")
             print(f"[BFGS] gradient checkpointing: {'ON' if use_grad_ckpt else 'OFF'}")
+            print(f"[BFGS] compute dtype: {compute_dtype_str}")
 
         # Build deterministic objective: params -> scalar (mean over eval points)
         if use_grad_ckpt:
-            step_fn = jax_checkpoint(partial_training_step, prevent_cse=True)
+            step_fn = jax_checkpoint(bfgs_training_step, prevent_cse=True)
         else:
-            step_fn = partial_training_step
+            step_fn = bfgs_training_step
         batched_pts = batched_partial_training_step_factory(step_fn)
         batched_obj = batched_objective_factory(batched_pts)
 
@@ -1935,9 +1954,17 @@ def train_on_historic_data(
             print(f"[BFGS] {n_flat} flat parameters per set")
 
         # Build flat objective: flat_x -> scalar (negated for minimization)
+        # BFGS iterates in float64 for Hessian stability; cast params to
+        # compute_dtype inside the objective so the forward pass runs in
+        # reduced precision when requested.
         def neg_objective(flat_x):
+            if compute_dtype != jnp.float64:
+                flat_x = flat_x.astype(compute_dtype)
             p = unravel_fn(flat_x)
-            return -batched_obj(p, fixed_start_indexes)
+            obj = -batched_obj(p, fixed_start_indexes)
+            # BFGS while_loop requires consistent dtypes; cast objective
+            # back to float64 so all BFGS state variables stay float64.
+            return obj.astype(jnp.float64) if compute_dtype != jnp.float64 else obj
 
         # Flatten all parameter sets into (n_parameter_sets, n_flat)
         all_flat_x0 = []

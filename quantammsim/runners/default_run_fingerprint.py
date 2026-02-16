@@ -217,7 +217,8 @@ bfgs_settings = {
     "maxiter": 100,
     "tol": 1e-6,
     "n_evaluation_points": 20,
-    "gradient_checkpointing": True,
+    "gradient_checkpointing": False,
+    "compute_dtype": "float32",
 }
 
 run_fingerprint_defaults["optimisation_settings"]["bfgs_settings"] = bfgs_settings

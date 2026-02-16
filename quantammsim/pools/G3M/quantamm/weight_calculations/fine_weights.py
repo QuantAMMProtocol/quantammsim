@@ -163,6 +163,8 @@ def _apply_per_asset_bounds(
         clipped = jnp.clip(weights, min=min_weights, max=max_weights)
 
     total = jnp.sum(clipped)
+    _one = jnp.ones((), dtype=weights.dtype)
+    _eps = jnp.asarray(1e-10, dtype=weights.dtype)
 
     # Calculate slack in each direction
     slack_up = max_weights - clipped  # how much each asset can grow
@@ -171,14 +173,14 @@ def _apply_per_asset_bounds(
     total_slack_up = jnp.sum(slack_up)
     total_slack_down = jnp.sum(slack_down)
 
-    deficit = 1.0 - total  # positive if we need to add weight
-    surplus = total - 1.0  # positive if we need to remove weight
+    deficit = _one - total  # positive if we need to add weight
+    surplus = total - _one  # positive if we need to remove weight
 
     # Redistribute: add to those with room to grow, or remove from those with room to shrink
     adjustment = jnp.where(
-        total < 1.0,
-        deficit * slack_up / (total_slack_up + 1e-10),
-        jnp.where(total > 1.0, -surplus * slack_down / (total_slack_down + 1e-10), 0.0),
+        total < _one,
+        deficit * slack_up / (total_slack_up + _eps),
+        jnp.where(total > _one, -surplus * slack_down / (total_slack_down + _eps), total * 0),
     )
 
     weights_adjusted = clipped + adjustment
@@ -216,7 +218,8 @@ def scale_diff(diff, maximum_change):
         Scaled weight increment with ``max(|result|) <= maximum_change``.
     """
     max_val = jnp.max(jnp.abs(diff))
-    scale = maximum_change / (max_val + 1e-10)
+    _eps = jnp.asarray(1e-10, dtype=diff.dtype)
+    scale = maximum_change / (max_val + _eps)
     needs_scale = max_val > maximum_change
     scaled = jnp.where(needs_scale, diff * scale, diff)
     return scaled
@@ -491,7 +494,7 @@ def calc_fine_weight_output(
     else:
         return jnp.vstack(
             [
-                jnp.ones((chunk_period, n_assets), dtype=jnp.float64) * initial_weights,
+                jnp.ones((chunk_period, n_assets), dtype=initial_weights.dtype) * initial_weights,
                 weights,
             ]
         )
@@ -587,8 +590,9 @@ def _jax_fine_weights_from_actual_starts_and_diffs(
     # initial_i = 0
     n_assets = len(intial_weights)
 
-    interpol_arange = jnp.expand_dims(jnp.arange(start=0, stop=interpol_num), 1)
-    fine_ones = jnp.ones((num - 1, n_assets))
+    _dtype = actual_starts.dtype
+    interpol_arange = jnp.expand_dims(jnp.arange(start=0, stop=interpol_num), 1).astype(_dtype)
+    fine_ones = jnp.ones((num - 1, n_assets), dtype=_dtype)
     array_of_trues = jnp.ones((n_assets,), dtype=bool)
 
     if method == "linear":
@@ -669,8 +673,9 @@ def _jax_fine_weights_end_from_coarse_weights(
     # initial_i = 0
     n_assets = coarse_weights.shape[1]
 
-    interpol_arange = jnp.expand_dims(jnp.arange(start=0, stop=interpol_num), 1)
-    fine_ones = jnp.ones((num - 1, n_assets))
+    _dtype = coarse_weights.dtype
+    interpol_arange = jnp.expand_dims(jnp.arange(start=0, stop=interpol_num), 1).astype(_dtype)
+    fine_ones = jnp.ones((num - 1, n_assets), dtype=_dtype)
 
     array_of_trues = jnp.ones((n_assets,), dtype=bool)
 
@@ -738,6 +743,7 @@ def _jax_calc_fine_weight_ends_only_scan_function(
     # we won't have reached the actual goal)
 
     actual_start = carry_list[0]
+    _dtype = actual_start.dtype
 
     # carry_list[1] is the current loop variable
     # might be useful
@@ -746,7 +752,9 @@ def _jax_calc_fine_weight_ends_only_scan_function(
 
     stop = coarse_weights
 
-    diff = 1 / (interpol_num - 1) * (stop - actual_start)
+    # Cast to carry dtype to prevent float64 promotion from Python float division
+    maximum_change = jnp.asarray(maximum_change, dtype=_dtype)
+    diff = jnp.asarray(1.0 / (interpol_num - 1), dtype=_dtype) * (stop - actual_start)
 
     # STE max-change: forward caps; backward treats as identity for grads
     scaled_diff = scale_diff(diff, maximum_change)
@@ -809,6 +817,14 @@ def _jax_calc_coarse_weight_scan_function(
     # carry_list[0] is the previous weight value
 
     prev_actual_position = carry_list[0]
+    _dtype = prev_actual_position.dtype
+
+    # Cast scalar parameters to carry dtype to prevent float64 promotion
+    # in float32 mode (Python float literals are float64 in JAX x64 mode).
+    minimum_weight = jnp.asarray(minimum_weight, dtype=_dtype)
+    maximum_change = jnp.asarray(maximum_change, dtype=_dtype)
+    if alt_lamb is not None:
+        alt_lamb = jnp.asarray(alt_lamb, dtype=_dtype)
 
     ## calc raw weight, previous weight plus delta
     ## note that the ith-indexed raw_weight_change
@@ -839,7 +855,7 @@ def _jax_calc_coarse_weight_scan_function(
         )
 
     # Uniform guardrails (applied AFTER per-asset bounds)
-    maximum_weight = 1.0 - (n_assets - 1) * minimum_weight
+    maximum_weight = jnp.asarray(1, dtype=_dtype) - (n_assets - 1) * minimum_weight
     ## check values are all above minimum weight
     ## if any values are too small
     idx = normed_weight_update < minimum_weight
@@ -856,10 +872,12 @@ def _jax_calc_coarse_weight_scan_function(
         )
 
     # calculate 'left over' weight, 1 - n * epsilon
-    remaining_weight = 1 - n_less_than_min * minimum_weight
+    # Cast n_less_than_min to carry dtype: jnp.sum(bool) → int64 in x64 mode,
+    # and int64 * float32 promotes to float64.
+    remaining_weight = jnp.asarray(1, dtype=_dtype) - jnp.asarray(n_less_than_min, dtype=_dtype) * minimum_weight
     ## now distribute this 'left over' weight to other weight-slots
     # in proportion to those other weights
-    other_weights = jnp.where(~idx, normed_weight_update, 0.0)
+    other_weights = jnp.where(~idx, normed_weight_update, normed_weight_update * 0)
     sum_of_other_weights = jnp.sum(other_weights)
     normed_weight_update = jnp.where(
         ~idx,
@@ -873,7 +891,7 @@ def _jax_calc_coarse_weight_scan_function(
     raw_idx = jnp.argmax(target_weights)
     idx = raw_idx == asset_arange
     corrected_weights = jnp.where(
-        idx, target_weights - jnp.sum(target_weights) + 1.0, target_weights
+        idx, target_weights - jnp.sum(target_weights) + 1, target_weights
     )
 
     # note that argmax is not differentiable, so we take the
@@ -902,7 +920,7 @@ def _jax_calc_coarse_weight_scan_function(
     #     stop_gradient(clipped_target_weights - og_normed_update) + og_normed_update
     # )
 
-    diff = 1 / (interpol_num - 1) * (target_weights - prev_actual_position)
+    diff = jnp.asarray(1.0 / (interpol_num - 1), dtype=_dtype) * (target_weights - prev_actual_position)
 
     # STE max-change: forward caps; backward passes gradients as if unscaled
     scaled_diff = scale_diff(diff, maximum_change)
@@ -912,5 +930,9 @@ def _jax_calc_coarse_weight_scan_function(
 
     # Calculate actual position reached after applying both constraints
     actual_position = prev_actual_position + scaled_diff * (interpol_num - 1)
+
+    # Ensure carry output dtype matches input — Python float/int literals and
+    # JAX x64 int64 intermediates can silently promote float32 to float64.
+    actual_position = actual_position.astype(_dtype)
 
     return [actual_position], (prev_actual_position, scaled_diff, target_weights)
