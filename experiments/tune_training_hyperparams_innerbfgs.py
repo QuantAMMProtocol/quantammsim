@@ -289,6 +289,7 @@ def create_base_fingerprint() -> dict:
         "maxiter": 100,
         "tol": 1e-6,
         "n_evaluation_points": 20,
+        "compute_dtype": "float32",
     }
 
     # --- Conservative initial strategy params ---
