@@ -111,7 +111,7 @@ from quantammsim.utils.post_train_analysis import (
     _METRIC_KEYS,
     metrics_arr_to_dicts,
 )
-from jax import checkpoint as jax_checkpoint
+
 import jax.numpy as jnp
 
 
@@ -1903,8 +1903,6 @@ def train_on_historic_data(
             [(s, 0) for s in evaluation_starts], dtype=jnp.int32
         )
 
-        use_grad_ckpt = bfgs_settings.get("gradient_checkpointing", True)
-
         # Resolve compute dtype for BFGS forward pass
         compute_dtype_str = bfgs_settings.get("compute_dtype", "float64")
         compute_dtype = jnp.float32 if compute_dtype_str == "float32" else jnp.float64
@@ -1926,14 +1924,10 @@ def train_on_historic_data(
         if verbose:
             print(f"[BFGS] {len(evaluation_starts)} evaluation points, maxiter={maxiter}, tol={tol}")
             print(f"[BFGS] {n_parameter_sets} parameter sets")
-            print(f"[BFGS] gradient checkpointing: {'ON' if use_grad_ckpt else 'OFF'}")
             print(f"[BFGS] compute dtype: {compute_dtype_str}")
 
         # Build deterministic objective: params -> scalar (mean over eval points)
-        if use_grad_ckpt:
-            step_fn = jax_checkpoint(bfgs_training_step, prevent_cse=True)
-        else:
-            step_fn = bfgs_training_step
+        step_fn = bfgs_training_step
         batched_pts = batched_partial_training_step_factory(step_fn)
         batched_obj = batched_objective_factory(batched_pts)
 

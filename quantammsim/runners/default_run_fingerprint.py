@@ -217,7 +217,6 @@ bfgs_settings = {
     "maxiter": 100,
     "tol": 1e-6,
     "n_evaluation_points": 20,
-    "gradient_checkpointing": False,
     "compute_dtype": "float32",
 }
 
