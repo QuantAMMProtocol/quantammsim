@@ -41,7 +41,7 @@ from itertools import product
 
 import numpy as np
 import jax.numpy as jnp
-from jax import jit, lax
+from jax import jit
 from jax import config
 
 from quantammsim.training.hessian_trace import hessian_trace
@@ -73,7 +73,8 @@ def squareplus(x):
     --------
     inverse_squareplus : Inverse mapping R⁺ → R.
     """
-    return lax.mul(0.5, lax.add(x, lax.sqrt(lax.add(lax.square(x), 4.0))))
+    # Use jnp (not raw lax) so dtype promotion handles float32/float64 mixes.
+    return 0.5 * (x + jnp.sqrt(x * x + 4))
 
 
 # again, this only works on startup!
@@ -648,8 +649,8 @@ def inverse_squareplus(y):
     squareplus : Forward mapping R → R⁺.
     inverse_squareplus_np : NumPy version for non-JAX contexts.
     """
-    y = jnp.asarray(y, dtype=jnp.float64)
-    return lax.div(lax.sub(lax.square(y), 1.0), y)
+    y = jnp.asarray(y)
+    return (y * y - 1) / y
 
 
 def inverse_squareplus_np(y):

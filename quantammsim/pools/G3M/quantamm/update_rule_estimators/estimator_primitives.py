@@ -14,7 +14,7 @@ from functools import partial
 
 import jax.numpy as jnp
 from jax import jit, vmap
-from jax import lax
+
 from jax.tree_util import Partial
 from jax.lax import scan, dynamic_slice
 
@@ -52,11 +52,12 @@ def _fft_convolve_full(x, k):
 def squareplus(x):
     # algebraic (so non-trancendental) replacement for softplus
     # see https://arxiv.org/abs/2112.11687 for detail
-    return lax.mul(0.5, lax.add(x, lax.sqrt(lax.add(lax.square(x), 4.0))))
+    # Use jnp (not raw lax) so dtype promotion handles float32/float64 mixes.
+    return 0.5 * (x + jnp.sqrt(x * x + 4))
 
 
 def inverse_squareplus(y):
-    return lax.div(lax.sub(lax.square(y), 1.0), y)
+    return (y * y - 1) / y
 
 
 def inverse_squareplus_np(y):
