@@ -1912,8 +1912,6 @@ def train_on_historic_data(
 
         # Build deterministic objective: params -> scalar (mean over eval points)
         if use_grad_ckpt:
-            # Gradient checkpointing: discard forward-pass intermediates, recompute
-            # during backward pass. Trades ~2x forward compute for reduced VRAM.
             step_fn = jax_checkpoint(partial_training_step, prevent_cse=True)
         else:
             step_fn = partial_training_step
