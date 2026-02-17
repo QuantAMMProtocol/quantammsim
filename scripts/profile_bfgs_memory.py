@@ -38,9 +38,6 @@ from typing import List, Optional
 
 import numpy as np
 
-from jax import config
-config.update("jax_enable_x64", True)
-
 import jax
 import jax.numpy as jnp
 from jax import jit, vmap, value_and_grad, clear_caches
@@ -149,6 +146,13 @@ def setup_bfgs_computation(fp, root=None):
     Replicate the BFGS setup from jax_runners.train_on_historic_data,
     returning all the pieces needed to build the compiled solve.
     """
+    # Toggle x64 mode BEFORE any data loading or param init, so all JAX
+    # arrays are created with the correct dtype from the start.
+    bfgs_settings = fp["optimisation_settings"]["bfgs_settings"]
+    compute_dtype_str = bfgs_settings.get("compute_dtype", "float64")
+    use_x64 = compute_dtype_str != "float32"
+    jax.config.update("jax_enable_x64", use_x64)
+
     unique_tokens = get_unique_tokens(fp)
     n_tokens = len(unique_tokens)
     n_assets = n_tokens
@@ -202,29 +206,16 @@ def setup_bfgs_computation(fp, root=None):
         },
     )
 
-    bfgs_settings = fp["optimisation_settings"]["bfgs_settings"]
-    compute_dtype_str = bfgs_settings.get("compute_dtype", "float64")
-    compute_dtype = jnp.float32 if compute_dtype_str == "float32" else jnp.float64
     n_eval_points = bfgs_settings["n_evaluation_points"]
     maxiter = bfgs_settings["maxiter"]
     tol = bfgs_settings["tol"]
 
-    # Cast prices to compute dtype if needed
-    if compute_dtype != jnp.float64:
-        prices = data_dict["prices"].astype(compute_dtype)
-        partial_training_step = Partial(
-            forward_pass,
-            prices=prices,
-            static_dict=Hashabledict(base_static_dict),
-            pool=pool,
-        )
-    else:
-        partial_training_step = Partial(
-            forward_pass,
-            prices=data_dict["prices"],
-            static_dict=Hashabledict(base_static_dict),
-            pool=pool,
-        )
+    partial_training_step = Partial(
+        forward_pass,
+        prices=data_dict["prices"],
+        static_dict=Hashabledict(base_static_dict),
+        pool=pool,
+    )
 
     min_spacing = data_dict["bout_length"] // 2
     evaluation_starts = generate_evaluation_points(
@@ -246,7 +237,6 @@ def setup_bfgs_computation(fp, root=None):
         n_parameter_sets,
         maxiter,
         tol,
-        compute_dtype,
     )
 
 
@@ -257,7 +247,6 @@ def compile_bfgs(
     n_parameter_sets: int,
     maxiter: int,
     tol: float,
-    compute_dtype,
 ) -> tuple:
     """
     Build and compile the BFGS computation.
@@ -280,10 +269,7 @@ def compile_bfgs(
 
     def neg_objective(flat_x):
         p = unravel_fn(flat_x)
-        if compute_dtype != jnp.float64:
-            p = jax.tree.map(lambda x: x.astype(compute_dtype), p)
-        obj = -batched_obj(p, fixed_start_indexes)
-        return obj.astype(jnp.float64) if compute_dtype != jnp.float64 else obj
+        return -batched_obj(p, fixed_start_indexes)
 
     # Flatten all parameter sets
     all_flat_x0 = []
@@ -435,7 +421,7 @@ def profile_config(
         setup = setup_bfgs_computation(fp, root=root)
 
         (partial_training_step, params, fixed_start_indexes,
-         n_sets, max_it, tol, dtype) = setup
+         n_sets, max_it, tol) = setup
 
         # Clear JIT cache to get independent compilation
         clear_caches()
@@ -443,7 +429,7 @@ def profile_config(
 
         compiled_solve, compiled_inner, compile_time = compile_bfgs(
             partial_training_step, params, fixed_start_indexes,
-            n_sets, max_it, tol, dtype,
+            n_sets, max_it, tol,
         )
 
         result.compile_time_s = compile_time

@@ -42,7 +42,6 @@ from itertools import product
 import numpy as np
 import jax.numpy as jnp
 from jax import jit
-from jax import config
 
 from quantammsim.training.hessian_trace import hessian_trace
 
@@ -76,9 +75,6 @@ def squareplus(x):
     # Use jnp (not raw lax) so dtype promotion handles float32/float64 mixes.
     return 0.5 * (x + jnp.sqrt(x * x + 4))
 
-
-# again, this only works on startup!
-config.update("jax_enable_x64", True)
 
 np.seterr(all="raise")
 np.seterr(under="print")

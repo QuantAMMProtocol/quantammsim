@@ -6,7 +6,7 @@ import hashlib
 import warnings
 
 # again, this only works on startup!
-from jax import config, jit
+from jax import jit
 from jax.tree_util import tree_map, tree_reduce
 import jax.numpy as jnp
 
@@ -19,8 +19,6 @@ from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
     LiquidityPoolCoinDto,
     SimulationResultTimestepDto,
 )
-
-config.update("jax_enable_x64", True)
 
 import os
 import optuna

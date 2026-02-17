@@ -1,7 +1,3 @@
-# again, this only works on startup!
-from jax import config
-
-config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from jax import jit, vmap
 from jax.lax import scan

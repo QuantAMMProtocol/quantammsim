@@ -15,8 +15,6 @@ except ImportError as e:
 try:
     import jax
     import jax.numpy as jnp
-    from jax import config
-    config.update("jax_enable_x64", True)
 except ImportError as e:
     raise ImportError(
         "JAX is required for core simulator. Please install jax and jaxlib."

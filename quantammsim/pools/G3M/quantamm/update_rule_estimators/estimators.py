@@ -9,7 +9,6 @@ paired/triple-threat gradient variants. Dispatches to either a sequential
 # again, this only works on startup!
 from jax import config
 
-config.update("jax_enable_x64", True)
 # config.update("jax_debug_nans", True)
 # config.update('jax_disable_jit', True)
 from jax import default_backend

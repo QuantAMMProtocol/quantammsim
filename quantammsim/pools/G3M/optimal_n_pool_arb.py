@@ -13,10 +13,8 @@ from itertools import product
 
 from functools import partial
 
-from jax import config, jit, vmap
+from jax import jit, vmap
 import jax.numpy as jnp
-
-config.update("jax_enable_x64", True)
 
 np.seterr(all="raise")
 np.seterr(under="print")

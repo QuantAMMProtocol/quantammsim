@@ -38,6 +38,7 @@ if "JAX_COMPILATION_CACHE_DIR" not in os.environ:
     os.makedirs(_cache_dir, exist_ok=True)
     os.environ["JAX_COMPILATION_CACHE_DIR"] = _cache_dir
 
+import jax
 from jax.tree_util import Partial
 from jax import jit, vmap, random, lax
 from jax import clear_caches
@@ -401,6 +402,34 @@ def train_on_historic_data(
 
     recursive_default_set(run_fingerprint, run_fingerprint_defaults)
     check_run_fingerprint(run_fingerprint)
+
+    # Set x64 mode early — before any data loading or param init — so that
+    # all JAX arrays created during setup have the correct dtype.  Restore
+    # the previous state on exit so callers (e.g. tests) aren't affected.
+    _prev_x64 = jax.config.jax_enable_x64
+    opt_settings = run_fingerprint["optimisation_settings"]
+    if opt_settings["method"] == "bfgs":
+        _compute_dtype = opt_settings.get("bfgs_settings", {}).get("compute_dtype", "float64")
+        jax.config.update("jax_enable_x64", _compute_dtype != "float32")
+    else:
+        # Non-BFGS methods expect float64.
+        jax.config.update("jax_enable_x64", True)
+
+    try:
+        return _train_on_historic_data_impl(
+            run_fingerprint, root, iterations_per_print, force_init,
+            price_data, verbose, run_location, return_training_metadata,
+            warm_start_params, warm_start_weights,
+        )
+    finally:
+        jax.config.update("jax_enable_x64", _prev_x64)
+
+
+def _train_on_historic_data_impl(
+    run_fingerprint, root, iterations_per_print, force_init,
+    price_data, verbose, run_location, return_training_metadata,
+    warm_start_params, warm_start_weights,
+):
     if verbose:
         print("Run Fingerprint: ", run_fingerprint)
     rule = run_fingerprint["rule"]
@@ -1903,31 +1932,18 @@ def train_on_historic_data(
             [(s, 0) for s in evaluation_starts], dtype=jnp.int32
         )
 
-        # Resolve compute dtype for BFGS forward pass
+        # x64 mode was already set at the top of train_on_historic_data
+        # based on bfgs_settings["compute_dtype"].
         compute_dtype_str = bfgs_settings.get("compute_dtype", "float64")
-        compute_dtype = jnp.float32 if compute_dtype_str == "float32" else jnp.float64
-
-        if compute_dtype != jnp.float64:
-            # Re-create partial with cast prices for reduced-precision forward pass.
-            # Prices are cast here; params are cast inside neg_objective so the
-            # BFGS optimizer itself iterates in float64 (stable Hessian updates).
-            bfgs_prices = data_dict["prices"].astype(compute_dtype)
-            bfgs_training_step = Partial(
-                forward_pass,
-                prices=bfgs_prices,
-                static_dict=Hashabledict(base_static_dict),
-                pool=pool,
-            )
-        else:
-            bfgs_training_step = partial_training_step
+        use_x64 = compute_dtype_str != "float32"
 
         if verbose:
             print(f"[BFGS] {len(evaluation_starts)} evaluation points, maxiter={maxiter}, tol={tol}")
             print(f"[BFGS] {n_parameter_sets} parameter sets")
-            print(f"[BFGS] compute dtype: {compute_dtype_str}")
+            print(f"[BFGS] compute dtype: {compute_dtype_str} (x64={'on' if use_x64 else 'off'})")
 
         # Build deterministic objective: params -> scalar (mean over eval points)
-        step_fn = bfgs_training_step
+        step_fn = partial_training_step
         batched_pts = batched_partial_training_step_factory(step_fn)
         batched_obj = batched_objective_factory(batched_pts)
 
@@ -1948,17 +1964,9 @@ def train_on_historic_data(
             print(f"[BFGS] {n_flat} flat parameters per set")
 
         # Build flat objective: flat_x -> scalar (negated for minimization)
-        # BFGS iterates in float64 for Hessian stability; cast params to
-        # compute_dtype inside the objective so the forward pass runs in
-        # reduced precision when requested.
         def neg_objective(flat_x):
-            if compute_dtype != jnp.float64:
-                flat_x = flat_x.astype(compute_dtype)
             p = unravel_fn(flat_x)
-            obj = -batched_obj(p, fixed_start_indexes)
-            # BFGS while_loop requires consistent dtypes; cast objective
-            # back to float64 so all BFGS state variables stay float64.
-            return obj.astype(jnp.float64) if compute_dtype != jnp.float64 else obj
+            return -batched_obj(p, fixed_start_indexes)
 
         # Flatten all parameter sets into (n_parameter_sets, n_flat)
         all_flat_x0 = []

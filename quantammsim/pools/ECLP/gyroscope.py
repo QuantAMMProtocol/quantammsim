@@ -9,7 +9,6 @@ calculation, dynamic inputs, and weight derivation from reserves.
 # again, this only works on startup!
 from jax import config
 
-config.update("jax_enable_x64", True)
 from jax import default_backend
 from jax import local_device_count, devices
 

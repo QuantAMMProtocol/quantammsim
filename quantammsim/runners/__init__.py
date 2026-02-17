@@ -7,9 +7,6 @@ This module provides simulation runners and utilities for running AMM simulation
 try:
     import jax
     import jax.numpy as jnp
-    from jax import config
-
-    config.update("jax_enable_x64", True)
 except ImportError as e:
     raise ImportError(
         "JAX is required for runners. Please install jax and jaxlib."

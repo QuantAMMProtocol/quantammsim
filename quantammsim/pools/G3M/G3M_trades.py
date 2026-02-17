@@ -5,12 +5,10 @@ a token pair, and an input amount, computes the output amount and
 resulting reserve changes. Also provides a conditional wrapper for
 use inside ``jax.lax.scan`` loops where trades may or may not be present.
 """
-from jax import config, jit, devices
+from jax import jit, devices
 import jax.numpy as jnp
 from jax.lax import cond
 from jax import default_backend
-
-config.update("jax_enable_x64", True)
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]

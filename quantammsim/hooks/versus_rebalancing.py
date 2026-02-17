@@ -2,9 +2,6 @@ from abc import ABC
 from typing import Dict, Any, Optional
 from copy import deepcopy
 
-# again, this only works on startup!
-from jax import config
-
 # TODO above is all from jax utils, tidy up required
 
 import jax.numpy as jnp
@@ -16,9 +13,6 @@ from jax.lax import dynamic_slice
 
 from quantammsim.utils.data_processing.historic_data_utils import get_data_dict
 from quantammsim.pools.base_pool import AbstractPool
-
-
-config.update("jax_enable_x64", True)
 
 
 @jit

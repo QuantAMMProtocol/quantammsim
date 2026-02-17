@@ -5,14 +5,13 @@ Provides JAX-based functions for computing ECLP reserves over time via
 zero-fee, fixed-fee, and dynamic-fee variants, as well as reserve
 initialisation from pool value and direct trade execution via Proposition 14.
 """
-from jax import config, jit
+from jax import jit
 from jax.lax import scan, cond
 from jax.tree_util import Partial
 import jax.numpy as jnp
 import numpy as np
 from functools import partial
 import jax
-config.update("jax_enable_x64", True)
 
 np.seterr(all="raise")
 np.seterr(under="print")

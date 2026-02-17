@@ -31,7 +31,6 @@ standard financial practice than minute-frequency arithmetic Sharpe.
 """
 from jax import config
 
-config.update("jax_enable_x64", True)
 from jax import default_backend
 from jax import devices
 
