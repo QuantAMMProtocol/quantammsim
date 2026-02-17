@@ -285,7 +285,7 @@ def probe_cmaes_max_lambda(
     max_lam: int = 1024,
     probe_n_eval: int = None,
     probe_bout_offset: int = None,
-    safety_factor: float = 0.8,
+    safety_factor: float = 1.0,
     verbose: bool = True,
 ) -> Optional[int]:
     """Probe GPU memory to find the largest CMA-ES λ that fits.
