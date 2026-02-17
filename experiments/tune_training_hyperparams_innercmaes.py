@@ -282,16 +282,22 @@ def create_base_fingerprint() -> dict:
 def probe_cmaes_memory_budget(
     base_fp: dict,
     n_wfa_cycles: int = 4,
+    max_lam: int = 1024,
     verbose: bool = True,
 ) -> Optional[int]:
-    """Probe GPU memory to determine max concurrent forward passes for CMA-ES.
+    """Probe GPU memory by running actual CMA-ES (2 generations).
 
-    On GPU, binary-searches for the largest batch of forward passes that fits,
-    then stores the result as ``memory_budget`` so the runner auto-sizes λ
-    per trial (accounting for each trial's ``n_evaluation_points``).
+    Binary-searches for the largest population size (λ) that fits in GPU
+    memory, using the real CMA-ES codepath (``train_on_historic_data`` with
+    ``n_generations=2``).  This captures the true memory footprint of the
+    fused ``lax.while_loop`` — nested vmap, carry state, XLA constant-folding
+    — without safety-margin guesswork.
 
-    The probe uses a single WFA cycle's training window (not the full period)
-    so the memory estimate matches what each trial actually sees.
+    Price data is loaded once and reused across all binary-search steps.
+
+    Returns ``memory_budget = max_λ × n_eval_points``, which the runner's
+    ``compute_cmaes_population_size()`` divides by each trial's
+    ``n_eval_points`` to adapt λ per trial.
 
     On CPU, returns None (no OOM risk, no parallelism benefit from large λ).
     """
@@ -300,41 +306,92 @@ def probe_cmaes_memory_budget(
             print("[CMA-ES] CPU backend — skipping memory probe (using Hansen default λ)")
         return None
 
-    from quantammsim.runners.jax_runner_utils import probe_max_n_parameter_sets
+    import gc
+    from jax import clear_caches
     from quantammsim.runners.robust_walk_forward import generate_walk_forward_cycles
+    from quantammsim.runners.jax_runners import train_on_historic_data, get_unique_tokens
+    from quantammsim.utils.data_processing.historic_data_utils import get_historic_parquet_data
 
-    # Build a probe fingerprint with per-cycle window size.
-    # WFA splits [start, end] into n_cycles+1 equal segments; each cycle
-    # trains on one segment. Probing against the full window would
-    # overestimate memory by ~(n_cycles+1)x.
+    # Use first WFA cycle as representative window (all cycles are equal length).
     cycles = generate_walk_forward_cycles(
         base_fp["startDateString"],
         base_fp["endDateString"],
         n_wfa_cycles,
     )
-    # Use the first cycle as representative (all cycles are equal length)
     cycle = cycles[0]
+
+    # Build probe fingerprint: minimal CMA-ES run (1 generation, 1 restart,
+    # no validation) — just enough to exercise the fused while_loop.
+    # lax.while_loop allocates body memory statically at compile time,
+    # so 1 generation has the same footprint as 300.
     probe_fp = deepcopy(base_fp)
     probe_fp["startDateString"] = cycle.train_start_date
     probe_fp["endDateString"] = cycle.train_end_date
     probe_fp["endTestDateString"] = cycle.test_end_date
+    probe_fp["optimisation_settings"]["n_parameter_sets"] = 1
+    probe_fp["optimisation_settings"]["val_fraction"] = 0.0
+    probe_fp["optimisation_settings"]["cma_es_settings"]["n_generations"] = 1
+
+    n_eval = probe_fp["optimisation_settings"]["cma_es_settings"]["n_evaluation_points"]
 
     if verbose:
         print(f"[CMA-ES] Probing GPU memory for population auto-sizing...")
         print(f"[CMA-ES] Probe window: {cycle.train_start_date} → {cycle.train_end_date} "
               f"(1 of {n_wfa_cycles} WFA cycles)")
+        print(f"[CMA-ES] Probe n_eval_points: {n_eval}, max_lam: {max_lam}")
 
-    # CMA-ES has no gradient overhead → use max directly (no safety margin
-    # needed for the 2x grad multiplier that BFGS requires).
-    probe_result = probe_max_n_parameter_sets(
-        probe_fp, max_sets=4096, safety_margin=1.0, verbose=verbose,
-    )
-    budget = probe_result["max_n_parameter_sets"]
+    # Load price data once — get_data_dict slices per fingerprint dates.
+    tokens = get_unique_tokens(probe_fp)
+    price_df = get_historic_parquet_data(tokens, ["close"])
 
     if verbose:
-        print(f"[CMA-ES] Memory budget: {budget} concurrent forward passes")
+        print(f"[CMA-ES] Price data loaded ({len(price_df)} rows)")
 
-    return budget
+    # Binary search for max λ that fits in GPU memory.
+    low, high = 4, max_lam
+    best_lam = None
+
+    while low <= high:
+        mid = (low + high) // 2
+        probe_fp["optimisation_settings"]["cma_es_settings"]["population_size"] = mid
+
+        if verbose:
+            print(f"[CMA-ES] Probing λ={mid}...", end=" ", flush=True)
+
+        clear_caches()
+        gc.collect()
+
+        try:
+            train_on_historic_data(probe_fp, price_data=price_df, verbose=False)
+            if verbose:
+                print("OK")
+            best_lam = mid
+            low = mid + 1
+        except Exception as e:
+            error_str = str(e).lower()
+            if "resource" in error_str or "memory" in error_str or "oom" in error_str:
+                if verbose:
+                    print("OOM")
+                high = mid - 1
+            else:
+                raise
+
+        clear_caches()
+        gc.collect()
+
+    if best_lam is None:
+        if verbose:
+            print("[CMA-ES] WARNING: Even λ=4 OOMs — falling back to Hansen default")
+        return None
+
+    memory_budget = best_lam * n_eval
+
+    if verbose:
+        print(f"\n[CMA-ES] Memory probe results:")
+        print(f"  Max λ at n_eval={n_eval}: {best_lam}")
+        print(f"  Memory budget: {memory_budget} concurrent forward passes")
+
+    return memory_budget
 
 
 # =============================================================================
