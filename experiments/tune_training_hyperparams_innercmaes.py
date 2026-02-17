@@ -279,14 +279,16 @@ def create_base_fingerprint() -> dict:
 # GPU memory probe
 # =============================================================================
 
-def probe_cmaes_memory_budget(
+def probe_cmaes_max_lambda(
     base_fp: dict,
     n_wfa_cycles: int = 4,
     max_lam: int = 1024,
     probe_n_eval: int = None,
+    probe_bout_offset: int = None,
+    safety_factor: float = 0.8,
     verbose: bool = True,
 ) -> Optional[int]:
-    """Probe GPU memory by running actual CMA-ES (1 generation).
+    """Probe GPU memory to find the largest CMA-ES λ that fits.
 
     Binary-searches for the largest population size (λ) that fits in GPU
     memory, using the real CMA-ES codepath (``train_on_historic_data`` with
@@ -294,21 +296,40 @@ def probe_cmaes_memory_budget(
     fused ``lax.while_loop`` — nested vmap, carry state, XLA constant-folding
     — without safety-margin guesswork.
 
-    Price data is loaded once and reused across all binary-search steps.
+    Returns the max λ (with safety factor applied) directly, to be used as
+    ``population_size`` for all trials.  This avoids the broken
+    ``memory_budget / n_eval`` scaling model — memory depends on λ and
+    n_eval independently through different XLA mechanisms (constant-folded
+    data vs working memory), so a linear budget model doesn't hold.
 
-    Returns ``memory_budget = max_λ × probe_n_eval``, which the runner's
-    ``compute_cmaes_population_size()`` divides by each trial's
-    ``n_eval_points`` to adapt λ per trial.
+    Probe conditions should be worst-case for memory:
+
+    - ``probe_n_eval``: max from search space (most eval points = most
+      constant-folded price data).
+    - ``probe_bout_offset``: set to max n_eval (minutes).  Just large
+      enough that eval points are distinct (avoiding the bout_offset=0
+      trap where all points collapse and XLA deduplicates), while keeping
+      ``bout_length_window ≈ bout_length`` — the worst case for memory.
+    - ``n_parameter_sets=1``: restarts are a Python loop, don't multiply
+      memory.
 
     Parameters
     ----------
     probe_n_eval : int, optional
         ``n_evaluation_points`` for the probe.  Should be the **maximum**
-        from the search space so that the XLA program tested has the most
-        constant-folded price data any trial could produce.  If None, uses
-        the base fingerprint's value (which may be too optimistic).
+        from the search space.  If None, uses the base fingerprint's value.
+    probe_bout_offset : int, optional
+        ``bout_offset`` in minutes for the probe.  Should equal max n_eval
+        so eval points are distinct but ``bout_length_window ≈ bout_length``
+        (worst-case memory).  If None, uses the base fingerprint's value.
+    safety_factor : float
+        Multiply max_λ by this factor to allow headroom for XLA compilation
+        variance across different trial configs.  Default 0.8.
 
-    On CPU, returns None (no OOM risk, no parallelism benefit from large λ).
+    Returns
+    -------
+    int or None
+        Max safe λ, or None on CPU (no OOM risk).
     """
     if jax.default_backend() != "gpu":
         if verbose:
@@ -329,28 +350,28 @@ def probe_cmaes_memory_budget(
     )
     cycle = cycles[0]
 
-    # Build probe fingerprint for worst-case memory: 1 generation, 1 restart,
-    # no validation (longest training window), zero bout_offset (longest
-    # forward pass per eval point), and max n_eval_points (most constant-
-    # folded price slices in the XLA program).
+    # Build probe fingerprint: worst-case memory conditions.
     probe_fp = deepcopy(base_fp)
     probe_fp["startDateString"] = cycle.train_start_date
     probe_fp["endDateString"] = cycle.train_end_date
     probe_fp["endTestDateString"] = cycle.test_end_date
     probe_fp["optimisation_settings"]["n_parameter_sets"] = 1
     probe_fp["optimisation_settings"]["val_fraction"] = 0.0
-    probe_fp["bout_offset"] = 0  # longest possible forward-pass window
     probe_fp["optimisation_settings"]["cma_es_settings"]["n_generations"] = 1
     if probe_n_eval is not None:
         probe_fp["optimisation_settings"]["cma_es_settings"]["n_evaluation_points"] = probe_n_eval
+    if probe_bout_offset is not None:
+        probe_fp["bout_offset"] = probe_bout_offset
 
     n_eval = probe_fp["optimisation_settings"]["cma_es_settings"]["n_evaluation_points"]
+    bout_offset_mins = probe_fp["bout_offset"]
 
     if verbose:
-        print(f"[CMA-ES] Probing GPU memory for population auto-sizing...")
+        print(f"[CMA-ES] Probing GPU memory for max λ...")
         print(f"[CMA-ES] Probe window: {cycle.train_start_date} → {cycle.train_end_date} "
               f"(1 of {n_wfa_cycles} WFA cycles)")
-        print(f"[CMA-ES] Probe n_eval_points: {n_eval} (worst-case), max_lam: {max_lam}")
+        print(f"[CMA-ES] Probe n_eval={n_eval}, bout_offset={bout_offset_mins}min, "
+              f"safety={safety_factor}, max_lam={max_lam}")
 
     # Load price data once — get_data_dict slices per fingerprint dates.
     tokens = get_unique_tokens(probe_fp)
@@ -402,14 +423,15 @@ def probe_cmaes_memory_budget(
             print("[CMA-ES] WARNING: Even λ=4 OOMs — falling back to Hansen default")
         return None
 
-    memory_budget = best_lam * n_eval
+    safe_lam = max(4, int(best_lam * safety_factor))
 
     if verbose:
         print(f"\n[CMA-ES] Memory probe results:")
-        print(f"  Max λ at n_eval={n_eval}: {best_lam}")
-        print(f"  Memory budget: {memory_budget} concurrent forward passes")
+        print(f"  Raw max λ: {best_lam}")
+        print(f"  Safe λ (×{safety_factor}): {safe_lam}")
+        print(f"  (n_eval={n_eval}, bout_offset={bout_offset_mins}min)")
 
-    return memory_budget
+    return safe_lam
 
 
 # =============================================================================
@@ -437,16 +459,21 @@ def run_tuning(
 
     base_fp = create_base_fingerprint()
 
-    # Probe GPU memory once at startup — every trial auto-sizes λ from this.
-    # Probe at the worst-case n_eval from the search space so the XLA program
-    # tested has the most constant-folded price data any trial could produce.
+    # Probe GPU memory once at startup to find the max safe λ.
+    # Probe at worst-case memory conditions:
+    # - max n_eval from search space (most constant-folded price data)
+    # - bout_offset = max_n_eval minutes (just enough for distinct eval points
+    #   while keeping bout_length_window ≈ bout_length — true worst case)
     search_space = create_search_space(cycle_days=cycle_days)
     max_n_eval = search_space.params["cma_es_n_evaluation_points"]["high"]
-    memory_budget = probe_cmaes_memory_budget(
-        base_fp, n_wfa_cycles=n_wfa_cycles, probe_n_eval=max_n_eval, verbose=True,
+    max_lambda = probe_cmaes_max_lambda(
+        base_fp, n_wfa_cycles=n_wfa_cycles,
+        probe_n_eval=max_n_eval,
+        probe_bout_offset=max_n_eval,  # minutes — minimal spread, max window size
+        verbose=True,
     )
-    if memory_budget is not None:
-        base_fp["optimisation_settings"]["cma_es_settings"]["memory_budget"] = memory_budget
+    if max_lambda is not None:
+        base_fp["optimisation_settings"]["cma_es_settings"]["population_size"] = max_lambda
 
     storage_path = STUDY_DIR / f"{STUDY_NAME}.db"
     storage = f"sqlite:///{storage_path}"
@@ -457,10 +484,10 @@ def run_tuning(
     print(f"Basket:     {TOKENS}")
     print(f"Strategy:   {RULE}")
     print(f"Inner opt:  CMA-ES (derivative-free, population-based)")
-    if memory_budget is not None:
-        print(f"GPU budget: {memory_budget} concurrent fwd passes (λ auto-sized per trial)")
+    if max_lambda is not None:
+        print(f"GPU λ cap:  {max_lambda} (probed, all trials use this)")
     else:
-        print(f"GPU budget: N/A (CPU — using Hansen default λ)")
+        print(f"GPU λ cap:  N/A (CPU — using Hansen default λ)")
     print(f"WFA period: {START_DATE} to {WFA_END_DATE}")
     print(f"Holdout:    {WFA_END_DATE} to {HOLDOUT_END_DATE}")
     print(f"Objective:  {objective}")
