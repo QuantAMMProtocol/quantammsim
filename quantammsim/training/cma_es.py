@@ -86,34 +86,37 @@ def default_params(n: int) -> dict:
 
 
 def init_cmaes(mean: jnp.ndarray, sigma: float) -> CMAESState:
-    """Initialise CMA-ES state from an initial mean and step size."""
+    """Initialise CMA-ES state from an initial mean and step size.
+
+    All fields are explicit JAX arrays with dtypes derived from ``mean.dtype``,
+    so the returned state is safe to use as ``lax.while_loop`` carry.
+    """
     n = mean.shape[0]
-    C = jnp.eye(n)
-    eigenvalues = jnp.ones(n)
-    eigenvectors = jnp.eye(n)
+    dtype = mean.dtype
     return CMAESState(
         mean=mean,
-        sigma=sigma,
-        C=C,
-        p_sigma=jnp.zeros(n),
-        p_c=jnp.zeros(n),
-        gen=0,
-        best_x=mean,
-        best_f=jnp.inf,
-        eigenvalues=eigenvalues,
-        eigenvectors=eigenvectors,
-        invsqrt_C=jnp.eye(n),
+        sigma=jnp.asarray(sigma, dtype=dtype),
+        C=jnp.eye(n, dtype=dtype),
+        p_sigma=jnp.zeros(n, dtype=dtype),
+        p_c=jnp.zeros(n, dtype=dtype),
+        gen=jnp.int32(0),
+        best_x=mean.copy(),
+        best_f=jnp.asarray(jnp.inf, dtype=dtype),
+        eigenvalues=jnp.ones(n, dtype=dtype),
+        eigenvectors=jnp.eye(n, dtype=dtype),
+        invsqrt_C=jnp.eye(n, dtype=dtype),
     )
 
 
 def ask(state: CMAESState, key: jnp.ndarray, lam: int) -> jnp.ndarray:
     """Sample *lam* candidate solutions from the current distribution.
 
-    Returns array of shape ``(lam, n)``.
+    Returns array of shape ``(lam, n)`` with the same dtype as ``state.mean``.
     """
     n = state.mean.shape[0]
+    dtype = state.mean.dtype
     # Sample z ~ N(0, I), transform via C^{1/2}
-    z = random.normal(key, shape=(lam, n))
+    z = random.normal(key, shape=(lam, n), dtype=dtype)
     # C = B D^2 B^T  =>  C^{1/2} = B D B^T
     # population = mean + sigma * B D z^T
     D = jnp.sqrt(state.eigenvalues)  # (n,)
@@ -132,10 +135,15 @@ def tell(
     """Update the CMA-ES state given the population and their fitness values.
 
     *fitness* should have shape ``(lam,)`` — lower is better (minimization).
+    All arithmetic preserves ``state.mean.dtype`` to stay compatible with
+    ``lax.while_loop`` carry constraints.
     """
     n = state.mean.shape[0]
+    dtype = state.mean.dtype
     mu = params["mu"]
-    weights = params["weights"]
+    # Cast weights to state dtype — default_params creates a JAX array whose
+    # dtype follows the global x64 flag, which may differ from the state dtype.
+    weights = params["weights"].astype(dtype)
     mu_eff = params["mu_eff"]
     c_sigma = params["c_sigma"]
     d_sigma = params["d_sigma"]
@@ -165,11 +173,15 @@ def tell(
     mean_diff = new_mean - state.mean
     invsqrt_C = state.invsqrt_C
 
+    # Coefficients computed via Python math to stay weakly-typed and avoid
+    # jnp.sqrt promoting to the default float dtype under x64.
+    sqrt_csig = math.sqrt(c_sigma * (2 - c_sigma) * mu_eff)
+    sqrt_cc = math.sqrt(c_c * (2 - c_c) * mu_eff)
+
     # p_sigma = (1 - c_sigma) * p_sigma + sqrt(c_sigma * (2 - c_sigma) * mu_eff) * C^{-1/2} * (mean_diff / sigma)
     p_sigma = (
         (1 - c_sigma) * state.p_sigma
-        + jnp.sqrt(c_sigma * (2 - c_sigma) * mu_eff)
-        * invsqrt_C @ (mean_diff / state.sigma)
+        + sqrt_csig * invsqrt_C @ (mean_diff / state.sigma)
     )
 
     # Heaviside function for stalling detection
@@ -178,13 +190,14 @@ def tell(
     threshold = (1.4 + 2.0 / (n + 1)) * chi_n * jnp.sqrt(
         1 - (1 - c_sigma) ** (2 * gen_plus_1)
     )
-    h_sigma = jnp.where(p_sigma_norm < threshold, 1.0, 0.0)
+    # Cast bool→dtype instead of jnp.where with float literals (which would
+    # default to float64 under x64, promoting downstream arrays).
+    h_sigma = (p_sigma_norm < threshold).astype(dtype)
 
     # p_c = (1 - c_c) * p_c + h_sigma * sqrt(c_c * (2 - c_c) * mu_eff) * (mean_diff / sigma)
     p_c = (
         (1 - c_c) * state.p_c
-        + h_sigma * jnp.sqrt(c_c * (2 - c_c) * mu_eff)
-        * (mean_diff / state.sigma)
+        + h_sigma * sqrt_cc * (mean_diff / state.sigma)
     )
 
     # Covariance matrix update
@@ -236,8 +249,8 @@ def tell(
     )
 
 
-def should_stop(state: CMAESState, tol: float = 1e-8) -> bool:
-    """Check termination criteria.
+def _should_stop_jax(state: CMAESState, tol: float = 1e-8) -> jnp.ndarray:
+    """Check termination criteria, returning a JAX bool (for use in ``lax.while_loop``).
 
     Stops when:
     - Step size × max eigenvalue < tol (distribution has collapsed)
@@ -250,4 +263,60 @@ def should_stop(state: CMAESState, tol: float = 1e-8) -> bool:
     size_converged = state.sigma * jnp.sqrt(max_eigval) < tol
     ill_conditioned = cond > 1e14
 
-    return bool(size_converged | ill_conditioned)
+    return size_converged | ill_conditioned
+
+
+def should_stop(state: CMAESState, tol: float = 1e-8) -> bool:
+    """Check termination criteria (Python bool for use in Python loops)."""
+    return bool(_should_stop_jax(state, tol))
+
+
+def run_cmaes(
+    init_state: CMAESState,
+    rng_key: jnp.ndarray,
+    eval_fn,
+    params: dict,
+    n_generations: int,
+    tol: float = 1e-8,
+) -> CMAESState:
+    """Run CMA-ES via ``lax.while_loop``.  JIT-compatible.
+
+    Fuses the ask → eval → tell loop into a single XLA program, eliminating
+    per-generation Python dispatch overhead.
+
+    Parameters
+    ----------
+    init_state : CMAESState
+        Initial state from :func:`init_cmaes`.
+    rng_key : jax.Array
+        PRNG key; split internally each generation.
+    eval_fn : callable
+        ``(lam, n) -> (lam,)`` fitness function (lower is better).
+    params : dict
+        CMA-ES hyper-parameters from :func:`default_params`.
+    n_generations : int
+        Maximum number of generations.
+    tol : float
+        Convergence tolerance passed to :func:`_should_stop_jax`.
+
+    Returns
+    -------
+    CMAESState
+        Final state after convergence or ``n_generations``.
+    """
+    lam = params["lam"]
+
+    def cond_fn(carry):
+        state, _key = carry
+        return (~_should_stop_jax(state, tol)) & (state.gen < n_generations)
+
+    def body_fn(carry):
+        state, key = carry
+        key, subkey = random.split(key)
+        pop = ask(state, subkey, lam)
+        fitness = eval_fn(pop)
+        state = tell(state, pop, fitness, params)
+        return (state, key)
+
+    final_state, _ = jax.lax.while_loop(cond_fn, body_fn, (init_state, rng_key))
+    return final_state

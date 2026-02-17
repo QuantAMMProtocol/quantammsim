@@ -17,6 +17,7 @@ from quantammsim.training.cma_es import (
     ask,
     tell,
     should_stop,
+    run_cmaes,
 )
 from quantammsim.runners.jax_runners import train_on_historic_data
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
@@ -129,6 +130,105 @@ class TestCMAESAlgorithm:
         n = 10
         state = init_cmaes(jnp.zeros(n), sigma=1.0)
         assert not should_stop(state, tol=1e-8)
+
+    def test_run_cmaes_sphere_convergence(self):
+        """run_cmaes minimises f(x) = sum(x^2) via lax.while_loop."""
+        n = 5
+        params = default_params(n)
+        key = jax.random.key(0)
+        key, init_key = jax.random.split(key)
+        x0 = jax.random.normal(init_key, shape=(n,))
+        state = init_cmaes(x0, sigma=1.0)
+
+        def eval_fn(pop):
+            return jnp.sum(pop ** 2, axis=1)
+
+        final = run_cmaes(state, key, eval_fn, params, n_generations=300, tol=1e-12)
+        assert final.best_f < 1e-6, f"best_f={final.best_f:.2e}, expected < 1e-6"
+
+    def test_run_cmaes_matches_python_loop(self):
+        """run_cmaes produces identical results to the Python ask/eval/tell loop."""
+        n = 5
+        params = default_params(n)
+        key = jax.random.key(7)
+        x0 = jnp.ones(n) * 3.0
+        n_gens = 50
+
+        def eval_fn(pop):
+            return jnp.sum(pop ** 2, axis=1)
+
+        # Python loop
+        state_py = init_cmaes(x0, sigma=1.0)
+        key_py = key
+        for gen in range(n_gens):
+            key_py, subkey = jax.random.split(key_py)
+            pop = ask(state_py, subkey, params["lam"])
+            fitness = eval_fn(pop)
+            state_py = tell(state_py, pop, fitness, params)
+            if should_stop(state_py, tol=1e-12):
+                break
+
+        # Fused loop
+        state_fused = init_cmaes(x0, sigma=1.0)
+        state_fused = run_cmaes(state_fused, key, eval_fn, params, n_gens, tol=1e-12)
+
+        assert jnp.allclose(state_py.best_x, state_fused.best_x, atol=1e-10), (
+            f"best_x mismatch: py={state_py.best_x}, fused={state_fused.best_x}"
+        )
+        assert jnp.allclose(state_py.best_f, state_fused.best_f, atol=1e-10), (
+            f"best_f mismatch: py={state_py.best_f}, fused={state_fused.best_f}"
+        )
+        assert int(state_py.gen) == int(state_fused.gen), (
+            f"gen mismatch: py={state_py.gen}, fused={state_fused.gen}"
+        )
+
+    def test_run_cmaes_early_stop(self):
+        """Starting near optimum with tiny sigma triggers early convergence."""
+        n = 5
+        params = default_params(n)
+        key = jax.random.key(0)
+        x0 = jnp.ones(n) * 1e-10
+        state = init_cmaes(x0, sigma=1e-10)
+
+        def eval_fn(pop):
+            return jnp.sum(pop ** 2, axis=1)
+
+        n_generations = 300
+        final = run_cmaes(state, key, eval_fn, params, n_generations, tol=1e-8)
+        assert int(final.gen) < n_generations, (
+            f"Expected early stop but ran all {n_generations} generations"
+        )
+
+    def test_run_cmaes_float32_under_x64(self):
+        """run_cmaes with float32 state works when x64 mode is enabled.
+
+        Verifies that dtype hardening prevents float64 promotion inside
+        lax.while_loop when the global x64 flag differs from state dtype.
+        """
+        prev = jax.config.jax_enable_x64
+        try:
+            jax.config.update("jax_enable_x64", True)
+            n = 5
+            params = default_params(n)
+            key = jax.random.key(0)
+            x0 = jnp.ones(n, dtype=jnp.float32)
+            state = init_cmaes(x0, sigma=1.0)
+
+            # Verify init state is float32
+            assert state.mean.dtype == jnp.float32
+
+            def eval_fn(pop):
+                return jnp.sum(pop ** 2, axis=1)
+
+            final = run_cmaes(state, key, eval_fn, params, n_generations=50, tol=1e-8)
+
+            # All float fields should remain float32
+            assert final.mean.dtype == jnp.float32, f"mean dtype={final.mean.dtype}"
+            assert final.sigma.dtype == jnp.float32, f"sigma dtype={final.sigma.dtype}"
+            assert final.C.dtype == jnp.float32, f"C dtype={final.C.dtype}"
+            assert final.best_f < 1e-2  # convergence check
+        finally:
+            jax.config.update("jax_enable_x64", prev)
 
 
 # ============================================================================

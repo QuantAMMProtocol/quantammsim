@@ -66,6 +66,27 @@ from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.runners.metric_extraction import extract_cycle_metric
 
 
+def _json_safe(obj):
+    """Recursively convert numpy/JAX arrays and scalars to Python natives for JSON."""
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if hasattr(obj, "shape"):  # JAX arrays
+        return np.asarray(obj).tolist()
+    if hasattr(obj, "item"):  # JAX/numpy 0-d arrays
+        return obj.item()
+    return obj
+
+
 def _is_degenerate(value) -> bool:
     """True if value is None, NaN, or inf. Negative finite values are valid."""
     if value is None:
@@ -830,7 +851,7 @@ def create_objective(
             })
 
         try:
-            trial.set_user_attr("evaluation_result", {
+            trial.set_user_attr("evaluation_result", _json_safe({
                 "mean_oos_sharpe": result.mean_oos_sharpe,
                 "mean_wfe": result.mean_wfe,
                 "worst_oos_sharpe": result.worst_oos_sharpe,
@@ -839,7 +860,7 @@ def create_objective(
                 "adjusted_mean_oos_sharpe": result.adjusted_mean_oos_sharpe,
                 "is_effective": result.is_effective,
                 "cycles": per_cycle_metrics,
-            })
+            }))
         except Exception as e:
             if verbose:
                 print(f"Warning: Failed to store evaluation_result for trial {trial.number}: {e}")

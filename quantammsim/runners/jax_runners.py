@@ -2215,6 +2215,7 @@ def _train_on_historic_data_impl(
             ask as cma_ask,
             tell as cma_tell,
             should_stop as cma_should_stop,
+            run_cmaes,
         )
 
         cma_settings = run_fingerprint["optimisation_settings"]["cma_es_settings"]
@@ -2294,32 +2295,31 @@ def _train_on_historic_data_impl(
             p = unravel_fn(flat_x)
             return -batched_obj(p, fixed_start_indexes)
 
-        eval_population = jit(vmap(eval_single))
+        # Un-jitted vmap for fusion into lax.while_loop's XLA program
+        eval_fn_raw = vmap(eval_single)
+        # Standalone jitted version kept for any verbose/diagnostic use
+        eval_population = jit(eval_fn_raw)
+
+        @jit
+        def _run_one_restart(flat_x0, rng_key):
+            state = init_cmaes(flat_x0, sigma0)
+            return run_cmaes(state, rng_key, eval_fn_raw, cma_params, n_generations, tol)
 
         # Keep initial params for saving
         initial_params = deepcopy(params)
 
-        # Python loop over restarts
+        # Python loop over restarts (different x0 per restart, verbose printing between)
         all_best_x = []
         all_best_f = []
         all_final_gen = []
 
         for restart_idx in range(n_parameter_sets):
             flat_x0 = all_flat_x0[restart_idx]
-            state = init_cmaes(flat_x0, sigma0)
             rng_key = random.key(
                 run_fingerprint["optimisation_settings"]["initial_random_key"] + restart_idx
             )
 
-            for gen in range(n_generations):
-                rng_key, subkey = random.split(rng_key)
-                pop = cma_ask(state, subkey, cma_params["lam"])
-                fitness = eval_population(pop)
-                state = cma_tell(state, pop, fitness, cma_params)
-                if cma_should_stop(state, tol):
-                    if verbose:
-                        print(f"  Restart {restart_idx}: converged at gen {gen + 1}")
-                    break
+            state = _run_one_restart(flat_x0, rng_key)
 
             all_best_x.append(state.best_x)
             all_best_f.append(float(state.best_f))
@@ -2328,7 +2328,7 @@ def _train_on_historic_data_impl(
             if verbose:
                 obj_val = -float(state.best_f)
                 print(f"  Restart {restart_idx}: objective={obj_val:+.6f} "
-                      f"(gen={state.gen}, sigma={float(state.sigma):.4e})")
+                      f"(gen={int(state.gen)}, sigma={float(state.sigma):.4e})")
 
         # Stack best solutions and unflatten into batched params
         all_best_x = jnp.stack(all_best_x)  # (n_parameter_sets, n_flat)

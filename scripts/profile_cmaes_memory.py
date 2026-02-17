@@ -73,6 +73,7 @@ from quantammsim.training.cma_es import (
     init_cmaes,
     ask as cma_ask,
     tell as cma_tell,
+    run_cmaes,
 )
 
 
@@ -97,6 +98,10 @@ class MemoryResult:
     eval_wall_ms: float = 0.0       # median wall-clock per eval_population call
     eval_gflops: float = 0.0        # effective GFLOP/s
     gen_wall_ms: float = 0.0        # wall-clock per full generation (ask+eval+tell)
+    # Fused loop timing (lax.while_loop)
+    fused_loop_ms: float = 0.0      # total wall-clock for N fused generations
+    fused_per_gen_ms: float = 0.0   # fused_loop_ms / N
+    fused_n_gens: int = 0           # number of generations in fused run
     error: str = ""
 
     @property
@@ -333,10 +338,11 @@ def extract_stats(compiled) -> dict:
 # ── Execution timing ──────────────────────────────────────────────────────
 
 def time_execution(compiled_eval, eval_fn, sample_pop, flat_x0, cma_params,
-                   pop_size, n_flat, eval_flops, reps=5):
+                   pop_size, n_flat, eval_flops, reps=5, n_gens_fused=50):
     """
     Run the compiled evaluation and measure wall-clock time.
-    Returns (eval_wall_ms, eval_gflops, gen_wall_ms).
+    Returns (eval_wall_ms, eval_gflops, gen_wall_ms, fused_loop_ms,
+             fused_per_gen_ms, fused_n_gens).
     """
     # Warm up eval
     out = compiled_eval(sample_pop)
@@ -353,7 +359,7 @@ def time_execution(compiled_eval, eval_fn, sample_pop, flat_x0, cma_params,
     eval_wall_ms = eval_wall_s * 1000
     eval_gflops = (eval_flops / 1e9) / eval_wall_s if eval_wall_s > 0 else 0
 
-    # Time a full generation: ask + eval + tell
+    # Time a full generation: ask + eval + tell (Python dispatch)
     state = init_cmaes(flat_x0, sigma=0.5)
     key = random.key(42)
 
@@ -375,7 +381,39 @@ def time_execution(compiled_eval, eval_fn, sample_pop, flat_x0, cma_params,
         gen_times.append(time.perf_counter() - t0)
     gen_wall_ms = float(np.median(gen_times)) * 1000
 
-    return eval_wall_ms, eval_gflops, gen_wall_ms
+    # Time fused loop: N generations compiled as single XLA program
+    eval_fn_raw = vmap(lambda flat_x: eval_fn.args[0](flat_x) if hasattr(eval_fn, 'args') else None)
+    # Reconstruct un-jitted eval for fusion — eval_fn is jit(vmap(eval_single)),
+    # so we need the raw vmap version. We can just use vmap of the inner fn.
+    # Simpler: build it from the same eval_single that compile_cmaes_eval used.
+    # Since we don't have eval_single here, use the un-jitted eval_fn directly
+    # (jit inside while_loop is a no-op anyway).
+    tol = 1e-8
+
+    @jit
+    def _fused_run(flat_x0_arg, key_arg):
+        st = init_cmaes(flat_x0_arg, 0.5)
+        return run_cmaes(st, key_arg, eval_fn, cma_params, n_gens_fused, tol)
+
+    # Compile + warm up
+    fused_key = random.key(99)
+    _fused_state = _fused_run(flat_x0, fused_key)
+    jax.block_until_ready(_fused_state.best_f)
+
+    fused_times = []
+    for i in range(reps):
+        fk = random.key(100 + i)
+        t0 = time.perf_counter()
+        fs = _fused_run(flat_x0, fk)
+        jax.block_until_ready(fs.best_f)
+        fused_times.append(time.perf_counter() - t0)
+
+    fused_loop_ms = float(np.median(fused_times)) * 1000
+    actual_gens = int(_fused_state.gen)
+    fused_n_gens = actual_gens if actual_gens > 0 else n_gens_fused
+    fused_per_gen_ms = fused_loop_ms / fused_n_gens if fused_n_gens > 0 else 0
+
+    return eval_wall_ms, eval_gflops, gen_wall_ms, fused_loop_ms, fused_per_gen_ms, fused_n_gens
 
 
 # ── Display ───────────────────────────────────────────────────────────────────
@@ -385,10 +423,10 @@ def print_header(execute=False):
            f"{'temp_MB':>10} {'arg_MB':>10} "
            f"{'GFLOP':>10} {'compile_s':>10}")
     if execute:
-        hdr += f" {'eval_ms':>10} {'GFLOP/s':>10} {'gen_ms':>10}"
+        hdr += f" {'eval_ms':>10} {'GFLOP/s':>10} {'gen_ms':>10} {'fused/gen':>10}"
     hdr += f" {'status':>8}"
     print(hdr)
-    print("-" * (82 + (32 if execute else 0)))
+    print("-" * (82 + (42 if execute else 0)))
 
 
 def print_row(r: MemoryResult, execute=False):
@@ -400,7 +438,7 @@ def print_row(r: MemoryResult, execute=False):
                f"{gflop:>10.2f} {r.compile_time_s:>10.1f}")
         if execute:
             row += (f" {r.eval_wall_ms:>10.1f} {r.eval_gflops:>10.2f}"
-                    f" {r.gen_wall_ms:>10.1f}")
+                    f" {r.gen_wall_ms:>10.1f} {r.fused_per_gen_ms:>10.1f}")
         row += f" {'OK':>8}"
         print(row)
     else:
@@ -409,7 +447,7 @@ def print_row(r: MemoryResult, execute=False):
                f"{'':>10} {'':>10} "
                f"{'':>10} {r.compile_time_s:>10.1f}")
         if execute:
-            row += f" {'':>10} {'':>10} {'':>10}"
+            row += f" {'':>10} {'':>10} {'':>10} {'':>10}"
         row += f" {'ERR':>8}"
         print(row)
         print(f"  error: {r.error}")
@@ -461,6 +499,14 @@ def print_comparison(results: List[MemoryResult]):
             gen64, gen32 = r64.gen_wall_ms, r32.gen_wall_ms
             speedup_g = gen64 / gen32 if gen32 > 0 else 0
             print(f"  {'full generation (ms)':<25} {gen64:>12.1f} {gen32:>12.1f} {speedup_g:>11.1f}x")
+        if r64.fused_per_gen_ms > 0 and r32.fused_per_gen_ms > 0:
+            fg64, fg32 = r64.fused_per_gen_ms, r32.fused_per_gen_ms
+            speedup_fg = fg64 / fg32 if fg32 > 0 else 0
+            print(f"  {'fused per-gen (ms)':<25} {fg64:>12.1f} {fg32:>12.1f} {speedup_fg:>11.1f}x")
+            # Show speedup vs Python dispatch
+            if r32.gen_wall_ms > 0:
+                dispatch_speedup = r32.gen_wall_ms / fg32 if fg32 > 0 else 0
+                print(f"  {'fused vs dispatch (f32)':<25} {'':>12} {'':>12} {dispatch_speedup:>11.1f}x")
 
 
 # ── Profiling ─────────────────────────────────────────────────────────────────
@@ -522,18 +568,24 @@ def profile_config(
 
         # Execution timing
         if execute and not result.error:
-            print(f"  [executing] {execute_reps} reps eval + {execute_reps} full generations ...")
-            result.eval_wall_ms, result.eval_gflops, result.gen_wall_ms = (
+            print(f"  [executing] {execute_reps} reps eval + {execute_reps} full generations + fused loop ...")
+            (result.eval_wall_ms, result.eval_gflops, result.gen_wall_ms,
+             result.fused_loop_ms, result.fused_per_gen_ms, result.fused_n_gens) = (
                 time_execution(
                     compiled, eval_fn, sample_pop, flat_x0,
                     cma_params, lam, n_flat,
                     result.flops, reps=execute_reps,
                 )
             )
-            print(f"  [eval] {result.eval_wall_ms:.1f} ms/call, "
+            print(f"  [eval]  {result.eval_wall_ms:.1f} ms/call, "
                   f"{result.eval_gflops:.2f} GFLOP/s")
-            print(f"  [gen]  {result.gen_wall_ms:.1f} ms/gen "
+            print(f"  [gen]   {result.gen_wall_ms:.1f} ms/gen "
                   f"(ask + eval + tell, pop={lam})")
+            print(f"  [fused] {result.fused_per_gen_ms:.1f} ms/gen "
+                  f"({result.fused_loop_ms:.0f} ms / {result.fused_n_gens} gens)")
+            if result.gen_wall_ms > 0 and result.fused_per_gen_ms > 0:
+                speedup = result.gen_wall_ms / result.fused_per_gen_ms
+                print(f"  [fused] {speedup:.1f}x speedup vs Python dispatch")
 
     except Exception as e:
         result.error = str(e)[:300]
@@ -571,7 +623,7 @@ def main():
                         help="Save results to JSON file")
     args = parser.parse_args()
 
-    w = 82 + (32 if args.execute else 0)
+    w = 82 + (42 if args.execute else 0)
     print(f"{'=' * w}")
     print(f"  CMA-ES Dtype Comparison — XLA Memory Analysis"
           + (" + Execution Timing" if args.execute else ""))
@@ -700,6 +752,9 @@ def main():
                 d["eval_wall_ms"] = r.eval_wall_ms
                 d["eval_gflops"] = r.eval_gflops
                 d["gen_wall_ms"] = r.gen_wall_ms
+                d["fused_loop_ms"] = r.fused_loop_ms
+                d["fused_per_gen_ms"] = r.fused_per_gen_ms
+                d["fused_n_gens"] = r.fused_n_gens
             out.append(d)
         with open(args.json, "w") as f:
             json.dump(out, f, indent=2)
