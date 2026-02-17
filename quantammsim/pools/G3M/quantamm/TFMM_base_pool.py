@@ -2,20 +2,11 @@
 from jax import config
 
 from jax import default_backend
-from jax import local_device_count, devices
 
 DEFAULT_BACKEND = default_backend()
-CPU_DEVICE = devices("cpu")[0]
-if DEFAULT_BACKEND != "cpu":
-    GPU_DEVICE = devices("gpu")[0]
-    config.update("jax_platform_name", "gpu")
-else:
-    GPU_DEVICE = devices("cpu")[0]
-    config.update("jax_platform_name", "cpu")
 
 import jax.numpy as jnp
 from jax import jit, vmap
-from jax import devices, device_put
 from jax.lax import stop_gradient, dynamic_slice, scan, fori_loop
 from jax.tree_util import Partial
 
@@ -876,12 +867,9 @@ class TFMMBasePool(AbstractPool):
                 n_assets,
             ),
         )
-        rule_outputs_cpu = device_put(rule_outputs, CPU_DEVICE)
-        initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
-
         weights = self.calculate_fine_weights(
-            rule_outputs_cpu,
-            initial_weights_cpu,
+            rule_outputs,
+            initial_weights,
             run_fingerprint,
             params,
         )
@@ -1082,12 +1070,9 @@ class TFMMBasePool(AbstractPool):
                 n_assets,
             ),
         )
-        rule_outputs_cpu = device_put(rule_outputs, CPU_DEVICE)
-        initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
-
         weights = self.calculate_fine_weights(
-            rule_outputs_cpu,
-            initial_weights_cpu,
+            rule_outputs,
+            initial_weights,
             run_fingerprint,
             params,
         )
@@ -1155,12 +1140,9 @@ class TFMMBasePool(AbstractPool):
                 n_assets,
             ),
         )
-        rule_outputs_cpu = device_put(rule_outputs, CPU_DEVICE)
-        initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
-
         weights = self.calculate_fine_weights(
-            rule_outputs_cpu,
-            initial_weights_cpu,
+            rule_outputs,
+            initial_weights,
             run_fingerprint,
             params,
         )
@@ -1440,9 +1422,6 @@ class TFMMBasePool(AbstractPool):
         # so wrap them in a stop_grad
         if initial_weights is None:
             initial_weights = self.calculate_initial_weights(params)
-
-        rule_outputs_cpu = device_put(rule_outputs, CPU_DEVICE)
-        initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
 
         actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
             rule_outputs,

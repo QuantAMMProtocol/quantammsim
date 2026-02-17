@@ -31,22 +31,9 @@ from jax import config
 
 # config.update("jax_debug_nans", True)
 # config.update('jax_disable_jit', True)
-from jax import default_backend
-from jax import local_device_count, devices
-
-DEFAULT_BACKEND = default_backend()
-CPU_DEVICE = devices("cpu")[0]
-if DEFAULT_BACKEND != "cpu":
-    GPU_DEVICE = devices("gpu")[0]
-    config.update("jax_platform_name", "gpu")
-else:
-    GPU_DEVICE = devices("cpu")[0]
-    config.update("jax_platform_name", "cpu")
-
 
 import jax.numpy as jnp
 from jax import jit, vmap
-from jax import devices, device_put
 from jax.tree_util import Partial
 from jax.lax import scan, stop_gradient
 
@@ -455,7 +442,7 @@ def calc_fine_weight_output(
         min_weights_per_asset = jnp.zeros(n_assets)
         max_weights_per_asset = jnp.ones(n_assets)
 
-    actual_starts_cpu, scaled_diffs_cpu, target_weights_cpu = _jax_calc_coarse_weights(
+    actual_starts, scaled_diffs, target_weights = _jax_calc_coarse_weights(
         rule_outputs,
         initial_weights,
         minimum_weight,
@@ -472,12 +459,9 @@ def calc_fine_weight_output(
         use_per_asset_bounds,
     )
 
-    scaled_diffs_gpu = device_put(scaled_diffs_cpu, GPU_DEVICE)
-    actual_starts_gpu = device_put(actual_starts_cpu, GPU_DEVICE)
-
     weights = _jax_fine_weights_from_actual_starts_and_diffs(
-        actual_starts_gpu,
-        scaled_diffs_gpu,
+        actual_starts,
+        scaled_diffs,
         initial_weights,
         interpol_num=weight_interpolation_period + 1,
         num=chunk_period + 1,
