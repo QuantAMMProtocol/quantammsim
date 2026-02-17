@@ -40,13 +40,23 @@ class CMAESState(NamedTuple):
     invsqrt_C: jnp.ndarray     # (n, n) C^{-1/2}
 
 
-def default_params(n: int) -> dict:
+def default_params(n: int, lam: int = None) -> dict:
     """Return default CMA-ES hyper-parameters for problem dimension *n*.
 
     Population size λ = 4 + floor(3 · ln(n)), parent count μ = λ // 2.
     Weights, learning rates, and damping follow Hansen's defaults.
+
+    Parameters
+    ----------
+    n : int
+        Problem dimension.
+    lam : int, optional
+        Override population size. If None, uses Hansen's default.
+        All dependent quantities (μ, weights, learning rates, damping)
+        are recomputed from the given λ.
     """
-    lam = 4 + int(math.floor(3 * math.log(n)))
+    if lam is None:
+        lam = 4 + int(math.floor(3 * math.log(n)))
     mu = lam // 2
 
     # Recombination weights (log-linear, normalised)

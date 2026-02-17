@@ -2265,11 +2265,17 @@ def _train_on_historic_data_impl(
         flat_x0_template, unravel_fn = ravel_pytree(params_single)
         n_flat = flat_x0_template.shape[0]
 
-        # CMA-ES default params (may override population size)
-        cma_params = cma_default_params(n_flat)
+        # Determine population size: explicit > memory-budget auto > Hansen default
         if population_size_override is not None:
-            cma_params["lam"] = population_size_override
-            cma_params["mu"] = population_size_override // 2
+            cma_params = cma_default_params(n_flat, lam=population_size_override)
+        elif cma_settings.get("memory_budget") is not None:
+            from quantammsim.runners.jax_runner_utils import compute_cmaes_population_size
+            auto_lam = compute_cmaes_population_size(
+                cma_settings["memory_budget"], n_eval_points, n_flat, verbose=verbose,
+            )
+            cma_params = cma_default_params(n_flat, lam=auto_lam)
+        else:
+            cma_params = cma_default_params(n_flat)
 
         if verbose:
             print(f"[CMA-ES] {n_flat} flat parameters, "

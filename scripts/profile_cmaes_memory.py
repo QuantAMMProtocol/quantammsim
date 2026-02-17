@@ -262,12 +262,10 @@ def setup_cmaes_computation(fp, pop_size=None, root=None):
     flat_x0, unravel_fn = ravel_pytree(params_single)
     n_flat = flat_x0.shape[0]
 
-    # Determine population size
-    cma_params = cma_default_params(n_flat)
-    if pop_size is not None:
-        lam = pop_size
-    else:
-        lam = cma_params["lam"]
+    # Determine population size — pass lam to default_params so all dependent
+    # quantities (weights, mu_eff, learning rates, damping) are consistent.
+    cma_params = cma_default_params(n_flat, lam=pop_size)
+    lam = cma_params["lam"]
 
     return (
         batched_obj,

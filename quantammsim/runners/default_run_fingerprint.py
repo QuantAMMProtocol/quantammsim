@@ -224,6 +224,7 @@ run_fingerprint_defaults["optimisation_settings"]["bfgs_settings"] = bfgs_settin
 
 cma_es_settings = {
     "population_size": None,    # Auto: 4 + floor(3 * ln(n))
+    "memory_budget": None,      # Max concurrent forward passes (from probe); auto-sizes λ
     "n_generations": 300,
     "sigma0": 0.5,
     "tol": 1e-8,

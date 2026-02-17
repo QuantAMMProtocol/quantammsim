@@ -63,9 +63,10 @@ import os
 import json
 import argparse
 import numpy as np
+import jax
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from copy import deepcopy
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -256,6 +257,7 @@ def create_base_fingerprint() -> dict:
         "tol": 1e-8,
         "n_evaluation_points": 20,
         "population_size": None,  # Auto from dimension
+        "memory_budget": None,    # Auto-size λ from probe (None = use Hansen default)
         "compute_dtype": "float32",
     }
 
@@ -271,6 +273,68 @@ def create_base_fingerprint() -> dict:
     fp["return_val"] = "daily_log_sharpe"
 
     return fp
+
+
+# =============================================================================
+# GPU memory probe
+# =============================================================================
+
+def probe_cmaes_memory_budget(
+    base_fp: dict,
+    n_wfa_cycles: int = 4,
+    verbose: bool = True,
+) -> Optional[int]:
+    """Probe GPU memory to determine max concurrent forward passes for CMA-ES.
+
+    On GPU, binary-searches for the largest batch of forward passes that fits,
+    then stores the result as ``memory_budget`` so the runner auto-sizes λ
+    per trial (accounting for each trial's ``n_evaluation_points``).
+
+    The probe uses a single WFA cycle's training window (not the full period)
+    so the memory estimate matches what each trial actually sees.
+
+    On CPU, returns None (no OOM risk, no parallelism benefit from large λ).
+    """
+    if jax.default_backend() != "gpu":
+        if verbose:
+            print("[CMA-ES] CPU backend — skipping memory probe (using Hansen default λ)")
+        return None
+
+    from quantammsim.runners.jax_runner_utils import probe_max_n_parameter_sets
+    from quantammsim.runners.robust_walk_forward import generate_walk_forward_cycles
+
+    # Build a probe fingerprint with per-cycle window size.
+    # WFA splits [start, end] into n_cycles+1 equal segments; each cycle
+    # trains on one segment. Probing against the full window would
+    # overestimate memory by ~(n_cycles+1)x.
+    cycles = generate_walk_forward_cycles(
+        base_fp["startDateString"],
+        base_fp["endDateString"],
+        n_wfa_cycles,
+    )
+    # Use the first cycle as representative (all cycles are equal length)
+    cycle = cycles[0]
+    probe_fp = deepcopy(base_fp)
+    probe_fp["startDateString"] = cycle.train_start_date
+    probe_fp["endDateString"] = cycle.train_end_date
+    probe_fp["endTestDateString"] = cycle.test_end_date
+
+    if verbose:
+        print(f"[CMA-ES] Probing GPU memory for population auto-sizing...")
+        print(f"[CMA-ES] Probe window: {cycle.train_start_date} → {cycle.train_end_date} "
+              f"(1 of {n_wfa_cycles} WFA cycles)")
+
+    # CMA-ES has no gradient overhead → use max directly (no safety margin
+    # needed for the 2x grad multiplier that BFGS requires).
+    probe_result = probe_max_n_parameter_sets(
+        probe_fp, safety_margin=1.0, verbose=verbose,
+    )
+    budget = probe_result["max_n_parameter_sets"]
+
+    if verbose:
+        print(f"[CMA-ES] Memory budget: {budget} concurrent forward passes")
+
+    return budget
 
 
 # =============================================================================
@@ -298,6 +362,11 @@ def run_tuning(
 
     base_fp = create_base_fingerprint()
 
+    # Probe GPU memory once at startup — every trial auto-sizes λ from this.
+    memory_budget = probe_cmaes_memory_budget(base_fp, n_wfa_cycles=n_wfa_cycles, verbose=True)
+    if memory_budget is not None:
+        base_fp["optimisation_settings"]["cma_es_settings"]["memory_budget"] = memory_budget
+
     search_space = create_search_space(cycle_days=cycle_days)
 
     storage_path = STUDY_DIR / f"{STUDY_NAME}.db"
@@ -309,6 +378,10 @@ def run_tuning(
     print(f"Basket:     {TOKENS}")
     print(f"Strategy:   {RULE}")
     print(f"Inner opt:  CMA-ES (derivative-free, population-based)")
+    if memory_budget is not None:
+        print(f"GPU budget: {memory_budget} concurrent fwd passes (λ auto-sized per trial)")
+    else:
+        print(f"GPU budget: N/A (CPU — using Hansen default λ)")
     print(f"WFA period: {START_DATE} to {WFA_END_DATE}")
     print(f"Holdout:    {WFA_END_DATE} to {HOLDOUT_END_DATE}")
     print(f"Objective:  {objective}")

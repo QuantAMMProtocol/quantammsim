@@ -19,6 +19,7 @@ from quantammsim.training.cma_es import (
     should_stop,
     run_cmaes,
 )
+from quantammsim.runners.jax_runner_utils import compute_cmaes_population_size
 from quantammsim.runners.jax_runners import train_on_historic_data
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.core_simulator.param_utils import recursive_default_set, check_run_fingerprint
@@ -229,6 +230,79 @@ class TestCMAESAlgorithm:
             assert final.best_f < 1e-2  # convergence check
         finally:
             jax.config.update("jax_enable_x64", prev)
+
+
+# ============================================================================
+# GPU-aware Population Sizing Tests
+# ============================================================================
+
+
+class TestCMAESPopulationSizing:
+    """Tests for custom λ in default_params and compute_cmaes_population_size."""
+
+    def test_default_params_custom_lambda(self):
+        """default_params(10, lam=24) recomputes all dependent quantities."""
+        params = default_params(10, lam=24)
+        assert params["lam"] == 24
+        assert params["mu"] == 12
+        assert params["weights"].shape == (12,)
+        assert jnp.allclose(jnp.sum(params["weights"]), 1.0, atol=1e-6)
+        # Verify mu_eff is consistent with the new weights (not stale)
+        expected_mu_eff = 1.0 / jnp.sum(params["weights"] ** 2)
+        assert jnp.allclose(params["mu_eff"], expected_mu_eff, atol=1e-6)
+
+    def test_compute_cmaes_population_size_small_budget(self):
+        """Small budget: budget_max < hansen_default → clamp to hansen_default."""
+        # budget=40, n_eval=20 → budget_max=2; hansen(14)=4+floor(3*ln(14))=4+7=11
+        lam = compute_cmaes_population_size(
+            memory_budget=40, n_eval_points=20, n_flat=14,
+        )
+        assert lam == 11  # Hansen default wins
+
+    def test_compute_cmaes_population_size_large_budget(self):
+        """Large budget: budget_max between hansen_default and 10n → use budget_max."""
+        # budget=1000, n_eval=20 → budget_max=50; hansen(14)=11; cap=10*14=140
+        lam = compute_cmaes_population_size(
+            memory_budget=1000, n_eval_points=20, n_flat=14,
+        )
+        assert lam == 50
+
+    def test_compute_cmaes_population_size_huge_budget(self):
+        """Huge budget: fills VRAM (no artificial cap — GPU parallelism makes large λ free)."""
+        # budget=50000, n_eval=10 → budget_max=5000; hansen(14)=11
+        lam = compute_cmaes_population_size(
+            memory_budget=50000, n_eval_points=10, n_flat=14,
+        )
+        assert lam == 5000  # use full budget
+
+    def test_run_cmaes_with_custom_lambda(self):
+        """run_cmaes converges on sphere with custom λ=20."""
+        n = 5
+        params = default_params(n, lam=20)
+        assert params["lam"] == 20
+        assert params["mu"] == 10
+
+        key = jax.random.key(0)
+        x0 = jnp.ones(n) * 3.0
+        state = init_cmaes(x0, sigma=1.0)
+
+        def eval_fn(pop):
+            return jnp.sum(pop ** 2, axis=1)
+
+        final = run_cmaes(state, key, eval_fn, params, n_generations=300, tol=1e-12)
+        assert final.best_f < 1e-6, f"best_f={final.best_f:.2e}, expected < 1e-6"
+
+    def test_cma_es_config_defaults_include_memory_budget(self):
+        """memory_budget default is applied via recursive_default_set."""
+        fp = {
+            "optimisation_settings": {
+                "method": "cma_es",
+            }
+        }
+        recursive_default_set(fp, run_fingerprint_defaults)
+        cma = fp["optimisation_settings"]["cma_es_settings"]
+        assert "memory_budget" in cma
+        assert cma["memory_budget"] is None
 
 
 # ============================================================================
