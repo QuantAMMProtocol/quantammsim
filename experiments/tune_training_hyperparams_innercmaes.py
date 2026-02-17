@@ -327,7 +327,7 @@ def probe_cmaes_memory_budget(
     # CMA-ES has no gradient overhead → use max directly (no safety margin
     # needed for the 2x grad multiplier that BFGS requires).
     probe_result = probe_max_n_parameter_sets(
-        probe_fp, max_sets=1024, safety_margin=1.0, verbose=verbose,
+        probe_fp, max_sets=4096, safety_margin=1.0, verbose=verbose,
     )
     budget = probe_result["max_n_parameter_sets"]
 
