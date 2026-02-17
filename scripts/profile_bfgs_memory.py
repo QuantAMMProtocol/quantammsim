@@ -4,34 +4,37 @@ BFGS dtype memory profiler.
 
 Uses XLA's compiled memory_analysis() to measure the actual temp memory
 XLA allocates for the BFGS computation in float32 vs float64.
-Deterministic and accurate — no runtime measurement noise, no nvidia-smi
-polling, no subprocess isolation needed.
+
+With --execute, also runs the compiled computation and measures wall-clock
+time, effective throughput (GFLOP/s), and speedup ratio.
 
 We compile two things:
   1. value_and_grad(neg_objective) — the inner BFGS step
   2. jit(vmap(solve_single)) — the full vmapped BFGS solve
 
 Usage:
-    # Quick comparison: float32 vs float64
+    # Quick comparison: float32 vs float64 (compile-time only)
     python scripts/profile_bfgs_memory.py
 
-    # Sweep n_parameter_sets
-    python scripts/profile_bfgs_memory.py --sweep
+    # With wall-clock execution timing
+    python scripts/profile_bfgs_memory.py --execute
 
-    # More eval points / longer window
-    python scripts/profile_bfgs_memory.py --n-eval 20 --months 12
+    # Sweep n_parameter_sets with execution timing
+    python scripts/profile_bfgs_memory.py --sweep --execute --max-sets 16
 
     # Save results
-    python scripts/profile_bfgs_memory.py --sweep --json results.json
+    python scripts/profile_bfgs_memory.py --sweep --execute --json results.json
 """
 from __future__ import annotations
 
 import sys
 import os
+import io
 import time
 import argparse
 import json
 import gc
+from contextlib import redirect_stdout
 from datetime import datetime
 from dataclasses import dataclass
 from typing import List, Optional
@@ -81,6 +84,10 @@ class MemoryResult:
     transcendentals: int = 0
     # Timing
     compile_time_s: float = 0.0
+    # Execution timing (--execute mode)
+    inner_wall_ms: float = 0.0       # median wall-clock per inner call
+    inner_gflops: float = 0.0        # effective GFLOP/s for inner call
+    solve_wall_s: float = 0.0        # wall-clock for full vmapped solve
     error: str = ""
 
     @property
@@ -250,7 +257,7 @@ def compile_bfgs(
 ) -> tuple:
     """
     Build and compile the BFGS computation.
-    Returns (compiled_solve, compiled_inner, compile_time_s).
+    Returns (compiled_solve, compiled_inner, all_flat_x0, compile_time_s).
     """
     batched_pts = batched_partial_training_step_factory(partial_training_step)
     batched_obj = batched_objective_factory(batched_pts)
@@ -310,7 +317,7 @@ def compile_bfgs(
 
     compile_time = time.perf_counter() - t0
 
-    return compiled_solve, compiled_inner, compile_time
+    return compiled_solve, compiled_inner, all_flat_x0, compile_time
 
 
 def extract_stats(compiled) -> dict:
@@ -338,25 +345,76 @@ def extract_stats(compiled) -> dict:
     return stats
 
 
+# ── Execution timing ──────────────────────────────────────────────────────
+
+def time_execution(compiled_inner, compiled_solve, all_flat_x0, inner_flops,
+                   reps=5):
+    """
+    Run the compiled computations and measure wall-clock time.
+    Returns (inner_wall_ms, inner_gflops, solve_wall_s).
+    """
+    x0_single = all_flat_x0[0]
+
+    # Warm up inner: first call may include transfer overhead
+    out = compiled_inner(x0_single)
+    jax.block_until_ready(out)
+
+    # Time inner value_and_grad over multiple reps
+    times = []
+    for _ in range(reps):
+        t0 = time.perf_counter()
+        out = compiled_inner(x0_single)
+        jax.block_until_ready(out)
+        times.append(time.perf_counter() - t0)
+    inner_wall_s = float(np.median(times))
+    inner_wall_ms = inner_wall_s * 1000
+    inner_gflops = (inner_flops / 1e9) / inner_wall_s if inner_wall_s > 0 else 0
+
+    # Time full vmapped solve (just once — it's expensive)
+    # Warm up
+    out = compiled_solve(all_flat_x0)
+    jax.block_until_ready(out)
+    # Timed run
+    t0 = time.perf_counter()
+    out = compiled_solve(all_flat_x0)
+    jax.block_until_ready(out)
+    solve_wall_s = time.perf_counter() - t0
+
+    return inner_wall_ms, inner_gflops, solve_wall_s
+
+
 # ── Display ───────────────────────────────────────────────────────────────────
 
-def print_header():
-    print(f"{'dtype':>7} {'n_sets':>6} {'n_eval':>6} "
-          f"{'temp_MB':>10} {'arg_MB':>10} "
-          f"{'GFLOP':>10} {'compile_s':>10} {'status':>8}")
-    print("-" * 76)
+def print_header(execute=False):
+    hdr = (f"{'dtype':>7} {'n_sets':>6} {'n_eval':>6} "
+           f"{'temp_MB':>10} {'arg_MB':>10} "
+           f"{'GFLOP':>10} {'compile_s':>10}")
+    if execute:
+        hdr += f" {'inner_ms':>10} {'GFLOP/s':>10} {'solve_s':>10}"
+    hdr += f" {'status':>8}"
+    print(hdr)
+    print("-" * (76 + (32 if execute else 0)))
 
 
-def print_row(r: MemoryResult):
+def print_row(r: MemoryResult, execute=False):
     if not r.error:
         gflop = r.flops / 1e9 if r.flops else 0
-        print(f"{r.compute_dtype:>7} {r.n_parameter_sets:>6} {r.n_eval_points:>6} "
-              f"{r.temp_mb:>10.1f} {r.argument_mb:>10.1f} "
-              f"{gflop:>10.2f} {r.compile_time_s:>10.1f} {'OK':>8}")
+        row = (f"{r.compute_dtype:>7} {r.n_parameter_sets:>6} {r.n_eval_points:>6} "
+               f"{r.temp_mb:>10.1f} {r.argument_mb:>10.1f} "
+               f"{gflop:>10.2f} {r.compile_time_s:>10.1f}")
+        if execute:
+            row += (f" {r.inner_wall_ms:>10.1f} {r.inner_gflops:>10.2f}"
+                    f" {r.solve_wall_s:>10.2f}")
+        row += f" {'OK':>8}"
+        print(row)
     else:
-        print(f"{r.compute_dtype:>7} {r.n_parameter_sets:>6} {r.n_eval_points:>6} "
-              f"{'':>10} {'':>10} "
-              f"{'':>10} {r.compile_time_s:>10.1f} {'ERR':>8}")
+        row = (f"{r.compute_dtype:>7} {r.n_parameter_sets:>6} {r.n_eval_points:>6} "
+               f"{'':>10} {'':>10} "
+               f"{'':>10} {r.compile_time_s:>10.1f}")
+        if execute:
+            row += f" {'':>10} {'':>10} {'':>10}"
+        row += f" {'ERR':>8}"
+        print(row)
         print(f"  error: {r.error}")
 
 
@@ -394,6 +452,19 @@ def print_comparison(results: List[MemoryResult]):
     c64, c32 = r64.compile_time_s, r32.compile_time_s
     print(f"  {'compile time (s)':<25} {c64:>12.1f} {c32:>12.1f}")
 
+    # Execution timing (if available)
+    if r64.inner_wall_ms > 0 and r32.inner_wall_ms > 0:
+        print()
+        w64, w32 = r64.inner_wall_ms, r32.inner_wall_ms
+        speedup = w64 / w32 if w32 > 0 else 0
+        print(f"  {'inner wall-clock (ms)':<25} {w64:>12.1f} {w32:>12.1f} {speedup:>11.1f}x")
+        g64, g32 = r64.inner_gflops, r32.inner_gflops
+        print(f"  {'inner throughput (GFLOP/s)':<25} {g64:>12.2f} {g32:>12.2f}")
+        if r64.solve_wall_s > 0 and r32.solve_wall_s > 0:
+            s64, s32 = r64.solve_wall_s, r32.solve_wall_s
+            speedup_s = s64 / s32 if s32 > 0 else 0
+            print(f"  {'full solve (s)':<25} {s64:>12.2f} {s32:>12.2f} {speedup_s:>11.1f}x")
+
 
 # ── Profiling ─────────────────────────────────────────────────────────────────
 
@@ -405,6 +476,8 @@ def profile_config(
     months: int,
     fees: float,
     root: Optional[str],
+    execute: bool = False,
+    execute_reps: int = 5,
 ) -> MemoryResult:
     """Profile a single configuration. Returns MemoryResult."""
     result = MemoryResult(
@@ -418,7 +491,9 @@ def profile_config(
             n_parameter_sets, n_eval_points, compute_dtype,
             maxiter, months, fees,
         )
-        setup = setup_bfgs_computation(fp, root=root)
+        # Suppress data-loading prints (start_date/end_date/unix_values)
+        with redirect_stdout(io.StringIO()):
+            setup = setup_bfgs_computation(fp, root=root)
 
         (partial_training_step, params, fixed_start_indexes,
          n_sets, max_it, tol) = setup
@@ -427,7 +502,7 @@ def profile_config(
         clear_caches()
         gc.collect()
 
-        compiled_solve, compiled_inner, compile_time = compile_bfgs(
+        compiled_solve, compiled_inner, all_flat_x0, compile_time = compile_bfgs(
             partial_training_step, params, fixed_start_indexes,
             n_sets, max_it, tol,
         )
@@ -448,9 +523,24 @@ def profile_config(
         # Also print inner (value_and_grad) stats for reference
         inner_stats = extract_stats(compiled_inner)
         inner_temp_mb = inner_stats.get("temp_bytes", 0) / (1024 * 1024)
-        inner_flops = inner_stats.get("flops", 0) / 1e9
+        inner_flops_count = inner_stats.get("flops", 0)
+        inner_gflop = inner_flops_count / 1e9
         print(f"  [inner value_and_grad] temp={inner_temp_mb:.1f} MB, "
-              f"flops={inner_flops:.2f} GFLOP  ({compute_dtype})")
+              f"flops={inner_gflop:.2f} GFLOP  ({compute_dtype})")
+
+        # Execution timing
+        if execute and not result.error:
+            print(f"  [executing] {execute_reps} reps inner + 1 full solve ...")
+            result.inner_wall_ms, result.inner_gflops, result.solve_wall_s = (
+                time_execution(
+                    compiled_inner, compiled_solve, all_flat_x0,
+                    inner_flops_count, reps=execute_reps,
+                )
+            )
+            print(f"  [inner] {result.inner_wall_ms:.1f} ms/call, "
+                  f"{result.inner_gflops:.2f} GFLOP/s")
+            print(f"  [solve] {result.solve_wall_s:.2f} s "
+                  f"({n_sets} sets × {max_it} maxiter)")
 
     except Exception as e:
         result.error = str(e)[:300]
@@ -480,31 +570,39 @@ def main():
                         help="Training window in months (default: 12)")
     parser.add_argument("--fees", type=float, default=0.0,
                         help="Pool fees (0.0 = analytical, >0 = scan reserves)")
+    parser.add_argument("--execute", action="store_true",
+                        help="Actually run the compiled computation and measure wall-clock time")
+    parser.add_argument("--execute-reps", type=int, default=5,
+                        help="Number of inner value_and_grad reps for timing (default: 5)")
     parser.add_argument("--root", type=str, default=None)
     parser.add_argument("--json", type=str, default=None,
                         help="Save results to JSON file")
     args = parser.parse_args()
 
-    print(f"{'=' * 76}")
-    print(f"  BFGS Dtype Comparison — XLA Memory Analysis")
-    print(f"{'=' * 76}")
+    w = 76 + (32 if args.execute else 0)
+    print(f"{'=' * w}")
+    print(f"  BFGS Dtype Comparison — XLA Memory Analysis"
+          + (" + Execution Timing" if args.execute else ""))
+    print(f"{'=' * w}")
     print(f"  JAX:        {jax.__version__}")
     print(f"  Backend:    {jax.default_backend()}")
     print(f"  Method:     compiled.memory_analysis() — XLA's planned allocation")
+    if args.execute:
+        print(f"  Execution:  wall-clock timing with block_until_ready ({args.execute_reps} reps)")
     print(f"  n_eval:     {args.n_eval}")
     print(f"  maxiter:    {args.maxiter}")
     print(f"  months:     {args.months}")
     print(f"  fees:       {args.fees}")
     if args.root:
         print(f"  data root:  {args.root}")
-    print(f"{'=' * 76}")
+    print(f"{'=' * w}")
 
     results = []
 
     if args.sweep:
         for dtype in ["float64", "float32"]:
             print(f"\n--- Sweep: {dtype} ---")
-            print_header()
+            print_header(execute=args.execute)
 
             n = args.min_sets
             while n <= args.max_sets:
@@ -516,9 +614,11 @@ def main():
                     months=args.months,
                     fees=args.fees,
                     root=args.root,
+                    execute=args.execute,
+                    execute_reps=args.execute_reps,
                 )
                 results.append(r)
-                print_row(r)
+                print_row(r, execute=args.execute)
 
                 if r.error:
                     break
@@ -526,29 +626,41 @@ def main():
                 n *= 2
 
         # Summary: compare matching rows
-        print(f"\n{'=' * 76}")
+        print(f"\n{'=' * w}")
         print(f"  SWEEP COMPARISON")
-        print(f"{'=' * 76}")
+        print(f"{'=' * w}")
         f64_results = {r.n_parameter_sets: r for r in results
                        if r.compute_dtype == "float64" and not r.error}
         f32_results = {r.n_parameter_sets: r for r in results
                        if r.compute_dtype == "float32" and not r.error}
         common = sorted(set(f64_results) & set(f32_results))
         if common:
-            print(f"\n  {'n_sets':>6} {'temp_f64_MB':>12} {'temp_f32_MB':>12} "
-                  f"{'reduction':>10} {'flop_ratio':>10}")
-            print(f"  {'-'*56}")
+            hdr = (f"  {'n_sets':>6} {'temp_f64_MB':>12} {'temp_f32_MB':>12} "
+                   f"{'mem_reduce':>10} {'flop_ratio':>10}")
+            if args.execute:
+                hdr += f" {'inner_f64':>10} {'inner_f32':>10} {'speedup':>10}"
+                hdr += f" {'solve_f64':>10} {'solve_f32':>10} {'speedup':>10}"
+            print(f"\n{hdr}")
+            print(f"  {'-'*(len(hdr) - 2)}")
             for n in common:
                 r64, r32 = f64_results[n], f32_results[n]
                 t64, t32 = r64.temp_mb, r32.temp_mb
                 pct = (1 - t32 / t64) * 100 if t64 > 0 else 0
                 flop_r = r32.flops / r64.flops if r64.flops > 0 else 0
-                print(f"  {n:>6} {t64:>12.1f} {t32:>12.1f} "
-                      f"{pct:>+9.1f}% {flop_r:>10.2f}x")
+                row = (f"  {n:>6} {t64:>12.1f} {t32:>12.1f} "
+                       f"{pct:>+9.1f}% {flop_r:>10.2f}x")
+                if args.execute:
+                    w64, w32 = r64.inner_wall_ms, r32.inner_wall_ms
+                    inner_su = w64 / w32 if w32 > 0 else 0
+                    row += f" {w64:>9.1f}ms {w32:>9.1f}ms {inner_su:>9.1f}x"
+                    s64, s32 = r64.solve_wall_s, r32.solve_wall_s
+                    solve_su = s64 / s32 if s32 > 0 else 0
+                    row += f" {s64:>9.2f}s {s32:>9.2f}s {solve_su:>9.1f}x"
+                print(row)
 
     else:
         print(f"\n--- Comparison at n_parameter_sets={args.n_sets} ---")
-        print_header()
+        print_header(execute=args.execute)
 
         for dtype in ["float64", "float32"]:
             r = profile_config(
@@ -559,16 +671,18 @@ def main():
                 months=args.months,
                 fees=args.fees,
                 root=args.root,
+                execute=args.execute,
+                execute_reps=args.execute_reps,
             )
             results.append(r)
-            print_row(r)
+            print_row(r, execute=args.execute)
 
         print_comparison(results)
 
     if args.json:
         out = []
         for r in results:
-            out.append({
+            d = {
                 "n_parameter_sets": r.n_parameter_sets,
                 "n_eval_points": r.n_eval_points,
                 "compute_dtype": r.compute_dtype,
@@ -581,7 +695,12 @@ def main():
                 "transcendentals": r.transcendentals,
                 "compile_time_s": r.compile_time_s,
                 "error": r.error,
-            })
+            }
+            if args.execute:
+                d["inner_wall_ms"] = r.inner_wall_ms
+                d["inner_gflops"] = r.inner_gflops
+                d["solve_wall_s"] = r.solve_wall_s
+            out.append(d)
         with open(args.json, "w") as f:
             json.dump(out, f, indent=2)
         print(f"\nResults saved to {args.json}")
