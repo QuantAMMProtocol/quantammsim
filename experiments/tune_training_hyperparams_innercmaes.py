@@ -369,7 +369,13 @@ def probe_cmaes_memory_budget(
             low = mid + 1
         except Exception as e:
             error_str = str(e).lower()
-            if "resource" in error_str or "memory" in error_str or "oom" in error_str:
+            is_oom = (
+                "resource" in error_str
+                or "memory" in error_str
+                or "oom" in error_str
+                or "allocat" in error_str  # cuFFT scratch allocator failures
+            )
+            if is_oom:
                 if verbose:
                     print("OOM")
                 high = mid - 1
