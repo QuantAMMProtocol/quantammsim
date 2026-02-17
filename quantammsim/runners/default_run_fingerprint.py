@@ -221,3 +221,14 @@ bfgs_settings = {
 }
 
 run_fingerprint_defaults["optimisation_settings"]["bfgs_settings"] = bfgs_settings
+
+cma_es_settings = {
+    "population_size": None,    # Auto: 4 + floor(3 * ln(n))
+    "n_generations": 300,
+    "sigma0": 0.5,
+    "tol": 1e-8,
+    "n_evaluation_points": 20,
+    "compute_dtype": "float32",
+}
+
+run_fingerprint_defaults["optimisation_settings"]["cma_es_settings"] = cma_es_settings

@@ -473,7 +473,7 @@ def calc_fine_weight_output(
     else:
         return jnp.vstack(
             [
-                jnp.ones((chunk_period, n_assets), dtype=jnp.float64) * initial_weights,
+                jnp.ones((chunk_period, n_assets), dtype=initial_weights.dtype) * initial_weights,
                 weights,
             ]
         )
@@ -894,5 +894,10 @@ def _jax_calc_coarse_weight_scan_function(
 
     # Calculate actual position reached after applying both constraints
     actual_position = prev_actual_position + scaled_diff * (interpol_num - 1)
+
+    # Cast carry back to input dtype to prevent float64 promotion from Python
+    # literals (1.0, 0.0) and int64 intermediates breaking lax.scan dtype matching.
+    _dtype = prev_actual_position.dtype
+    actual_position = actual_position.astype(_dtype)
 
     return [actual_position], (prev_actual_position, scaled_diff, target_weights)

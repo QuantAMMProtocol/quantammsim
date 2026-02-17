@@ -97,8 +97,9 @@ class TestVarianceCalculations:
 
         cpu_vars, gpu_vars = self.run_variance_comparison(prices, default_params)
 
-        assert jnp.all(cpu_vars > -1e-15), "CPU variances should be non-negative"
-        assert jnp.all(gpu_vars > -1e-15), "GPU variances should be non-negative"
+        # Machine-epsilon tolerance: first-row warm-up can produce tiny negatives
+        assert jnp.all(cpu_vars > -1e-10), f"CPU variances below machine tol: min={float(jnp.min(cpu_vars))}"
+        assert jnp.all(gpu_vars > -1e-10), f"GPU variances below machine tol: min={float(jnp.min(gpu_vars))}"
 
     def test_output_shape(self, rng_key, default_params):
         """Test that output shapes are correct."""

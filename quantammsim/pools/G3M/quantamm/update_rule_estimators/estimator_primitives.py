@@ -346,7 +346,7 @@ def _jax_variance_at_infinity_via_conv_1D(arr_in, ewma, kernel, lamb):
     full_n = outer.shape[0] + kernel.shape[0] - 1
     a = _fft_convolve_1d(outer, kernel, full_n)
     cov = a[: outer.shape[0]] * (1 - lamb)
-    return jnp.concatenate([jnp.zeros(1, dtype=jnp.float64), cov], axis=0)
+    return jnp.concatenate([jnp.zeros(1, dtype=arr_in.dtype), cov], axis=0)
 
 
 conv_intermediate = vmap(
@@ -365,7 +365,7 @@ def _jax_covariance_at_infinity_via_conv(arr_in, ewma, kernel, lamb):
     outer = jnp.einsum("...i,...j->...ij", diff_old, diff_new)
     a = conv_vmap(outer, kernel)
     cov = a[: outer.shape[0]] * (1 - lamb)
-    return jnp.concatenate([jnp.zeros((1, n, n), dtype=jnp.float64), cov], axis=0)
+    return jnp.concatenate([jnp.zeros((1, n, n), dtype=arr_in.dtype), cov], axis=0)
 
 
 # _jax_covariance_at_infinity_via_conv = vmap(
@@ -467,13 +467,14 @@ def _jax_gradients_at_infinity_via_scan(arr_in, lamb, carry_list_init=None):
     scan_fn = Partial(
         _jax_gradient_scan_function, G_inf=G_inf, lamb=lamb, saturated_b=saturated_b
     )
+    _dtype = arr_in.dtype
     if carry_list_init is None:
         # Initialize to steady-state for constant input arr_in[0]:
         # - EWMA steady state = arr_in[0] (EWMA of constant is that constant)
         # - running_a steady state = 0 (for constant input, running_a converges to 0)
-        carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=jnp.float64)]
+        carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=_dtype)]
     carry_list_end, gradients = scan(scan_fn, carry_list_init, arr_in[1:])
-    gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=jnp.float64), gradients])
+    gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=_dtype), gradients])
 
     return gradients
 
@@ -511,10 +512,11 @@ def _jax_gradients_at_infinity_via_scan_with_readout(arr_in, lamb):
         saturated_b=saturated_b,
     )
 
-    carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=jnp.float64)]
+    _dtype = arr_in.dtype
+    carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=_dtype)]
     carry_list_end, output_list = scan(scan_fn, carry_list_init, arr_in[1:])
 
-    gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=jnp.float64), output_list[0]])
+    gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=_dtype), output_list[0]])
     ewma = output_list[1]
     running_a = output_list[2]
     return {
@@ -558,10 +560,11 @@ def _jax_gradients_at_infinity_via_scan_with_alt_ewma(arr_in, lamb, alt_lamb):
     )
 
     # Initialize to steady-state: both EWMAs = arr_in[0], running_a = 0
-    carry_list_init = [arr_in[0], arr_in[0], jnp.zeros((n_grads,), dtype=jnp.float64)]
+    _dtype = arr_in.dtype
+    carry_list_init = [arr_in[0], arr_in[0], jnp.zeros((n_grads,), dtype=_dtype)]
     carry_list_end, gradients = scan(scan_fn, carry_list_init, arr_in[1:])
 
-    gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=jnp.float64), gradients])
+    gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=_dtype), gradients])
 
     return gradients
 
@@ -594,11 +597,12 @@ def _jax_gradients_at_infinity_via_scan_alt1(arr_in, lamb):
     )
 
     # Initialize to steady-state: EWMA = arr_in[0], running_a = 0
-    carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=jnp.float64)]
+    _dtype = arr_in.dtype
+    carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=_dtype)]
 
     gradients = jnp.vstack(
         [
-            jnp.zeros((n_grads,), dtype=jnp.float64),
+            jnp.zeros((n_grads,), dtype=_dtype),
             scan(scan_fn, carry_list_init, arr_in[1:])[1],
         ]
     )
@@ -633,9 +637,10 @@ def _jax_gradients_at_infinity_via_scan_alt2(arr_in, lamb):
         _jax_gradient_scan_function, G_inf=G_inf, lamb=lamb, saturated_b=saturated_b
     )
 
-    carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=jnp.float64)]
+    _dtype = arr_in.dtype
+    carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=_dtype)]
 
-    gradients = jnp.zeros((n, n_grads), dtype=jnp.float64)
+    gradients = jnp.zeros((n, n_grads), dtype=_dtype)
     gradients = gradients.at[1:].set(scan(scan_fn, carry_list_init, arr_in[1:])[1])
 
     return gradients
@@ -738,10 +743,11 @@ def _jax_variance_at_infinity_via_scan(arr_in, lamb):
     scan_fn = Partial(_jax_variance_scan_function, G_inf=G_inf, lamb=lamb)
 
     # Initialize with first value
-    carry_list_init = [arr_in[0], jnp.zeros((n_features,), dtype=jnp.float64)]
+    _dtype = arr_in.dtype
+    carry_list_init = [arr_in[0], jnp.zeros((n_features,), dtype=_dtype)]
 
     # Run scan and prepend ones for first timestep
     _, variances = scan(scan_fn, carry_list_init, arr_in[1:])
-    variances = jnp.vstack([jnp.ones((1, n_features), dtype=jnp.float64), variances])
+    variances = jnp.vstack([jnp.ones((1, n_features), dtype=_dtype), variances])
 
     return variances

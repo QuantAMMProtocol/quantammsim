@@ -666,6 +666,23 @@ def create_objective(
                 if "bfgs_settings" not in fp["optimisation_settings"]:
                     fp["optimisation_settings"]["bfgs_settings"] = {}
                 fp["optimisation_settings"]["bfgs_settings"]["tol"] = float(value)
+            # Inner CMA-ES settings (for method="cma_es")
+            elif key == "cma_es_n_generations":
+                if "cma_es_settings" not in fp["optimisation_settings"]:
+                    fp["optimisation_settings"]["cma_es_settings"] = {}
+                fp["optimisation_settings"]["cma_es_settings"]["n_generations"] = int(value)
+            elif key == "cma_es_n_evaluation_points":
+                if "cma_es_settings" not in fp["optimisation_settings"]:
+                    fp["optimisation_settings"]["cma_es_settings"] = {}
+                fp["optimisation_settings"]["cma_es_settings"]["n_evaluation_points"] = int(value)
+            elif key == "cma_es_sigma0":
+                if "cma_es_settings" not in fp["optimisation_settings"]:
+                    fp["optimisation_settings"]["cma_es_settings"] = {}
+                fp["optimisation_settings"]["cma_es_settings"]["sigma0"] = float(value)
+            elif key == "cma_es_population_size":
+                if "cma_es_settings" not in fp["optimisation_settings"]:
+                    fp["optimisation_settings"]["cma_es_settings"] = {}
+                fp["optimisation_settings"]["cma_es_settings"]["population_size"] = int(value)
             # Skip control params that aren't real hyperparams (handled above)
             elif key in ["use_weight_decay", "weight_decay", "use_early_stopping",
                          "val_fraction", "training_objective"]:
