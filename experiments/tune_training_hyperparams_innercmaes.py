@@ -283,21 +283,30 @@ def probe_cmaes_memory_budget(
     base_fp: dict,
     n_wfa_cycles: int = 4,
     max_lam: int = 1024,
+    probe_n_eval: int = None,
     verbose: bool = True,
 ) -> Optional[int]:
-    """Probe GPU memory by running actual CMA-ES (2 generations).
+    """Probe GPU memory by running actual CMA-ES (1 generation).
 
     Binary-searches for the largest population size (λ) that fits in GPU
     memory, using the real CMA-ES codepath (``train_on_historic_data`` with
-    ``n_generations=2``).  This captures the true memory footprint of the
+    ``n_generations=1``).  This captures the true memory footprint of the
     fused ``lax.while_loop`` — nested vmap, carry state, XLA constant-folding
     — without safety-margin guesswork.
 
     Price data is loaded once and reused across all binary-search steps.
 
-    Returns ``memory_budget = max_λ × n_eval_points``, which the runner's
+    Returns ``memory_budget = max_λ × probe_n_eval``, which the runner's
     ``compute_cmaes_population_size()`` divides by each trial's
     ``n_eval_points`` to adapt λ per trial.
+
+    Parameters
+    ----------
+    probe_n_eval : int, optional
+        ``n_evaluation_points`` for the probe.  Should be the **maximum**
+        from the search space so that the XLA program tested has the most
+        constant-folded price data any trial could produce.  If None, uses
+        the base fingerprint's value (which may be too optimistic).
 
     On CPU, returns None (no OOM risk, no parallelism benefit from large λ).
     """
@@ -320,17 +329,20 @@ def probe_cmaes_memory_budget(
     )
     cycle = cycles[0]
 
-    # Build probe fingerprint: minimal CMA-ES run (1 generation, 1 restart,
-    # no validation) — just enough to exercise the fused while_loop.
-    # lax.while_loop allocates body memory statically at compile time,
-    # so 1 generation has the same footprint as 300.
+    # Build probe fingerprint for worst-case memory: 1 generation, 1 restart,
+    # no validation (longest training window), zero bout_offset (longest
+    # forward pass per eval point), and max n_eval_points (most constant-
+    # folded price slices in the XLA program).
     probe_fp = deepcopy(base_fp)
     probe_fp["startDateString"] = cycle.train_start_date
     probe_fp["endDateString"] = cycle.train_end_date
     probe_fp["endTestDateString"] = cycle.test_end_date
     probe_fp["optimisation_settings"]["n_parameter_sets"] = 1
     probe_fp["optimisation_settings"]["val_fraction"] = 0.0
+    probe_fp["bout_offset"] = 0  # longest possible forward-pass window
     probe_fp["optimisation_settings"]["cma_es_settings"]["n_generations"] = 1
+    if probe_n_eval is not None:
+        probe_fp["optimisation_settings"]["cma_es_settings"]["n_evaluation_points"] = probe_n_eval
 
     n_eval = probe_fp["optimisation_settings"]["cma_es_settings"]["n_evaluation_points"]
 
@@ -338,7 +350,7 @@ def probe_cmaes_memory_budget(
         print(f"[CMA-ES] Probing GPU memory for population auto-sizing...")
         print(f"[CMA-ES] Probe window: {cycle.train_start_date} → {cycle.train_end_date} "
               f"(1 of {n_wfa_cycles} WFA cycles)")
-        print(f"[CMA-ES] Probe n_eval_points: {n_eval}, max_lam: {max_lam}")
+        print(f"[CMA-ES] Probe n_eval_points: {n_eval} (worst-case), max_lam: {max_lam}")
 
     # Load price data once — get_data_dict slices per fingerprint dates.
     tokens = get_unique_tokens(probe_fp)
@@ -426,11 +438,15 @@ def run_tuning(
     base_fp = create_base_fingerprint()
 
     # Probe GPU memory once at startup — every trial auto-sizes λ from this.
-    memory_budget = probe_cmaes_memory_budget(base_fp, n_wfa_cycles=n_wfa_cycles, verbose=True)
+    # Probe at the worst-case n_eval from the search space so the XLA program
+    # tested has the most constant-folded price data any trial could produce.
+    search_space = create_search_space(cycle_days=cycle_days)
+    max_n_eval = search_space.params["cma_es_n_evaluation_points"]["high"]
+    memory_budget = probe_cmaes_memory_budget(
+        base_fp, n_wfa_cycles=n_wfa_cycles, probe_n_eval=max_n_eval, verbose=True,
+    )
     if memory_budget is not None:
         base_fp["optimisation_settings"]["cma_es_settings"]["memory_budget"] = memory_budget
-
-    search_space = create_search_space(cycle_days=cycle_days)
 
     storage_path = STUDY_DIR / f"{STUDY_NAME}.db"
     storage = f"sqlite:///{storage_path}"
