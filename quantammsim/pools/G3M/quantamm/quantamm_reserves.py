@@ -83,13 +83,14 @@ _jax_calc_quantAMM_reserve_ratios = jit(
 
 
 @jit
-def _calc_protocol_fee_amount_from_trade(
+def _calc_lp_fee_amount_with_protocol_take_from_trade(
     overall_trade: jnp.ndarray, gamma: jnp.ndarray, protocol_fee_split: float
 ) -> jnp.ndarray:
     """Compute protocol fee amount (in reserve units) from a trade reserve delta."""
     inbound_trade = jnp.where(overall_trade > 0.0, overall_trade, 0.0)
     fee_rate = 1.0 - gamma
-    return inbound_trade * fee_rate * protocol_fee_split
+    lp_split = 1.0 - protocol_fee_split
+    return inbound_trade * fee_rate * lp_split
 
 
 @jit
@@ -369,7 +370,7 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     # if arb trade IS profitable
     # then reserves is equal to post_price_reserves, otherwise equal to prev_reserves
     do_price_arb_trade = arb_profitable
-    price_protocol_fee = _calc_protocol_fee_amount_from_trade(
+    price_protocol_fee = _calc_lp_fee_amount_with_protocol_take_from_trade(
         optimal_arb_trade, gamma, protocol_fee_split
     )
     price_protocol_fee = jnp.where(
@@ -437,7 +438,7 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     # if arb trade IS profitable
     # then reserves is equal to post_weight_reserves, otherwise equal to the prior reserves
     do_weight_arb_trade = arb_profitable
-    weight_protocol_fee = _calc_protocol_fee_amount_from_trade(
+    weight_protocol_fee = _calc_lp_fee_amount_with_protocol_take_from_trade(
         optimal_arb_trade, gamma, protocol_fee_split
     )
     weight_protocol_fee = jnp.where(
@@ -640,7 +641,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     # if arb trade IS profitable AND outside_no_arb_region IS true
     # then reserves is equal to post_price_reserves, otherwise equal to prev_reserves
     do_price_arb_trade = arb_profitable * do_arb
-    price_protocol_fee = _calc_protocol_fee_amount_from_trade(
+    price_protocol_fee = _calc_lp_fee_amount_with_protocol_take_from_trade(
         optimal_arb_trade, gamma, protocol_fee_split
     )
     price_protocol_fee = jnp.where(
@@ -652,7 +653,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     # apply trade if trade is present
     if do_trades:
         trade_delta = jitted_G3M_cond_trade(do_trades, reserves, weights, trade, gamma)
-        trade_protocol_fee = _calc_protocol_fee_amount_from_trade(
+        trade_protocol_fee = _calc_lp_fee_amount_with_protocol_take_from_trade(
             trade_delta, gamma, protocol_fee_split
         )
         reserves = reserves + trade_delta
@@ -733,7 +734,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     # if arb trade IS profitable AND outside_no_arb_region IS true
     # then reserves is equal to post_weight_reserves, otherwise equal to prev_reserves
     do_weight_arb_trade = arb_profitable * do_arb
-    weight_protocol_fee = _calc_protocol_fee_amount_from_trade(
+    weight_protocol_fee = _calc_lp_fee_amount_with_protocol_take_from_trade(
         optimal_arb_trade, gamma, protocol_fee_split
     )
     weight_protocol_fee = jnp.where(
