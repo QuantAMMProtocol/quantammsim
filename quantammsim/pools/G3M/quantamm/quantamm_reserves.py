@@ -83,6 +83,16 @@ _jax_calc_quantAMM_reserve_ratios = jit(
 
 
 @jit
+def _calc_protocol_fee_amount_from_trade(
+    overall_trade: jnp.ndarray, gamma: jnp.ndarray, protocol_fee_split: float
+) -> jnp.ndarray:
+    """Compute protocol fee amount (in reserve units) from a trade reserve delta."""
+    inbound_trade = jnp.where(overall_trade > 0.0, overall_trade, 0.0)
+    fee_rate = 1.0 - gamma
+    return inbound_trade * fee_rate * protocol_fee_split
+
+
+@jit
 def _jax_calc_quantAMM_reserves_with_fees_using_precalcs(
     initial_reserves,
     weights,
@@ -92,6 +102,7 @@ def _jax_calc_quantAMM_reserves_with_fees_using_precalcs(
     arb_fees=0.0,
     all_sig_variations=None,
     noise_trader_ratio=0.0,
+    protocol_fee_split=0.0,
 ):
     """
     Calculate AMM reserves considering fees and arbitrage opportunities using signature variations,
@@ -192,6 +203,7 @@ def _jax_calc_quantAMM_reserves_with_fees_using_precalcs(
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
         noise_trader_ratio=noise_trader_ratio,
+        protocol_fee_split=protocol_fee_split,
     )
 
     carry_list_init = [
@@ -235,6 +247,7 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     arb_thresh=0.0,
     arb_fees=0.0,
     noise_trader_ratio=0.0,
+    protocol_fee_split=0.0,
 ):
     """
     Calculate changes in AMM reserves considering fees and arbitrage opportunities using signature variations.
@@ -295,6 +308,7 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     lagged_all_other_assets_ratios = weights_and_prices_and_precalcs[7]
 
     fees_are_being_charged = gamma != 1.0
+    gamma_for_noise_trader_fees = 1.0 - (1.0 - gamma) * (1.0 - protocol_fee_split)
 
     current_value = (prev_reserves * prices).sum()
     quoted_prices = current_value * prev_weights / prev_reserves
@@ -332,7 +346,11 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     post_price_reserves = jnp.where(
         noise_trader_ratio > 0,
         calculate_reserves_after_noise_trade(
-            optimal_arb_trade, post_price_reserves, prices, noise_trader_ratio, gamma
+            optimal_arb_trade,
+            post_price_reserves,
+            prices,
+            noise_trader_ratio,
+            gamma_for_noise_trader_fees,
         ),
         post_price_reserves,
     )
@@ -351,7 +369,13 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     # if arb trade IS profitable
     # then reserves is equal to post_price_reserves, otherwise equal to prev_reserves
     do_price_arb_trade = arb_profitable
-
+    price_protocol_fee = _calc_protocol_fee_amount_from_trade(
+        optimal_arb_trade, gamma, protocol_fee_split
+    )
+    price_protocol_fee = jnp.where(
+        do_price_arb_trade, price_protocol_fee, jnp.zeros_like(price_protocol_fee)
+    )
+    post_price_reserves = post_price_reserves - price_protocol_fee
     reserves = jnp.where(do_price_arb_trade, post_price_reserves, prev_reserves)
 
     current_value = (reserves * prices).sum()
@@ -390,7 +414,11 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     post_weight_reserves = jnp.where(
         noise_trader_ratio > 0,
         calculate_reserves_after_noise_trade(
-            optimal_arb_trade, post_weight_reserves, prices, noise_trader_ratio, gamma
+            optimal_arb_trade,
+            post_weight_reserves,
+            prices,
+            noise_trader_ratio,
+            gamma_for_noise_trader_fees,
         ),
         post_weight_reserves,
     )
@@ -409,7 +437,13 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     # if arb trade IS profitable
     # then reserves is equal to post_weight_reserves, otherwise equal to the prior reserves
     do_weight_arb_trade = arb_profitable
-
+    weight_protocol_fee = _calc_protocol_fee_amount_from_trade(
+        optimal_arb_trade, gamma, protocol_fee_split
+    )
+    weight_protocol_fee = jnp.where(
+        do_weight_arb_trade, weight_protocol_fee, jnp.zeros_like(weight_protocol_fee)
+    )
+    post_weight_reserves = post_weight_reserves - weight_protocol_fee
     reserves = jnp.where(do_weight_arb_trade, post_weight_reserves, reserves)
     counter += 1
     return [
@@ -430,6 +464,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     n,
     do_trades,
     noise_trader_ratio=0.0,
+    protocol_fee_split=0.0,
 ):
     """
     Calculate changes in AMM reserves considering fees and arbitrage opportunities using signature variations.
@@ -521,6 +556,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     do_arb = input_list[12]
     lp_supply = input_list[13]
     fees_are_being_charged = gamma != 1.0
+    protocol_fee_amount_step = jnp.zeros_like(prev_reserves)
 
     # if there has been a change in lp supply, we need to update the reserves
     # by the ratio of the new lp supply to the old lp supply
@@ -581,7 +617,11 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     post_price_reserves = jnp.where(
         noise_trader_ratio > 0,
         calculate_reserves_after_noise_trade(
-            optimal_arb_trade, post_price_reserves, prices, noise_trader_ratio, gamma
+            optimal_arb_trade,
+            post_price_reserves,
+            prices,
+            noise_trader_ratio,
+            gamma,
         ),
         post_price_reserves,
     )
@@ -600,12 +640,24 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     # if arb trade IS profitable AND outside_no_arb_region IS true
     # then reserves is equal to post_price_reserves, otherwise equal to prev_reserves
     do_price_arb_trade = arb_profitable * do_arb
-
+    price_protocol_fee = _calc_protocol_fee_amount_from_trade(
+        optimal_arb_trade, gamma, protocol_fee_split
+    )
+    price_protocol_fee = jnp.where(
+        do_price_arb_trade, price_protocol_fee, jnp.zeros_like(price_protocol_fee)
+    )
+    protocol_fee_amount_step = protocol_fee_amount_step + price_protocol_fee
     reserves = jnp.where(do_price_arb_trade, post_price_reserves, prev_reserves)
 
     # apply trade if trade is present
     if do_trades:
-        reserves += jitted_G3M_cond_trade(do_trades, reserves, weights, trade, gamma)
+        trade_delta = jitted_G3M_cond_trade(do_trades, reserves, weights, trade, gamma)
+        trade_protocol_fee = _calc_protocol_fee_amount_from_trade(
+            trade_delta, gamma, protocol_fee_split
+        )
+        reserves = reserves + trade_delta
+        protocol_fee_amount_step = protocol_fee_amount_step + trade_protocol_fee
+
     current_value = (reserves * prices).sum()
     quoted_prices = current_value * weights / reserves
 
@@ -658,7 +710,11 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     post_weight_reserves = jnp.where(
         noise_trader_ratio > 0,
         calculate_reserves_after_noise_trade(
-            optimal_arb_trade, post_weight_reserves, prices, noise_trader_ratio, gamma
+            optimal_arb_trade,
+            post_weight_reserves,
+            prices,
+            noise_trader_ratio,
+            gamma,
         ),
         post_weight_reserves,
     )
@@ -677,8 +733,15 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     # if arb trade IS profitable AND outside_no_arb_region IS true
     # then reserves is equal to post_weight_reserves, otherwise equal to prev_reserves
     do_weight_arb_trade = arb_profitable * do_arb
-
+    weight_protocol_fee = _calc_protocol_fee_amount_from_trade(
+        optimal_arb_trade, gamma, protocol_fee_split
+    )
+    weight_protocol_fee = jnp.where(
+        do_weight_arb_trade, weight_protocol_fee, jnp.zeros_like(weight_protocol_fee)
+    )
+    protocol_fee_amount_step = protocol_fee_amount_step + weight_protocol_fee
     reserves = jnp.where(do_weight_arb_trade, post_weight_reserves, reserves)
+    reserves = reserves - protocol_fee_amount_step
     counter += 1
     return [
         weights,
@@ -703,6 +766,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
     do_arb=True,
     noise_trader_ratio=0.0,
     lp_supply_array=None,
+    protocol_fee_split=0.0,
 ):
     """
     Calculate AMM reserves considering fees and arbitrage opportunities using signature variations,
@@ -836,6 +900,7 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
         do_trades=do_trades,
         # do_arb=do_arb,
         noise_trader_ratio=noise_trader_ratio,
+        protocol_fee_split=protocol_fee_split,
     )
 
     carry_list_init = [

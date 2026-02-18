@@ -105,6 +105,8 @@ def check_run_fingerprint(run_fingerprint):
         run_fingerprint["weight_interpolation_period"]
         <= run_fingerprint["chunk_period"]
     )
+    protocol_fee_split = run_fingerprint.get("protocol_fee_split", 0.0)
+    assert 0.0 <= protocol_fee_split <= 1.0
 
 def default_set_or_get(dictionary, key, default, augment=True):
     """

@@ -171,6 +171,7 @@ class TFMMBasePool(AbstractPool):
                 arb_fees=run_fingerprint["arb_fees"],
                 all_sig_variations=jnp.array(run_fingerprint["all_sig_variations"]),
                 noise_trader_ratio=run_fingerprint["noise_trader_ratio"],
+                protocol_fee_split=run_fingerprint.get("protocol_fee_split", 0.0),
             )
         else:
             reserves = jnp.broadcast_to(
@@ -296,6 +297,7 @@ class TFMMBasePool(AbstractPool):
         # if we are doing trades, the trades array must be of the same length as the other arrays
         if run_fingerprint["do_trades"]:
             assert trade_array.shape[0] == max_len
+        protocol_fee_split = run_fingerprint.get("protocol_fee_split", 0.0)
         reserves = _jax_calc_quantAMM_reserves_with_dynamic_inputs(
             initial_reserves,
             arb_acted_upon_weights,
@@ -309,6 +311,7 @@ class TFMMBasePool(AbstractPool):
             run_fingerprint["do_arb"],
             run_fingerprint["noise_trader_ratio"],
             lp_supply_array_broadcast,
+            protocol_fee_split=protocol_fee_split,
         )
         return reserves
 
