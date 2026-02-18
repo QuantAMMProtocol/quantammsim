@@ -792,11 +792,13 @@ def create_objective(
             if verbose:
                 print(f"Trial {trial.number} failed with ValueError: {e}")
                 traceback.print_exc()
+            trial.set_user_attr("fail_reason", repr(e))
             raise
         except Exception as e:
             if verbose:
                 print(f"Trial {trial.number} failed: {e}")
                 traceback.print_exc()
+            trial.set_user_attr("fail_reason", repr(e))
             # Return bad value for other failures (e.g., data loading issues)
             # Metrics we MAXIMIZE (higher is better): sharpe, wfe, calmar, sterling, returns, ulcer
             # Note: ulcer is negated (higher = less pain), so we maximize
@@ -917,6 +919,7 @@ def create_multi_objective(
             # For other exceptions, log and return worst values for all objectives
             if verbose:
                 print(f"Trial {trial.number} multi-objective failed: {e}")
+            trial.set_user_attr("fail_reason", repr(e))
             return tuple(float("-inf") for _ in objectives)
 
         # Get stored results
