@@ -515,6 +515,102 @@ calc_fine_weight_output_bounded_from_weights = jit(
 )
 
 
+# ---------------------------------------------------------------------------
+# Coarse-weight-only path (for fused reserve computation)
+# ---------------------------------------------------------------------------
+
+
+@partial(jit, static_argnums=(2, 4, 5))
+def calc_coarse_weight_output(
+    rule_outputs,
+    initial_weights,
+    run_fingerprint,
+    params,
+    rule_outputs_are_weights,
+    use_per_asset_bounds=False,
+):
+    """Compute coarse weight trajectory without interpolating to fine resolution.
+
+    Same parameter extraction and coarse scan as :func:`calc_fine_weight_output`,
+    but returns ``(actual_starts, scaled_diffs)`` directly.  This is the entry
+    point for the fused chunked reserve path, which performs per-chunk
+    interpolation + reserve-ratio products inline rather than materialising the
+    full minute-resolution weight array.
+
+    Parameters
+    ----------
+    rule_outputs : jnp.ndarray, shape (T_coarse, n_assets)
+        Raw outputs from the update rule.
+    initial_weights : jnp.ndarray, shape (n_assets,)
+        Starting weight allocation.
+    run_fingerprint : dict
+        Run configuration (same keys as :func:`calc_fine_weight_output`).
+    params : dict
+        Learnable parameters.
+    rule_outputs_are_weights : bool
+        True for target-weight rules, False for additive-delta rules.
+    use_per_asset_bounds : bool
+        If True, enforce per-asset bounds from ``params``.
+
+    Returns
+    -------
+    actual_starts : jnp.ndarray, shape (T_coarse, n_assets)
+    scaled_diffs : jnp.ndarray, shape (T_coarse, n_assets)
+    """
+    weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
+    chunk_period = run_fingerprint["chunk_period"]
+    maximum_change = run_fingerprint["maximum_change"]
+    minimum_weight = run_fingerprint.get("minimum_weight")
+    n_assets = run_fingerprint["n_assets"]
+    ste_max_change = run_fingerprint["ste_max_change"]
+    ste_min_max_weight = run_fingerprint["ste_min_max_weight"]
+    if minimum_weight is None:
+        minimum_weight = 0.1 / n_assets
+
+    if use_per_asset_bounds:
+        min_weights_per_asset = params["min_weights_per_asset"]
+        max_weights_per_asset = params["max_weights_per_asset"]
+    else:
+        min_weights_per_asset = jnp.zeros(n_assets)
+        max_weights_per_asset = jnp.ones(n_assets)
+
+    actual_starts, scaled_diffs, _ = _jax_calc_coarse_weights(
+        rule_outputs,
+        initial_weights,
+        minimum_weight,
+        params,
+        min_weights_per_asset,
+        max_weights_per_asset,
+        run_fingerprint["max_memory_days"],
+        chunk_period,
+        weight_interpolation_period,
+        maximum_change,
+        rule_outputs_are_weights,
+        ste_max_change,
+        ste_min_max_weight,
+        use_per_asset_bounds,
+    )
+    return actual_starts, scaled_diffs
+
+
+calc_coarse_weight_output_from_weight_changes = jit(
+    Partial(
+        calc_coarse_weight_output,
+        rule_outputs_are_weights=False,
+        use_per_asset_bounds=False,
+    ),
+    static_argnums=(2,),
+)
+calc_coarse_weight_output_from_weights = jit(
+    Partial(
+        calc_coarse_weight_output,
+        rule_outputs_are_weights=True,
+        use_per_asset_bounds=False,
+    ),
+    static_argnums=(2,),
+)
+
+
 @partial(
     jit,
     static_argnums=(3, 4, 6),

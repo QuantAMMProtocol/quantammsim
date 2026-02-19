@@ -63,6 +63,9 @@ class MinVariancePool(TFMMBasePool):
     A class for min variance strategies run as TFMM (Temporal Function Market Making) liquidity pools,
     extending the TFMMBasePool class.
 
+    .. note:: _rule_outputs_are_weights = True because this pool outputs
+       target weight vectors (inverse-variance allocations), not additive deltas.
+
     This class implements a min variance strategy for asset allocation within a TFMM framework.
     It uses price data to generate min variance weights.
 
@@ -84,6 +87,8 @@ class MinVariancePool(TFMMBasePool):
     The class provides methods to calculate raw weight outputs based on min variance signals and refine them
     into final asset weights, taking into account various parameters and constraints defined in the pool setup.
     """
+
+    _rule_outputs_are_weights = True
 
     def __init__(self):
         """

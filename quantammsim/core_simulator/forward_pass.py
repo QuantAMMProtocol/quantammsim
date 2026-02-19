@@ -91,6 +91,143 @@ def _apply_price_noise(prices, sigma, seed_int):
     return prices * jnp.exp(sigma * epsilon)
 
 
+# ---------------------------------------------------------------------------
+# Fused chunked reserve path — compatible metrics and dispatch
+# ---------------------------------------------------------------------------
+
+DAILY_COMPATIBLE_METRICS = frozenset({
+    # Sharpe / VaR / ROVAR metrics naturally operate on day-boundary values.
+    "daily_log_sharpe",
+    "daily_sharpe",
+    "daily_var_95%_trad",
+    "daily_var_99%_trad",
+    "weekly_var_95%_trad",
+    "weekly_var_99%_trad",
+    "daily_rovar_trad",
+    "weekly_rovar_trad",
+    "monthly_rovar_trad",
+    # Return-based metrics use boundary_values[-1] (last day boundary) rather
+    # than value_over_time[-1] (last minute).  The endpoint differs by up to
+    # 1439 minutes — a negligible approximation for training objectives.
+    "returns",
+    "annualised_returns",
+    "returns_over_hodl",
+    "annualised_returns_over_hodl",
+    "returns_over_uniform_hodl",
+    "annualised_returns_over_uniform_hodl",
+})
+
+
+@partial(jit, static_argnums=(0,))
+def _calculate_return_value_chunked(
+    return_val, boundary_values, initial_reserves, n_assets,
+):
+    """Compute a financial metric from metric-cadence boundary values.
+
+    This is the fused-path analogue of :func:`_calculate_return_value`.
+    The input ``boundary_values`` is already at metric-period cadence
+    (e.g. daily), so no minute-level resampling is needed.
+
+    Parameters
+    ----------
+    return_val : str
+        Metric name (must be in ``DAILY_COMPATIBLE_METRICS``).
+    boundary_values : (n_periods + 1,)
+        Pool values at metric-period boundaries. ``[0]`` is initial value.
+    initial_reserves : (n_assets,)
+        Initial reserves (for hodl-relative metrics).
+    n_assets : int
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar metric value.
+    """
+    if return_val == "daily_log_sharpe":
+        log_rets = jnp.diff(jnp.log(boundary_values + 1e-12))
+        mean = log_rets.mean()
+        std = log_rets.std()
+        return jnp.sqrt(365.0) * (mean / (std + 1e-8))
+
+    if return_val == "daily_sharpe":
+        daily_returns = jnp.diff(boundary_values) / boundary_values[:-1]
+        return jnp.sqrt(365.0) * (daily_returns.mean() / daily_returns.std())
+
+    if return_val == "returns":
+        return boundary_values[-1] / boundary_values[0] - 1.0
+
+    if return_val == "annualised_returns":
+        n_days = boundary_values.shape[0] - 1
+        return (boundary_values[-1] / boundary_values[0]) ** (365.0 / n_days) - 1.0
+
+    if return_val in (
+        "returns_over_hodl", "annualised_returns_over_hodl",
+        "returns_over_uniform_hodl", "annualised_returns_over_uniform_hodl",
+    ):
+        ratio = boundary_values[-1] / boundary_values[0]
+        if return_val in ("returns_over_hodl", "returns_over_uniform_hodl"):
+            return ratio - 1.0
+        else:
+            n_days = boundary_values.shape[0] - 1
+            return ratio ** (365.0 / n_days) - 1.0
+
+    # VaR-trad metrics: use end-of-period boundary values
+    if return_val == "daily_var_95%_trad":
+        returns = jnp.diff(boundary_values) / boundary_values[:-1]
+        return jnp.percentile(returns, 5.0)
+
+    if return_val == "daily_var_99%_trad":
+        returns = jnp.diff(boundary_values) / boundary_values[:-1]
+        return jnp.percentile(returns, 1.0)
+
+    if return_val == "weekly_var_95%_trad":
+        # Subsample to weekly (every 7 days)
+        weekly_values = boundary_values[::7]
+        returns = jnp.diff(weekly_values) / weekly_values[:-1]
+        return jnp.percentile(returns, 5.0)
+
+    if return_val == "weekly_var_99%_trad":
+        weekly_values = boundary_values[::7]
+        returns = jnp.diff(weekly_values) / weekly_values[:-1]
+        return jnp.percentile(returns, 1.0)
+
+    if return_val == "daily_rovar_trad":
+        returns = jnp.diff(boundary_values) / boundary_values[:-1]
+        var = jnp.percentile(returns, 5.0)
+        n_days = boundary_values.shape[0] - 1
+        period_returns = jnp.diff(boundary_values) / boundary_values[:-1]
+        annualized_return = (1 + period_returns) ** 365.0 - 1
+        mean_ann_ret = jnp.mean(annualized_return)
+        ann_factor = 365.0 / n_days
+        ann_var = var * jnp.sqrt(ann_factor)
+        return -mean_ann_ret / ann_var
+
+    if return_val == "weekly_rovar_trad":
+        weekly_values = boundary_values[::7]
+        returns = jnp.diff(weekly_values) / weekly_values[:-1]
+        var = jnp.percentile(returns, 5.0)
+        n_weeks = weekly_values.shape[0] - 1
+        ann_return = (1 + returns) ** (365.0 / 7) - 1
+        mean_ann_ret = jnp.mean(ann_return)
+        ann_factor = (365.0 / 7) / n_weeks
+        ann_var = var * jnp.sqrt(ann_factor)
+        return -mean_ann_ret / ann_var
+
+    if return_val == "monthly_rovar_trad":
+        monthly_values = boundary_values[::30]
+        returns = jnp.diff(monthly_values) / monthly_values[:-1]
+        var = jnp.percentile(returns, 5.0)
+        n_months = monthly_values.shape[0] - 1
+        ann_return = (1 + returns) ** (365.0 / 30) - 1
+        mean_ann_ret = jnp.mean(ann_return)
+        ann_factor = (365.0 / 30) / n_months
+        ann_var = var * jnp.sqrt(ann_factor)
+        return -mean_ann_ret / ann_var
+
+    # Should not reach here if caller checked DAILY_COMPATIBLE_METRICS
+    return jnp.array(0.0)
+
+
 def _daily_log_sharpe(values: jnp.ndarray) -> jnp.ndarray:
     """Annualized Sharpe ratio computed on daily log returns.
 
@@ -849,6 +986,36 @@ def forward_pass(
             prices, (0, 0, start_index[-1]), (prices.shape[0], prices.shape[1], 1)
         )[:, :, 0]
         start_index = start_index[0:2]
+
+    # --- Fused chunked reserve path (opt-in, zero-fees only) ---
+    use_fused = static_dict.get("use_fused_reserves", False)
+    if (
+        use_fused
+        and hasattr(pool, "supports_fused_reserves")
+        and pool.supports_fused_reserves
+        and return_val in DAILY_COMPATIBLE_METRICS
+        and static_dict["fees"] == 0.0
+        and static_dict["gas_cost"] == 0.0
+        and static_dict["arb_fees"] == 0.0
+        and static_dict["arb_frequency"] == 1
+        and static_dict.get("turnover_penalty", 0.0) == 0.0
+        and static_dict.get("price_noise_sigma", 0.0) == 0.0
+        and all(
+            ele is None
+            for ele in [fees_array, gas_cost_array, arb_fees_array, trades_array]
+        )
+        and 1440 % static_dict["chunk_period"] == 0  # chunk_period divides metric_period
+        and not pool._rule_outputs_are_weights  # only delta-based pools validated
+    ):
+        fused_result = pool.calculate_fused_reserves_zero_fees(
+            params, static_dict, prices, start_index,
+        )
+        boundary_values = fused_result["boundary_values"]
+        return _calculate_return_value_chunked(
+            return_val, boundary_values,
+            fused_result["initial_reserves"],
+            n_assets,
+        )
 
     # Now we can calculate the reserves over time useing the pool.
     # We have to handle three cases:

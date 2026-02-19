@@ -11,8 +11,24 @@ either:
 import pytest
 import jax.numpy as jnp
 import numpy as np
-from quantammsim.core_simulator.param_utils import memory_days_to_logit_lamb
+from jax.tree_util import Partial
+from jax import jit
+
+from quantammsim.core_simulator.param_utils import (
+    memory_days_to_logit_lamb,
+    recursive_default_set,
+)
 from quantammsim.runners.jax_runners import do_run_on_historic_data
+from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
+from quantammsim.core_simulator.forward_pass import forward_pass
+from quantammsim.pools.creator import create_pool
+from quantammsim.utils.data_processing.historic_data_utils import get_data_dict
+from quantammsim.runners.jax_runner_utils import (
+    Hashabledict,
+    get_unique_tokens,
+    get_sig_variations,
+    create_static_dict,
+)
 from tests.conftest import TEST_DATA_DIR
 
 
@@ -348,4 +364,159 @@ class TestMeanReversionBaseline:
         weight_sums = np.sum(result["weights"], axis=1)
         np.testing.assert_array_almost_equal(
             weight_sums, np.ones_like(weight_sums), decimal=6
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fused reserves: verify use_fused_reserves=True matches the full path
+# ---------------------------------------------------------------------------
+
+# Configs eligible for fused path (zero fees, momentum rule)
+_FUSED_ELIGIBLE = [
+    k for k, v in BASELINE_CONFIGS.items()
+    if v["fingerprint"].get("fees", 0.0) == 0.0
+    and v["fingerprint"].get("gas_cost", 0.0) == 0.0
+    and v["fingerprint"].get("arb_fees", 0.0) == 0.0
+]
+
+# Configs that must fall back (non-zero fees)
+_FUSED_FALLBACK = [
+    k for k, v in BASELINE_CONFIGS.items()
+    if v["fingerprint"].get("fees", 0.0) > 0.0
+    or v["fingerprint"].get("gas_cost", 0.0) > 0.0
+    or v["fingerprint"].get("arb_fees", 0.0) > 0.0
+]
+
+
+def _setup_forward_pass(config, return_val, use_fused_reserves):
+    """Mirror the data-loading pipeline of do_run_on_historic_data,
+    but call forward_pass directly so we can control return_val and
+    use_fused_reserves."""
+    fingerprint = dict(config["fingerprint"])
+    recursive_default_set(fingerprint, run_fingerprint_defaults)
+
+    unique_tokens = get_unique_tokens(fingerprint)
+    n_assets = len(fingerprint["tokens"])
+    all_sig_variations = get_sig_variations(n_assets)
+
+    data_dict = get_data_dict(
+        unique_tokens,
+        fingerprint,
+        data_kind=fingerprint["optimisation_settings"]["training_data_kind"],
+        root=TEST_DATA_DIR,
+        max_memory_days=fingerprint["max_memory_days"],
+        start_date_string=fingerprint["startDateString"],
+        end_time_string=fingerprint["endDateString"],
+        start_time_test_string=fingerprint["endDateString"],
+        end_time_test_string=fingerprint["endTestDateString"],
+        max_mc_version=fingerprint["optimisation_settings"]["max_mc_version"],
+    )
+
+    pool = create_pool(fingerprint["rule"])
+
+    static_dict = create_static_dict(
+        fingerprint,
+        bout_length=data_dict["bout_length"],
+        all_sig_variations=all_sig_variations,
+        overrides={
+            "n_assets": n_assets,
+            "training_data_kind": fingerprint["optimisation_settings"]["training_data_kind"],
+            "return_val": return_val,
+            "use_fused_reserves": use_fused_reserves,
+        },
+    )
+
+    start_index = jnp.array([data_dict["start_idx"], 0])
+    return pool, static_dict, config["params"], start_index, data_dict["prices"]
+
+
+class TestFusedReservesBaseline:
+    """Verify that use_fused_reserves=True produces identical metrics to
+    the full-resolution path on the same BASELINE_CONFIGS data."""
+
+    @pytest.mark.parametrize("config_name", _FUSED_ELIGIBLE)
+    def test_fused_daily_log_sharpe_matches_full(self, config_name):
+        """daily_log_sharpe via fused path matches full-resolution path."""
+        config = BASELINE_CONFIGS[config_name]
+
+        pool, sd_full, params, si, prices = _setup_forward_pass(
+            config, "daily_log_sharpe", use_fused_reserves=False,
+        )
+        _, sd_fused, _, _, _ = _setup_forward_pass(
+            config, "daily_log_sharpe", use_fused_reserves=True,
+        )
+
+        val_full = forward_pass(params, si, prices, pool=pool, static_dict=sd_full)
+        val_fused = forward_pass(params, si, prices, pool=pool, static_dict=sd_fused)
+
+        np.testing.assert_allclose(
+            float(val_fused), float(val_full), atol=1e-6,
+            err_msg=f"{config_name}: fused daily_log_sharpe doesn't match full path",
+        )
+
+    @pytest.mark.parametrize("config_name", _FUSED_ELIGIBLE)
+    def test_fused_daily_sharpe_matches_full(self, config_name):
+        """daily_sharpe via fused path matches full-resolution path."""
+        config = BASELINE_CONFIGS[config_name]
+
+        pool, sd_full, params, si, prices = _setup_forward_pass(
+            config, "daily_sharpe", use_fused_reserves=False,
+        )
+        _, sd_fused, _, _, _ = _setup_forward_pass(
+            config, "daily_sharpe", use_fused_reserves=True,
+        )
+
+        val_full = forward_pass(params, si, prices, pool=pool, static_dict=sd_full)
+        val_fused = forward_pass(params, si, prices, pool=pool, static_dict=sd_fused)
+
+        np.testing.assert_allclose(
+            float(val_fused), float(val_full), atol=1e-6,
+            err_msg=f"{config_name}: fused daily_sharpe doesn't match full path",
+        )
+
+    @pytest.mark.parametrize("config_name", _FUSED_ELIGIBLE)
+    def test_fused_annualised_returns_close_to_full(self, config_name):
+        """annualised_returns via fused path is close to full-resolution.
+
+        Not bit-exact because the fused path uses the last day-boundary
+        value rather than the very last minute.  The approximation error
+        is bounded by one day of returns out of the full period."""
+        config = BASELINE_CONFIGS[config_name]
+
+        pool, sd_full, params, si, prices = _setup_forward_pass(
+            config, "annualised_returns", use_fused_reserves=False,
+        )
+        _, sd_fused, _, _, _ = _setup_forward_pass(
+            config, "annualised_returns", use_fused_reserves=True,
+        )
+
+        val_full = forward_pass(params, si, prices, pool=pool, static_dict=sd_full)
+        val_fused = forward_pass(params, si, prices, pool=pool, static_dict=sd_fused)
+
+        # Allow 10% relative tolerance — the day-boundary endpoint
+        # approximation compounds through the annualisation exponent
+        np.testing.assert_allclose(
+            float(val_fused), float(val_full), rtol=0.10,
+            err_msg=f"{config_name}: fused annualised_returns too far from full path",
+        )
+
+    @pytest.mark.parametrize("config_name", _FUSED_FALLBACK)
+    def test_fused_falls_back_with_fees(self, config_name):
+        """When fees > 0, fused flag is ignored — results match exactly."""
+        config = BASELINE_CONFIGS[config_name]
+
+        pool, sd_without, params, si, prices = _setup_forward_pass(
+            config, "daily_log_sharpe", use_fused_reserves=False,
+        )
+        _, sd_with, _, _, _ = _setup_forward_pass(
+            config, "daily_log_sharpe", use_fused_reserves=True,
+        )
+
+        val_without = forward_pass(params, si, prices, pool=pool, static_dict=sd_without)
+        val_with = forward_pass(params, si, prices, pool=pool, static_dict=sd_with)
+
+        # Exact match — both take the full-resolution path
+        np.testing.assert_allclose(
+            float(val_with), float(val_without), atol=0.0,
+            err_msg=f"{config_name}: fused fallback doesn't match full path",
         )

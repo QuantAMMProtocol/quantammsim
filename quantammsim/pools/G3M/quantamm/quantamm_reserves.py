@@ -867,3 +867,207 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
     )
 
     return reserves
+
+
+# ============================================================================
+# Fused chunked reserve computation
+# ============================================================================
+
+
+def _intra_chunk_ratio_product(actual_start, scaled_diff, chunk_prices,
+                               interpol_num, chunk_period, interpolation_fn):
+    """Per-chunk: interpolate weights, compute ratios, return product.
+
+    This is the inner kernel of the fused path.  It materialises a
+    ``(chunk_period, n_assets)`` weight block, computes ``chunk_period - 1``
+    reserve ratios, and returns their product — a single ``(n_assets,)``
+    vector.  The intermediates are local to this call and never coexist
+    across chunks, achieving the memory reduction.
+
+    Parameters
+    ----------
+    actual_start : (n_assets,)
+    scaled_diff : (n_assets,)
+    chunk_prices : (chunk_period, n_assets)
+    interpol_num : int
+    chunk_period : int
+    interpolation_fn : callable
+        Maps (actual_start, scaled_diff, interpol_arange, fine_ones, interpol_num)
+        → (chunk_period, n_assets) fine weights.
+
+    Returns
+    -------
+    intra_product : (n_assets,) — product of intra-chunk reserve ratios
+    first_weight : (n_assets,) — first fine weight in this chunk
+    last_weight : (n_assets,) — last fine weight in this chunk
+    """
+    n_assets = actual_start.shape[0]
+    interpol_arange = jnp.expand_dims(jnp.arange(interpol_num), 1)
+    fine_ones = jnp.ones((chunk_period, n_assets))
+
+    fine_weights = interpolation_fn(
+        actual_start, scaled_diff, interpol_arange, fine_ones, interpol_num,
+    )
+    # fine_weights: (chunk_period, n_assets)
+
+    # Intra-chunk ratios (chunk_period - 1 transitions)
+    ratios = _jax_calc_quantAMM_reserve_ratios(
+        fine_weights[:-1], chunk_prices[:-1],
+        fine_weights[1:], chunk_prices[1:],
+    )
+    # (chunk_period - 1, n_assets)
+    intra_product = jnp.prod(ratios, axis=0)
+    return intra_product, fine_weights[0], fine_weights[-1]
+
+
+@partial(jit, static_argnums=(5, 6, 7, 8, 9, 10, 11))
+def _fused_chunked_reserves(
+    actual_starts, scaled_diffs, local_prices, initial_reserves,
+    initial_weights,
+    chunk_period, interpol_num, metric_period,
+    interpolation_fn, rule_outputs_are_weights,
+    n_chunks_total, n_metric_periods,
+):
+    """Fused chunked reserve computation — fully vectorised (no scans).
+
+    Computes metric-cadence boundary values matching ``values[::metric_period]``
+    from the full-resolution path, without materialising the full
+    ``(T_fine, n_assets)`` weight or reserve arrays.
+
+    The fine-weight pipeline produces exactly ``chunk_period`` fine weights
+    per coarse interval (the ``interpol_num``-th ramp endpoint is computed
+    but dropped by the interpolation function).  Consecutive blocks are
+    separated by exactly one ``scaled_diff`` step, so blocks align perfectly
+    with the daily grid.
+
+    Each metric period of ``metric_period`` fine steps decomposes into
+    ``chunks_per_metric`` chunks, each contributing ``chunk_period - 1``
+    intra-transitions + 1 boundary transition = ``chunk_period`` transitions.
+
+    Algorithm (no ``lax.scan``):
+      1. Compute per-chunk intra products via ``vmap``  (embarrassingly parallel).
+      2. Compute per-chunk boundary ratios via ``vmap`` (embarrassingly parallel).
+      3. Combine:  ``chunk_ratio[k] = intra[k] * boundary[k]``.
+      4. Group into metric periods, product over ``chunks_per_metric``.
+      5. ``cumprod`` over metric periods → cumulative reserve ratios.
+      6. Evaluate boundary values at ``prices[k * metric_period]``.
+
+    Parameters
+    ----------
+    actual_starts : (n_coarse_for_rules, n_assets)
+        Coarse weight start positions.  Includes one extra entry beyond
+        what is needed for intra products, providing the start weight
+        for the final boundary transition.
+    scaled_diffs : (n_coarse_for_rules, n_assets)
+        Per-step weight increments (only the first ``n_coarse_for_intra``
+        entries are used for intra products).
+    local_prices : (T_fine, n_assets)
+        Bout prices at minute resolution.
+    initial_reserves : (n_assets,)
+    initial_weights : (n_assets,)
+    chunk_period : int
+    interpol_num : int
+    metric_period : int
+    interpolation_fn : callable
+    rule_outputs_are_weights : bool
+    n_chunks_total : int
+        Number of chunks (including virtual for delta pools).
+    n_metric_periods : int
+
+    Returns
+    -------
+    boundary_values : (n_metric_periods + 1,)
+    final_reserves : (n_assets,)
+    """
+    n_assets = initial_weights.shape[0]
+    chunks_per_metric = metric_period // chunk_period
+
+    # --- Step 1: Build per-chunk data arrays ---
+    # All chunks are laid out as: local_prices[k*cp : (k+1)*cp] for chunk k.
+    # For delta pools, chunk 0 = virtual (initial weights), chunk 1..N = coarse 0..N-1.
+    # For target pools, chunk 0..N-1 = coarse 0..N-1.
+    all_chunk_prices = local_prices[:n_chunks_total * chunk_period].reshape(
+        n_chunks_total, chunk_period, n_assets
+    )
+
+    if not rule_outputs_are_weights:
+        # Delta pool: prepend virtual chunk (constant initial_weights)
+        n_coarse_for_intra = n_chunks_total - 1
+        intra_starts = jnp.concatenate(
+            [initial_weights[None, :], actual_starts[:n_coarse_for_intra]], axis=0
+        )
+        intra_diffs = jnp.concatenate(
+            [jnp.zeros((1, n_assets)), scaled_diffs[:n_coarse_for_intra]], axis=0
+        )
+        # Boundary "next" weights: chunk k+1 = coarse k → actual_starts[k]
+        next_start_weights = actual_starts[:n_chunks_total]
+    else:
+        # Target pool: all chunks are coarse
+        n_coarse_for_intra = n_chunks_total
+        intra_starts = actual_starts[:n_coarse_for_intra]
+        intra_diffs = scaled_diffs[:n_coarse_for_intra]
+        # Boundary "next" weights: chunk k+1 = coarse k+1 → actual_starts[k+1]
+        next_start_weights = actual_starts[1:n_chunks_total + 1]
+
+    # --- Step 2: Per-chunk intra products (embarrassingly parallel) ---
+    _intra_fn = partial(
+        _intra_chunk_ratio_product,
+        interpol_num=interpol_num,
+        chunk_period=chunk_period,
+        interpolation_fn=interpolation_fn,
+    )
+    all_intra_products, _, all_end_weights = vmap(_intra_fn)(
+        intra_starts, intra_diffs, all_chunk_prices,
+    )
+    # all_intra_products: (n_chunks_total, n_assets) — product of chunk_period-1 ratios
+    # all_end_weights: (n_chunks_total, n_assets) — last fine weight of each chunk
+
+    # --- Step 3: Per-chunk boundary ratios (embarrassingly parallel) ---
+    # Boundary k: from end of chunk k to start of chunk k+1
+    #   prev_w = all_end_weights[k], prev_p = all_chunk_prices[k, -1]
+    #   next_w = next_start_weights[k], next_p = local_prices[(k+1)*chunk_period]
+    boundary_end_prices = all_chunk_prices[:, -1, :]  # (n_chunks_total, n_assets)
+    next_start_price_indices = jnp.arange(1, n_chunks_total + 1) * chunk_period
+    next_start_prices = local_prices[next_start_price_indices]  # (n_chunks_total, n_assets)
+
+    boundary_ratios = _jax_calc_quantAMM_reserve_ratios(
+        all_end_weights, boundary_end_prices,
+        next_start_weights, next_start_prices,
+    )
+    # (n_chunks_total, n_assets)
+
+    # --- Step 4: Combine intra + boundary per chunk ---
+    # chunk_ratio[k] = intra[k] * boundary[k]
+    # This covers chunk_period transitions: (chunk_period-1) intra + 1 boundary
+    chunk_ratios = all_intra_products * boundary_ratios
+    # (n_chunks_total, n_assets)
+
+    # --- Step 5: Group into metric periods and take product ---
+    metric_ratios = chunk_ratios.reshape(n_metric_periods, chunks_per_metric, n_assets)
+    period_ratios = jnp.prod(metric_ratios, axis=1)
+    # (n_metric_periods, n_assets)
+
+    # --- Step 6: Cumprod over metric periods ---
+    cum_ratios = jnp.cumprod(period_ratios, axis=0)
+    # (n_metric_periods, n_assets)
+
+    boundary_reserves = initial_reserves * cum_ratios
+    # (n_metric_periods, n_assets)
+
+    # --- Step 7: Evaluate boundary values ---
+    # Value at metric boundary k (for k=1..n_metric_periods) is at
+    # local_prices[k * metric_period], which is the start of the next period.
+    metric_price_indices = jnp.arange(1, n_metric_periods + 1) * metric_period
+    metric_boundary_prices = local_prices[metric_price_indices]
+    # (n_metric_periods, n_assets)
+
+    boundary_values_after = jnp.sum(boundary_reserves * metric_boundary_prices, axis=1)
+    # (n_metric_periods,)
+
+    initial_value = jnp.sum(initial_reserves * local_prices[0])
+    boundary_values = jnp.concatenate([initial_value[None], boundary_values_after])
+    # (n_metric_periods + 1,)
+
+    final_reserves = boundary_reserves[-1]
+
+    return boundary_values, final_reserves
