@@ -20,7 +20,7 @@ def make_sinuisoid_data(
     prices[:, 2] = -3.0 * np.cos(angular_frequency * np.arange(n_time_steps))
     prices += base_prices
     prices = prices[:, :n_tokens]
-    if composite_run == False:
+    if not composite_run:
         if noise:
             prices += np.random.randn(*prices.shape)
             prices[prices < 0] = 0.1
