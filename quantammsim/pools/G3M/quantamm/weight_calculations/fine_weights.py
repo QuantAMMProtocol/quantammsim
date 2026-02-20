@@ -485,15 +485,16 @@ def calc_fine_weight_output(
         maximum_change=maximum_change,
         method=weight_interpolation_method,
     )
-    if rule_outputs_are_weights:
-        return weights
-    else:
-        return jnp.vstack(
-            [
-                jnp.ones((chunk_period, n_assets), dtype=jnp.float64) * initial_weights,
-                weights,
-            ]
-        )
+    # Prepend chunk_period rows of initial weights for both paths.
+    # This ensures weights at fine timestep t don't use prices beyond t.
+    # Without this prepending for weight-outputting rules, there would be
+    # a 1-step lookahead bias (weights computed from future prices).
+    return jnp.vstack(
+        [
+            jnp.ones((chunk_period, n_assets), dtype=jnp.float64) * initial_weights,
+            weights,
+        ]
+    )
 
 
 calc_fine_weight_output_from_weight_changes = jit(

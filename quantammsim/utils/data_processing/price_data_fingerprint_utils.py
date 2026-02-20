@@ -8,6 +8,7 @@ from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.utils.data_processing.historic_data_utils import (
     get_historic_csv_data,
     get_historic_csv_data_w_versions,
+    get_historic_parquet_data,
 )
 from quantammsim.core_simulator.param_utils import default_set
 
@@ -119,7 +120,9 @@ def load_price_data_if_fingerprints_match(
         if verbose:
             print("loading data for all run fingerprints")
         if run_fingerprint["optimisation_settings"]["training_data_kind"] == "historic":
-            price_data = get_historic_csv_data(unique_tokens, cols=["close"], root=root)
+            price_data = get_historic_parquet_data(
+                unique_tokens, cols=["close"], root=root
+            )
             return price_data
         elif run_fingerprint["optimisation_settings"]["training_data_kind"] == "mc":
             list_of_tickers = unique_tokens
