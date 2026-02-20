@@ -10,9 +10,9 @@ agree on the directional weight changes.
 
 Architecture
 ------------
-With this hook, params have shape: (n_parameter_sets, n_ensemble_members, ...)
-Exception: initial_weights_logits has shape (n_parameter_sets, n_assets)
-           because initial weights are shared across ensemble members.
+With this hook, params have shape ``(n_parameter_sets, n_ensemble_members, ...)``.
+The exception is ``initial_weights_logits`` which has shape ``(n_parameter_sets, n_assets)``
+because initial weights are shared across ensemble members.
 
 - Outer vmap (in jax_runners): over n_parameter_sets (axis 0)
 - After slicing: hook receives (n_ensemble_members, ...) for rule params
@@ -40,7 +40,8 @@ The spread of ensemble members is controlled by:
 Backwards compatible: when n_ensemble_members=1 (default), no extra dimension
 is added and behavior is unchanged.
 
-Usage:
+Usage::
+
     from quantammsim.pools.creator import create_pool
 
     # Create an ensemble-averaged pool
@@ -52,12 +53,10 @@ Usage:
     run_fingerprint["ensemble_init_scale"] = 0.5     # Spread scale
 """
 from typing import Dict, Any, Optional, Tuple
-import numpy as np
 import jax.numpy as jnp
 from jax import vmap
 
-from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
-from quantammsim.utils.sampling import generate_ensemble_samples, generate_param_space_samples
+from quantammsim.utils.sampling import generate_param_space_samples
 
 
 class EnsembleAveragingHook:

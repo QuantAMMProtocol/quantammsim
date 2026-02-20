@@ -299,16 +299,17 @@ Common metrics:
 * ``daily_sharpe`` - Daily Sharpe ratio
 * ``returns`` - Total return over simulation period
 * ``returns_over_hodl`` - Return relative to holding the initial portfolio
-* ``sortino`` - Sortino ratio (downside risk-adjusted)
+* ``returns_over_uniform_hodl`` - Return relative to uniform hold of all assets
 * ``calmar`` - Calmar ratio (return / max drawdown)
 * ``sterling`` - Sterling ratio (return / average drawdown)
-* ``max_drawdown`` - Maximum drawdown (negative: larger = worse)
-* ``var_5`` - 5% Value at Risk
-* ``raroc`` - Risk-Adjusted Return on Capital
-* ``rovar`` - Return on VaR
-* ``ulcer_index`` - Ulcer Index (measures drawdown duration and depth)
+* ``greatest_draw_down`` - Maximum drawdown from initial value
+* ``weekly_max_drawdown`` - Worst drawdown across weekly chunks
+* ``daily_var_95%`` - 5th percentile of daily returns (VaR)
+* ``daily_raroc`` - Risk-Adjusted Return on Capital (daily)
+* ``daily_rovar`` - Return on VaR (daily)
+* ``ulcer`` - Ulcer Index (measures drawdown duration and depth)
 
-See :doc:`metrics_reference` for the full list of ~30 available metrics with formulas.
+See :doc:`metrics_reference` for the full list of ~30 available metrics.
 
 Runtime Behavior
 ----------------
@@ -436,7 +437,7 @@ Understanding the relationship between timing parameters:
     run_fingerprint.update({
         "chunk_period": 1440,               # Strategy evaluation frequency (minutes)
         "weight_interpolation_period": 1440, # Weight update frequency (minutes)
-        "bout_offset": 24 * 60 * 7,         # Training window offset (minutes)
+        "bout_offset": 24 * 60 * 7,         # Temporal sampling range (minutes)
     })
 
 - ``chunk_period`` - How often the strategy calculates new target weights.
@@ -446,9 +447,80 @@ Understanding the relationship between timing parameters:
   Must be <= chunk_period. When < chunk_period, weights are interpolated
   between chunk evaluations.
 
-- ``bout_offset`` - Controls training data sampling. Training uses periods of
-  length (total_duration - bout_offset), sampled from different starting points
-  within the bout_offset window.
+- ``bout_offset`` - Temporal sampling range in minutes. See :ref:`bout-offset-detail` below.
+
+.. _bout-offset-detail:
+
+bout_offset (Temporal Sampling Range)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``bout_offset`` is the number of minutes **subtracted** from the total training
+window to define the length of each sampled forward pass.  The remainder
+becomes the range of possible start positions, giving different batches
+different temporal views of the data.
+
+.. code-block:: python
+
+    bout_length_window = effective_train_length - bout_offset
+
+Each training iteration, a start position is randomly drawn from the first
+``bout_offset`` minutes of the training region, and the forward pass runs for
+exactly ``bout_length_window`` steps from that position.  All sampled windows
+are the same length; only their start positions differ.
+
+**Default:** ``24 * 60 * 7`` (= 10080 minutes = 7 days)
+
+**How sampling works within the training region:**
+
+.. code-block:: text
+
+    Full training region (effective_train_length steps):
+    |<==================== effective_train_length ====================>|
+
+    bout_length_window = effective_train_length - bout_offset
+
+    Sampled windows (all the same length, shifted start positions):
+    |[============= bout_length_window ==============].................|
+    |.....[============= bout_length_window ==============]............|
+    |...........[============= bout_length_window ==============]......|
+    |.................[============= bout_length_window ==============]|
+    |<- bout_offset ->|
+      start positions
+      sampled here
+
+When ``val_fraction > 0``, the effective training length is reduced first:
+
+.. code-block:: text
+
+    Full data (bout_length):
+    |<--- effective_train_length --->|<--- val_length --->|
+    |                                |                    |
+    Sampling and windows operate     Held out for
+    within this region only          validation
+
+**Constraint:**  ``(1 - val_fraction) * bout_length > bout_offset`` — the
+effective training region must be longer than ``bout_offset`` to leave room for
+a meaningful forward pass.
+
+**Not burn-in:**  ``bout_offset`` does **not** control estimator warm-up.
+EWMA burn-in is handled separately by ``max_memory_days``: data is loaded
+starting ``max_memory_days`` before the nominal start date, and the pool's
+warm-up ``fori_loop`` runs over all pre-start data before computing the
+objective.  ``bout_offset`` only controls the length and variety of sampled
+windows within the training region itself.
+
+**Choosing a value:**  Larger values give more temporal diversity but shorter
+forward passes (less data per gradient step).  The default 7 days provides
+moderate diversity for a typical multi-month training window.  Very small
+values mean all batches evaluate nearly the same window, reducing stochasticity.
+
+.. code-block:: python
+
+    # 7-day offset (default) — windows are 7 days shorter than the full training region
+    run_fingerprint["bout_offset"] = 24 * 60 * 7
+
+    # 14-day offset — more start position variety, shorter windows
+    run_fingerprint["bout_offset"] = 24 * 60 * 14
 
 Weight Interpolation Method
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -573,6 +645,35 @@ Checkpoints
 
 Checkpoint data is used for Rademacher complexity estimation during walk-forward
 evaluation.
+
+Other Settings
+--------------
+
+``freq``
+    Data frequency string.  Default ``"minute"``.  Controls how price data
+    is loaded and interpreted.
+
+``initial_memory_length_delta``
+    Offset added to memory length for the alternative lambda (``logit_delta_lamb``)
+    parameterisation.  Default ``0.0``.  When ``use_alt_lamb`` is True, the
+    second EWMA has effective memory ``initial_memory_length + initial_memory_length_delta``.
+
+``initial_raw_width``
+    Initial channel width parameter (log2 space) for power channel and mean
+    reversion channel pools.  Default ``0.0`` (i.e., effective width = 1.0).
+
+``initial_raw_exponents``
+    Initial exponent parameter (squareplus space) for power channel pools.
+    Default ``0.0`` (i.e., effective exponent = 1.0, linear).
+
+``initial_pre_exp_scaling``
+    Pre-exponent scaling factor (logistic space) for the ``use_pre_exp_scaling``
+    parameterisation.  Default ``0.5``.
+
+``subsidary_pools``
+    List of subsidiary pool configurations for composite (multi-rule) pools.
+    Each entry is a dict with at minimum ``tokens``, ``rule``,
+    ``initial_memory_length``, and ``initial_k_per_day``.  Default ``[]``.
 
 Implementation Notes
 --------------------

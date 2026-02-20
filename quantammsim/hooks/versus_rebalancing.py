@@ -106,9 +106,6 @@ def _jax_calc_rvr_scan_function(
     # carry_list[0] is previous weights
     prev_weights = carry_list[0]
 
-    # carry_list[1] is previous prices
-    prev_prices = carry_list[1]
-
     # carry_list[2] is previous reserves
     prev_reserves = carry_list[2]
 
@@ -321,9 +318,6 @@ def _jax_calc_lvr_reserve_change_scan_function(carry_list, weights_and_prices, t
     # carry_list[0] is previous weights
     prev_weights = carry_list[0]
 
-    # carry_list[1] is previous prices
-    prev_prices = carry_list[1]
-
     # carry_list[2] is previous reserves
     prev_reserves = carry_list[2]
 
@@ -518,16 +512,12 @@ class CalculateLossVersusRebalancing(ABC):
         """
         Calculate reserves with dynamic inputs.
 
-        This method is intended to calculate the reserves for a pool with dynamic inputs.
-        However, it is not implemented for LVR pools and will raise a NotImplementedError
-        if called.
+        Not implemented for LVR pools.
 
-        Args:
-            *args: Variable length argument list.
-            **kwargs: Arbitrary keyword arguments.
-
-        Raises:
-            NotImplementedError: This method is not implemented for LVR pools.
+        Raises
+        ------
+        NotImplementedError
+            Always raised.
         """
 
         raise NotImplementedError("This method is not implemented for LVR pools.")
@@ -656,16 +646,12 @@ class CalculateRebalancingVersusRebalancing(ABC):
         """
         Calculate reserves with dynamic inputs.
 
-        This method is intended to calculate the reserves for RVR pools using
-        dynamic inputs provided through *args and **kwargs. However, it is
-        currently not implemented and will raise a NotImplementedError if called.
+        Not implemented for RVR pools.
 
-        Args:
-            *args: Variable length argument list.
-            **kwargs: Arbitrary keyword arguments.
-
-        Raises:
-            NotImplementedError: This method is not implemented for RVR pools.
+        Raises
+        ------
+        NotImplementedError
+            Always raised.
         """
         raise NotImplementedError("This method is not implemented for RVR pools.")
 

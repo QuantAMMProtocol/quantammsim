@@ -317,7 +317,11 @@ Post-Training Analysis
 
 The ``quantammsim.utils.post_train_analysis`` module provides utilities for analyzing results after training.
 
-Period Metrics
+.. automodule:: quantammsim.utils.post_train_analysis
+   :members:
+   :show-inheritance:
+
+Usage Examples
 ~~~~~~~~~~~~~~
 
 Calculate comprehensive metrics for a simulation period:
@@ -331,23 +335,6 @@ Calculate comprehensive metrics for a simulation period:
 
     # Calculate all metrics
     metrics = calculate_period_metrics(result)
-
-Returns a dictionary with:
-
-- ``sharpe`` - Daily Sharpe ratio (annualized)
-- ``jax_sharpe`` - JAX-computed Sharpe ratio
-- ``return`` - Total return
-- ``returns_over_hodl`` - Return relative to holding initial portfolio
-- ``returns_over_uniform_hodl`` - Return relative to uniform hold
-- ``annualised_returns`` - Annualized total return
-- ``annualised_returns_over_hodl`` - Annualized return vs HODL
-- ``annualised_returns_over_uniform_hodl`` - Annualized return vs uniform HODL
-- ``ulcer`` - Ulcer index
-- ``calmar`` - Calmar ratio
-- ``sterling`` - Sterling ratio
-
-Continuous Test Metrics
-~~~~~~~~~~~~~~~~~~~~~~~
 
 For walk-forward analysis with separate train and test periods:
 
@@ -366,5 +353,3 @@ For walk-forward analysis with separate train and test periods:
     # Returns metrics prefixed with 'continuous_test_'
     print(test_metrics['continuous_test_sharpe'])
     print(test_metrics['continuous_test_return'])
-
-This extracts only the test period from a continuous simulation and calculates metrics on that portion.

@@ -1,10 +1,16 @@
+"""Reserve calculations for Gyroscope ECLP pools.
+
+Provides JAX-based functions for computing ECLP reserves over time via
+``jax.lax.scan``, following the mathematics in the E-CLP paper. Includes
+zero-fee, fixed-fee, and dynamic-fee variants, as well as reserve
+initialisation from pool value and direct trade execution via Proposition 14.
+"""
 from jax import config, jit
 from jax.lax import scan, cond
 from jax.tree_util import Partial
 import jax.numpy as jnp
 import numpy as np
 from functools import partial
-import jax
 config.update("jax_enable_x64", True)
 
 np.seterr(all="raise")
@@ -193,7 +199,6 @@ def _jax_calc_gyroscope_reserves_zero_fees(
         The reserves array, showing how reserves change over time.
     """
 
-    initial_prices = prices[0]
 
     # pre-calculate some values that are repeatedly used in optimal arb calculations
     A_matrix = calculate_A_matrix(cos, sin, lam)
@@ -302,7 +307,6 @@ def _jax_calc_gyroscope_reserves_with_fees_scan_function(
     # check if this is worth the cost to arbs
     # is this trade a good deal for the arb?
     profit_to_arb = -(overall_trade * prices).sum() - arb_thresh
-    profit_prices = profit_to_arb
 
     arb_external_rebalance_cost = (
         0.5 * arb_fees * (jnp.abs(overall_trade) * prices).sum()
@@ -460,8 +464,6 @@ def _jax_calc_ECLP_trade_from_exact_out_given_in(
     tau_beta = calculate_tau(beta, A_matrix)
     tau_alpha = calculate_tau(alpha, A_matrix)
 
-    lam_underscore = 1.0 - 1.0 / (lam**2.0)
-
     # we need the invariant too
 
     invariant = _jax_calc_gyroscope_invariant(
@@ -473,30 +475,12 @@ def _jax_calc_ECLP_trade_from_exact_out_given_in(
     a = invariant * (A_matrix_inv @ tau_beta)[0]
     b = invariant * (A_matrix_inv @ tau_alpha)[1]
 
-    translation_vector = jnp.array([a, b])
     x_prime = reserves[0] - a
     y_prime = reserves[1] - b
 
     t_prime = jnp.array([x_prime, y_prime])
 
     post_trade_in_reserves_with_fees_applied = t_prime[token_in] + amount_in * gamma
-    s_c_lam_unsc_post_t_in_r = (
-        sin * cos * lam_underscore * post_trade_in_reserves_with_fees_applied
-    )
-    one_minus_lam_underscore_times_trig_squared = jnp.array(
-        [1 - lam_underscore * (sin**2.0), 1 - lam_underscore * (cos**2.0)]
-    )
-    post_trade_t_prime_for_token_out = (
-        -s_c_lam_unsc_post_t_in_r
-        - jnp.sqrt(
-            s_c_lam_unsc_post_t_in_r * 2.0
-            - (1 - lam_underscore * (sin**2.0))
-            * (
-                (1 - lam_underscore * (cos**2.0)) * post_trade_in_reserves_with_fees_applied
-                - invariant**2.0
-            )
-        )
-    ) / one_minus_lam_underscore_times_trig_squared[token_in]
     amount_out = post_trade_in_reserves_with_fees_applied - t_prime[token_out]
     overall_trade = jnp.zeros(2)
     overall_trade = overall_trade.at[token_in].set(amount_in)
@@ -610,8 +594,6 @@ def _jax_calc_gyroscope_reserves_with_dynamic_fees_and_trades_scan_function_usin
         Array of reserves changes.
     """
 
-    # carry_list[0] is previous prices
-    prev_prices = carry_list[0]
 
     # carry_list[1] is previous reserves
     prev_reserves = carry_list[1]
@@ -625,9 +607,7 @@ def _jax_calc_gyroscope_reserves_with_dynamic_fees_and_trades_scan_function_usin
     arb_fees = input_list[3]
     trade = input_list[4]
 
-    fees_are_being_charged = gamma != 1.0
 
-    current_value = (prev_reserves * prices).sum()
 
     _, reserves = _jax_calc_gyroscope_reserves_with_fees_scan_function(
         [prev_reserves],
@@ -731,7 +711,6 @@ def _jax_calc_gyroscope_reserves_with_dynamic_inputs(
     jnp.ndarray
         The reserves array, indicating the changes in reserves over time.
     """
-    n = prices.shape[0]
 
     initial_prices = prices[0]
 

@@ -49,21 +49,28 @@ import optuna
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner, PercentilePruner, HyperbandPruner, SuccessiveHalvingPruner
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Tuple, Callable, Union
+from typing import Dict, List, Optional, Any, Tuple, Callable
 from copy import deepcopy
 from datetime import datetime
-import json
-import warnings
 import traceback
 
 from quantammsim.runners.training_evaluator import (
     TrainingEvaluator,
     EvaluationResult,
-    ExistingRunnerWrapper,
 )
 from quantammsim.core_simulator.param_utils import recursive_default_set
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.runners.metric_extraction import extract_cycle_metric
+
+
+def _is_degenerate(value) -> bool:
+    """True if value is None, NaN, or inf. Negative finite values are valid."""
+    if value is None:
+        return True
+    try:
+        return not np.isfinite(value)
+    except (TypeError, ValueError):
+        return True
 
 
 # =============================================================================
@@ -672,14 +679,24 @@ def create_objective(
                 if enable_pruning:
                     trial.report(intermediate_value, step=cycle_eval.cycle_number)
 
-                    # Aggressive pruning: prune if oos_returns_over_hodl is non-positive or NaN
-                    # This catches obviously broken training early without waiting for Optuna's pruner
-                    oos_roh = cycle_eval.oos_returns_over_hodl
-                    if oos_roh is None or (isinstance(oos_roh, float) and np.isnan(oos_roh)) or oos_roh <= 0:
+                    # Sanity check: prune only if core metrics are degenerate (NaN/None/inf).
+                    # Negative-but-finite returns are normal in some market regimes.
+                    # The PercentilePruner handles relative performance filtering.
+                    _oos_sharpe = cycle_eval.oos_sharpe
+                    _oos_roh = cycle_eval.oos_returns_over_hodl
+                    if _is_degenerate(_oos_sharpe) and _is_degenerate(_oos_roh):
                         if verbose:
                             print(f"Trial {trial.number} pruned at cycle {cycle_eval.cycle_number}: "
-                                  f"non-positive OOS metrics (sharpe={cycle_eval.oos_sharpe:.4f}, "
-                                  f"returns_over_hodl={oos_roh}, intermediate={intermediate_value:.4f})")
+                                  f"degenerate OOS metrics (sharpe={_oos_sharpe}, "
+                                  f"returns_over_hodl={_oos_roh})")
+                        raise optuna.TrialPruned()
+
+                    # Also prune if running objective is -inf (all cycles so far
+                    # produced non-finite values for the target metric)
+                    if intermediate_value == float("-inf"):
+                        if verbose:
+                            print(f"Trial {trial.number} pruned at cycle {cycle_eval.cycle_number}: "
+                                  f"intermediate objective is -inf")
                         raise optuna.TrialPruned()
 
                     # Check if trial should be pruned (Optuna's percentile/median pruner)

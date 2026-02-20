@@ -1,6 +1,14 @@
+"""Optimal arbitrage computation for n-asset G3M pools.
+
+Computes the profit-maximising arbitrage trade for a Geometric Mean
+Market Maker with an arbitrary number of assets. Enumerates trade-
+direction signatures (which tokens flow in vs out), constructs the
+closed-form optimal trade for each signature, and selects the most
+profitable. Supports pre-computation and vmapping for efficient use
+inside the simulation scan loop.
+"""
 
 import numpy as np
-from itertools import product
 
 from functools import partial
 

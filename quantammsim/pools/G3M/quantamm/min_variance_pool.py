@@ -1,9 +1,18 @@
+"""Minimum-variance portfolio pool for QuantAMM.
+
+Allocates weights inversely proportional to each asset's EWMA return variance
+(diagonal-covariance minimum-variance portfolio). The strategy outputs weights
+directly rather than weight changes, producing a risk-parity-like allocation
+that tilts toward lower-volatility assets.
+
+Key parameters: ``logit_lamb`` (EWMA decay for variance estimation).
+"""
 # again, this only works on startup!
 from jax import config
 
 config.update("jax_enable_x64", True)
 from jax import default_backend
-from jax import local_device_count, devices
+from jax import devices
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -15,16 +24,13 @@ else:
     config.update("jax_platform_name", "cpu")
 
 import jax.numpy as jnp
-from jax import jit, vmap
-from jax import devices, device_put
+from jax import jit
+from jax import devices
 from jax import tree_util
-from jax.lax import stop_gradient, dynamic_slice
 
 from quantammsim.pools.G3M.quantamm.TFMM_base_pool import TFMMBasePool
 from quantammsim.core_simulator.param_utils import (
     memory_days_to_lamb,
-    lamb_to_memory_days_clipped,
-    calc_lamb,
 )
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
     calc_return_variances,
@@ -32,7 +38,6 @@ from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
 
 from typing import Dict, Any, Optional
 from functools import partial
-from abc import abstractmethod
 import numpy as np
 
 # import the fine weight output function which has pre-set argument rule_outputs_are_weights
@@ -254,7 +259,6 @@ class MinVariancePool(TFMMBasePool):
         )
 
         logit_lamb_np = np.log(initial_lamb / (1.0 - initial_lamb))
-        logit_lamb = np.array([[logit_lamb_np] * n_assets] * n_parameter_sets)
 
         # lamb delta is the difference in lamb needed for
         # lamb + delta lamb to give a final memory length
@@ -268,10 +272,7 @@ class MinVariancePool(TFMMBasePool):
         logit_lamb_plus_delta_lamb_np = np.log(
             initial_lamb_plus_delta_lamb / (1.0 - initial_lamb_plus_delta_lamb)
         )
-        logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np
-        logit_delta_lamb = np.array(
-            [[logit_delta_lamb_np] * n_assets] * n_parameter_sets
-        )
+        logit_delta_lamb_np = logit_lamb_plus_delta_lamb_np - logit_lamb_np  # noqa: F841
 
         memory_days_1 = process_initial_values(
             initial_values_dict, "initial_memory_length", n_assets, n_parameter_sets
@@ -297,6 +298,7 @@ class MinVariancePool(TFMMBasePool):
     def process_parameters(cls, update_rule_parameters, run_fingerprint):
         """Process Min Variance pool parameters from web interface input."""
         result = {}
+        n_assets = len(run_fingerprint["tokens"])
 
         # Find memory_days parameter
         for urp in update_rule_parameters:
@@ -304,8 +306,8 @@ class MinVariancePool(TFMMBasePool):
                 memory_days = []
                 for tokenValue in urp.value:
                     memory_days.append(tokenValue)
-                if len(memory_days) != len(run_fingerprint["tokens"]):
-                    memory_days = [memory_days[0]] * len(run_fingerprint["tokens"])
+                if len(memory_days) != n_assets:
+                    memory_days = [memory_days[0]] * n_assets
                 memory_days = np.array(memory_days)
                 # Set both memory_days parameters to the same value
                 result["memory_days_1"] = memory_days  # for variance calculation

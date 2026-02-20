@@ -1,9 +1,20 @@
+"""Mean-reversion channel pool for QuantAMM.
+
+Implements a channel-based mean-reversion strategy where weight updates are
+driven by a Gaussian-enveloped, power-law-exponentiated price gradient signal.
+Inside the channel (small price deviations) the strategy reverts; outside
+(large deviations) the response saturates smoothly.
+
+Key parameters: ``width`` (channel half-width), ``amplitude`` (reversion
+strength), ``exponents`` (per-asset power-law shaping), ``logit_lamb`` (EWMA
+memory length).
+"""
 # again, this only works on startup!
 from jax import config
 
 config.update("jax_enable_x64", True)
 from jax import default_backend
-from jax import local_device_count, devices
+from jax import devices
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -15,22 +26,18 @@ else:
     config.update("jax_platform_name", "cpu")
 
 import jax.numpy as jnp
-from jax import jit, vmap
-from jax import devices, device_put
+from jax import jit
+from jax import devices
 from jax import tree_util
-from jax.lax import stop_gradient, dynamic_slice
 
 from quantammsim.pools.G3M.quantamm.momentum_pool import (
     MomentumPool,
-    _jax_momentum_weight_update,
 )
 from quantammsim.core_simulator.param_utils import (
     memory_days_to_lamb,
     lamb_to_memory_days_clipped,
     calc_lamb,
     inverse_squareplus_np,
-    get_raw_value,
-    get_log_amplitude,
     jax_memory_days_to_lamb,
 )
 from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimators import (
@@ -49,9 +56,6 @@ import numpy as np
 
 # import the fine weight output function which has pre-set argument rule_outputs_are_themselves_weights
 # as this is False for momentum pools --- the strategy outputs weight _changes_
-from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
-    calc_fine_weight_output_from_weight_changes,
-)
 
 
 @jit

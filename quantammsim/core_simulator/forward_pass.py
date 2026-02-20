@@ -93,7 +93,7 @@ def _apply_price_noise(prices, sigma, seed_int):
 
 
 def _daily_log_sharpe(values: jnp.ndarray) -> jnp.ndarray:
-    """Annualized Sharpe ratio computed on daily log returns.
+    r"""Annualized Sharpe ratio computed on daily log returns.
 
     This is the **default training metric** (``return_val='daily_log_sharpe'``).
     It subsamples the minute-resolution value series at daily intervals (every 1440
@@ -480,7 +480,7 @@ def _calculate_calmar_ratio(value_over_time, duration=None):
 
 
 def _calculate_ulcer_index(value_over_time, duration=7 * 24 * 60):
-    """Calculate (negated) Ulcer Index on a chunked basis.
+    r"""Calculate (negated) Ulcer Index on a chunked basis.
 
     The Ulcer Index measures downside risk considering both depth and duration of
     drawdowns, defined as the root-mean-square of percentage drawdowns from peak:
@@ -707,40 +707,19 @@ def forward_pass(
     gas_cost_array=None,
     arb_fees_array=None,
     pool=None,
-    static_dict={
-        "bout_length": 1000,
-        "maximum_change": 1.0,
-        "n_assets": 3,
-        "chunk_period": 60,
-        "weight_interpolation_period": 60,
-        "return_val": "reserves",
-        "rule": "momentum",
-        "run_type": "normal",
-        "max_memory_days": 365.0,
-        "initial_pool_value": 1000000.0,
-        "fees": 0.0,
-        "use_alt_lamb": False,
-        "use_pre_exp_scaling": True,
-        "arb_fees": 0.0,
-        "gas_cost": 0.0,
-        "all_sig_variations": None,
-        "weight_interpolation_method": "linear",
-        "training_data_kind": "historic",
-        "arb_frequency": 1,
-        "do_trades": False,
-    },
+    static_dict=None,
 ):
     """
     Simulates a forward pass of a liquidity pool using specified parameters and market data.
 
-    This function models the behavior of a liquidity pool over a given period, 
+    This function models the behavior of a liquidity pool over a given period,
     considering various factors such as fees, gas costs, and arbitrage fees.
     It calculates reserves and other metrics based on the provided parameters and market prices.
 
     Parameters
     ----------
     params : dict
-        A dictionary containing the parameters for the simulation, 
+        A dictionary containing the parameters for the simulation,
         such as initial weights and other configuration settings.
 
     start_index : array-like
@@ -829,6 +808,29 @@ def forward_pass(
     >>> forward_pass(params, start_index, prices, pool=my_pool)
     {'reserves': array([...])}
     """
+    if static_dict is None:
+        static_dict = {
+            "bout_length": 1000,
+            "maximum_change": 1.0,
+            "n_assets": 3,
+            "chunk_period": 60,
+            "weight_interpolation_period": 60,
+            "return_val": "reserves",
+            "rule": "momentum",
+            "run_type": "normal",
+            "max_memory_days": 365.0,
+            "initial_pool_value": 1000000.0,
+            "fees": 0.0,
+            "use_alt_lamb": False,
+            "use_pre_exp_scaling": True,
+            "arb_fees": 0.0,
+            "gas_cost": 0.0,
+            "all_sig_variations": None,
+            "weight_interpolation_method": "linear",
+            "training_data_kind": "historic",
+            "arb_frequency": 1,
+            "do_trades": False,
+        }
 
     # 'pool' has default of None only to handle how partial function
     # evaluation works with jitted functions in jax. If no pool is provided
@@ -899,7 +901,7 @@ def forward_pass(
             reserves,
             static_dict["arb_frequency"],
             axis=0,
-            total_repeat_length=local_prices.shape[0],
+            total_repeat_length=bout_length - 1,
         )
 
     if return_val == "reserves":
@@ -971,28 +973,7 @@ def forward_pass_nograd(
     gas_cost_array=None,
     arb_fees_array=None,
     pool=None,
-    static_dict={
-        "bout_length": 1000,
-        "maximum_change": 1.0,
-        "n_assets": 3,
-        "chunk_period": 60,
-        "weight_interpolation_period": 60,
-        "return_val": "reserves",
-        "rule": "momentum",
-        "run_type": "normal",
-        "max_memory_days": 365.0,
-        "initial_pool_value": 1000000.0,
-        "fees": 0.0,
-        "use_alt_lamb": False,
-        "use_pre_exp_scaling": True,
-        "arb_fees": 0.0,
-        "gas_cost": 0.0,
-        "all_sig_variations": None,
-        "weight_interpolation_method": "linear",
-        "training_data_kind": "historic",
-        "arb_frequency": 1,
-        "do_trades": False,
-    },
+    static_dict=None,
 ):
     """
     Simulates a forward pass of a liquidity pool without gradient tracking

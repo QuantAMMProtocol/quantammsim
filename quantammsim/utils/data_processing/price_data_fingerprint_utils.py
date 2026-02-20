@@ -70,8 +70,6 @@ def load_run_fingerprints(results_dir):
     """
     json_files = glob.glob(os.path.join(results_dir, "*.json"))
     run_fingerprints = []
-    n_files = len(json_files)
-    counter = 0
     json_files.sort()
     for json_file in json_files:
         with open(json_file) as f:
@@ -84,12 +82,16 @@ def load_run_fingerprints(results_dir):
 
 def load_price_data_if_fingerprints_match(
     run_fingerprints,
-    base_keys_to_check=["tokens"],
-    optimisation_keys_to_check=["training_data_kind", "max_mc_version"],
+    base_keys_to_check=None,
+    optimisation_keys_to_check=None,
     root=None,
     verbose=False,
     token_override=None,
 ):
+    if base_keys_to_check is None:
+        base_keys_to_check = ["tokens"]
+    if optimisation_keys_to_check is None:
+        optimisation_keys_to_check = ["training_data_kind", "max_mc_version"]
     if check_if_run_fingerprints_have_same_values(
         run_fingerprints, base_keys_to_check
     ) and check_if_run_fingerprints_have_same_values(
@@ -114,7 +116,6 @@ def load_price_data_if_fingerprints_match(
         unique_tokens = list(set(all_tokens))
         unique_tokens.sort()
 
-        max_memory_days = 365.0
         np.random.seed(0)
         if verbose:
             print("loading data for all run fingerprints")
@@ -124,6 +125,9 @@ def load_price_data_if_fingerprints_match(
             )
             return price_data
         elif run_fingerprint["optimisation_settings"]["training_data_kind"] == "mc":
+            list_of_tickers = unique_tokens
+            mc_data_available_for = []  # TODO: populate from data directory scan
+            cols = ["close"]
             mc_tokens = [
                 value for value in list_of_tickers if value in mc_data_available_for
             ]
@@ -132,7 +136,7 @@ def load_price_data_if_fingerprints_match(
             ]
             price_data_mc = get_historic_csv_data_w_versions(
                 mc_tokens,
-                ["close"],
+                cols,
                 root,
                 max_verion=run_fingerprint["optimisation_settings"]["max_mc_version"],
             )
@@ -147,16 +151,20 @@ def load_price_data_if_fingerprints_match(
 
 def load_price_data_if_fingerprints_in_dir_match(
     results_dir,
-    base_keys_to_check=[
-        "tokens",
-        "startDateString",
-        "endDateString",
-        "endTestDateString",
-    ],
-    optimisation_keys_to_check=["training_data_kind", "max_mc_version"],
+    base_keys_to_check=None,
+    optimisation_keys_to_check=None,
     root=None,
     verbose=False,
 ):
+    if base_keys_to_check is None:
+        base_keys_to_check = [
+            "tokens",
+            "startDateString",
+            "endDateString",
+            "endTestDateString",
+        ]
+    if optimisation_keys_to_check is None:
+        optimisation_keys_to_check = ["training_data_kind", "max_mc_version"]
     run_fingerprints = load_run_fingerprints(results_dir)
     return load_price_data_if_fingerprints_match(
         run_fingerprints, base_keys_to_check, optimisation_keys_to_check, root, verbose

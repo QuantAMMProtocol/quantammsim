@@ -26,6 +26,8 @@ dependencies = [
     "Historic-Crypto",
     "bidask",
     "optax",
+    "jsonpickle",
+    "flask_cors",
 ]
 
 [project.optional-dependencies]

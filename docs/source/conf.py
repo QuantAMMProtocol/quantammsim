@@ -22,7 +22,7 @@ ForwardRef._evaluate = _do_not_evaluate_in_jax
 
 # Project information
 project = "quantammsim"
-copyright = "2025, QuantAMM.fi"
+copyright = "2025-2026, QuantAMM.fi"
 author = "QuantAMM.fi team"
 version = "0.1"
 release = "0.1"

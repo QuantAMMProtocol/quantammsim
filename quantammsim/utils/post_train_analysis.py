@@ -9,14 +9,130 @@ Includes:
 
 import numpy as np
 import jax.numpy as jnp
-from typing import Dict, List, Tuple, Optional
+from jax import jit, vmap
+from typing import Dict, Optional
 from scipy import stats
-from quantammsim.core_simulator.forward_pass import _calculate_return_value
+from quantammsim.core_simulator.forward_pass import (
+    _daily_log_sharpe,
+    _calculate_ulcer_index,
+    _calculate_calmar_ratio,
+    _calculate_sterling_ratio,
+)
+
+
+# Ordered keys for the fused metric array returned by _compute_all_metrics_jit.
+_METRIC_KEYS = (
+    "sharpe", "jax_sharpe", "daily_log_sharpe", "return",
+    "returns_over_hodl", "returns_over_uniform_hodl",
+    "annualised_returns", "annualised_returns_over_hodl",
+    "annualised_returns_over_uniform_hodl",
+    "ulcer", "calmar", "sterling",
+)
+
+
+@jit
+def _compute_all_metrics_jit(value, reserves, prices):
+    """Compute all 12 scalar evaluation metrics in a single fused kernel.
+
+    Replaces 12 separate eager dispatches + 12 device→host syncs with
+    one JIT'd dispatch. Returns (12-element scalar array, daily_returns array).
+    daily_returns stays on device — no sync until post-training analysis needs it.
+    """
+    initial_reserves = reserves[0]
+    n_minutes = value.shape[0] - 1
+    n_assets = reserves.shape[1]
+
+    # Minute-level returns (for jax_sharpe)
+    pool_returns = jnp.diff(value) / value[:-1]
+
+    # Daily-sampled Sharpe ("sharpe" key — arithmetic returns, daily sampling)
+    daily_values = value[::24 * 60]
+    daily_returns = jnp.diff(daily_values) / daily_values[:-1]
+    daily_std = daily_returns.std()
+    sharpe = jnp.where(
+        daily_std > 1e-12,
+        jnp.sqrt(365) * daily_returns.mean() / daily_std,
+        0.0,
+    )
+
+    # Minute-frequency Sharpe ("jax_sharpe")
+    jax_sharpe = jnp.sqrt(365 * 24 * 60) * pool_returns.mean() / pool_returns.std()
+
+    # Daily log Sharpe (default training metric)
+    daily_log_sharpe = _daily_log_sharpe(value)
+
+    # Returns
+    returns = value[-1] / value[0] - 1.0
+
+    # Annualised returns
+    annualised_returns = (
+        (value[-1] / value[0]) ** (365 * 24 * 60 / n_minutes) - 1.0
+    )
+
+    # Returns over HODL
+    hodl_value = (initial_reserves * prices[-1]).sum()
+    returns_over_hodl = value[-1] / hodl_value - 1.0
+    annualised_returns_over_hodl = (
+        (value[-1] / hodl_value) ** (365 * 24 * 60 / n_minutes) - 1.0
+    )
+
+    # Returns over uniform HODL
+    uniform_hodl_reserves = (
+        (initial_reserves * prices[0]).sum() / (n_assets * prices[0])
+    )
+    uniform_hodl_value = (uniform_hodl_reserves * prices[-1]).sum()
+    returns_over_uniform_hodl = value[-1] / uniform_hodl_value - 1.0
+    annualised_returns_over_uniform_hodl = (
+        (value[-1] / uniform_hodl_value) ** (365 * 24 * 60 / n_minutes) - 1.0
+    )
+
+    # Drawdown-based metrics
+    ulcer = _calculate_ulcer_index(value, duration=30 * 24 * 60)
+    calmar = _calculate_calmar_ratio(value)
+    sterling = _calculate_sterling_ratio(value, duration=30 * 24 * 60)
+
+    scalars = jnp.array([
+        sharpe, jax_sharpe, daily_log_sharpe, returns,
+        returns_over_hodl, returns_over_uniform_hodl,
+        annualised_returns, annualised_returns_over_hodl,
+        annualised_returns_over_uniform_hodl,
+        ulcer, calmar, sterling,
+    ])
+
+    return scalars, daily_returns
+
+
+# Vmapped version: one dispatch computes metrics for all param sets.
+# in_axes=(0, 0, None) — batch value & reserves over param sets, broadcast prices.
+# Returns: ((n_param_sets, 12), (n_param_sets, n_days))
+_compute_all_metrics_batched = jit(vmap(
+    _compute_all_metrics_jit,
+    in_axes=(0, 0, None),
+))
+
+
+def metrics_arr_to_dicts(metrics_arr, daily_returns_arr=None):
+    """Convert (n_param_sets, 12) metrics array to list of dicts.
+
+    Used at display/save boundaries where downstream code expects the
+    original dict-per-param-set format.  Transfers the whole array to
+    host in one shot then indexes with numpy (avoids per-scalar JAX
+    dispatch overhead).
+    """
+    arr_np = np.asarray(metrics_arr)
+    n = arr_np.shape[0]
+    result = []
+    for i in range(n):
+        d = {k: float(arr_np[i, j]) for j, k in enumerate(_METRIC_KEYS)}
+        if daily_returns_arr is not None:
+            d["daily_returns"] = np.asarray(daily_returns_arr[i])
+        result.append(d)
+    return result
 
 
 def calculate_period_metrics(results_dict, prices=None):
     """Calculate performance metrics for a given period.
-    
+
     Parameters
     ----------
     results_dict : dict
@@ -24,109 +140,19 @@ def calculate_period_metrics(results_dict, prices=None):
     prices : array-like, optional
         Price data. If not provided, will look for prices in results_dict
     """
-    # Use provided prices if available, otherwise get from results_dict
     price_data = prices if prices is not None else results_dict["prices"]
+    value = results_dict["value"]
+    reserves = results_dict["reserves"]
 
-    sharpe = _calculate_return_value(
-        "sharpe",
-        results_dict["reserves"],
-        price_data,
-        results_dict["value"],
-    )
-    returns = _calculate_return_value(
-        "returns",
-        results_dict["reserves"],
-        price_data,
-        results_dict["value"],
-    )
-    returns_over_hodl = _calculate_return_value(
-        "returns_over_hodl",
-        results_dict["reserves"],
-        price_data,
-        results_dict["value"],
-        initial_reserves=results_dict["reserves"][0],
-    )
-    returns_over_uniform_hodl = _calculate_return_value(
-        "returns_over_uniform_hodl",
-        results_dict["reserves"],
-        price_data,
-        results_dict["value"],
-        initial_reserves=results_dict["reserves"][0],
-    )
-    annualised_returns = _calculate_return_value(
-        "annualised_returns",
-        results_dict["reserves"],
-        price_data,
-        results_dict["value"],
-    )
-    annualised_returns_over_hodl = _calculate_return_value(
-        "annualised_returns_over_hodl",
-        results_dict["reserves"],
-        price_data,
-        results_dict["value"],
-        initial_reserves=results_dict["reserves"][0],
-    )
-    annualised_returns_over_uniform_hodl = _calculate_return_value(
-        "annualised_returns_over_uniform_hodl",
-        results_dict["reserves"],
-        price_data,
-        results_dict["value"],
-        initial_reserves=results_dict["reserves"][0],
-    )
-    daily_returns = (
-        jnp.diff(results_dict["value"][::24 * 60])
-        / results_dict["value"][::24 * 60][:-1]
-    )
-    daily_std = daily_returns.std()
-    daily_sharpe = jnp.where(
-        daily_std > 1e-12,
-        jnp.sqrt(365) * daily_returns.mean() / daily_std,
-        0.0,
-    )
+    # Single JIT'd dispatch: 12 scalars + daily_returns in one kernel.
+    # Everything stays on device as JAX arrays — zero device→host sync.
+    # Syncs happen lazily only when host values are actually needed
+    # (early stopping comparisons, JSON serialization at end of training).
+    metrics_arr, daily_returns = _compute_all_metrics_jit(value, reserves, price_data)
 
-    daily_log_sharpe = _calculate_return_value(
-        "daily_log_sharpe",
-        results_dict["reserves"],
-        price_data,
-        results_dict["value"],
-    )
-
-    ulcer_index = _calculate_return_value(
-        "ulcer",
-        results_dict["reserves"],
-        price_data,
-        results_dict["value"],
-        initial_reserves=results_dict["reserves"][0],
-    )
-    calmar_ratio = _calculate_return_value(
-        "calmar",
-        results_dict["reserves"],
-        price_data,
-        results_dict["value"],
-        initial_reserves=results_dict["reserves"][0],
-    )
-    sterling_ratio = _calculate_return_value(
-        "sterling",
-        results_dict["reserves"],
-        price_data,
-        results_dict["value"],
-        initial_reserves=results_dict["reserves"][0],
-    )
-    return {
-        "sharpe": float(daily_sharpe),
-        "jax_sharpe": float(sharpe),
-        "daily_log_sharpe": float(daily_log_sharpe),
-        "return": float(returns),
-        "returns_over_hodl": float(returns_over_hodl),
-        "returns_over_uniform_hodl": float(returns_over_uniform_hodl),
-        "annualised_returns": float(annualised_returns),
-        "annualised_returns_over_hodl": float(annualised_returns_over_hodl),
-        "annualised_returns_over_uniform_hodl": float(annualised_returns_over_uniform_hodl),
-        "ulcer": float(ulcer_index),
-        "calmar": float(calmar_ratio),
-        "sterling": float(sterling_ratio),
-        "daily_returns": np.asarray(daily_returns, dtype=np.float64),
-    }
+    result = {k: metrics_arr[i] for i, k in enumerate(_METRIC_KEYS)}
+    result["daily_returns"] = daily_returns
+    return result
 
 def calculate_continuous_test_metrics(continuous_results, train_len, test_len, prices):
     """Calculate metrics for continuous test period.
@@ -509,9 +535,6 @@ def decompose_pool_returns(
     values = np.asarray(values, dtype=np.float64)
     reserves = np.asarray(reserves, dtype=np.float64)
     prices = np.asarray(prices, dtype=np.float64)
-
-    T = len(values)
-    n_assets = reserves.shape[1] if reserves.ndim > 1 else 1
 
     # Pool return
     pool_return = values[-1] / values[0] - 1.0

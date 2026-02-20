@@ -5,8 +5,8 @@ This module provides simulation runners and utilities for running AMM simulation
 """
 
 try:
-    import jax
-    import jax.numpy as jnp
+    import jax  # noqa: F401
+    import jax.numpy as jnp  # noqa: F401
     from jax import config
 
     config.update("jax_enable_x64", True)
@@ -16,7 +16,7 @@ except ImportError as e:
     ) from e
 
 try:
-    import numpy as np
+    import numpy as np  # noqa: F401
 except ImportError as e:
     raise ImportError("NumPy is required for runners.") from e
 

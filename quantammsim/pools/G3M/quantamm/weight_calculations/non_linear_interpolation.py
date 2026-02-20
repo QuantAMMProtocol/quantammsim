@@ -1,4 +1,10 @@
-from jax import jit
+"""Approximately optimal (non-linear) weight interpolation.
+
+Blends a linear ramp with a geometric interpolation path between coarse
+weight updates, following the method in "Optimal Rebalancing in Dynamic AMMs"
+(Willetts & Harrington, 2024, https://arxiv.org/abs/2403.18737). The combined
+path reduces arbitrage loss compared to naive linear interpolation.
+"""
 import jax.numpy as jnp
 
 

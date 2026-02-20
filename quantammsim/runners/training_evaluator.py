@@ -81,10 +81,9 @@ import jax.numpy as jnp
 from jax import jit
 from jax.tree_util import Partial
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Any, Callable, Union, Generator
+from typing import List, Dict, Tuple, Optional, Any, Callable, Generator
 from copy import deepcopy
 from datetime import datetime
-from functools import partial
 
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.core_simulator.param_utils import recursive_default_set
@@ -95,7 +94,7 @@ from quantammsim.runners.jax_runner_utils import (
     get_sig_variations,
 )
 from quantammsim.utils.post_train_analysis import calculate_period_metrics
-from quantammsim.utils.data_processing.historic_data_utils import get_data_dict
+from quantammsim.utils.data_processing.historic_data_utils import get_data_dict, get_historic_parquet_data
 from quantammsim.pools.creator import create_pool
 from quantammsim.core_simulator.forward_pass import forward_pass_nograd
 
@@ -299,6 +298,7 @@ class TrainerWrapper:
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
         test_end_date: Optional[str] = None,
+        price_data=None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Train and return (params, metadata).
 
@@ -342,6 +342,7 @@ class FunctionWrapper(TrainerWrapper):
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
         test_end_date: Optional[str] = None,
+        price_data=None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         return self.fn(
             data_dict=data_dict,
@@ -392,6 +393,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
         test_end_date: Optional[str] = None,
+        price_data=None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Call the existing runner.
@@ -406,6 +408,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
                 pool, run_fingerprint, n_assets, warm_start_params,
                 warm_start_weights,
                 train_start_date, train_end_date, test_end_date,
+                price_data=price_data,
             )
         elif self.runner_name == "multi_period_sgd":
             return self._run_multi_period_sgd(
@@ -429,6 +432,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
         train_start_date: Optional[str],
         train_end_date: Optional[str],
         test_end_date: Optional[str] = None,
+        price_data=None,
     ) -> Tuple[Dict, Dict]:
         """Adapter for train_on_historic_data."""
         from datetime import datetime, timedelta
@@ -473,6 +477,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
             root=self.root,
             warm_start_params=warm_start_params,
             warm_start_weights=warm_start_weights,
+            price_data=price_data,
         )
 
         # Unpack (params, metadata) tuple - both SGD and optuna return this format
@@ -616,6 +621,7 @@ class RandomBaselineWrapper(TrainerWrapper):
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
         test_end_date: Optional[str] = None,
+        price_data=None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Return random parameters (ignores warm-start and date strings)."""
         rng = np.random.RandomState(self.seed + self._call_count)
@@ -712,12 +718,7 @@ class RandomBaselineWrapper(TrainerWrapper):
         test_metrics : dict
             Metric dict for the test window.
         """
-        from jax import jit
-        from functools import partial as Partial
-        from quantammsim.core_simulator.forward_pass import forward_pass_nograd
-        from quantammsim.runners.jax_runner_utils import Hashabledict, create_static_dict
-        from quantammsim.runners.jax_runners import get_sig_variations
-        from quantammsim.utils.post_train_analysis import calculate_period_metrics, calculate_continuous_test_metrics
+        from quantammsim.utils.post_train_analysis import calculate_continuous_test_metrics
 
         all_sig_variations = get_sig_variations(n_assets)
 
@@ -1012,15 +1013,26 @@ class TrainingEvaluator:
         if self.verbose:
             print(f"\nLoading data: {run_fingerprint['startDateString']} → {last_test_end}")
 
+        # Load raw parquet DataFrame once — passed to train_on_historic_data via
+        # price_data= so each cycle skips redundant disk I/O.
+        data_kind = run_fingerprint["optimisation_settings"]["training_data_kind"]
+        if data_kind in ("historic", "step"):
+            raw_price_data = get_historic_parquet_data(
+                sorted(unique_tokens), cols=["close"], root=self.root,
+            )
+        else:
+            raw_price_data = None
+
         data_dict = get_data_dict(
             unique_tokens,
             run_fingerprint,
-            data_kind=run_fingerprint["optimisation_settings"]["training_data_kind"],
+            data_kind=data_kind,
             max_memory_days=run_fingerprint["max_memory_days"],
             start_date_string=run_fingerprint["startDateString"],
             end_time_string=last_test_end,
             do_test_period=False,
             root=self.root,
+            price_data=raw_price_data,
         )
 
         if self.verbose:
@@ -1053,6 +1065,7 @@ class TrainingEvaluator:
                 train_start_date=cycle.train_start_date,
                 train_end_date=cycle.train_end_date,
                 test_end_date=cycle.test_end_date,
+                price_data=raw_price_data,
             )
 
             # Handle training failure (e.g., all inner Optuna trials failed)
@@ -1507,7 +1520,7 @@ class TrainingEvaluator:
             if result.adjusted_mean_oos_sharpe is not None:
                 print(f"Adjusted Sharpe:  {result.adjusted_mean_oos_sharpe:.4f}")
 
-        print(f"\n--- Verdict ---")
+        print("\n--- Verdict ---")
         print(f"Effective: {'YES' if result.is_effective else 'NO'}")
         for reason in result.effectiveness_reasons:
             print(f"  • {reason}")

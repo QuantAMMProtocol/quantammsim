@@ -1,3 +1,10 @@
+"""Reserve calculations for CoW AMM (FM-AMM) pools.
+
+Provides JAX-based functions for computing CoW AMM reserves over time,
+following the FM-AMM paper. Includes perfect-arbitrage and single-
+arbitrageur rebalancing models, with support for fees, arbitrage
+thresholds, noise traders, and dynamic inputs via ``jax.lax.scan``.
+"""
 from functools import partial
 
 import math
@@ -6,12 +13,11 @@ import numpy as np
 
 
 # again, this only works on startup!
-from jax import config, jit, vmap
+from jax import jit, vmap
 import jax.numpy as jnp
 from jax.lax import scan
 from jax.tree_util import Partial
 
-from functools import partial
 
 from quantammsim.pools.FM_AMM.FMAMM_trades import jitted_FMAMM_cond_trade
 from quantammsim.pools.noise_trades import calculate_reserves_after_noise_trade
@@ -316,7 +322,6 @@ def _jax_calc_cowamm_reserves_with_fees(
     n_assets = prices.shape[1]
     assert n_assets == 2
 
-    n = prices.shape[0]
 
     initial_prices = prices[0]
 
@@ -488,7 +493,6 @@ def _jax_calc_cowamm_reserves_one_arb_with_fees(
     n_assets = prices.shape[1]
     assert n_assets == 2
 
-    n = prices.shape[0]
 
     initial_prices = prices[0]
 
@@ -551,7 +555,6 @@ def _jax_calc_cowamm_reserves_one_arb_zero_fees_scan_function(
     prev_reserves = carry_list[0]
 
     # first find quoted price
-    current_price = prev_reserves[1] / prev_reserves[0]
 
     prev_product = prev_reserves[0] * prev_reserves[1]
 
@@ -616,7 +619,6 @@ def _jax_calc_cowamm_reserves_one_arb_zero_fees(
     n_assets = prices.shape[1]
     assert n_assets == 2
 
-    initial_prices = prices[0]
 
     scan_fn = Partial(
         _jax_calc_cowamm_reserves_one_arb_zero_fees_scan_function,
@@ -718,8 +720,6 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
         Array of reserves.
     """
 
-    # carry_list[0] is previous prices
-    prev_prices = carry_list[0]
 
     # carry_list[1] is previous reserves
     prev_reserves = carry_list[1]

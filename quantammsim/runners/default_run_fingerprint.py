@@ -84,6 +84,7 @@ run_fingerprint_defaults = {
     "return_val": "daily_log_sharpe",
     "initial_pool_value": 1000000.0,
     "fees": 0.0,
+    "protocol_fee_split": 0.0,  # fraction of swap fees diverted from LP reserves to protocol treasury
     "arb_fees": 0.0,
     "gas_cost": 0.0,
     "use_alt_lamb": False,
