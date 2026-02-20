@@ -33,7 +33,7 @@ CMA-ES-specific (~4D):
   - cma_es_n_evaluation_points: Fitness averaging (5-50)
   - cma_es_n_generations: Budget per restart (50-500)
   - cma_es_sigma0: Initial step size (0.1-2.0) — the ONE CMA-ES hyperparameter
-  - n_parameter_sets: Number of independent restarts (1-32)
+  - n_parameter_sets: Number of independent restarts (1-8)
 
 Training window / constraints (~4D):
   - bout_offset_days: Window timing
@@ -96,7 +96,7 @@ FEES = 0.0
 ARB_FEES = 0.0
 
 STUDY_DIR = Path(__file__).parent / "hyperparam_studies"
-STUDY_NAME = "eth_usdc_innercmaes_v2"
+STUDY_NAME = "eth_usdc_innercmaes_v3"
 
 
 # =============================================================================
@@ -157,7 +157,7 @@ def create_search_space(cycle_days: int = 180) -> HyperparamSpace:
     # CMA-ES explores within each restart via population, so fewer restarts
     # needed than BFGS — but restarts still help with widely separated basins.
     space.params["n_parameter_sets"] = {
-        "low": 1, "high": 32, "log": False, "type": "int",
+        "low": 1, "high": 8, "log": False, "type": "int",
     }
 
     # noise_scale: std of Gaussian perturbation to initial params for
@@ -285,7 +285,7 @@ def create_base_fingerprint() -> dict:
 def probe_cmaes_max_lambda(
     base_fp: dict,
     n_wfa_cycles: int = 4,
-    max_lam: int = 1024,
+    max_lam: int = 128,
     probe_n_eval: int = None,
     probe_bout_offset: int = None,
     probe_val_fraction: float = None,
