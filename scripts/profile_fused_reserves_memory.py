@@ -77,7 +77,8 @@ class MemoryResult:
     use_fused: bool
     n_parameter_sets: int
     n_eval_points: int
-    months: int
+    actual_n_eval: int = 0
+    months: int = 0
     bout_length: int = 0
     # From compiled.memory_analysis()
     temp_bytes: int = 0
@@ -135,7 +136,9 @@ def build_fingerprint(
         "arb_frequency": 1,
         "minimum_weight": 0.01,
         "max_memory_days": 365,
-        "bout_offset": 0,
+        # bout_offset must be > 0 so generate_evaluation_points has room
+        # for multiple distinct eval windows (available_range = bout_offset)
+        "bout_offset": 2 * n_eval_points,
         "return_val": "daily_log_sharpe",
         "optimisation_settings": {
             "method": "bfgs",
@@ -337,21 +340,21 @@ def time_execution(compiled_vg, flat_x0, flops, reps=5):
 # ── Display ───────────────────────────────────────────────────────────────────
 
 def print_header(execute=False):
-    hdr = (f"{'mode':>7} {'months':>6} {'n_sets':>6} {'n_eval':>6} {'bout':>7} "
+    hdr = (f"{'mode':>7} {'months':>6} {'n_sets':>6} {'n_eval':>6} {'actual':>6} {'bout':>7} "
            f"{'temp_MB':>10} {'arg_MB':>10} "
            f"{'GFLOP':>10} {'compile_s':>10}")
     if execute:
         hdr += f" {'vg_ms':>10} {'GFLOP/s':>10}"
     hdr += f" {'status':>8}"
     print(hdr)
-    print("-" * (83 + (22 if execute else 0)))
+    print("-" * (90 + (22 if execute else 0)))
 
 
 def print_row(r: MemoryResult, execute=False):
     if not r.error:
         gflop = r.flops / 1e9 if r.flops else 0
         row = (f"{r.fused_label:>7} {r.months:>6} {r.n_parameter_sets:>6} "
-               f"{r.n_eval_points:>6} {r.bout_length:>7} "
+               f"{r.n_eval_points:>6} {r.actual_n_eval:>6} {r.bout_length:>7} "
                f"{r.temp_mb:>10.1f} {r.argument_mb:>10.1f} "
                f"{gflop:>10.2f} {r.compile_time_s:>10.1f}")
         if execute:
@@ -360,7 +363,7 @@ def print_row(r: MemoryResult, execute=False):
         print(row)
     else:
         row = (f"{r.fused_label:>7} {r.months:>6} {r.n_parameter_sets:>6} "
-               f"{r.n_eval_points:>6} {r.bout_length:>7} "
+               f"{r.n_eval_points:>6} {r.actual_n_eval:>6} {r.bout_length:>7} "
                f"{'':>10} {'':>10} "
                f"{'':>10} {r.compile_time_s:>10.1f}")
         if execute:
@@ -439,6 +442,8 @@ def profile_config(
          n_sets, bout_length_window) = setup
 
         result.bout_length = bout_length_window
+        result.actual_n_eval = fixed_start_indexes.shape[0]
+        actual_n_eval = result.actual_n_eval
 
         # Clear JIT cache to get independent compilation
         clear_caches()
@@ -464,7 +469,8 @@ def profile_config(
         gflop = result.flops / 1e9
         print(f"  [{mode}] temp={result.temp_mb:.1f} MB, "
               f"flops={gflop:.2f} GFLOP, "
-              f"bout={bout_length_window}")
+              f"bout={bout_length_window}, "
+              f"actual_n_eval={actual_n_eval}")
 
         # Execution timing
         if execute and not result.error:
