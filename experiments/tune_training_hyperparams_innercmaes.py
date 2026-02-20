@@ -285,7 +285,8 @@ def probe_cmaes_max_lambda(
     max_lam: int = 1024,
     probe_n_eval: int = None,
     probe_bout_offset: int = None,
-    safety_factor: float = 1.0,
+    probe_val_fraction: float = None,
+    safety_factor: float = 0.9,
     verbose: bool = True,
 ) -> Optional[int]:
     """Probe GPU memory to find the largest CMA-ES λ that fits.
@@ -302,14 +303,20 @@ def probe_cmaes_max_lambda(
     n_eval independently through different XLA mechanisms (constant-folded
     data vs working memory), so a linear budget model doesn't hold.
 
-    Probe conditions should be worst-case for memory:
+    Probe conditions should be worst-case for memory.  Memory scales as
+    ``n_eval_actual × bout_length_window × n_assets``, so worst case is
+    the largest product of eval points and window length:
 
-    - ``probe_n_eval``: max from search space (most eval points = most
-      constant-folded price data).
-    - ``probe_bout_offset``: set to max n_eval (minutes).  Just large
-      enough that eval points are distinct (avoiding the bout_offset=0
-      trap where all points collapse and XLA deduplicates), while keeping
-      ``bout_length_window ≈ bout_length`` — the worst case for memory.
+    - ``probe_n_eval``: **max** from search space (most eval points in
+      the vmap).
+    - ``probe_val_fraction``: **min** from search space.  Smaller
+      val_fraction → longer effective training window → longer
+      ``bout_length_window`` → more memory per eval point.
+    - ``probe_bout_offset``: **small** — just enough that
+      ``generate_evaluation_points`` produces distinct eval windows
+      (``available_range = bout_offset``, need ``~2 × n_eval`` for
+      full dedup).  A *large* offset shrinks ``bout_length_window``
+      and *reduces* memory — the opposite of what we want.
     - ``n_parameter_sets=1``: restarts are a Python loop, don't multiply
       memory.
 
@@ -319,12 +326,18 @@ def probe_cmaes_max_lambda(
         ``n_evaluation_points`` for the probe.  Should be the **maximum**
         from the search space.  If None, uses the base fingerprint's value.
     probe_bout_offset : int, optional
-        ``bout_offset`` in minutes for the probe.  Should equal max n_eval
-        so eval points are distinct but ``bout_length_window ≈ bout_length``
-        (worst-case memory).  If None, uses the base fingerprint's value.
+        ``bout_offset`` in minutes for the probe.  Should be *small* —
+        just enough for distinct eval windows (``~2 × max_n_eval``).
+        A large offset shrinks ``bout_length_window`` and underestimates
+        peak memory.  If None, uses the base fingerprint's value.
+    safety_factor : float
+    probe_val_fraction : float, optional
+        ``val_fraction`` for the probe.  Should be the **minimum** from the
+        search space — smaller val_fraction → longer effective training
+        window → more memory.  If None, uses the base fingerprint's value.
     safety_factor : float
         Multiply max_λ by this factor to allow headroom for XLA compilation
-        variance across different trial configs.  Default 0.8.
+        variance across different trial configs.  Default 0.9.
 
     Returns
     -------
@@ -356,22 +369,26 @@ def probe_cmaes_max_lambda(
     probe_fp["endDateString"] = cycle.train_end_date
     probe_fp["endTestDateString"] = cycle.test_end_date
     probe_fp["optimisation_settings"]["n_parameter_sets"] = 1
-    probe_fp["optimisation_settings"]["val_fraction"] = 0.0
     probe_fp["optimisation_settings"]["cma_es_settings"]["n_generations"] = 1
     if probe_n_eval is not None:
         probe_fp["optimisation_settings"]["cma_es_settings"]["n_evaluation_points"] = probe_n_eval
     if probe_bout_offset is not None:
         probe_fp["bout_offset"] = probe_bout_offset
+    if probe_val_fraction is not None:
+        probe_fp["optimisation_settings"]["val_fraction"] = probe_val_fraction
+    else:
+        probe_fp["optimisation_settings"]["val_fraction"] = 0.0
 
     n_eval = probe_fp["optimisation_settings"]["cma_es_settings"]["n_evaluation_points"]
     bout_offset_mins = probe_fp["bout_offset"]
+    val_frac = probe_fp["optimisation_settings"]["val_fraction"]
 
     if verbose:
         print(f"[CMA-ES] Probing GPU memory for max λ...")
         print(f"[CMA-ES] Probe window: {cycle.train_start_date} → {cycle.train_end_date} "
               f"(1 of {n_wfa_cycles} WFA cycles)")
         print(f"[CMA-ES] Probe n_eval={n_eval}, bout_offset={bout_offset_mins}min, "
-              f"safety={safety_factor}, max_lam={max_lam}")
+              f"val_fraction={val_frac}, safety={safety_factor}, max_lam={max_lam}")
 
     # Load price data once — get_data_dict slices per fingerprint dates.
     tokens = get_unique_tokens(probe_fp)
@@ -429,7 +446,7 @@ def probe_cmaes_max_lambda(
         print(f"\n[CMA-ES] Memory probe results:")
         print(f"  Raw max λ: {best_lam}")
         print(f"  Safe λ (×{safety_factor}): {safe_lam}")
-        print(f"  (n_eval={n_eval}, bout_offset={bout_offset_mins}min)")
+        print(f"  (n_eval={n_eval}, bout_offset={bout_offset_mins}min, val_fraction={val_frac})")
 
     return safe_lam
 
@@ -460,16 +477,24 @@ def run_tuning(
     base_fp = create_base_fingerprint()
 
     # Probe GPU memory once at startup to find the max safe λ.
-    # Probe at worst-case memory conditions:
-    # - max n_eval from search space (most constant-folded price data)
-    # - bout_offset = max_n_eval minutes (just enough for distinct eval points
-    #   while keeping bout_length_window ≈ bout_length — true worst case)
+    # Worst case for memory = largest (n_eval × bout_length_window) product:
+    # - max n_eval (most eval points in the vmap)
+    # - min val_fraction (longest effective training window)
+    # - small bout_offset: just enough that generate_evaluation_points
+    #   produces distinct eval windows (available_range = bout_offset,
+    #   need ~2×n_eval for full dedup), while keeping bout_length_window
+    #   as long as possible.  A LARGE offset shrinks the window and
+    #   reduces memory — the opposite of what we want.
     search_space = create_search_space(cycle_days=cycle_days)
     max_n_eval = search_space.params["cma_es_n_evaluation_points"]["high"]
+    min_val_fraction = search_space.params["val_fraction"]["low"]
+    # Enough offset for distinct eval points, no more
+    probe_offset_minutes = 2 * max_n_eval
     max_lambda = probe_cmaes_max_lambda(
         base_fp, n_wfa_cycles=n_wfa_cycles,
         probe_n_eval=max_n_eval,
-        probe_bout_offset=max_n_eval,  # minutes — minimal spread, max window size
+        probe_bout_offset=probe_offset_minutes,
+        probe_val_fraction=min_val_fraction,
         verbose=True,
     )
     if max_lambda is not None:
