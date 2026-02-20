@@ -27,8 +27,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
 export XLA_PYTHON_CLIENT_MEM_FRACTION="$MEM_FRAC"
 
 echo "================================================"
@@ -42,7 +40,7 @@ echo "================================================"
 
 echo ""
 echo "=== CMA-ES ==="
-python "$SCRIPT_DIR/tune_training_hyperparams_innercmaes.py" \
+python tune_training_hyperparams_innercmaes.py \
     --n-trials "$N_TRIALS" \
     --n-wfa-cycles "$N_WFA" \
     --objective "$OBJECTIVE" \
@@ -50,7 +48,7 @@ python "$SCRIPT_DIR/tune_training_hyperparams_innercmaes.py" \
 
 echo ""
 echo "=== BFGS ==="
-python "$SCRIPT_DIR/tune_training_hyperparams_innerbfgs.py" \
+python tune_training_hyperparams_innerbfgs.py \
     --n-trials "$N_TRIALS" \
     --n-wfa-cycles "$N_WFA" \
     --objective "$OBJECTIVE" \
