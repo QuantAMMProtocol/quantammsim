@@ -393,7 +393,7 @@ def probe_cmaes_max_lambda(
         print(f"[CMA-ES] Probing GPU memory for max λ...")
         print(f"[CMA-ES] Probe window: {cycle.train_start_date} → {cycle.train_end_date} "
               f"(1 of {n_wfa_cycles} WFA cycles)")
-        print(f"[CMA-ES] Probe n_eval={n_eval}, n_sets={max_n_sets}, "
+        print(f"[CMA-ES] Probe n_eval={n_eval}, n_sets={probe_max_n_sets}, "
               f"bout_offset={bout_offset_mins}min, "
               f"val_fraction={val_frac}, safety={safety_factor}, max_lam={max_lam}")
 
