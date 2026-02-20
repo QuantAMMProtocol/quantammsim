@@ -99,6 +99,8 @@ run_fingerprint_defaults = {
     "minimum_weight": None,  # will be set to 0.1 / n_assets
     "ste_max_change": False,
     "ste_min_max_weight": False,
+    "use_fused_reserves": True,  # Fused chunked reserve path: ~89% memory reduction, ~2.3x speedup
+    "checkpoint_fused": "scan",  # "none", "vmap", or "scan" — scan gives best memory savings
     "weight_calculation_method": "auto",  # "auto", "vectorized", or "scan"
     # Learnable bounds settings - for per-asset min/max weight constraints
     # Control is via rule string prefix (e.g., "bounded__momentum")

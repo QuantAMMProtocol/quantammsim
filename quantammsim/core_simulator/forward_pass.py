@@ -988,7 +988,7 @@ def forward_pass(
         start_index = start_index[0:2]
 
     # --- Fused chunked reserve path (opt-in, zero-fees only) ---
-    use_fused = static_dict.get("use_fused_reserves", False)
+    use_fused = static_dict.get("use_fused_reserves", True)
     if (
         use_fused
         and hasattr(pool, "supports_fused_reserves")
@@ -1006,6 +1006,7 @@ def forward_pass(
         )
         and 1440 % static_dict["chunk_period"] == 0  # chunk_period divides metric_period
         and not pool._rule_outputs_are_weights  # only delta-based pools validated
+        and static_dict["bout_length"] > 1440 * 2  # need ≥2 metric periods
     ):
         fused_result = pool.calculate_fused_reserves_zero_fees(
             params, static_dict, prices, start_index,

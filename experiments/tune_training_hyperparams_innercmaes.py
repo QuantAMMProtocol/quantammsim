@@ -33,7 +33,7 @@ CMA-ES-specific (~4D):
   - cma_es_n_evaluation_points: Fitness averaging (5-50)
   - cma_es_n_generations: Budget per restart (50-500)
   - cma_es_sigma0: Initial step size (0.1-2.0) — the ONE CMA-ES hyperparameter
-  - n_parameter_sets: Number of independent restarts (1-4)
+  - n_parameter_sets: Number of independent restarts (1-32)
 
 Training window / constraints (~4D):
   - bout_offset_days: Window timing
@@ -157,7 +157,7 @@ def create_search_space(cycle_days: int = 180) -> HyperparamSpace:
     # CMA-ES explores within each restart via population, so fewer restarts
     # needed than BFGS — but restarts still help with widely separated basins.
     space.params["n_parameter_sets"] = {
-        "low": 1, "high": 4, "log": False, "type": "int",
+        "low": 1, "high": 32, "log": False, "type": "int",
     }
 
     # noise_scale: std of Gaussian perturbation to initial params for
@@ -272,6 +272,9 @@ def create_base_fingerprint() -> dict:
     # Training objective
     fp["return_val"] = "daily_log_sharpe"
 
+    # Fused chunked reserves: ~89% memory reduction, ~2.3x speedup
+    fp["use_fused_reserves"] = True
+
     return fp
 
 
@@ -286,6 +289,7 @@ def probe_cmaes_max_lambda(
     probe_n_eval: int = None,
     probe_bout_offset: int = None,
     probe_val_fraction: float = None,
+    probe_max_n_sets: int = 1,
     safety_factor: float = 0.9,
     verbose: bool = True,
 ) -> Optional[int]:
@@ -317,8 +321,8 @@ def probe_cmaes_max_lambda(
       (``available_range = bout_offset``, need ``~2 × n_eval`` for
       full dedup).  A *large* offset shrinks ``bout_length_window``
       and *reduces* memory — the opposite of what we want.
-    - ``n_parameter_sets=1``: restarts are a Python loop, don't multiply
-      memory.
+    - ``n_parameter_sets``: set to **max** from search space — restarts
+      are vmapped in parallel and multiply memory proportionally.
 
     Parameters
     ----------
@@ -368,7 +372,9 @@ def probe_cmaes_max_lambda(
     probe_fp["startDateString"] = cycle.train_start_date
     probe_fp["endDateString"] = cycle.train_end_date
     probe_fp["endTestDateString"] = cycle.test_end_date
-    probe_fp["optimisation_settings"]["n_parameter_sets"] = 1
+    # Restarts are vmapped — probe with max n_parameter_sets to ensure
+    # the chosen λ fits when all restarts run in parallel.
+    probe_fp["optimisation_settings"]["n_parameter_sets"] = probe_max_n_sets
     probe_fp["optimisation_settings"]["cma_es_settings"]["n_generations"] = 1
     if probe_n_eval is not None:
         probe_fp["optimisation_settings"]["cma_es_settings"]["n_evaluation_points"] = probe_n_eval
@@ -387,7 +393,8 @@ def probe_cmaes_max_lambda(
         print(f"[CMA-ES] Probing GPU memory for max λ...")
         print(f"[CMA-ES] Probe window: {cycle.train_start_date} → {cycle.train_end_date} "
               f"(1 of {n_wfa_cycles} WFA cycles)")
-        print(f"[CMA-ES] Probe n_eval={n_eval}, bout_offset={bout_offset_mins}min, "
+        print(f"[CMA-ES] Probe n_eval={n_eval}, n_sets={max_n_sets}, "
+              f"bout_offset={bout_offset_mins}min, "
               f"val_fraction={val_frac}, safety={safety_factor}, max_lam={max_lam}")
 
     # Load price data once — get_data_dict slices per fingerprint dates.
@@ -488,6 +495,7 @@ def run_tuning(
     search_space = create_search_space(cycle_days=cycle_days)
     max_n_eval = search_space.params["cma_es_n_evaluation_points"]["high"]
     min_val_fraction = search_space.params["val_fraction"]["low"]
+    max_n_sets = search_space.params["n_parameter_sets"]["high"]
     # Enough offset for distinct eval points, no more
     probe_offset_minutes = 2 * max_n_eval
     max_lambda = probe_cmaes_max_lambda(
@@ -495,6 +503,7 @@ def run_tuning(
         probe_n_eval=max_n_eval,
         probe_bout_offset=probe_offset_minutes,
         probe_val_fraction=min_val_fraction,
+        probe_max_n_sets=max_n_sets,
         verbose=True,
     )
     if max_lambda is not None:

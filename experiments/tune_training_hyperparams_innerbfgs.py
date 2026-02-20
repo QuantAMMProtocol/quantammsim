@@ -289,7 +289,7 @@ def create_base_fingerprint() -> dict:
         "maxiter": 100,
         "tol": 1e-6,
         "n_evaluation_points": 20,
-        "compute_dtype": "float32",
+        "compute_dtype": "float64",
     }
 
     # --- Conservative initial strategy params ---
@@ -304,6 +304,9 @@ def create_base_fingerprint() -> dict:
 
     # Training objective: daily_log_sharpe by default
     fp["return_val"] = "daily_log_sharpe"
+
+    # Fused chunked reserves: ~89% memory reduction, ~2.3x speedup
+    fp["use_fused_reserves"] = True
 
     return fp
 
