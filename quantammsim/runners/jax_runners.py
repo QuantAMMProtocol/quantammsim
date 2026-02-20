@@ -2306,6 +2306,7 @@ def _train_on_historic_data_impl(
         # Standalone jitted version kept for any verbose/diagnostic use
         eval_population = jit(eval_fn_raw)
 
+        @jit
         def _run_one_restart(flat_x0, rng_key):
             state = init_cmaes(flat_x0, sigma0)
             return run_cmaes(state, rng_key, eval_fn_raw, cma_params, n_generations, tol)
@@ -2313,32 +2314,31 @@ def _train_on_historic_data_impl(
         # Keep initial params for saving
         initial_params = deepcopy(params)
 
-        # vmap over restarts — all run in parallel inside a single XLA program.
-        # Each restart has its own while_loop; XLA fuses them.
-        all_flat_x0_stacked = jnp.stack(all_flat_x0)  # (n_parameter_sets, n_flat)
-        all_rng_keys = jnp.stack([
-            random.key(
-                run_fingerprint["optimisation_settings"]["initial_random_key"] + i
+        # Sequential loop over restarts (different x0 per restart).
+        # Population evaluation (lambda individuals) is already vmapped inside
+        # run_cmaes, so GPU parallelism is fully utilised per restart.
+        all_best_x = []
+        all_best_f = []
+        all_final_gen = []
+
+        for restart_idx in range(n_parameter_sets):
+            flat_x0 = all_flat_x0[restart_idx]
+            rng_key = random.key(
+                run_fingerprint["optimisation_settings"]["initial_random_key"] + restart_idx
             )
-            for i in range(n_parameter_sets)
-        ])
 
-        vmapped_run = jit(vmap(_run_one_restart))
+            state = _run_one_restart(flat_x0, rng_key)
 
-        if verbose:
-            print(f"[CMA-ES] Running {n_parameter_sets} restart(s) in parallel (vmapped)...")
+            all_best_x.append(state.best_x)
+            all_best_f.append(float(state.best_f))
+            all_final_gen.append(int(state.gen))
 
-        final_states = vmapped_run(all_flat_x0_stacked, all_rng_keys)
+            if verbose:
+                obj_val = -float(state.best_f)
+                print(f"  Restart {restart_idx}: objective={obj_val:+.6f} "
+                      f"(gen={int(state.gen)}, sigma={float(state.sigma):.4e})")
 
-        all_best_x = final_states.best_x  # (n_parameter_sets, n_flat)
-        all_best_f = final_states.best_f  # (n_parameter_sets,)
-        all_final_gen = final_states.gen   # (n_parameter_sets,)
-
-        if verbose:
-            for i in range(n_parameter_sets):
-                obj_val = -float(all_best_f[i])
-                print(f"  Restart {i}: objective={obj_val:+.6f} "
-                      f"(gen={int(all_final_gen[i])}, sigma={float(final_states.sigma[i]):.4e})")
+        all_best_x = jnp.stack(all_best_x)  # (n_parameter_sets, n_flat)
         optimized_params_list = [unravel_fn(all_best_x[i]) for i in range(n_parameter_sets)]
         optimized_params = {}
         for k in optimized_params_list[0].keys():
@@ -2483,7 +2483,7 @@ def _train_on_historic_data_impl(
         if return_training_metadata:
             metadata = {
                 "method": "cma_es",
-                "epochs_trained": int(jnp.max(all_final_gen)),
+                "epochs_trained": max(all_final_gen),
 
                 # Best metrics (from tracker)
                 "best_train_metrics": tracker_results["best_train_metrics"],
@@ -2508,7 +2508,7 @@ def _train_on_historic_data_impl(
                 "selection_metric": tracker_results["selection_metric"],
 
                 # Legacy fields
-                "final_objective": float(-jnp.min(all_best_f)),
+                "final_objective": float(-min(all_best_f)),
                 "final_train_metrics": tracker_results["best_train_metrics"],
                 "final_continuous_test_metrics": tracker_results["best_continuous_test_metrics"],
                 "final_weights": tracker_results["best_final_weights"][best_idx] if tracker_results["best_final_weights"] is not None else None,
@@ -2520,8 +2520,8 @@ def _train_on_historic_data_impl(
                 "checkpoint_returns": None,
 
                 # CMA-ES-specific
-                "generations_per_restart": [int(g) for g in all_final_gen],
-                "objective_per_restart": [float(-f) for f in all_best_f],
+                "generations_per_restart": all_final_gen,
+                "objective_per_restart": [-f for f in all_best_f],
             }
             return selected_params, metadata
         return selected_params

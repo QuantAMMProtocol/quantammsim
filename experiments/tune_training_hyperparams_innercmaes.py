@@ -289,7 +289,6 @@ def probe_cmaes_max_lambda(
     probe_n_eval: int = None,
     probe_bout_offset: int = None,
     probe_val_fraction: float = None,
-    probe_max_n_sets: int = 1,
     safety_factor: float = 0.9,
     verbose: bool = True,
 ) -> Optional[int]:
@@ -321,8 +320,8 @@ def probe_cmaes_max_lambda(
       (``available_range = bout_offset``, need ``~2 × n_eval`` for
       full dedup).  A *large* offset shrinks ``bout_length_window``
       and *reduces* memory — the opposite of what we want.
-    - ``n_parameter_sets``: set to **max** from search space — restarts
-      are vmapped in parallel and multiply memory proportionally.
+    - ``n_parameter_sets=1``: restarts are sequential, don't multiply
+      memory.
 
     Parameters
     ----------
@@ -372,9 +371,7 @@ def probe_cmaes_max_lambda(
     probe_fp["startDateString"] = cycle.train_start_date
     probe_fp["endDateString"] = cycle.train_end_date
     probe_fp["endTestDateString"] = cycle.test_end_date
-    # Restarts are vmapped — probe with max n_parameter_sets to ensure
-    # the chosen λ fits when all restarts run in parallel.
-    probe_fp["optimisation_settings"]["n_parameter_sets"] = probe_max_n_sets
+    probe_fp["optimisation_settings"]["n_parameter_sets"] = 1
     probe_fp["optimisation_settings"]["cma_es_settings"]["n_generations"] = 1
     if probe_n_eval is not None:
         probe_fp["optimisation_settings"]["cma_es_settings"]["n_evaluation_points"] = probe_n_eval
@@ -393,7 +390,7 @@ def probe_cmaes_max_lambda(
         print(f"[CMA-ES] Probing GPU memory for max λ...")
         print(f"[CMA-ES] Probe window: {cycle.train_start_date} → {cycle.train_end_date} "
               f"(1 of {n_wfa_cycles} WFA cycles)")
-        print(f"[CMA-ES] Probe n_eval={n_eval}, n_sets={probe_max_n_sets}, "
+        print(f"[CMA-ES] Probe n_eval={n_eval}, "
               f"bout_offset={bout_offset_mins}min, "
               f"val_fraction={val_frac}, safety={safety_factor}, max_lam={max_lam}")
 
@@ -495,7 +492,6 @@ def run_tuning(
     search_space = create_search_space(cycle_days=cycle_days)
     max_n_eval = search_space.params["cma_es_n_evaluation_points"]["high"]
     min_val_fraction = search_space.params["val_fraction"]["low"]
-    max_n_sets = search_space.params["n_parameter_sets"]["high"]
     # Enough offset for distinct eval points, no more
     probe_offset_minutes = 2 * max_n_eval
     max_lambda = probe_cmaes_max_lambda(
@@ -503,7 +499,6 @@ def run_tuning(
         probe_n_eval=max_n_eval,
         probe_bout_offset=probe_offset_minutes,
         probe_val_fraction=min_val_fraction,
-        probe_max_n_sets=max_n_sets,
         verbose=True,
     )
     if max_lambda is not None:
