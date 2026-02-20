@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 def import_st0x_data(file_path):

@@ -2,12 +2,11 @@ import numpy as np
 import pandas as pd
 import os.path
 import os
-import pyarrow as pa
 import matplotlib.pyplot as plt
 import dask.dataframe as dd
 
 from Historic_Crypto import Cryptocurrencies, HistoricalData
-from datetime import datetime, timezone
+from datetime import datetime
 from importlib import resources as impresources
 from quantammsim import data
 from pathlib import Path
@@ -23,6 +22,7 @@ from quantammsim.utils.data_processing.coinbase_data_utils import (
 from quantammsim.utils.data_processing.amalgamated_data_utils import (
     fill_missing_rows_with_historical_data,
     forward_fill_ohlcv_data,
+    import_crypto_historical_data,
 )
 from quantammsim.utils.data_processing.cmc_data_utils import (
     fill_missing_rows_with_cmc_historical_data,
@@ -40,9 +40,6 @@ from quantammsim.utils.data_processing.minute_daily_conversion_utils import (
 )
 from quantammsim.utils.data_processing.datetime_utils import (
     datetime_to_unixtimestamp,
-    unixtimestamp_to_datetime,
-    unixtimestamp_to_minute_datetime,
-    unixtimestamp_to_midnight_datetime,
     unixtimestamp_to_precise_datetime,
     pddatetime_to_unixtimestamp,
 )
@@ -740,9 +737,7 @@ def update_historic_data(token, root):
         root (str): Root directory path
     """
     outputPath = root + "combined_data/"
-    outputMinutePath = outputPath + token + "_USD.csv"
     parquetPath = outputPath + token + "_USD.parquet"
-    path = root + "concat_binance_data/" + token + "_USD.csv"
     minutePath = outputPath + token + "_USD.csv"
     dailyPath = outputPath + token + "_USD_daily.csv"
     hourlyPath = outputPath + token + "_USD_hourly.csv"
@@ -790,7 +785,6 @@ def update_historic_data(token, root):
         )
         if historical_years:
             print(f"Found historical data years for {token}: {historical_years}")
-            available_years = historical_years
             concated_df = import_crypto_historical_data(
                 token, root + "historical_data/"
             )
@@ -1075,8 +1069,10 @@ def createMissingDataFrameFromClosePrices(startUnix, closePrices, token):
 
 
 def get_historic_parquet_data(
-    list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
+    list_of_tickers, cols=None, root=None, start_time_unix=None, end_time_unix=None
 ):
+    if cols is None:
+        cols = ["close"]
     firstTicker = list_of_tickers[0]
     filename = firstTicker + "_USD.parquet"
     renamedCols = [col + "_" + firstTicker for col in cols]
@@ -1118,8 +1114,10 @@ def get_historic_parquet_data(
 
 
 def get_historic_csv_data(
-    list_of_tickers, cols=["close"], root=None, start_time_unix=None, end_time_unix=None
+    list_of_tickers, cols=None, root=None, start_time_unix=None, end_time_unix=None
 ):
+    if cols is None:
+        cols = ["close"]
     firstTicker = list_of_tickers[0]
     # print('cwd: ', os.getcwd())
     filename = firstTicker + "_USD.csv"
@@ -1198,8 +1196,10 @@ def get_stub_historic_close_csv_data(
 
 
 def get_historic_csv_data_w_versions(
-    list_of_tickers, cols=["close"], root=None, max_verion=9
+    list_of_tickers, cols=None, root=None, max_verion=9
 ):
+    if cols is None:
+        cols = ["close"]
     tickers_data = []
 
     version = 0
@@ -1734,7 +1734,6 @@ def get_historic_data(
     )
 
     cleaned_data = []
-    raise_exception = 0
     for d in data:
         # make array of times as timestamps
         unix_timestamps = pddatetime_to_unixtimestamp(d.index)
@@ -1748,6 +1747,5 @@ def get_historic_data(
                 period=period,
             )
         )
-        raise_exception = 1
 
     return np.array(cleaned_data).T

@@ -16,6 +16,7 @@ from quantammsim.runners.hyperparam_tuner import (
     quick_tune,
     tune_for_robustness,
     create_objective,
+    _is_degenerate,
 )
 from quantammsim.runners.training_evaluator import (
     TrainingEvaluator,
@@ -33,23 +34,28 @@ class TestHyperparamSpace:
     """Tests for the hyperparameter search space."""
 
     def test_default_sgd_space_has_expected_params(self):
-        """Default SGD space should include lr, batch_size, etc."""
+        """Default SGD space should include lr, n_iterations, etc. (batch_size is now fixed)."""
         space = HyperparamSpace.default_sgd_space()
 
         assert "base_lr" in space.params
-        assert "batch_size" in space.params
         assert "n_iterations" in space.params
         assert "bout_offset_days" in space.params
+        assert "maximum_change" in space.params
+        assert "turnover_penalty" in space.params
+        # batch_size is now fixed from domain knowledge
+        assert "batch_size" not in space.params
 
         # Check lr is log-scaled
         assert space.params["base_lr"]["log"] is True
 
     def test_default_adam_space_has_expected_params(self):
-        """Default Adam space should include lr, batch_size."""
+        """Default Adam space should include lr, n_iterations (batch_size is now fixed)."""
         space = HyperparamSpace.default_adam_space()
 
         assert "base_lr" in space.params
-        assert "batch_size" in space.params
+        assert "n_iterations" in space.params
+        # batch_size is now fixed from domain knowledge
+        assert "batch_size" not in space.params
         assert space.params["base_lr"]["log"] is True
 
     def test_default_multi_period_space_has_expected_params(self):
@@ -101,36 +107,29 @@ class TestHyperparamSpace:
         # 365-day cycle: max = 365 * 0.9 = 328 days
         assert space_365.params["bout_offset_days"]["high"] == int(365 * 0.9)
 
-    def test_lr_schedule_params_included(self):
-        """lr_schedule_type and warmup_fraction should be in default spaces."""
+    def test_lr_schedule_params_fixed_not_searched(self):
+        """lr_schedule_type and warmup_fraction should be fixed, not in search space."""
         space = HyperparamSpace.default_sgd_space()
 
-        assert "lr_schedule_type" in space.params
-        assert "choices" in space.params["lr_schedule_type"]
-        assert "constant" in space.params["lr_schedule_type"]["choices"]
-        assert "cosine" in space.params["lr_schedule_type"]["choices"]
-        assert "warmup_cosine" in space.params["lr_schedule_type"]["choices"]
-        assert "exponential" in space.params["lr_schedule_type"]["choices"]
+        # These are now fixed from domain knowledge
+        assert "lr_schedule_type" not in space.params
+        assert "warmup_fraction" not in space.params
+        # Verify they're in the fixed defaults
+        assert "lr_schedule_type" in HyperparamSpace.FIXED_TRAINING_DEFAULTS
 
-        assert "warmup_fraction" in space.params
-        assert space.params["warmup_fraction"]["low"] == 0.05
-        assert space.params["warmup_fraction"]["high"] == 0.3
-
-    def test_early_stopping_patience_included(self):
-        """early_stopping_patience should be in default spaces."""
+    def test_early_stopping_patience_fixed_not_searched(self):
+        """early_stopping_patience should be fixed, not in search space."""
         space = HyperparamSpace.default_adam_space()
 
-        assert "early_stopping_patience" in space.params
-        assert space.params["early_stopping_patience"]["type"] == "int"
-        assert space.params["early_stopping_patience"]["log"] is True
+        assert "early_stopping_patience" not in space.params
+        # early_stopping is fixed on
+        assert "early_stopping" in HyperparamSpace.FIXED_TRAINING_DEFAULTS
 
     def test_for_cycle_duration_factory(self):
         """for_cycle_duration should create properly scaled spaces."""
         space = HyperparamSpace.for_cycle_duration(
             cycle_days=120,
             runner="train_on_historic_data",
-            include_lr_schedule=True,
-            include_early_stopping=True,
         )
 
         # Check bout_offset_days scaling (in days)
@@ -138,39 +137,40 @@ class TestHyperparamSpace:
         assert space.params["bout_offset_days"]["low"] == 7
         assert space.params["bout_offset_days"]["high"] == int(120 * 0.9)
 
-        # Check optional params included
-        assert "lr_schedule_type" in space.params
-        assert "early_stopping_patience" in space.params
+        # These are now fixed, not searched
+        assert "lr_schedule_type" not in space.params
+        assert "early_stopping_patience" not in space.params
 
-    def test_for_cycle_duration_without_optional_params(self):
-        """for_cycle_duration should respect include flags."""
+    def test_for_cycle_duration_focused_space(self):
+        """for_cycle_duration should produce focused ~7D space."""
         space = HyperparamSpace.for_cycle_duration(
             cycle_days=120,
             runner="train_on_historic_data",
-            include_lr_schedule=False,
-            include_early_stopping=False,
-            include_weight_decay=False,
         )
 
+        # Fixed params should not appear in search space
         assert "lr_schedule_type" not in space.params
         assert "warmup_fraction" not in space.params
         assert "early_stopping_patience" not in space.params
         assert "use_weight_decay" not in space.params
         assert "weight_decay" not in space.params
+        assert "batch_size" not in space.params
+        assert "noise_scale" not in space.params
 
 
 class TestConditionalSampling:
     """Tests for conditional hyperparameter sampling."""
 
-    def test_weight_decay_is_conditional_on_use_weight_decay(self):
-        """weight_decay should only be sampled when use_weight_decay=True."""
+    def test_weight_decay_is_fixed_not_conditional(self):
+        """weight_decay is now fixed from domain knowledge, not in search space."""
         space = HyperparamSpace.default_sgd_space()
 
-        # Check spec structure
-        assert "use_weight_decay" in space.params
-        assert "weight_decay" in space.params
-        assert space.params["weight_decay"]["conditional_on"] == "use_weight_decay"
-        assert space.params["weight_decay"]["conditional_value"] is True
+        # Weight decay is fixed, not searched
+        assert "use_weight_decay" not in space.params
+        assert "weight_decay" not in space.params
+        # Verify it's in the fixed defaults
+        assert HyperparamSpace.FIXED_TRAINING_DEFAULTS["weight_decay"] == 0.01
+        assert HyperparamSpace.FIXED_TRAINING_DEFAULTS["use_weight_decay"] is True
 
     def test_softmin_temperature_is_conditional_on_aggregation(self):
         """softmin_temperature should only be sampled when aggregation='softmin'."""
@@ -181,15 +181,15 @@ class TestConditionalSampling:
         assert space.params["softmin_temperature"]["conditional_on"] == "aggregation"
         assert space.params["softmin_temperature"]["conditional_value"] == "softmin"
 
-    def test_warmup_fraction_is_conditional_on_lr_schedule(self):
-        """warmup_fraction should only be sampled when lr_schedule_type == 'warmup_cosine'."""
+    def test_warmup_fraction_is_fixed_not_searched(self):
+        """warmup_fraction and lr_schedule_type are fixed, not in search space."""
         space = HyperparamSpace.default_sgd_space()
 
-        assert "lr_schedule_type" in space.params
-        assert "warmup_fraction" in space.params
-        assert space.params["warmup_fraction"]["conditional_on"] == "lr_schedule_type"
-        # warmup_fraction only makes sense for warmup_cosine schedule
-        assert space.params["warmup_fraction"]["conditional_value"] == "warmup_cosine"
+        # Both are fixed from domain knowledge
+        assert "lr_schedule_type" not in space.params
+        assert "warmup_fraction" not in space.params
+        # lr_schedule is fixed to cosine
+        assert HyperparamSpace.FIXED_TRAINING_DEFAULTS["lr_schedule_type"] == "cosine"
 
     def test_suggest_excludes_weight_decay_when_disabled(self):
         """When use_weight_decay=False, weight_decay should not be in suggested."""
@@ -1126,6 +1126,214 @@ class TestNaNCycleDetection:
                 f"NaN in second cycle should prune trial, not complete. Got n_completed={result.n_completed}"
             assert result.n_pruned == 1, \
                 f"Trial should be marked as pruned. Got n_pruned={result.n_pruned}"
+
+
+class TestIsDegenerate:
+    """Unit tests for the _is_degenerate helper."""
+
+    def test_nan_is_degenerate(self):
+        assert _is_degenerate(float("nan")) is True
+
+    def test_inf_is_degenerate(self):
+        assert _is_degenerate(float("inf")) is True
+
+    def test_neg_inf_is_degenerate(self):
+        assert _is_degenerate(float("-inf")) is True
+
+    def test_none_is_degenerate(self):
+        assert _is_degenerate(None) is True
+
+    def test_negative_finite_is_not_degenerate(self):
+        assert _is_degenerate(-0.2) is False
+
+    def test_zero_is_not_degenerate(self):
+        assert _is_degenerate(0.0) is False
+
+    def test_positive_finite_is_not_degenerate(self):
+        assert _is_degenerate(1.5) is False
+
+    def test_np_nan_is_degenerate(self):
+        assert _is_degenerate(np.nan) is True
+
+    def test_np_inf_is_degenerate(self):
+        assert _is_degenerate(np.inf) is True
+
+
+class TestRelaxedPruning:
+    """Tests that negative-but-finite OOS metrics are NOT pruned."""
+
+    @pytest.fixture
+    def base_fingerprint(self):
+        """Base fingerprint for pruning tests."""
+        return {
+            "tokens": ["BTC", "ETH"],
+            "rule": "momentum",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
+            "chunk_period": 1440,
+            "bout_offset": 10080,
+            "weight_interpolation_period": 1440,
+            "optimisation_settings": {
+                "base_lr": 0.01,
+                "optimiser": "sgd",
+                "n_iterations": 3,
+                "training_data_kind": "historic",
+                "force_scalar": False,
+                "n_parameter_sets": 1,
+                "batch_size": 2,
+                "n_cycles": 1,
+            },
+            "initial_memory_length": 10.0,
+            "initial_memory_length_delta": 0.0,
+            "initial_k_per_day": 1.0,
+            "initial_weights_logits": 0.0,
+            "initial_log_amplitude": -5.0,
+            "initial_raw_width": 0.0,
+            "initial_raw_exponents": 0.0,
+            "initial_pre_exp_scaling": 0.001,
+            "maximum_change": 0.001,
+            "return_val": "sharpe",
+            "initial_pool_value": 1000000.0,
+            "fees": 0.003,
+            "arb_fees": 0.0,
+            "gas_cost": 0.0,
+            "use_alt_lamb": False,
+            "use_pre_exp_scaling": True,
+            "weight_interpolation_method": "linear",
+            "arb_frequency": 1,
+            "do_arb": True,
+            "arb_quality": 1.0,
+            "numeraire": None,
+            "do_trades": False,
+            "noise_trader_ratio": 0.0,
+            "minimum_weight": 0.03,
+            "max_memory_days": 30,
+            "subsidary_pools": [],
+        }
+
+    def test_negative_oos_returns_over_hodl_not_pruned(self, base_fingerprint):
+        """Trial with negative but finite oos_returns_over_hodl should COMPLETE, not prune."""
+        def mock_evaluate_iter(self, fp):
+            cycle = CycleEvaluation(
+                cycle_number=0,
+                is_sharpe=0.5,
+                is_returns_over_hodl=-0.1,
+                oos_sharpe=0.3,
+                oos_returns_over_hodl=-0.2,  # Negative but finite — was wrongly pruned before
+                walk_forward_efficiency=0.6,
+                is_oos_gap=0.2,
+            )
+            yield cycle
+            return EvaluationResult(
+                trainer_name="test",
+                trainer_config={},
+                cycles=[cycle],
+                mean_wfe=0.6, mean_oos_sharpe=0.3, std_oos_sharpe=0.1,
+                worst_oos_sharpe=0.3, mean_is_oos_gap=0.2, is_effective=True,
+            )
+
+        with patch.object(TrainingEvaluator, 'evaluate_iter', mock_evaluate_iter):
+            tuner = HyperparamTuner(
+                runner_name="train_on_historic_data",
+                n_trials=1,
+                n_wfa_cycles=1,
+                hyperparam_space=HyperparamSpace.minimal_space(),
+                verbose=False,
+            )
+            result = tuner.tune(base_fingerprint)
+
+            assert result.n_completed == 1, \
+                f"Negative-but-finite oos_roh should complete, not prune. Got n_completed={result.n_completed}"
+            assert result.n_pruned == 0
+
+    def test_mixed_cycles_complete_with_negative_roh(self, base_fingerprint):
+        """Trial where cycle 0 has negative RoH, cycle 1 positive → should COMPLETE."""
+        def mock_evaluate_iter(self, fp):
+            cycle0 = CycleEvaluation(
+                cycle_number=0,
+                is_sharpe=0.5,
+                is_returns_over_hodl=-0.1,
+                oos_sharpe=0.3,
+                oos_returns_over_hodl=-0.15,  # Bear market cycle
+                walk_forward_efficiency=0.6,
+                is_oos_gap=0.2,
+            )
+            yield cycle0
+
+            cycle1 = CycleEvaluation(
+                cycle_number=1,
+                is_sharpe=1.2,
+                is_returns_over_hodl=0.3,
+                oos_sharpe=0.9,
+                oos_returns_over_hodl=0.1,  # Bull market cycle
+                walk_forward_efficiency=0.75,
+                is_oos_gap=0.3,
+            )
+            yield cycle1
+
+            return EvaluationResult(
+                trainer_name="test",
+                trainer_config={},
+                cycles=[cycle0, cycle1],
+                mean_wfe=0.675, mean_oos_sharpe=0.6, std_oos_sharpe=0.3,
+                worst_oos_sharpe=0.3, mean_is_oos_gap=0.25, is_effective=True,
+            )
+
+        with patch.object(TrainingEvaluator, 'evaluate_iter', mock_evaluate_iter):
+            tuner = HyperparamTuner(
+                runner_name="train_on_historic_data",
+                n_trials=1,
+                n_wfa_cycles=2,
+                hyperparam_space=HyperparamSpace.minimal_space(),
+                verbose=False,
+            )
+            result = tuner.tune(base_fingerprint)
+
+            assert result.n_completed == 1, \
+                f"Mixed pos/neg RoH cycles should complete. Got n_completed={result.n_completed}"
+            assert result.n_pruned == 0
+
+    def test_inf_intermediate_value_prunes_trial(self, base_fingerprint):
+        """Trial with oos_daily_log_sharpe=None (objective is -inf) should be PRUNED."""
+        def mock_evaluate_iter(self, fp):
+            # oos_sharpe and oos_roh are finite, so the degenerate-metrics check won't fire.
+            # But oos_daily_log_sharpe is None → extract_cycle_metric("mean_oos_daily_log_sharpe")
+            # returns -inf → the -inf intermediate check fires.
+            cycle = CycleEvaluation(
+                cycle_number=0,
+                is_sharpe=0.5,
+                is_returns_over_hodl=0.1,
+                oos_sharpe=0.3,
+                oos_returns_over_hodl=0.05,
+                walk_forward_efficiency=0.6,
+                is_oos_gap=0.2,
+                oos_daily_log_sharpe=None,  # Target metric is None
+            )
+            yield cycle
+            return EvaluationResult(
+                trainer_name="test",
+                trainer_config={},
+                cycles=[cycle],
+                mean_wfe=0.6, mean_oos_sharpe=0.3, std_oos_sharpe=0.1,
+                worst_oos_sharpe=0.3, mean_is_oos_gap=0.2, is_effective=True,
+            )
+
+        with patch.object(TrainingEvaluator, 'evaluate_iter', mock_evaluate_iter):
+            tuner = HyperparamTuner(
+                runner_name="train_on_historic_data",
+                n_trials=1,
+                n_wfa_cycles=1,
+                objective="mean_oos_daily_log_sharpe",
+                hyperparam_space=HyperparamSpace.minimal_space(),
+                verbose=False,
+            )
+            result = tuner.tune(base_fingerprint)
+
+            assert result.n_completed == 0, \
+                f"-inf intermediate should prune trial. Got n_completed={result.n_completed}"
+            assert result.n_pruned == 1, \
+                f"Trial should be pruned. Got n_pruned={result.n_pruned}"
 
 
 if __name__ == "__main__":

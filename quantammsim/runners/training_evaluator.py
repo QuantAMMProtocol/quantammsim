@@ -81,10 +81,9 @@ import jax.numpy as jnp
 from jax import jit
 from jax.tree_util import Partial
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Any, Callable, Union, Generator
+from typing import List, Dict, Tuple, Optional, Any, Callable, Generator
 from copy import deepcopy
 from datetime import datetime
-from functools import partial
 
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.core_simulator.param_utils import recursive_default_set
@@ -95,7 +94,7 @@ from quantammsim.runners.jax_runner_utils import (
     get_sig_variations,
 )
 from quantammsim.utils.post_train_analysis import calculate_period_metrics
-from quantammsim.utils.data_processing.historic_data_utils import get_data_dict
+from quantammsim.utils.data_processing.historic_data_utils import get_data_dict, get_historic_parquet_data
 from quantammsim.pools.creator import create_pool
 from quantammsim.core_simulator.forward_pass import forward_pass_nograd
 
@@ -191,6 +190,11 @@ class CycleEvaluation:
     train_end_date: Optional[str] = None
     test_start_date: Optional[str] = None
     test_end_date: Optional[str] = None
+    # OOS daily returns for downstream analysis (bootstrap CIs, DSR)
+    oos_daily_returns: Optional[List[float]] = None
+    # Regime tags for the test period
+    volatility_regime: Optional[str] = None  # low_vol / medium_vol / high_vol
+    trend_regime: Optional[str] = None       # bull / bear / sideways
     # Provenance: for debugging and linking to output files
     run_location: Optional[str] = None
     run_fingerprint: Optional[Dict[str, Any]] = None
@@ -246,6 +250,11 @@ class EvaluationResult:
     aggregate_rademacher: Optional[float] = None
     adjusted_mean_oos_sharpe: Optional[float] = None
 
+    # Bootstrap CI for OOS Sharpe (from concatenated OOS daily returns)
+    bootstrap_ci: Optional[Dict[str, float]] = None
+    # Concatenated OOS daily returns across all cycles (for DSR computation)
+    concatenated_oos_daily_returns: Optional[List[float]] = None
+
     # Verdict
     is_effective: bool = False
     effectiveness_reasons: List[str] = field(default_factory=list)
@@ -289,6 +298,7 @@ class TrainerWrapper:
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
         test_end_date: Optional[str] = None,
+        price_data=None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Train and return (params, metadata).
 
@@ -332,6 +342,7 @@ class FunctionWrapper(TrainerWrapper):
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
         test_end_date: Optional[str] = None,
+        price_data=None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         return self.fn(
             data_dict=data_dict,
@@ -382,6 +393,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
         test_end_date: Optional[str] = None,
+        price_data=None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Call the existing runner.
@@ -396,6 +408,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
                 pool, run_fingerprint, n_assets, warm_start_params,
                 warm_start_weights,
                 train_start_date, train_end_date, test_end_date,
+                price_data=price_data,
             )
         elif self.runner_name == "multi_period_sgd":
             return self._run_multi_period_sgd(
@@ -419,6 +432,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
         train_start_date: Optional[str],
         train_end_date: Optional[str],
         test_end_date: Optional[str] = None,
+        price_data=None,
     ) -> Tuple[Dict, Dict]:
         """Adapter for train_on_historic_data."""
         from datetime import datetime, timedelta
@@ -463,6 +477,7 @@ class ExistingRunnerWrapper(TrainerWrapper):
             root=self.root,
             warm_start_params=warm_start_params,
             warm_start_weights=warm_start_weights,
+            price_data=price_data,
         )
 
         # Unpack (params, metadata) tuple - both SGD and optuna return this format
@@ -606,6 +621,7 @@ class RandomBaselineWrapper(TrainerWrapper):
         train_start_date: Optional[str] = None,
         train_end_date: Optional[str] = None,
         test_end_date: Optional[str] = None,
+        price_data=None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Return random parameters (ignores warm-start and date strings)."""
         rng = np.random.RandomState(self.seed + self._call_count)
@@ -702,12 +718,7 @@ class RandomBaselineWrapper(TrainerWrapper):
         test_metrics : dict
             Metric dict for the test window.
         """
-        from jax import jit
-        from functools import partial as Partial
-        from quantammsim.core_simulator.forward_pass import forward_pass_nograd
-        from quantammsim.runners.jax_runner_utils import Hashabledict, create_static_dict
-        from quantammsim.runners.jax_runners import get_sig_variations
-        from quantammsim.utils.post_train_analysis import calculate_period_metrics, calculate_continuous_test_metrics
+        from quantammsim.utils.post_train_analysis import calculate_continuous_test_metrics
 
         all_sig_variations = get_sig_variations(n_assets)
 
@@ -1002,15 +1013,26 @@ class TrainingEvaluator:
         if self.verbose:
             print(f"\nLoading data: {run_fingerprint['startDateString']} → {last_test_end}")
 
+        # Load raw parquet DataFrame once — passed to train_on_historic_data via
+        # price_data= so each cycle skips redundant disk I/O.
+        data_kind = run_fingerprint["optimisation_settings"]["training_data_kind"]
+        if data_kind in ("historic", "step"):
+            raw_price_data = get_historic_parquet_data(
+                sorted(unique_tokens), cols=["close"], root=self.root,
+            )
+        else:
+            raw_price_data = None
+
         data_dict = get_data_dict(
             unique_tokens,
             run_fingerprint,
-            data_kind=run_fingerprint["optimisation_settings"]["training_data_kind"],
+            data_kind=data_kind,
             max_memory_days=run_fingerprint["max_memory_days"],
             start_date_string=run_fingerprint["startDateString"],
             end_time_string=last_test_end,
             do_test_period=False,
             root=self.root,
+            price_data=raw_price_data,
         )
 
         if self.verbose:
@@ -1043,6 +1065,7 @@ class TrainingEvaluator:
                 train_start_date=cycle.train_start_date,
                 train_end_date=cycle.train_end_date,
                 test_end_date=cycle.test_end_date,
+                price_data=raw_price_data,
             )
 
             # Handle training failure (e.g., all inner Optuna trials failed)
@@ -1143,6 +1166,11 @@ class TrainingEvaluator:
                     except (TypeError, ValueError):
                         serializable_params[k] = str(v)
 
+            # Compute regime tags for the test period
+            vol_regime, trend_regime = self._compute_regime_tags(
+                data_dict, cycle.test_start_idx, cycle.test_end_idx
+            )
+
             cycle_eval = CycleEvaluation(
                 cycle_number=cycle.cycle_number,
                 is_sharpe=is_metrics["sharpe"],
@@ -1165,6 +1193,13 @@ class TrainingEvaluator:
                 oos_returns=oos_metrics.get("return"),
                 is_daily_log_sharpe=is_metrics.get("daily_log_sharpe"),
                 oos_daily_log_sharpe=oos_metrics.get("daily_log_sharpe"),
+                # OOS daily returns for bootstrap CIs / DSR
+                oos_daily_returns=oos_metrics.get("daily_returns", np.array([])).tolist()
+                    if hasattr(oos_metrics.get("daily_returns", None), "tolist")
+                    else None,
+                # Regime tags
+                volatility_regime=vol_regime,
+                trend_regime=trend_regime,
                 # Trained strategy params and dates
                 trained_params=serializable_params,
                 train_start_date=cycle.train_start_date,
@@ -1267,6 +1302,68 @@ class TrainingEvaluator:
             if cycle.test_end_idx <= cycle.test_start_idx:
                 cycle.test_end_idx = min(cycle.test_start_idx + 1, max_idx)
 
+    def _compute_regime_tags(
+        self,
+        data_dict: dict,
+        test_start_idx: int,
+        test_end_idx: int,
+    ) -> Tuple[str, str]:
+        """Classify the test period by volatility regime and trend direction.
+
+        Uses the first asset's price series (typically the numeraire pair)
+        to compute realised volatility and total return over the test window.
+
+        Parameters
+        ----------
+        data_dict : dict
+            Must contain ``"prices"`` array of shape (T, n_assets).
+        test_start_idx, test_end_idx : int
+            Slice indices into the prices array for the OOS period.
+
+        Returns
+        -------
+        (volatility_regime, trend_regime) : tuple of str
+            volatility_regime in {"low_vol", "medium_vol", "high_vol"}
+            trend_regime in {"bull", "bear", "sideways"}
+        """
+        prices = data_dict["prices"][test_start_idx:test_end_idx]
+        if len(prices) < 2:
+            return "unknown", "unknown"
+
+        # Aggregate to daily prices first, then compute returns.
+        # This avoids microstructure noise inflating vol estimates and
+        # keeps thresholds calibrated for daily return distributions.
+        steps_per_day = 1440
+        daily_prices = prices[::steps_per_day]
+        if len(daily_prices) < 2:
+            # Test period shorter than 2 days — vol/trend classification
+            # is meaningless at this timescale
+            return "unknown", "unknown"
+
+        # Average log returns across assets for a portfolio-level view
+        log_returns = np.diff(np.log(np.maximum(daily_prices, 1e-12)), axis=0)
+        mean_daily_log_returns = np.mean(log_returns, axis=1)
+
+        annualised_vol = float(np.std(mean_daily_log_returns) * np.sqrt(365))
+        total_return = float(np.sum(mean_daily_log_returns))
+
+        # Volatility buckets calibrated for daily crypto returns
+        if annualised_vol < 0.4:
+            vol_regime = "low_vol"
+        elif annualised_vol < 0.8:
+            vol_regime = "medium_vol"
+        else:
+            vol_regime = "high_vol"
+
+        # Trend direction: >10% cumulative = bull, <-10% = bear
+        if total_return > 0.1:
+            trend_regime = "bull"
+        elif total_return < -0.1:
+            trend_regime = "bear"
+        else:
+            trend_regime = "sideways"
+
+        return vol_regime, trend_regime
 
     def _aggregate_results(
         self,
@@ -1337,6 +1434,17 @@ class TrainingEvaluator:
                     total_test_T,
                 )
 
+        # Concatenate OOS daily returns across cycles for bootstrap CIs / DSR
+        all_oos_daily_returns = []
+        for c in cycle_results:
+            if c.oos_daily_returns:
+                all_oos_daily_returns.extend(c.oos_daily_returns)
+
+        bootstrap_ci = None
+        if len(all_oos_daily_returns) >= 20:
+            from quantammsim.utils.post_train_analysis import block_bootstrap_sharpe_ci
+            bootstrap_ci = block_bootstrap_sharpe_ci(np.array(all_oos_daily_returns))
+
         # Effectiveness verdict
         is_effective = False
         reasons = []
@@ -1377,6 +1485,8 @@ class TrainingEvaluator:
             mean_is_oos_gap=mean_gap,
             aggregate_rademacher=aggregate_rademacher,
             adjusted_mean_oos_sharpe=adjusted_mean_oos_sharpe,
+            bootstrap_ci=bootstrap_ci,
+            concatenated_oos_daily_returns=all_oos_daily_returns if all_oos_daily_returns else None,
             is_effective=is_effective,
             effectiveness_reasons=reasons,
         )
@@ -1410,7 +1520,7 @@ class TrainingEvaluator:
             if result.adjusted_mean_oos_sharpe is not None:
                 print(f"Adjusted Sharpe:  {result.adjusted_mean_oos_sharpe:.4f}")
 
-        print(f"\n--- Verdict ---")
+        print("\n--- Verdict ---")
         print(f"Effective: {'YES' if result.is_effective else 'NO'}")
         for reason in result.effectiveness_reasons:
             print(f"  • {reason}")

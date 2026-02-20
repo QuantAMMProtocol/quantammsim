@@ -11,7 +11,7 @@ from jax import config
 
 config.update("jax_enable_x64", True)
 from jax import default_backend
-from jax import local_device_count, devices
+from jax import devices
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -23,44 +23,26 @@ else:
     config.update("jax_platform_name", "cpu")
 
 import jax.numpy as jnp
-from jax import jit, vmap
-from jax import devices, device_put
+from jax import jit
+from jax import devices
 from jax import tree_util
-from jax.lax import stop_gradient, dynamic_slice, while_loop, scan, cond
-from jax.nn import softmax
+from jax.lax import dynamic_slice, scan
 from jax.tree_util import Partial
 
-from quantammsim.pools.G3M.quantamm.TFMM_base_pool import TFMMBasePool
-from quantammsim.core_simulator.param_utils import (
-    memory_days_to_lamb,
-    lamb_to_memory_days_clipped,
-    calc_lamb,
-)
 from quantammsim.pools.G3M.quantamm.index_market_cap_pool import IndexMarketCapPool
 from quantammsim.pools.G3M.optimal_n_pool_arb import (
     precalc_shared_values_for_all_signatures,
     precalc_components_of_optimal_trade_across_weights_and_prices,
-    precalc_components_of_optimal_trade_across_weights_and_prices_and_dynamic_fees,
     parallelised_optimal_trade_sifter,
 )
-from quantammsim.pools.G3M.G3M_trades import jitted_G3M_cond_trade
 from quantammsim.pools.noise_trades import calculate_reserves_after_noise_trade
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from functools import partial
-from abc import abstractmethod
-import numpy as np
-import pandas as pd
-from importlib import resources as impresources
 
-from quantammsim import data
 
-from pathlib import Path
 
 # import the fine weight output function which has pre-set argument rule_outputs_are_weights
-from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
-    calc_fine_weight_output_from_weights,
-)
 
 from quantammsim.pools.G3M.quantamm.quantamm_reserves import _jax_calc_quantAMM_reserve_ratios
 
@@ -123,7 +105,6 @@ def _jax_calc_quantAMM_reserves_with_fees_using_precalcs(
     # So, for first weight, we have initial reserves, weights and
     # prices, so the change is 1
 
-    n = prices.shape[0]
 
     initial_prices = prices[0]
 
@@ -262,8 +243,6 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     # carry_list[0] is previous weights
     prev_weights = carry_list[0]
 
-    # carry_list[1] is previous prices
-    prev_prices = carry_list[1]
 
     # carry_list[2] is previous reserves
     prev_reserves = carry_list[2]
@@ -328,7 +307,6 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     # delta = post_price_reserves - prev_reserves
     # is this delta a good deal for the arb?
     profit_to_arb = -(optimal_arb_trade * prices).sum() - arb_thresh
-    profit_prices = profit_to_arb
 
     arb_external_rebalance_cost = (
         0.5 * arb_fees * (jnp.abs(optimal_arb_trade) * prices).sum()
@@ -386,7 +364,6 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     # delta = post_weight_reserves - reserves
     # is this delta a good deal for the arb?
     profit_to_arb = -(optimal_arb_trade * prices).sum() - arb_thresh
-    profit_weights = profit_to_arb
 
     arb_external_rebalance_cost = (
         0.5 * arb_fees * (jnp.abs(optimal_arb_trade) * prices).sum()
