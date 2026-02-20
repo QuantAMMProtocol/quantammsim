@@ -34,11 +34,29 @@ def make_flat_fn(params_dict, func):
 
 
 def flat_hessian(params_dict, func, exclude_params=None):
-    """Compute the Hessian of func w.r.t. flattened params.
+    """Compute the full Hessian matrix of ``func`` w.r.t. flattened parameters.
 
-    When exclude_params is provided, the Hessian is computed only over the
-    non-excluded parameters, with excluded parameters held fixed at their
-    values in params_dict.
+    Flattens ``params_dict`` via :func:`jax.flatten_util.ravel_pytree` and
+    calls :func:`jax.hessian` on the resulting 1-D array.  When
+    ``exclude_params`` is provided, excluded keys are held constant at their
+    values in ``params_dict`` and the Hessian is computed only over the
+    remaining (non-excluded) parameters.
+
+    Parameters
+    ----------
+    params_dict : dict
+        Parameter pytree to evaluate at.
+    func : callable
+        Scalar-valued function that takes a parameter dict.
+    exclude_params : list of str, optional
+        Parameter keys to hold fixed.  These are stitched back into the
+        dict before calling ``func`` but are not differentiated through.
+
+    Returns
+    -------
+    jnp.ndarray
+        Square Hessian matrix of shape ``(D, D)`` where *D* is the total
+        number of scalar entries in the non-excluded parameters.
     """
     if exclude_params is None:
         flat_params, _ = ravel_pytree(params_dict)
