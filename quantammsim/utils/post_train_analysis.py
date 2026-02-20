@@ -10,10 +10,9 @@ Includes:
 import numpy as np
 import jax.numpy as jnp
 from jax import jit, vmap
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, Optional
 from scipy import stats
 from quantammsim.core_simulator.forward_pass import (
-    _calculate_return_value,
     _daily_log_sharpe,
     _calculate_ulcer_index,
     _calculate_calmar_ratio,
@@ -536,9 +535,6 @@ def decompose_pool_returns(
     values = np.asarray(values, dtype=np.float64)
     reserves = np.asarray(reserves, dtype=np.float64)
     prices = np.asarray(prices, dtype=np.float64)
-
-    T = len(values)
-    n_assets = reserves.shape[1] if reserves.ndim > 1 else 1
 
     # Pool return
     pool_return = values[-1] / values[0] - 1.0

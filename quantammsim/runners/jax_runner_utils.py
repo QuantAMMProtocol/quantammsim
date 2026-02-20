@@ -22,14 +22,10 @@ from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
 
 config.update("jax_enable_x64", True)
 
-import os
 import optuna
 import logging
 from datetime import datetime
 from pathlib import Path
-import plotly.graph_objects as go
-from optuna.visualization import plot_optimization_history, plot_param_importances
-import numpy as np
 
 
 from typing import Dict, Any, Generic, TypeVar, List, Optional, Tuple
@@ -877,11 +873,13 @@ def nan_rollback(grads, params, old_params):
     >>> old_params = {"log_k": jnp.array([[0.05, 0.15], [0.25, 0.35]])}
     >>> rolled_back = nan_rollback(grads, params, old_params)
     """
-    for key in["log_k", "logit_lamb"]:
+    for key in ["log_k", "logit_lamb"]:
         if key in grads:
             bool_idx = jnp.sum(jnp.isnan(grads[key]), axis=-1, keepdims=True) > 0
             params = tree_map(
-                lambda p, old_p: jnp.where(bool_idx, old_p, p), params, old_params
+                lambda p, old_p, _bi=bool_idx: jnp.where(_bi, old_p, p),
+                params,
+                old_params,
             )
 
     return params
@@ -1458,8 +1456,7 @@ def optimized_output_conversion(simulationRunDto, outputDict, tokens):
     # Convert outputDict data to pandas DataFrame for efficient slicing
     prices_df = pd.DataFrame(outputDict["prices"])[::1440]
     reserves_df = pd.DataFrame(outputDict["reserves"])[::1440]
-    values_df = pd.DataFrame(outputDict["value"])[::1440]
-    
+
     # note that the returned weights are empirical weights, not calculated weights
     # this is because the calculated weights are not returned in the outputDict as
     # they are not guaranteed to exist for all possible pool types
@@ -1550,7 +1547,6 @@ def probe_max_n_parameter_sets(
     - The forward pass (without gradients) is used for probing, so gradient
       computation may require ~2x more memory. Hence the safety_margin.
     """
-    from copy import deepcopy
     from jax import clear_caches
     from jax.tree_util import Partial
     import jax.numpy as jnp
@@ -1707,7 +1703,7 @@ def probe_max_n_parameter_sets(
     }
 
     if verbose:
-        print(f"\nMemory probe results:")
+        print("\nMemory probe results:")
         print(f"  Max n_parameter_sets: {best}")
         print(f"  Recommended (with {safety_margin:.0%} margin): {recommended}")
 

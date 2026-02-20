@@ -1,4 +1,4 @@
-import sys, os
+import os
 import numpy as np
 import jax.numpy as jnp
 import pandas as pd
@@ -32,9 +32,7 @@ from quantammsim.core_simulator.param_utils import (
     _to_float64_list,
 )
 from quantammsim.utils.data_processing.datetime_utils import (
-    unixtimestamp_to_precise_datetime,
     unixtimestamp_to_midnight_datetime,
-    datetime_to_unixtimestamp,
 )
 from quantammsim.utils.data_processing.dtb3_data_utils import filter_dtb3_values
 from quantammsim.utils.data_processing.historic_data_utils import (
@@ -359,12 +357,6 @@ def retrieve_simulation_run_analysis_results(
     run_fingerprint, params, portfolio_result, price_data=None, btc_price_data=None
 ):
 
-    minute_index = pd.date_range(
-        start=run_fingerprint["startDateString"],
-        periods=len(portfolio_result["value"]),
-        freq="T",
-    )
-
     hodl_params = copy.deepcopy(params)
     hodl_fingerprint = copy.deepcopy(run_fingerprint)
     hodl_fingerprint["rule"] = "hodl"
@@ -627,7 +619,7 @@ def retrieve_param_and_mc_financial_analysis_results(
         hodl_result,
     )
 
-    mc_results = retrieve_mc_param_financial_results(
+    retrieve_mc_param_financial_results(
         run_fingerprint, params, testEndDateString
     )
 
@@ -774,13 +766,6 @@ def calculate_daily_returns(minute_values, startDateString, name):
     daily_return_array = np.insert(daily_return_array, 0, 0)
 
     return daily_return_array
-
-
-def calculate_daily_old_returns(minute_values):
-
-    daily_values = minute_values[::1440]
-
-    return np.array(jnp.diff(daily_values) / daily_values[:-1])
 
 
 def calculate_daily_old_returns(minute_values):
@@ -947,7 +932,7 @@ def plot_drawdown_charts(analysis_result, run_name):
 
 def retrieve_mc_param_financial_results(run_fingerprint, params, testEndDateString):
     results = []
-    price_data_cache = {}
+    price_data_cache = []
     for token in run_fingerprint["tokens"]:
         newTokens = []
         if token == "DAI":
@@ -959,7 +944,7 @@ def retrieve_mc_param_financial_results(run_fingerprint, params, testEndDateStri
                 price_data_cache.append(get_data_dict(token + str(i), "DAI", "1h"))
         results.append(newTokens)
 
-    mc_variations = generate_interarray_permutations(*results)
+    mc_variations = list(product(*results))
 
     mc_results = []
 

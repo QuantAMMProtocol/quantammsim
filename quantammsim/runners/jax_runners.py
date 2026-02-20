@@ -58,8 +58,6 @@ import hashlib
 import json as _json
 
 from quantammsim.training.backpropagation import (
-    update_from_partial_training_step_factory,
-    update_from_partial_training_step_factory_with_optax,
     create_opt_state_in_axes_dict,
     create_optimizer_chain,
     build_scan_update_with_optax,
@@ -80,12 +78,7 @@ from quantammsim.core_simulator.result_exporter import (
 )
 
 from quantammsim.runners.jax_runner_utils import (
-    nan_param_reinit,
-    nan_param_reinit_vectorized,
-    has_nan_grads,
     Hashabledict,
-    NestedHashabledict,
-    HashableArrayWrapper,
     get_trades_and_fees,
     get_unique_tokens,
     OptunaManager,
@@ -94,18 +87,17 @@ from quantammsim.runners.jax_runner_utils import (
     create_static_dict,
     get_sig_variations,
     BestParamsTracker,
-    SELECTION_METHODS,
     init_tracker_state,
     update_tracker_state,
     generate_nan_bank,
     nan_reinit_from_bank,
+    nan_param_reinit,  # noqa: F401  — re-exported to multi_period_sgd
 )
 
 from quantammsim.pools.creator import create_pool
 
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.utils.post_train_analysis import (
-    calculate_period_metrics,
     calculate_continuous_test_metrics,
     _compute_all_metrics_batched,
     _METRIC_KEYS,
@@ -403,16 +395,7 @@ def train_on_historic_data(
     if verbose:
         print("Run Fingerprint: ", run_fingerprint)
     rule = run_fingerprint["rule"]
-    chunk_period = run_fingerprint["chunk_period"]
-    weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
-    use_alt_lamb = run_fingerprint["use_alt_lamb"]
-    use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-    fees = run_fingerprint["fees"]
-    arb_fees = run_fingerprint["arb_fees"]
-    gas_cost = run_fingerprint["gas_cost"]
     n_parameter_sets = run_fingerprint["optimisation_settings"]["n_parameter_sets"]
-    weight_interpolation_method = run_fingerprint["weight_interpolation_method"]
-    arb_frequency = run_fingerprint["arb_frequency"]
     random_key = random.key(
         run_fingerprint["optimisation_settings"]["initial_random_key"]
     )
@@ -539,7 +522,7 @@ def train_on_historic_data(
         loaded = True
     else:
         if force_init and os.path.isfile(run_location) and verbose:
-            print(f"[Cache] force_init=True, ignoring cached file")
+            print("[Cache] force_init=True, ignoring cached file")
         loaded = False
     # Create pool
     pool = create_pool(rule)
@@ -624,7 +607,7 @@ def train_on_historic_data(
                 value_per_asset = initial_pool_value / n_assets_local
                 fresh_reserves = value_per_asset / start_prices
                 if verbose:
-                    print(f"[Warm-start] Using previous params with equal weights")
+                    print("[Warm-start] Using previous params with equal weights")
 
             params["initial_reserves"] = jnp.stack([fresh_reserves] * n_parameter_sets, axis=0)
 
@@ -672,31 +655,9 @@ def train_on_historic_data(
         },
     )
 
-    partial_training_step = Partial(
-        forward_pass,
-        prices=data_dict["prices"],
-        static_dict=Hashabledict(base_static_dict),
-        pool=pool,
-    )
-    partial_forward_pass_nograd_batch = Partial(
-        forward_pass_nograd,
-        prices=data_dict["prices"],
-        static_dict=Hashabledict(base_static_dict),
-        pool=pool,
-    )
-
     # Note: Validation and test metrics are now computed by slicing from the continuous
     # forward pass (which covers train + validation + test) rather than running separate
     # passes. This ensures metrics reflect continuous simulation state.
-
-    returns_train_static_dict = base_static_dict.copy()
-    returns_train_static_dict["return_val"] = "returns"
-    returns_train_static_dict["bout_length"] = data_dict["bout_length"]
-    partial_forward_pass_nograd_batch_returns_train = Partial(
-        forward_pass_nograd,
-        static_dict=Hashabledict(returns_train_static_dict),
-        pool=pool,
-    )
 
     # Create continuous forward pass that covers train + validation + test period
     # Use original_bout_length to include validation period when val_fraction > 0
@@ -711,12 +672,6 @@ def train_on_historic_data(
 
     nograd_in_axes = [params_in_axes_dict, None, None]
 
-    partial_forward_pass_nograd_returns_train = jit(
-        vmap(
-            partial_forward_pass_nograd_batch_returns_train,
-            in_axes=nograd_in_axes,
-        )
-    )
     partial_forward_pass_nograd_continuous = jit(
         vmap(
             partial_forward_pass_nograd_batch_continuous,
@@ -724,12 +679,7 @@ def train_on_historic_data(
         )
     )
 
-    partial_fixed_training_step = Partial(
-        partial_training_step, start_index=(data_dict["start_idx"], 0)
-    )
-
     local_learning_rate = run_fingerprint["optimisation_settings"]["base_lr"]
-    iterations_since_improvement = 0
 
     max_iterations_with_no_improvement = run_fingerprint["optimisation_settings"][
         "decay_lr_plateau"
@@ -761,15 +711,7 @@ def train_on_historic_data(
             f"early_stopping_metric '{selection_metric}' is not valid. "
             f"Must be one of: {valid_metrics}"
         )
-    metric_direction = 1  # All metrics: higher = better
-
-    # Early stopping state (only used when use_early_stopping=True)
-    # Early stopping only controls WHEN to stop, not WHAT params to return.
-    # Final param selection is handled by BestParamsTracker.
-    best_early_stopping_metric = jnp.where(metric_direction == -1, jnp.inf, -jnp.inf)
-    iterations_since_early_stopping_improvement = jnp.int32(0)
     use_validation_for_early_stopping = val_fraction > 0
-    warned_about_nan = False  # Track if we've already warned about NaN metrics
 
     # Initialize BestParamsTracker for unified param selection
     # Selection method depends on whether validation is enabled
@@ -784,7 +726,6 @@ def train_on_historic_data(
     use_swa = run_fingerprint["optimisation_settings"].get("use_swa", False)
     swa_start_frac = run_fingerprint["optimisation_settings"].get("swa_start_frac", 0.75)
     swa_freq = run_fingerprint["optimisation_settings"].get("swa_freq", 10)
-    swa_params_list = []  # Will collect parameters for averaging
     n_iterations = run_fingerprint["optimisation_settings"]["n_iterations"]
 
     # Checkpoint tracking for Rademacher complexity
@@ -806,10 +747,10 @@ def train_on_historic_data(
         is_optax = run_fingerprint["optimisation_settings"]["optimiser"] in ["adam", "adamw"]
 
         if is_optax:
-            import optax
 
             optimizer = create_optimizer_chain(run_fingerprint)
-            init_optimizer = lambda params: optimizer.init(params)
+            def init_optimizer(params):
+                return optimizer.init(params)
             batched_init = vmap(init_optimizer, in_axes=[params_in_axes_dict])
             opt_state = batched_init(params)
             opt_state_in_axes_dict = create_opt_state_in_axes_dict(opt_state)
@@ -1339,17 +1280,6 @@ def train_on_historic_data(
             )
         )
 
-        reserves_values_test_static_dict = base_static_dict.copy()
-        reserves_values_test_static_dict["return_val"] = "reserves_and_values"
-        reserves_values_test_static_dict["bout_length"] = data_dict["bout_length_test"]
-        partial_forward_pass_nograd_batch_reserves_values_test = jit(
-            Partial(
-                forward_pass_nograd,
-                static_dict=Hashabledict(reserves_values_test_static_dict),
-                pool=pool,
-            )
-        )
-
         # Continuous forward pass covering train + test for proper continuous metrics
         continuous_optuna_static_dict = base_static_dict.copy()
         continuous_optuna_static_dict["return_val"] = "reserves_and_values"
@@ -1649,7 +1579,7 @@ def train_on_historic_data(
             n_failed = n_total - n_completed - n_pruned
 
             print(f"\n{'='*60}")
-            print(f"OPTUNA OPTIMIZATION COMPLETE")
+            print("OPTUNA OPTIMIZATION COMPLETE")
             print(f"{'='*60}")
             print(f"Trials: {n_completed} completed, {n_pruned} pruned, {n_failed} failed (of {n_total} total)")
 
@@ -1801,7 +1731,7 @@ def train_on_historic_data(
 
                 if verbose:
                     # Print continuous test metrics (computed from actual forward pass)
-                    print(f"\nContinuous test metrics (from forward pass):")
+                    print("\nContinuous test metrics (from forward pass):")
                     print(f"  Best trial #{best_trial.number}:")
                     print(f"    Train (IS):  sharpe={best_train_metrics.get('sharpe', 0):+.4f}  "
                           f"ret_over_hodl={best_train_metrics.get('returns_over_hodl', 0):+.4f}")
@@ -1860,7 +1790,7 @@ def train_on_historic_data(
 
 def do_run_on_historic_data(
     run_fingerprint,
-    params={},
+    params=None,
     root=None,
     price_data=None,
     verbose=False,
@@ -1937,16 +1867,12 @@ def do_run_on_historic_data(
         For multiple parameter sets, each value in the dict is a list
         (one entry per parameter set).
     """
+    if params is None:
+        params = {}
 
     # Set default values for run_fingerprint and its optimisation_settings
     recursive_default_set(run_fingerprint, run_fingerprint_defaults)
     # Extract various settings from run_fingerprint
-    chunk_period = run_fingerprint["chunk_period"]
-    weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
-    use_alt_lamb = run_fingerprint["use_alt_lamb"]
-    use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-    weight_interpolation_method = run_fingerprint["weight_interpolation_method"]
-    arb_frequency = run_fingerprint["arb_frequency"]
     rule = run_fingerprint["rule"]
 
     # Create a list of unique tokens
@@ -2127,7 +2053,7 @@ def do_run_on_historic_data(
 def do_run_on_historic_data_with_provided_coarse_weights(
     run_fingerprint,
     coarse_weights,
-    params={},
+    params=None,
     root=None,
     price_data=None,
     verbose=False,
@@ -2194,6 +2120,8 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     dict or tuple[dict, dict]
         Same structure as :func:`do_run_on_historic_data`.
     """
+    if params is None:
+        params = {}
     from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
         _jax_calc_coarse_weights,
         _jax_fine_weights_from_actual_starts_and_diffs,
@@ -2206,12 +2134,6 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     recursive_default_set(run_fingerprint, run_fingerprint_defaults)
     # Extract various settings from run_fingerprint
     chunk_period = run_fingerprint["chunk_period"]
-    weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
-    use_alt_lamb = run_fingerprint["use_alt_lamb"]
-    use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-    weight_interpolation_method = run_fingerprint["weight_interpolation_method"]
-    arb_frequency = run_fingerprint["arb_frequency"]
-    rule = run_fingerprint["rule"]
 
     # Create a list of unique tokens
     unique_tokens = get_unique_tokens(run_fingerprint)
@@ -2263,9 +2185,6 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         # TODO: Handle MC data for post-training analysis
         raise NotImplementedError
 
-    # create pool
-    pool = create_pool(rule)
-
     # Create static dict using helper - with run-specific overrides
     base_static_dict = create_static_dict(
         run_fingerprint,
@@ -2291,10 +2210,8 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     static_dict["return_val"] = "reserves_and_values"
     static_dict["bout_length"] = data_dict["bout_length"]
 
-    training_data_kind = static_dict["training_data_kind"]
     minimum_weight = static_dict.get("minimum_weight")
     n_assets = static_dict["n_assets"]
-    return_val = static_dict["return_val"]
     bout_length = static_dict["bout_length"]
 
     # filter coarse weights using the start and end indices
@@ -2330,15 +2247,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     # undo padding
     weights = weights[: (-1 * chunk_period + 1)]
 
-    # Check that weights[::chunk_period] matches coarse_weights["weights"]
-    # Get weights at coarse timesteps
-    coarse_timestep_weights = weights[::chunk_period]
     weights = weights[:-1]
-
-    # Compare with original coarse weights
-    weights_match = jnp.allclose(
-        coarse_timestep_weights, coarse_weights["weights"], rtol=1e-10
-    )
 
     start_index = data_dict["start_idx"]
     end_index = data_dict["end_idx"] - 1

@@ -54,9 +54,6 @@ def import_historic_coinbase_data(
     start_time_as_unix_timestamp = datetime_to_unixtimestamp(
         start_time, str_format="%Y-%m-%d-%H-%M"
     )
-    end_time_as_unix_timestamp = datetime_to_unixtimestamp(
-        end_time, str_format="%Y-%m-%d-%H-%M"
-    )
 
     prevRow = retrievedData.iloc[0]
     prevIndex = start_time_as_unix_timestamp * 1000
@@ -183,7 +180,6 @@ def import_clean_historic_coinbase_dataframe(
 
     cleaned_data = []
     unix_timestamps = []
-    raise_exception = 0
     for d in data:
         # make array of times as timestamps
         unix_timestamps = pddatetime_to_unixtimestamp(d.index)
@@ -197,7 +193,6 @@ def import_clean_historic_coinbase_dataframe(
                 period=period,
             )
         )
-        raise_exception = 1
 
     return unix_timestamps, np.array(cleaned_data).T
 
@@ -247,7 +242,7 @@ def _cleaned_up_coinbase_data(
             raw_data_index += 1
             print("correct")
         else:
-            if i < initial_gap_in_rows and have_backfilled == True:
+            if i < initial_gap_in_rows and have_backfilled:
                 pass
             else:
                 cleaned_prices[i] = cleaned_prices[i - 1]
@@ -280,12 +275,12 @@ def fill_missing_rows_with_coinbase_data(concatenated_df, token1, root):
     )
     if not plot_success:
         print(
-            f"Warning: Could not create visualization for {token1} {prefix.strip('_')} data"
+            f"Warning: Could not create visualization for {token1} Coinbase data"
         )
 
     missing_timestamps = coinbase_data.index.difference(concatenated_df.index)
     if missing_timestamps.empty:
-        print(f"No missing timestamps to fill from {prefix.strip('_')}")
+        print("No missing timestamps to fill from Coinbase")
         return concatenated_df, None
 
     filled_in_df = pd.concat([concatenated_df, coinbase_data.loc[missing_timestamps]])

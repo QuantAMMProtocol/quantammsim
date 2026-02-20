@@ -10,7 +10,6 @@ from jax import devices
 from jax.tree_util import Partial
 from jax.lax import scan
 from jax import default_backend
-from jax import local_device_count, devices
 
 from functools import partial
 
@@ -137,7 +136,6 @@ def _jax_calc_quantAMM_reserves_with_fees_using_precalcs(
     # So, for first weight, we have initial reserves, weights and
     # prices, so the change is 1
 
-    n = prices.shape[0]
 
     initial_prices = prices[0]
 
@@ -275,8 +273,6 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     # carry_list[0] is previous weights
     prev_weights = carry_list[0]
 
-    # carry_list[1] is previous prices
-    prev_prices = carry_list[1]
 
     # carry_list[2] is previous reserves
     prev_reserves = carry_list[2]
@@ -340,7 +336,6 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     # delta = post_price_reserves - prev_reserves
     # is this delta a good deal for the arb?
     profit_to_arb = -(optimal_arb_trade * prices).sum() - arb_thresh
-    profit_prices = profit_to_arb
 
     arb_external_rebalance_cost = (
         0.5 * arb_fees * (jnp.abs(optimal_arb_trade) * prices).sum()
@@ -398,7 +393,6 @@ def _jax_calc_quantAMM_reserves_with_fees_scan_function_using_precalcs(
     # delta = post_weight_reserves - reserves
     # is this delta a good deal for the arb?
     profit_to_arb = -(optimal_arb_trade * prices).sum() - arb_thresh
-    profit_weights = profit_to_arb
 
     arb_external_rebalance_cost = (
         0.5 * arb_fees * (jnp.abs(optimal_arb_trade) * prices).sum()
@@ -490,8 +484,6 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     # carry_list[0] is previous weights
     prev_weights = carry_list[0]
 
-    # carry_list[1] is previous prices
-    prev_prices = carry_list[1]
 
     # carry_list[2] is previous reserves
     prev_reserves = carry_list[2]
@@ -589,7 +581,6 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     # delta = post_price_reserves - prev_reserves
     # is this delta a good deal for the arb?
     profit_to_arb = -(optimal_arb_trade * prices).sum() - arb_thresh
-    profit_prices = profit_to_arb
 
     arb_external_rebalance_cost = (
         0.5 * arb_fees * (jnp.abs(optimal_arb_trade) * prices).sum()
@@ -666,7 +657,6 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     # delta = post_weight_reserves - reserves
     # is this delta a good deal for the arb?
     profit_to_arb = -(optimal_arb_trade * prices).sum() - arb_thresh
-    profit_weights = profit_to_arb
 
     arb_external_rebalance_cost = (
         0.5 * arb_fees * (jnp.abs(optimal_arb_trade) * prices).sum()
@@ -760,7 +750,6 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
     # So, for first weight, we have initial reserves, weights and
     # prices, so the change is 1
 
-    n = prices.shape[0]
 
     initial_prices = prices[0]
 
@@ -790,7 +779,6 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
 
     # pre-calculate some values that are repeatedly used in optimal arb calculations
 
-    array_of_trues = jnp.ones((n_assets,), dtype=bool)
 
     tokens_to_keep, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
         precalc_shared_values_for_all_signatures(all_sig_variations, n_assets)

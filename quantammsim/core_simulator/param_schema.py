@@ -40,7 +40,7 @@ Example usage in a pool class::
         }
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union, List
 import numpy as np
 

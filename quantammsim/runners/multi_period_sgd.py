@@ -27,7 +27,7 @@ from jax import jit
 from jax.lax import dynamic_slice
 from jax.tree_util import Partial
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Any
+from typing import List, Dict, Tuple, Any
 from copy import deepcopy
 from itertools import product
 
@@ -384,7 +384,7 @@ def multi_period_sgd_training(
     }
 
     if verbose:
-        print(f"\nLoading data...")
+        print("\nLoading data...")
 
     data_dict = get_data_dict(
         unique_tokens,
@@ -408,7 +408,7 @@ def multi_period_sgd_training(
     period_specs = generate_period_specs(n_periods, output_length, overlap_fraction)
 
     if verbose:
-        print(f"\nPeriod breakdown:")
+        print("\nPeriod breakdown:")
         for spec in period_specs:
             print(f"  Period {spec.period_id}: [{spec.rel_start}:{spec.rel_end}] (len={spec.length})")
 
