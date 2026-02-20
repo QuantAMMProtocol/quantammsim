@@ -77,6 +77,7 @@ class MemoryResult:
     use_fused: bool
     n_parameter_sets: int
     n_eval_points: int
+    checkpoint_mode: str = "none"
     actual_n_eval: int = 0
     months: int = 0
     bout_length: int = 0
@@ -104,6 +105,8 @@ class MemoryResult:
 
     @property
     def fused_label(self) -> str:
+        if self.use_fused and self.checkpoint_mode != "none":
+            return f"f+{self.checkpoint_mode[:4]}"
         return "fused" if self.use_fused else "full"
 
 
@@ -157,7 +160,7 @@ def build_fingerprint(
     return fp
 
 
-def setup_computation(fp, use_fused: bool, root=None):
+def setup_computation(fp, use_fused: bool, root=None, checkpoint_mode: str = "none"):
     """
     Build the batched objective and flatten params, returning all pieces
     needed to compile value_and_grad.
@@ -215,6 +218,7 @@ def setup_computation(fp, use_fused: bool, root=None):
             "training_data_kind": fp["optimisation_settings"]["training_data_kind"],
             "do_trades": False,
             "use_fused_reserves": use_fused,
+            "checkpoint_fused": checkpoint_mode,
         },
     )
 
@@ -423,12 +427,14 @@ def profile_config(
     root: Optional[str],
     execute: bool = False,
     execute_reps: int = 5,
+    checkpoint_mode: str = "none",
 ) -> MemoryResult:
     """Profile a single configuration. Returns MemoryResult."""
     result = MemoryResult(
         use_fused=use_fused,
         n_parameter_sets=n_parameter_sets,
         n_eval_points=n_eval_points,
+        checkpoint_mode=checkpoint_mode,
         months=months,
     )
 
@@ -436,7 +442,10 @@ def profile_config(
         fp = build_fingerprint(n_parameter_sets, n_eval_points, months, rule)
 
         with redirect_stdout(io.StringIO()):
-            setup = setup_computation(fp, use_fused=use_fused, root=root)
+            setup = setup_computation(
+                fp, use_fused=use_fused, root=root,
+                checkpoint_mode=checkpoint_mode,
+            )
 
         (partial_training_step, params, fixed_start_indexes,
          n_sets, bout_length_window) = setup
@@ -465,7 +474,7 @@ def profile_config(
         if "error" in stats:
             result.error = stats["error"]
 
-        mode = "fused" if use_fused else "full"
+        mode = f"fused+{checkpoint_mode}" if (use_fused and checkpoint_mode != "none") else ("fused" if use_fused else "full")
         gflop = result.flops / 1e9
         print(f"  [{mode}] temp={result.temp_mb:.1f} MB, "
               f"flops={gflop:.2f} GFLOP, "
@@ -511,6 +520,8 @@ def main():
                         help="Run compiled computation and measure wall-clock time")
     parser.add_argument("--execute-reps", type=int, default=5,
                         help="Number of reps for timing (default: 5)")
+    parser.add_argument("--checkpoint", action="store_true",
+                        help="Also profile fused + jax.checkpoint (remat) for backward-pass savings")
     parser.add_argument("--root", type=str, default=None)
     parser.add_argument("--json", type=str, default=None,
                         help="Save results to JSON file")
@@ -531,6 +542,8 @@ def main():
     print(f"  n_eval:     {args.n_eval}")
     if not args.sweep:
         print(f"  months:     {args.months}")
+    if args.checkpoint:
+        print(f"  checkpoint: enabled (fused + jax.checkpoint comparison)")
     if args.root:
         print(f"  data root:  {args.root}")
     print(f"{'=' * w}")
@@ -573,6 +586,24 @@ def main():
             print_row(r_fused, execute=args.execute)
 
             print_comparison(r_full, r_fused, execute=args.execute)
+
+            if args.checkpoint:
+                for ckpt_mode in ("vmap", "scan"):
+                    r_ckpt = profile_config(
+                        use_fused=True,
+                        n_parameter_sets=args.n_sets,
+                        n_eval_points=args.n_eval,
+                        months=months,
+                        rule=args.rule,
+                        root=args.root,
+                        execute=args.execute,
+                        execute_reps=args.execute_reps,
+                        checkpoint_mode=ckpt_mode,
+                    )
+                    results.append(r_ckpt)
+                    print_row(r_ckpt, execute=args.execute)
+                    print(f"\n  fused vs fused+{ckpt_mode}:")
+                    print_comparison(r_fused, r_ckpt, execute=args.execute)
 
         # Sweep summary table
         print(f"\n{'=' * w}")
@@ -630,11 +661,30 @@ def main():
 
         print_comparison(r_full, r_fused, execute=args.execute)
 
+        if args.checkpoint:
+            for ckpt_mode in ("vmap", "scan"):
+                r_ckpt = profile_config(
+                    use_fused=True,
+                    n_parameter_sets=args.n_sets,
+                    n_eval_points=args.n_eval,
+                    months=args.months,
+                    rule=args.rule,
+                    root=args.root,
+                    execute=args.execute,
+                    execute_reps=args.execute_reps,
+                    checkpoint_mode=ckpt_mode,
+                )
+                results.append(r_ckpt)
+                print_row(r_ckpt, execute=args.execute)
+                print(f"\n  fused vs fused+{ckpt_mode}:")
+                print_comparison(r_fused, r_ckpt, execute=args.execute)
+
     if args.json:
         out = []
         for r in results:
             d = {
                 "use_fused": r.use_fused,
+                "checkpoint_mode": r.checkpoint_mode,
                 "n_parameter_sets": r.n_parameter_sets,
                 "n_eval_points": r.n_eval_points,
                 "months": r.months,

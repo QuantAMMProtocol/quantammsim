@@ -398,3 +398,57 @@ def test_fused_path_with_fees_falls_back():
 
     # Should be exactly equal — both take the fees path
     np.testing.assert_allclose(val_with, val_without, atol=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Test: Checkpoint produces identical results and gradients
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("checkpoint_mode", ["vmap", "scan"])
+def test_checkpoint_matches_fused(checkpoint_mode):
+    """checkpoint_fused modes produce identical value and gradients to plain fused."""
+    n_assets = 2
+    chunk_period = 1440
+    bout_length = 10 * 1440
+    n_timesteps = bout_length + chunk_period
+    pool = MomentumPool()
+    params = _make_momentum_params(n_assets, chunk_period=chunk_period)
+    prices = _make_test_prices(n_timesteps, n_assets)
+    start_index = jnp.array([chunk_period, 0])
+
+    sd_fused = _make_static_dict(
+        bout_length, n_assets=n_assets, chunk_period=chunk_period,
+        return_val="daily_log_sharpe", use_fused_reserves=True,
+    )
+    sd_ckpt = _make_static_dict(
+        bout_length, n_assets=n_assets, chunk_period=chunk_period,
+        return_val="daily_log_sharpe", use_fused_reserves=True,
+    )
+    sd_ckpt["checkpoint_fused"] = checkpoint_mode
+
+    val_fused = forward_pass(
+        params, start_index, prices, pool=pool, static_dict=sd_fused,
+    )
+    val_ckpt = forward_pass(
+        params, start_index, prices, pool=pool, static_dict=sd_ckpt,
+    )
+
+    # Values should be bitwise identical
+    np.testing.assert_allclose(val_ckpt, val_fused, atol=0.0)
+
+    # Gradients should also match
+    def loss_fused(p):
+        return forward_pass(p, start_index, prices, pool=pool, static_dict=sd_fused)
+
+    def loss_ckpt(p):
+        return forward_pass(p, start_index, prices, pool=pool, static_dict=sd_ckpt)
+
+    g_fused = jax.grad(loss_fused)(params)
+    g_ckpt = jax.grad(loss_ckpt)(params)
+
+    for key in g_fused:
+        np.testing.assert_allclose(
+            g_ckpt[key], g_fused[key], atol=0.0,
+            err_msg=f"Gradient mismatch for {key} with checkpoint_mode={checkpoint_mode}",
+        )

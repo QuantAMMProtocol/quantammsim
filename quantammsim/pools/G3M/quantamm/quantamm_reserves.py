@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-from jax import jit, vmap
+from jax import jit, vmap, checkpoint as jax_checkpoint
 from jax import devices
 from jax.tree_util import Partial
 from jax.lax import scan
@@ -920,13 +920,14 @@ def _intra_chunk_ratio_product(actual_start, scaled_diff, chunk_prices,
     return intra_product, fine_weights[0], fine_weights[-1]
 
 
-@partial(jit, static_argnums=(5, 6, 7, 8, 9, 10, 11))
+@partial(jit, static_argnums=(5, 6, 7, 8, 9, 10, 11, 12))
 def _fused_chunked_reserves(
     actual_starts, scaled_diffs, local_prices, initial_reserves,
     initial_weights,
     chunk_period, interpol_num, metric_period,
     interpolation_fn, rule_outputs_are_weights,
     n_chunks_total, n_metric_periods,
+    checkpoint_mode="none",
 ):
     """Fused chunked reserve computation — fully vectorised (no scans).
 
@@ -973,6 +974,13 @@ def _fused_chunked_reserves(
     n_chunks_total : int
         Number of chunks (including virtual for delta pools).
     n_metric_periods : int
+    checkpoint_mode : str
+        ``"none"`` — standard vmap, no checkpointing (default).
+        ``"vmap"`` — wrap per-chunk fn with ``jax.checkpoint`` inside
+        vmap.  XLA may or may not schedule the recomputation lazily.
+        ``"scan"`` — replace vmap with ``lax.scan`` over chunks, with
+        ``jax.checkpoint`` per step.  Guarantees O(chunk_period) backward
+        memory at the cost of serialising the per-chunk computation.
 
     Returns
     -------
@@ -1016,9 +1024,30 @@ def _fused_chunked_reserves(
         chunk_period=chunk_period,
         interpolation_fn=interpolation_fn,
     )
-    all_intra_products, _, all_end_weights = vmap(_intra_fn)(
-        intra_starts, intra_diffs, all_chunk_prices,
-    )
+    if checkpoint_mode == "scan":
+        # Sequential with checkpoint — minimal backward-pass memory.
+        # Only one chunk's intermediates exist at a time during backward.
+        _ckpt_fn = jax_checkpoint(_intra_fn)
+
+        def _scan_intra(carry, inputs):
+            start, diff, c_prices = inputs
+            intra_prod, first_w, last_w = _ckpt_fn(start, diff, c_prices)
+            return carry, (intra_prod, first_w, last_w)
+
+        _, (all_intra_products, _, all_end_weights) = scan(
+            _scan_intra, None, (intra_starts, intra_diffs, all_chunk_prices),
+        )
+    elif checkpoint_mode == "vmap":
+        # vmap with checkpoint — XLA may schedule recomputation lazily.
+        _intra_fn = jax_checkpoint(_intra_fn)
+        all_intra_products, _, all_end_weights = vmap(_intra_fn)(
+            intra_starts, intra_diffs, all_chunk_prices,
+        )
+    else:
+        # Default: plain vmap, no checkpointing.
+        all_intra_products, _, all_end_weights = vmap(_intra_fn)(
+            intra_starts, intra_diffs, all_chunk_prices,
+        )
     # all_intra_products: (n_chunks_total, n_assets) — product of chunk_period-1 ratios
     # all_end_weights: (n_chunks_total, n_assets) — last fine weight of each chunk
 

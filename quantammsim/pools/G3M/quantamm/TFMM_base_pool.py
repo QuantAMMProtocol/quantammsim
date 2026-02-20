@@ -341,12 +341,15 @@ class TFMMBasePool(AbstractPool):
                 f"Invalid interpolation method: {weight_interpolation_method}"
             )
 
+        checkpoint_mode = run_fingerprint.get("checkpoint_fused", "none")
+
         boundary_values, final_reserves = _fused_chunked_reserves(
             actual_starts, scaled_diffs, local_prices, initial_reserves,
             initial_weights,
             chunk_period, interpol_num, metric_period,
             interpolation_fn, rule_outputs_are_weights,
             n_chunks_total, n_metric_periods,
+            checkpoint_mode,
         )
 
         return {
