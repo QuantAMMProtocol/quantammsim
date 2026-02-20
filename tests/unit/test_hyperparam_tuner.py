@@ -16,6 +16,7 @@ from quantammsim.runners.hyperparam_tuner import (
     quick_tune,
     tune_for_robustness,
     create_objective,
+    _is_degenerate,
 )
 from quantammsim.runners.training_evaluator import (
     TrainingEvaluator,
@@ -1125,6 +1126,214 @@ class TestNaNCycleDetection:
                 f"NaN in second cycle should prune trial, not complete. Got n_completed={result.n_completed}"
             assert result.n_pruned == 1, \
                 f"Trial should be marked as pruned. Got n_pruned={result.n_pruned}"
+
+
+class TestIsDegenerate:
+    """Unit tests for the _is_degenerate helper."""
+
+    def test_nan_is_degenerate(self):
+        assert _is_degenerate(float("nan")) is True
+
+    def test_inf_is_degenerate(self):
+        assert _is_degenerate(float("inf")) is True
+
+    def test_neg_inf_is_degenerate(self):
+        assert _is_degenerate(float("-inf")) is True
+
+    def test_none_is_degenerate(self):
+        assert _is_degenerate(None) is True
+
+    def test_negative_finite_is_not_degenerate(self):
+        assert _is_degenerate(-0.2) is False
+
+    def test_zero_is_not_degenerate(self):
+        assert _is_degenerate(0.0) is False
+
+    def test_positive_finite_is_not_degenerate(self):
+        assert _is_degenerate(1.5) is False
+
+    def test_np_nan_is_degenerate(self):
+        assert _is_degenerate(np.nan) is True
+
+    def test_np_inf_is_degenerate(self):
+        assert _is_degenerate(np.inf) is True
+
+
+class TestRelaxedPruning:
+    """Tests that negative-but-finite OOS metrics are NOT pruned."""
+
+    @pytest.fixture
+    def base_fingerprint(self):
+        """Base fingerprint for pruning tests."""
+        return {
+            "tokens": ["BTC", "ETH"],
+            "rule": "momentum",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-20 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
+            "chunk_period": 1440,
+            "bout_offset": 10080,
+            "weight_interpolation_period": 1440,
+            "optimisation_settings": {
+                "base_lr": 0.01,
+                "optimiser": "sgd",
+                "n_iterations": 3,
+                "training_data_kind": "historic",
+                "force_scalar": False,
+                "n_parameter_sets": 1,
+                "batch_size": 2,
+                "n_cycles": 1,
+            },
+            "initial_memory_length": 10.0,
+            "initial_memory_length_delta": 0.0,
+            "initial_k_per_day": 1.0,
+            "initial_weights_logits": 0.0,
+            "initial_log_amplitude": -5.0,
+            "initial_raw_width": 0.0,
+            "initial_raw_exponents": 0.0,
+            "initial_pre_exp_scaling": 0.001,
+            "maximum_change": 0.001,
+            "return_val": "sharpe",
+            "initial_pool_value": 1000000.0,
+            "fees": 0.003,
+            "arb_fees": 0.0,
+            "gas_cost": 0.0,
+            "use_alt_lamb": False,
+            "use_pre_exp_scaling": True,
+            "weight_interpolation_method": "linear",
+            "arb_frequency": 1,
+            "do_arb": True,
+            "arb_quality": 1.0,
+            "numeraire": None,
+            "do_trades": False,
+            "noise_trader_ratio": 0.0,
+            "minimum_weight": 0.03,
+            "max_memory_days": 30,
+            "subsidary_pools": [],
+        }
+
+    def test_negative_oos_returns_over_hodl_not_pruned(self, base_fingerprint):
+        """Trial with negative but finite oos_returns_over_hodl should COMPLETE, not prune."""
+        def mock_evaluate_iter(self, fp):
+            cycle = CycleEvaluation(
+                cycle_number=0,
+                is_sharpe=0.5,
+                is_returns_over_hodl=-0.1,
+                oos_sharpe=0.3,
+                oos_returns_over_hodl=-0.2,  # Negative but finite — was wrongly pruned before
+                walk_forward_efficiency=0.6,
+                is_oos_gap=0.2,
+            )
+            yield cycle
+            return EvaluationResult(
+                trainer_name="test",
+                trainer_config={},
+                cycles=[cycle],
+                mean_wfe=0.6, mean_oos_sharpe=0.3, std_oos_sharpe=0.1,
+                worst_oos_sharpe=0.3, mean_is_oos_gap=0.2, is_effective=True,
+            )
+
+        with patch.object(TrainingEvaluator, 'evaluate_iter', mock_evaluate_iter):
+            tuner = HyperparamTuner(
+                runner_name="train_on_historic_data",
+                n_trials=1,
+                n_wfa_cycles=1,
+                hyperparam_space=HyperparamSpace.minimal_space(),
+                verbose=False,
+            )
+            result = tuner.tune(base_fingerprint)
+
+            assert result.n_completed == 1, \
+                f"Negative-but-finite oos_roh should complete, not prune. Got n_completed={result.n_completed}"
+            assert result.n_pruned == 0
+
+    def test_mixed_cycles_complete_with_negative_roh(self, base_fingerprint):
+        """Trial where cycle 0 has negative RoH, cycle 1 positive → should COMPLETE."""
+        def mock_evaluate_iter(self, fp):
+            cycle0 = CycleEvaluation(
+                cycle_number=0,
+                is_sharpe=0.5,
+                is_returns_over_hodl=-0.1,
+                oos_sharpe=0.3,
+                oos_returns_over_hodl=-0.15,  # Bear market cycle
+                walk_forward_efficiency=0.6,
+                is_oos_gap=0.2,
+            )
+            yield cycle0
+
+            cycle1 = CycleEvaluation(
+                cycle_number=1,
+                is_sharpe=1.2,
+                is_returns_over_hodl=0.3,
+                oos_sharpe=0.9,
+                oos_returns_over_hodl=0.1,  # Bull market cycle
+                walk_forward_efficiency=0.75,
+                is_oos_gap=0.3,
+            )
+            yield cycle1
+
+            return EvaluationResult(
+                trainer_name="test",
+                trainer_config={},
+                cycles=[cycle0, cycle1],
+                mean_wfe=0.675, mean_oos_sharpe=0.6, std_oos_sharpe=0.3,
+                worst_oos_sharpe=0.3, mean_is_oos_gap=0.25, is_effective=True,
+            )
+
+        with patch.object(TrainingEvaluator, 'evaluate_iter', mock_evaluate_iter):
+            tuner = HyperparamTuner(
+                runner_name="train_on_historic_data",
+                n_trials=1,
+                n_wfa_cycles=2,
+                hyperparam_space=HyperparamSpace.minimal_space(),
+                verbose=False,
+            )
+            result = tuner.tune(base_fingerprint)
+
+            assert result.n_completed == 1, \
+                f"Mixed pos/neg RoH cycles should complete. Got n_completed={result.n_completed}"
+            assert result.n_pruned == 0
+
+    def test_inf_intermediate_value_prunes_trial(self, base_fingerprint):
+        """Trial with oos_daily_log_sharpe=None (objective is -inf) should be PRUNED."""
+        def mock_evaluate_iter(self, fp):
+            # oos_sharpe and oos_roh are finite, so the degenerate-metrics check won't fire.
+            # But oos_daily_log_sharpe is None → extract_cycle_metric("mean_oos_daily_log_sharpe")
+            # returns -inf → the -inf intermediate check fires.
+            cycle = CycleEvaluation(
+                cycle_number=0,
+                is_sharpe=0.5,
+                is_returns_over_hodl=0.1,
+                oos_sharpe=0.3,
+                oos_returns_over_hodl=0.05,
+                walk_forward_efficiency=0.6,
+                is_oos_gap=0.2,
+                oos_daily_log_sharpe=None,  # Target metric is None
+            )
+            yield cycle
+            return EvaluationResult(
+                trainer_name="test",
+                trainer_config={},
+                cycles=[cycle],
+                mean_wfe=0.6, mean_oos_sharpe=0.3, std_oos_sharpe=0.1,
+                worst_oos_sharpe=0.3, mean_is_oos_gap=0.2, is_effective=True,
+            )
+
+        with patch.object(TrainingEvaluator, 'evaluate_iter', mock_evaluate_iter):
+            tuner = HyperparamTuner(
+                runner_name="train_on_historic_data",
+                n_trials=1,
+                n_wfa_cycles=1,
+                objective="mean_oos_daily_log_sharpe",
+                hyperparam_space=HyperparamSpace.minimal_space(),
+                verbose=False,
+            )
+            result = tuner.tune(base_fingerprint)
+
+            assert result.n_completed == 0, \
+                f"-inf intermediate should prune trial. Got n_completed={result.n_completed}"
+            assert result.n_pruned == 1, \
+                f"Trial should be pruned. Got n_pruned={result.n_pruned}"
 
 
 if __name__ == "__main__":

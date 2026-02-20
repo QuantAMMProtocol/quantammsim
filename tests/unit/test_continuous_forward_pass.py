@@ -64,15 +64,16 @@ class TestCalculatePeriodMetrics:
         for key in expected_keys:
             assert key in metrics, f"Missing key: {key}"
 
-    def test_returns_are_floats(self, mock_results):
-        """All scalar metric values should be floats (daily_returns is an array)."""
+    def test_returns_are_numeric_scalars(self, mock_results):
+        """All scalar metric values should be numeric scalars (daily_returns is an array)."""
         metrics = calculate_period_metrics(mock_results)
 
         for key, value in metrics.items():
             if key == "daily_returns":
                 assert hasattr(value, "__len__"), f"{key} should be array-like"
             else:
-                assert isinstance(value, float), f"{key} is not a float: {type(value)}"
+                # Accept both Python float and JAX 0-d arrays (zero-sync design)
+                assert hasattr(value, '__float__'), f"{key} is not a numeric scalar: {type(value)}"
 
     def test_positive_return_for_increasing_values(self, mock_results):
         """Increasing values should give positive return."""
