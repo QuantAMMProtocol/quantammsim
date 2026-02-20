@@ -96,7 +96,7 @@ FEES = 0.0
 ARB_FEES = 0.0
 
 STUDY_DIR = Path(__file__).parent / "hyperparam_studies"
-STUDY_NAME = "eth_usdc_innercmaes_v1"
+STUDY_NAME = "eth_usdc_innercmaes_v2"
 
 
 # =============================================================================
