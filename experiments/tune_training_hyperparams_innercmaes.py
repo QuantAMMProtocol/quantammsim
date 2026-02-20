@@ -86,7 +86,7 @@ from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 
 TOKENS = ["ETH", "USDC"]
 
-START_DATE = "2021-01-01 00:00:00"
+START_DATE = "2019-01-01 00:00:00"
 WFA_END_DATE = "2025-01-01 00:00:00"
 HOLDOUT_END_DATE = "2026-01-01 00:00:00"
 
@@ -478,7 +478,7 @@ def run_tuning(
 
     STUDY_DIR.mkdir(parents=True, exist_ok=True)
 
-    training_days = 365 * 4  # START_DATE to WFA_END_DATE = 4 years
+    training_days = 365 * 6  # START_DATE to WFA_END_DATE = 6 years
     cycle_days = int(training_days / n_wfa_cycles)
 
     base_fp = create_base_fingerprint()
