@@ -309,6 +309,13 @@ class AbstractPool(ABC):
         """
         return make_vmap_in_axes_dict(params, 0, [], [], n_repeats_of_recurred)
 
+    def get_initial_values(self, run_fingerprint):
+        """Extract initial parameter values from run_fingerprint.
+
+        Override in subclasses to define pool-specific initial values.
+        """
+        return {}
+
     @abstractmethod
     def is_trainable(self):
         pass

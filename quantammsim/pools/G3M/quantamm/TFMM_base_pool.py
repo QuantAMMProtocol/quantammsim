@@ -76,6 +76,22 @@ class TFMMBasePool(AbstractPool):
         """
         super().__init__()
 
+    def get_initial_values(self, run_fingerprint):
+        """Extract initial TFMM parameter values from run_fingerprint."""
+        learnable_bounds = run_fingerprint.get("learnable_bounds_settings", {})
+        return {
+            "initial_memory_length": run_fingerprint["initial_memory_length"],
+            "initial_memory_length_delta": run_fingerprint["initial_memory_length_delta"],
+            "initial_k_per_day": run_fingerprint["initial_k_per_day"],
+            "initial_weights_logits": run_fingerprint["initial_weights_logits"],
+            "initial_log_amplitude": run_fingerprint["initial_log_amplitude"],
+            "initial_raw_width": run_fingerprint["initial_raw_width"],
+            "initial_raw_exponents": run_fingerprint["initial_raw_exponents"],
+            "initial_pre_exp_scaling": run_fingerprint["initial_pre_exp_scaling"],
+            "min_weights_per_asset": learnable_bounds.get("min_weights_per_asset"),
+            "max_weights_per_asset": learnable_bounds.get("max_weights_per_asset"),
+        }
+
     @partial(jit, static_argnums=(2, 6, 7, 8))
     def calculate_reserves_with_fees(
         self,
