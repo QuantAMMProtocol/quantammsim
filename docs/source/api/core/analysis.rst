@@ -315,7 +315,9 @@ Available Metrics
 Post-Training Analysis
 ----------------------
 
-The ``quantammsim.utils.post_train_analysis`` module provides utilities for analyzing results after training.
+The ``quantammsim.utils.post_train_analysis`` module provides utilities for
+analysing results after training: period metrics, statistical validation of
+Sharpe ratios, and return decomposition.
 
 .. automodule:: quantammsim.utils.post_train_analysis
    :members:
@@ -324,32 +326,54 @@ The ``quantammsim.utils.post_train_analysis`` module provides utilities for anal
 Usage Examples
 ~~~~~~~~~~~~~~
 
-Calculate comprehensive metrics for a simulation period:
+**Period metrics** — after running a simulation:
 
 .. code-block:: python
 
     from quantammsim.utils.post_train_analysis import calculate_period_metrics
 
-    # After running a simulation
     result = do_run_on_historic_data(fingerprint, params)
-
-    # Calculate all metrics
     metrics = calculate_period_metrics(result)
+    print(f"Sharpe: {metrics['sharpe']}")
+    print(f"Calmar: {metrics['calmar']}")
 
-For walk-forward analysis with separate train and test periods:
+**Deflated Sharpe Ratio** — correct for multiple testing:
 
 .. code-block:: python
 
-    from quantammsim.utils.post_train_analysis import calculate_continuous_test_metrics
+    from quantammsim.utils.post_train_analysis import deflated_sharpe_ratio
 
-    # Assuming continuous_results spans train + test
-    test_metrics = calculate_continuous_test_metrics(
-        continuous_results=full_results,
-        train_len=train_period_length,
-        test_len=test_period_length,
-        prices=price_data
+    dsr = deflated_sharpe_ratio(
+        observed_sr=1.2,   # best OOS Sharpe
+        n_trials=50,       # number of Optuna trials
+        T=365,             # number of OOS daily observations
     )
+    print(f"DSR p-value: {dsr['dsr']:.3f}")
+    print(f"Significant: {dsr['significant']}")
 
-    # Returns metrics prefixed with 'continuous_test_'
-    print(test_metrics['continuous_test_sharpe'])
-    print(test_metrics['continuous_test_return'])
+**Block bootstrap CIs** — confidence interval preserving autocorrelation:
+
+.. code-block:: python
+
+    from quantammsim.utils.post_train_analysis import block_bootstrap_sharpe_ci
+
+    ci = block_bootstrap_sharpe_ci(
+        daily_returns=metrics["daily_returns"],
+        block_length=10,
+    )
+    print(f"Sharpe 95% CI: [{ci['lower']:.2f}, {ci['upper']:.2f}]")
+
+**Return decomposition** — isolate strategy alpha from divergence loss:
+
+.. code-block:: python
+
+    from quantammsim.utils.post_train_analysis import decompose_pool_returns
+
+    decomp = decompose_pool_returns(
+        values=result["value"],
+        reserves=result["reserves"],
+        prices=result["prices"],
+    )
+    print(f"HODL return:      {decomp['hodl_return']:.4f}")
+    print(f"Divergence loss:  {decomp['divergence_loss']:.4f}")
+    print(f"Strategy alpha:   {decomp['strategy_alpha']:.4f}")
