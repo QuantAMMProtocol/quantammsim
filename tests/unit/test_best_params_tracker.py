@@ -221,7 +221,7 @@ class TestBestParamsTracker:
             continuous_outputs=mock_continuous_outputs,
             train_metrics_list=mock_metrics,
         )
-        assert improved is True
+        assert bool(improved) is True
         assert tracker.best_iteration == 0
         assert tracker.last_iteration == 0
 
@@ -238,7 +238,7 @@ class TestBestParamsTracker:
         high_metrics = [{"sharpe": 0.5}, {"sharpe": 0.6}, {"sharpe": 0.55}]
         params2 = deepcopy(mock_params)
         improved = tracker.update(1, params2, mock_continuous_outputs, high_metrics)
-        assert improved is True
+        assert bool(improved) is True
         assert tracker.best_iteration == 1
         assert tracker.last_iteration == 1
 
@@ -254,7 +254,7 @@ class TestBestParamsTracker:
         low_metrics = [{"sharpe": 0.1}, {"sharpe": 0.2}, {"sharpe": 0.15}]
         params2 = deepcopy(mock_params)
         improved = tracker.update(1, params2, mock_continuous_outputs, low_metrics)
-        assert improved is False
+        assert bool(improved) is False
         assert tracker.best_iteration == 0  # Still iteration 0
         assert tracker.last_iteration == 1  # Last is updated
 

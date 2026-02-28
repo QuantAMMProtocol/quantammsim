@@ -7,7 +7,7 @@ grid search followed by gradient descent in an unconstrained (softplus)
 parameter space.
 """
 from jax import numpy as jnp
-from jax import jit, grad, value_and_grad
+from jax import jit, value_and_grad
 from typing import Tuple
 from quantammsim.pools.ECLP.gyroscope_reserves import initialise_gyroscope_reserves_given_value
 import jax
@@ -119,7 +119,6 @@ def explore_weight_space(
     lam_values = jnp.geomspace(1.1, beta**2.0, n_points)  # lam > 1
 
     # tan_phi represents peg price, so let's center around current price
-    current_price = initial_prices[0] / initial_prices[1]
     tan_phi_min = alpha * 0.5  # 50% of low price
     tan_phi_max = beta * 1.5  # 150% of high price
     tan_phi_values = jnp.geomspace(tan_phi_min, tan_phi_max, n_points)
@@ -252,7 +251,6 @@ def optimize_lambda_and_tan_phi(
         Optimal (lambda, tan_phi) parameters that achieve the target weight
     """
     # Initial guess
-    current_price = initial_prices[0] / initial_prices[1]
     initial_params = jnp.array([0.5 * (alpha + beta), 0.5 * (alpha + beta)])
     initial_loss = 0.0
 

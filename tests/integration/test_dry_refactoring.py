@@ -229,16 +229,24 @@ class TestHyperparamSpaceFactory:
     """Test unified HyperparamSpace.create() factory."""
 
     def test_create_adam_space(self):
-        """Test create() with optimizer='adam'."""
+        """Test create() with optimizer='adam' returns focused ~7D space."""
         from quantammsim.runners.hyperparam_tuner import HyperparamSpace
 
         space = HyperparamSpace.create(cycle_days=180, optimizer="adam")
 
         assert "base_lr" in space.params
-        assert "batch_size" in space.params
         assert "n_iterations" in space.params
-        assert "early_stopping_patience" in space.params
-        assert "use_weight_decay" in space.params
+        assert "bout_offset_days" in space.params
+        assert "val_fraction" in space.params
+        assert "maximum_change" in space.params
+        assert "turnover_penalty" in space.params
+
+        # These are now fixed from domain knowledge, not searched
+        assert "batch_size" not in space.params
+        assert "early_stopping_patience" not in space.params
+        assert "use_weight_decay" not in space.params
+        assert "lr_schedule_type" not in space.params
+        assert "noise_scale" not in space.params
 
         # Adam should have lower LR range than SGD
         assert space.params["base_lr"]["low"] >= 1e-6  # Adam uses lower LRs
@@ -279,16 +287,16 @@ class TestHyperparamSpaceFactory:
         assert "n_iterations" in space.params
         assert len(space.params) == 2
 
-    def test_create_without_lr_schedule(self):
-        """Test create() with include_lr_schedule=False."""
+    def test_lr_schedule_always_fixed(self):
+        """Test that lr_schedule_type is never in search space (fixed from domain knowledge)."""
         from quantammsim.runners.hyperparam_tuner import HyperparamSpace
 
-        space = HyperparamSpace.create(
-            cycle_days=180, include_lr_schedule=False
-        )
+        space = HyperparamSpace.create(cycle_days=180)
 
         assert "lr_schedule_type" not in space.params
         assert "warmup_steps" not in space.params
+        # Verify it's in the fixed defaults instead
+        assert "lr_schedule_type" in HyperparamSpace.FIXED_TRAINING_DEFAULTS
 
     def test_legacy_wrappers_equivalent(self):
         """Test that legacy wrappers produce equivalent spaces."""
@@ -428,6 +436,7 @@ class TestOuterHyperparamTuner:
     """Test outer hyperparameter tuner with n_parameter_sets."""
 
     @pytest.mark.slow
+    @pytest.mark.timeout(180)
     def test_tuner_objective_with_n_param_sets(self, base_fingerprint):
         """Test hyperparam tuner objective works with n_parameter_sets > 1."""
         try:

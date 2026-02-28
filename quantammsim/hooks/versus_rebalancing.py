@@ -106,9 +106,6 @@ def _jax_calc_rvr_scan_function(
     # carry_list[0] is previous weights
     prev_weights = carry_list[0]
 
-    # carry_list[1] is previous prices
-    prev_prices = carry_list[1]
-
     # carry_list[2] is previous reserves
     prev_reserves = carry_list[2]
 
@@ -320,9 +317,6 @@ def _jax_calc_lvr_reserve_change_scan_function(carry_list, weights_and_prices, t
 
     # carry_list[0] is previous weights
     prev_weights = carry_list[0]
-
-    # carry_list[1] is previous prices
-    prev_prices = carry_list[1]
 
     # carry_list[2] is previous reserves
     prev_reserves = carry_list[2]

@@ -28,8 +28,18 @@ import math
 import gc
 import os
 import optuna
+
+# Enable JAX persistent compilation cache so that the fused scan program
+# (which takes ~26s to compile) is cached on disk across calls.  Without
+# this, each train_on_historic_data call recompiles from scratch because
+# the JIT'd scan closure is a new Python function object every time.
+if "JAX_COMPILATION_CACHE_DIR" not in os.environ:
+    _cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "jax-compilation")
+    os.makedirs(_cache_dir, exist_ok=True)
+    os.environ["JAX_COMPILATION_CACHE_DIR"] = _cache_dir
+
 from jax.tree_util import Partial
-from jax import jit, vmap, random
+from jax import jit, vmap, random, lax
 from jax import clear_caches
 from jax.tree_util import tree_map
 
@@ -44,11 +54,14 @@ from quantammsim.core_simulator.forward_pass import (
 )
 from quantammsim.core_simulator.windowing_utils import get_indices, filter_coarse_weights_by_data_indices
 
+import hashlib
+import json as _json
+
 from quantammsim.training.backpropagation import (
-    update_from_partial_training_step_factory,
-    update_from_partial_training_step_factory_with_optax,
     create_opt_state_in_axes_dict,
     create_optimizer_chain,
+    build_scan_update_with_optax,
+    build_scan_update_sgd,
 )
 from quantammsim.core_simulator.param_utils import (
     recursive_default_set,
@@ -65,11 +78,7 @@ from quantammsim.core_simulator.result_exporter import (
 )
 
 from quantammsim.runners.jax_runner_utils import (
-    nan_param_reinit,
-    has_nan_grads,
     Hashabledict,
-    NestedHashabledict,
-    HashableArrayWrapper,
     get_trades_and_fees,
     get_unique_tokens,
     OptunaManager,
@@ -78,17 +87,226 @@ from quantammsim.runners.jax_runner_utils import (
     create_static_dict,
     get_sig_variations,
     BestParamsTracker,
-    SELECTION_METHODS,
+    init_tracker_state,
+    update_tracker_state,
+    generate_nan_bank,
+    nan_reinit_from_bank,
+    nan_param_reinit,  # noqa: F401  — re-exported to multi_period_sgd
 )
 
 from quantammsim.pools.creator import create_pool
 
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.utils.post_train_analysis import (
-    calculate_period_metrics,
     calculate_continuous_test_metrics,
+    _compute_all_metrics_batched,
+    _METRIC_KEYS,
+    metrics_arr_to_dicts,
 )
 import jax.numpy as jnp
+
+
+# ── Scan infrastructure cache ─────────────────────────────────────────────
+#
+# Each call to train_on_historic_data used to create fresh closures for the
+# scan body → fresh @jit function → ~52 s recompilation on GPU.  By caching
+# the scan infrastructure (update fn, forward fn, scan body, JIT wrapper)
+# keyed on a config hash, the same function identity is reused → JIT cache
+# hit → zero recompilation from the 2nd call onward.
+#
+# Varying data (prices, nan_bank) flows through the scan carry, not
+# closures, so the compiled XLA program is correct for any price input
+# with matching shapes.
+
+_scan_infra_cache = {}
+
+
+def _scan_config_key(run_fingerprint, chunk_size, original_bout_length, bout_length_test):
+    """Compute a hash key capturing everything that affects the compiled scan."""
+    fp_str = _json.dumps(run_fingerprint, sort_keys=True, default=str)
+    raw = f"{fp_str}|{chunk_size}|{original_bout_length}|{bout_length_test}"
+    return hashlib.sha256(raw.encode(), usedforsecurity=False).hexdigest()[:16]
+
+
+def _build_scan_infrastructure(
+    chunk_size,
+    # Pool / forward-pass config (cached, don't vary between calls)
+    partial_step_no_prices,        # Partial(forward_pass, static_dict=…, pool=…)
+    forward_nograd_continuous,     # jit(vmap(Partial(forward_pass_nograd, …)))
+    vmapped_update,                # from build_scan_update_*
+    # Slicing indices (baked as constants in the trace)
+    start_idx, bout_length, bout_length_test,
+    original_bout_length, bout_length_window, sampling_end_idx,
+    # Config flags (control Python-level if branches at trace time)
+    is_optax, optim_settings,
+    sel_metric_idx, use_val_for_selection, val_fraction,
+    use_early_stopping, use_validation_for_early_stopping,
+    max_iterations_with_no_improvement, decay_lr_ratio, min_lr,
+    use_swa, swa_start_step, swa_freq,
+    n_parameter_sets,
+):
+    """Build scan body + JIT wrapper.  Prices/nan_bank flow through carry.
+
+    All returned callables have **stable identity** and can be cached across
+    ``train_on_historic_data`` calls.  The only data that changes between
+    calls (prices, nan_bank, initial params) is in the carry dict.
+
+    Returns
+    -------
+    run_scan_chunk : callable
+        ``@jit`` wrapped ``lax.scan(scan_body, carry, None, length=chunk_size)``.
+    scan_body : callable
+        The raw scan body (for partial-chunk Python fallback).
+    """
+    # Local aliases for closed-over constants
+    _start_idx = start_idx
+    _bout_length = bout_length
+    _bout_length_test = bout_length_test
+    _test_start = original_bout_length
+    _test_end = original_bout_length + bout_length_test
+    _optim_settings = optim_settings
+
+    def scan_body(carry, _):
+        """One training iteration.  Prices & nan_bank from carry, not closures."""
+        prices = carry["_prices"]
+
+        # 1. Sample indices
+        start_indexes, key = get_indices(
+            start_index=_start_idx,
+            bout_length=bout_length_window,
+            len_prices=sampling_end_idx,
+            key=carry["random_key"],
+            optimisation_settings=_optim_settings,
+        )
+
+        # 2. Gradient update — prices passed explicitly
+        if is_optax:
+            new_params, obj, old_params, grads, new_opt_state, has_nan = vmapped_update(
+                carry["params"], start_indexes, carry["lr"], carry["opt_state"], prices,
+            )
+        else:
+            new_params, obj, old_params, grads, has_nan = vmapped_update(
+                carry["params"], start_indexes, carry["lr"], prices,
+            )
+            new_opt_state = None
+
+        # 3. NaN reinit from bank (bank in carry)
+        new_params, nan_count = nan_reinit_from_bank(
+            new_params, has_nan, carry["_nan_bank"], carry["nan_count"],
+        )
+
+        # 4. Continuous forward pass — prices passed explicitly
+        continuous_outputs = forward_nograd_continuous(
+            new_params, (_start_idx, 0), prices,
+        )
+
+        # 5a. Metrics — train
+        train_values = continuous_outputs["value"][:, :_bout_length]
+        train_reserves = continuous_outputs["reserves"][:, :_bout_length, :]
+        train_metrics_arr, _ = _compute_all_metrics_batched(
+            train_values, train_reserves, carry["_train_prices"],
+        )
+
+        # 5b. Metrics — test
+        test_values = continuous_outputs["value"][:, _test_start:_test_end]
+        test_reserves = continuous_outputs["reserves"][:, _test_start:_test_end, :]
+        test_prices_slice = carry["_continuous_prices"][_test_start:_test_end]
+        cont_test_metrics_arr, _ = _compute_all_metrics_batched(
+            test_values, test_reserves, test_prices_slice,
+        )
+
+        # 5c. Metrics — val
+        if val_fraction > 0:
+            val_values = continuous_outputs["value"][:, _bout_length:original_bout_length]
+            val_reserves = continuous_outputs["reserves"][:, _bout_length:original_bout_length, :]
+            val_metrics_arr, _ = _compute_all_metrics_batched(
+                val_values, val_reserves, carry["_val_prices"],
+            )
+        else:
+            val_metrics_arr = jnp.zeros_like(train_metrics_arr)
+
+        # 6. Tracker update
+        tracker, improved = update_tracker_state(
+            carry["tracker"], carry["step"], new_params,
+            train_metrics_arr, val_metrics_arr, cont_test_metrics_arr,
+            sel_metric_idx=sel_metric_idx,
+            use_val=use_val_for_selection,
+            use_test=False,
+        )
+
+        # 7. LR decay
+        iters_since = jnp.where(improved, jnp.int32(0), carry["iters_since_improvement"] + 1)
+        should_decay = iters_since > max_iterations_with_no_improvement
+        lr = jnp.where(
+            should_decay,
+            jnp.maximum(carry["lr"] * decay_lr_ratio, min_lr),
+            carry["lr"],
+        )
+        iters_since = jnp.where(should_decay, jnp.int32(0), iters_since)
+
+        # 8. Early stopping state
+        if use_early_stopping:
+            if use_validation_for_early_stopping:
+                es_metric = jnp.nanmean(val_metrics_arr[:, sel_metric_idx])
+            else:
+                es_metric = jnp.nanmean(cont_test_metrics_arr[:, sel_metric_idx])
+            es_improved = es_metric > carry["es_metric"]
+            new_es_metric = jnp.where(es_improved, es_metric, carry["es_metric"])
+            new_es_counter = jnp.where(es_improved, jnp.int32(0), carry["es_counter"] + 1)
+        else:
+            new_es_metric = carry["es_metric"]
+            new_es_counter = carry["es_counter"]
+
+        # 9. SWA accumulator
+        if use_swa:
+            should_swa = (carry["step"] >= swa_start_step) & (carry["step"] % swa_freq == 0)
+            swa_sum = tree_map(
+                lambda s, p: jnp.where(should_swa, s + p, s),
+                carry["swa_sum"], new_params,
+            )
+            swa_count = carry["swa_count"] + should_swa.astype(jnp.int32)
+        else:
+            swa_sum = carry["swa_sum"]
+            swa_count = carry["swa_count"]
+
+        new_carry = {
+            "params": new_params,
+            "random_key": key,
+            "lr": lr,
+            "iters_since_improvement": iters_since,
+            "tracker": tracker,
+            "es_metric": new_es_metric,
+            "es_counter": new_es_counter,
+            "nan_count": nan_count,
+            "swa_sum": swa_sum,
+            "swa_count": swa_count,
+            "step": carry["step"] + 1,
+            # Pass through static data unchanged
+            "_prices": prices,
+            "_train_prices": carry["_train_prices"],
+            "_continuous_prices": carry["_continuous_prices"],
+            "_val_prices": carry["_val_prices"],
+            "_nan_bank": carry["_nan_bank"],
+        }
+        if is_optax:
+            new_carry["opt_state"] = new_opt_state
+
+        per_step = {
+            "objective": obj,
+            "train_metrics": train_metrics_arr,
+            "test_metrics": cont_test_metrics_arr,
+            "val_metrics": val_metrics_arr,
+            "lr": lr,
+            "iters_since_improvement": iters_since,
+            "params": new_params,
+        }
+        return new_carry, per_step
+
+    @jit
+    def _run_scan_chunk(carry):
+        return lax.scan(scan_body, carry, None, length=chunk_size)
+
+    return _run_scan_chunk, scan_body
 
 
 def train_on_historic_data(
@@ -177,16 +395,7 @@ def train_on_historic_data(
     if verbose:
         print("Run Fingerprint: ", run_fingerprint)
     rule = run_fingerprint["rule"]
-    chunk_period = run_fingerprint["chunk_period"]
-    weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
-    use_alt_lamb = run_fingerprint["use_alt_lamb"]
-    use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-    fees = run_fingerprint["fees"]
-    arb_fees = run_fingerprint["arb_fees"]
-    gas_cost = run_fingerprint["gas_cost"]
     n_parameter_sets = run_fingerprint["optimisation_settings"]["n_parameter_sets"]
-    weight_interpolation_method = run_fingerprint["weight_interpolation_method"]
-    arb_frequency = run_fingerprint["arb_frequency"]
     random_key = random.key(
         run_fingerprint["optimisation_settings"]["initial_random_key"]
     )
@@ -313,7 +522,7 @@ def train_on_historic_data(
         loaded = True
     else:
         if force_init and os.path.isfile(run_location) and verbose:
-            print(f"[Cache] force_init=True, ignoring cached file")
+            print("[Cache] force_init=True, ignoring cached file")
         loaded = False
     # Create pool
     pool = create_pool(rule)
@@ -358,7 +567,8 @@ def train_on_historic_data(
 
             # Step 2: Add noise using existing pool method (reuse single source of truth)
             noise_scale = run_fingerprint["optimisation_settings"].get("noise_scale", 0.1)
-            params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale)
+            per_param_noise_scale = run_fingerprint["optimisation_settings"].get("per_param_noise_scale")
+            params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale, per_param_noise_scale)
 
             # Initialize reserves with fresh initial_pool_value
             # If warm_start_weights provided, distribute according to those weights
@@ -397,7 +607,7 @@ def train_on_historic_data(
                 value_per_asset = initial_pool_value / n_assets_local
                 fresh_reserves = value_per_asset / start_prices
                 if verbose:
-                    print(f"[Warm-start] Using previous params with equal weights")
+                    print("[Warm-start] Using previous params with equal weights")
 
             params["initial_reserves"] = jnp.stack([fresh_reserves] * n_parameter_sets, axis=0)
 
@@ -428,7 +638,8 @@ def train_on_historic_data(
         # noise_scale controls initialization diversity for param sets 1+
         # Default 0.1 maintains backward compatibility
         noise_scale = run_fingerprint["optimisation_settings"].get("noise_scale", 0.1)
-        params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale=noise_scale)
+        per_param_noise_scale = run_fingerprint["optimisation_settings"].get("per_param_noise_scale")
+        params = pool.add_noise(params, "gaussian", n_parameter_sets, noise_scale=noise_scale, per_param_noise_scale=per_param_noise_scale)
 
     params_in_axes_dict = pool.make_vmap_in_axes(params)
 
@@ -444,31 +655,9 @@ def train_on_historic_data(
         },
     )
 
-    partial_training_step = Partial(
-        forward_pass,
-        prices=data_dict["prices"],
-        static_dict=Hashabledict(base_static_dict),
-        pool=pool,
-    )
-    partial_forward_pass_nograd_batch = Partial(
-        forward_pass_nograd,
-        prices=data_dict["prices"],
-        static_dict=Hashabledict(base_static_dict),
-        pool=pool,
-    )
-
     # Note: Validation and test metrics are now computed by slicing from the continuous
     # forward pass (which covers train + validation + test) rather than running separate
     # passes. This ensures metrics reflect continuous simulation state.
-
-    returns_train_static_dict = base_static_dict.copy()
-    returns_train_static_dict["return_val"] = "returns"
-    returns_train_static_dict["bout_length"] = data_dict["bout_length"]
-    partial_forward_pass_nograd_batch_returns_train = Partial(
-        forward_pass_nograd,
-        static_dict=Hashabledict(returns_train_static_dict),
-        pool=pool,
-    )
 
     # Create continuous forward pass that covers train + validation + test period
     # Use original_bout_length to include validation period when val_fraction > 0
@@ -483,12 +672,6 @@ def train_on_historic_data(
 
     nograd_in_axes = [params_in_axes_dict, None, None]
 
-    partial_forward_pass_nograd_returns_train = jit(
-        vmap(
-            partial_forward_pass_nograd_batch_returns_train,
-            in_axes=nograd_in_axes,
-        )
-    )
     partial_forward_pass_nograd_continuous = jit(
         vmap(
             partial_forward_pass_nograd_batch_continuous,
@@ -496,12 +679,7 @@ def train_on_historic_data(
         )
     )
 
-    partial_fixed_training_step = Partial(
-        partial_training_step, start_index=(data_dict["start_idx"], 0)
-    )
-
     local_learning_rate = run_fingerprint["optimisation_settings"]["base_lr"]
-    iterations_since_improvement = 0
 
     max_iterations_with_no_improvement = run_fingerprint["optimisation_settings"][
         "decay_lr_plateau"
@@ -533,15 +711,7 @@ def train_on_historic_data(
             f"early_stopping_metric '{selection_metric}' is not valid. "
             f"Must be one of: {valid_metrics}"
         )
-    metric_direction = 1  # All metrics: higher = better
-
-    # Early stopping state (only used when use_early_stopping=True)
-    # Early stopping only controls WHEN to stop, not WHAT params to return.
-    # Final param selection is handled by BestParamsTracker.
-    best_early_stopping_metric = float("inf") if metric_direction == -1 else -float("inf")
-    iterations_since_early_stopping_improvement = 0
     use_validation_for_early_stopping = val_fraction > 0
-    warned_about_nan = False  # Track if we've already warned about NaN metrics
 
     # Initialize BestParamsTracker for unified param selection
     # Selection method depends on whether validation is enabled
@@ -556,7 +726,6 @@ def train_on_historic_data(
     use_swa = run_fingerprint["optimisation_settings"].get("use_swa", False)
     swa_start_frac = run_fingerprint["optimisation_settings"].get("swa_start_frac", 0.75)
     swa_freq = run_fingerprint["optimisation_settings"].get("swa_freq", 10)
-    swa_params_list = []  # Will collect parameters for averaging
     n_iterations = run_fingerprint["optimisation_settings"]["n_iterations"]
 
     # Checkpoint tracking for Rademacher complexity
@@ -575,345 +744,386 @@ def train_on_historic_data(
         )
 
     if run_fingerprint["optimisation_settings"]["method"] == "gradient_descent":
-        if run_fingerprint["optimisation_settings"]["optimiser"] in ["adam", "adamw"]:
-            import optax
+        is_optax = run_fingerprint["optimisation_settings"]["optimiser"] in ["adam", "adamw"]
 
-            # Create Adam optimizer with the specified learning rate
+        if is_optax:
+
             optimizer = create_optimizer_chain(run_fingerprint)
-
-            # Initialize optimizer state for each parameter set
-            # For multiple parameter sets, each needs its own optimizer state
-            # if n_parameter_sets > 1:
-            # Use vmap to vectorize optimizer initialization over parameter sets
-            init_optimizer = lambda params: optimizer.init(params)
+            def init_optimizer(params):
+                return optimizer.init(params)
             batched_init = vmap(init_optimizer, in_axes=[params_in_axes_dict])
             opt_state = batched_init(params)
-            # else:
-            # opt_state = optimizer.init(params)
-
             opt_state_in_axes_dict = create_opt_state_in_axes_dict(opt_state)
-            # Use optax-based update function
-            update_batch = update_from_partial_training_step_factory_with_optax(
-                partial_training_step,
-                optimizer,
-                run_fingerprint["optimisation_settings"]["train_on_hessian_trace"],
-                partial_fixed_training_step,
-            )
-            update = jit(
-                vmap(
-                    update_batch,
-                    in_axes=[params_in_axes_dict, None, None, opt_state_in_axes_dict],
-                )
-            )
 
         elif run_fingerprint["optimisation_settings"]["optimiser"] == "sgd":
-
-            update_batch = update_from_partial_training_step_factory(
-                partial_training_step,
-                run_fingerprint["optimisation_settings"]["train_on_hessian_trace"],
-                partial_fixed_training_step,
-            )
-
-            update = jit(
-                vmap(
-                    update_batch,
-                    in_axes=[params_in_axes_dict, None, None],
-                )
-            )
-
-        elif run_fingerprint["optimisation_settings"]["optimiser"] != "sgd":
+            optimizer = None
+            opt_state = None
+            opt_state_in_axes_dict = None
+        else:
             raise NotImplementedError
 
+        # ── Price slices for metrics (put into carry, not closures) ──
+        _start_idx = data_dict["start_idx"]
+        _bout_length = data_dict["bout_length"]
+        _bout_length_test = data_dict["bout_length_test"]
+        _test_start = original_bout_length
+        _test_end = original_bout_length + _bout_length_test
+
+        train_prices = data_dict["prices"][_start_idx:_start_idx + _bout_length]
+        continuous_prices = data_dict["prices"][_start_idx:_start_idx + original_bout_length + _bout_length_test]
+        val_prices = data_dict["prices"][
+            _start_idx + _bout_length:
+            _start_idx + original_bout_length
+        ]
+
+        # ── Pre-generate NaN replacement bank ──
+        nan_bank = generate_nan_bank(
+            pool, initial_params, run_fingerprint, n_tokens,
+            n_parameter_sets,
+        )
+
+        # ── Selection metric index ──
+        sel_metric_idx = _METRIC_KEYS.index(selection_metric)
+        use_val_for_selection = val_fraction > 0
+        if use_early_stopping:
+            if use_validation_for_early_stopping:
+                metric_source = "validation"
+            else:
+                metric_source = "continuous_test"
+
+        _swa_start_step = int(n_iterations * swa_start_frac)
+
+        # ── Outer loop: scan in chunks, Python between chunks ────────────
+        total_iterations = n_iterations + 1  # 0..n_iterations inclusive
+        chunk_size = min(max(iterations_per_print, 1), total_iterations)
+
+        # ── Get or build cached scan infrastructure ──────────────────────
+        # The scan function, update chain, and forward pass are cached by
+        # config hash so the same JIT'd function is reused across calls.
+        # Only prices and nan_bank (in carry) change between calls.
+        config_key = _scan_config_key(
+            run_fingerprint, chunk_size, original_bout_length, _bout_length_test,
+        )
+
+        if config_key in _scan_infra_cache:
+            _run_scan_chunk, scan_body = _scan_infra_cache[config_key]
+        else:
+            # Build scan-compatible update (prices as explicit arg, not closure)
+            partial_step_no_prices = Partial(
+                forward_pass,
+                static_dict=Hashabledict(base_static_dict),
+                pool=pool,
+            )
+            if is_optax:
+                vmapped_update = build_scan_update_with_optax(
+                    partial_step_no_prices, optimizer,
+                    params_in_axes_dict, opt_state_in_axes_dict,
+                )
+            else:
+                vmapped_update = build_scan_update_sgd(
+                    partial_step_no_prices, params_in_axes_dict,
+                )
+
+            _run_scan_chunk, scan_body = _build_scan_infrastructure(
+                chunk_size,
+                partial_step_no_prices=partial_step_no_prices,
+                forward_nograd_continuous=partial_forward_pass_nograd_continuous,
+                vmapped_update=vmapped_update,
+                start_idx=_start_idx,
+                bout_length=_bout_length,
+                bout_length_test=_bout_length_test,
+                original_bout_length=original_bout_length,
+                bout_length_window=bout_length_window,
+                sampling_end_idx=sampling_end_idx,
+                is_optax=is_optax,
+                optim_settings=run_fingerprint["optimisation_settings"],
+                sel_metric_idx=sel_metric_idx,
+                use_val_for_selection=use_val_for_selection,
+                val_fraction=val_fraction,
+                use_early_stopping=use_early_stopping,
+                use_validation_for_early_stopping=use_validation_for_early_stopping,
+                max_iterations_with_no_improvement=max_iterations_with_no_improvement,
+                decay_lr_ratio=decay_lr_ratio,
+                min_lr=min_lr,
+                use_swa=use_swa,
+                swa_start_step=_swa_start_step,
+                swa_freq=swa_freq,
+                n_parameter_sets=n_parameter_sets,
+            )
+            _scan_infra_cache[config_key] = (_run_scan_chunk, scan_body)
+
+        # ── Initialize carry (prices & nan_bank in carry, not closures) ──
+        carry = {
+            "params": params,
+            "random_key": random_key,
+            "lr": jnp.array(local_learning_rate),
+            "iters_since_improvement": jnp.int32(0),
+            "tracker": init_tracker_state(params, n_parameter_sets),
+            "es_metric": jnp.array(-jnp.inf),
+            "es_counter": jnp.int32(0),
+            "nan_count": jnp.int32(0),
+            "swa_sum": tree_map(jnp.zeros_like, params),
+            "swa_count": jnp.int32(0),
+            "step": jnp.int32(offset),
+            # Static data — passed through carry unchanged each iteration.
+            # XLA optimises these as aliases (no per-iteration copy).
+            "_prices": jnp.asarray(data_dict["prices"]),
+            "_train_prices": jnp.asarray(train_prices),
+            "_continuous_prices": jnp.asarray(continuous_prices),
+            "_val_prices": jnp.asarray(val_prices),
+            "_nan_bank": nan_bank,
+        }
+        if is_optax:
+            carry["opt_state"] = opt_state
+        remaining = total_iterations
+        completed = 0
+        last_objective_value = None
+
+        # Accumulators for save_multi_params (filled from per-step outputs)
         paramSteps = []
         trainingSteps = []
         continuousTestSteps = []
-        validationSteps = []  # Collect validation metrics when val_fraction > 0
+        validationSteps = []
         objectiveSteps = []
         learningRateSteps = []
         interationsSinceImprovementSteps = []
         stepSteps = []
 
-        train_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"]]
-        continuous_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + original_bout_length + data_dict["bout_length_test"]]
-        val_prices = data_dict["prices"][
-            data_dict["start_idx"] + data_dict["bout_length"]:
-            data_dict["start_idx"] + original_bout_length
-        ]
+        while remaining > 0:
+            actual = min(chunk_size, remaining)
 
-        for i in range(run_fingerprint["optimisation_settings"]["n_iterations"] + 1):
-            step = i + offset
-            start_indexes, random_key = get_indices(
-                start_index=data_dict["start_idx"],
-                bout_length=bout_length_window,
-                len_prices=sampling_end_idx,  # Limited to not overlap with validation
-                key=random_key,
-                optimisation_settings=run_fingerprint["optimisation_settings"],
-            )
-            if run_fingerprint["optimisation_settings"]["optimiser"] in [
-                "adam",
-                "adamw",
-            ]:
-                # Adam update with state maintenance
-                params, objective_value, old_params, grads, opt_state = update(
-                    params, start_indexes, local_learning_rate, opt_state
-                )
+            if actual < chunk_size:
+                # Partial last chunk: run Python loop to avoid recompilation
+                # at a different scan length
+                all_per_steps = {
+                    "objective": [],
+                    "train_metrics": [],
+                    "test_metrics": [],
+                    "val_metrics": [],
+                    "lr": [],
+                    "iters_since_improvement": [],
+                    "params": {k: [] for k in carry["params"]},
+                }
+                for _ in range(actual):
+                    carry, step_out = scan_body(carry, None)
+                    all_per_steps["objective"].append(step_out["objective"])
+                    all_per_steps["train_metrics"].append(step_out["train_metrics"])
+                    all_per_steps["test_metrics"].append(step_out["test_metrics"])
+                    all_per_steps["val_metrics"].append(step_out["val_metrics"])
+                    all_per_steps["lr"].append(step_out["lr"])
+                    all_per_steps["iters_since_improvement"].append(step_out["iters_since_improvement"])
+                    for k in step_out["params"]:
+                        all_per_steps["params"][k].append(step_out["params"][k])
+                # Stack into arrays with leading chunk dim
+                history = {
+                    "objective": jnp.stack(all_per_steps["objective"]),
+                    "train_metrics": jnp.stack(all_per_steps["train_metrics"]),
+                    "test_metrics": jnp.stack(all_per_steps["test_metrics"]),
+                    "val_metrics": jnp.stack(all_per_steps["val_metrics"]),
+                    "lr": jnp.stack(all_per_steps["lr"]),
+                    "iters_since_improvement": jnp.stack(all_per_steps["iters_since_improvement"]),
+                    "params": {
+                        k: jnp.stack(v) if v and hasattr(v[0], 'shape') else v
+                        for k, v in all_per_steps["params"].items()
+                    },
+                }
             else:
-                # Regular SGD update
-                params, objective_value, old_params, grads = update(
-                    params, start_indexes, local_learning_rate
-                )
-            params = nan_param_reinit(
-                params,
-                grads,
-                pool,
-                initial_params,
-                run_fingerprint,
-                n_tokens,
-                n_parameter_sets,
+                carry, history = _run_scan_chunk(carry)
+
+            remaining -= actual
+            completed += actual
+
+            # ── Bulk device→host transfer ─────────────────────────────
+            # Transfer entire scan output to host once, avoiding hundreds
+            # of small per-step device→host round trips.
+            host_history = tree_map(
+                lambda x: np.asarray(x) if hasattr(x, 'shape') else x,
+                history,
             )
+            last_objective_value = host_history["objective"][-1]
 
-            # Run continuous forward pass covering train + test period
-            # This is vmapped over parameter sets, so outputs have shape:
-            # - value: (n_parameter_sets, time_steps)
-            # - reserves: (n_parameter_sets, time_steps, n_assets)
-            continuous_outputs = partial_forward_pass_nograd_continuous(
-                params,
-                (data_dict["start_idx"], 0),
-                data_dict["prices"],
-            )
-
-            # Process each parameter set individually
-            # (metric functions expect single parameter set, not batched)
-            train_metrics_list = []
-            continuous_test_metrics_list = []
-
-            for param_idx in range(n_parameter_sets):
-                # Extract outputs for this parameter set
-                # After indexing: value (time_steps,), reserves (time_steps, n_assets)
-                param_value = continuous_outputs["value"][param_idx]
-                param_reserves = continuous_outputs["reserves"][param_idx]
-
-                # Slice train period (uses effective_train_length when val_fraction > 0)
-                train_dict = {
-                    "value": param_value[:data_dict["bout_length"]],
-                    "reserves": param_reserves[:data_dict["bout_length"]],
+            # ── Python-side: accumulate save data ────────────────────
+            def _extract_params_at(params_tree, j):
+                """Extract params at step j, handling empty-list pytree leaves."""
+                return {
+                    k: v[j] if hasattr(v, '__getitem__') and not isinstance(v, list) else v
+                    for k, v in params_tree.items()
                 }
 
-                # Create continuous dict for test metrics
-                # continuous_test_metrics computes metrics on test slice from continuous simulation
-                param_continuous_dict = {
-                    "value": param_value,
-                    "reserves": param_reserves,
-                }
-
-                # Calculate metrics
-                train_metrics = calculate_period_metrics(train_dict, train_prices)
-                continuous_test_metrics = calculate_continuous_test_metrics(
-                    param_continuous_dict,
-                    original_bout_length,  # Use original length as train/test boundary
-                    data_dict["bout_length_test"],
-                    continuous_prices
+            for j in range(actual):
+                step_j = int(carry["step"]) - actual + j
+                p_j = _extract_params_at(host_history["params"], j)
+                paramSteps.append(p_j)
+                trainingSteps.append(
+                    metrics_arr_to_dicts(host_history["train_metrics"][j])
                 )
+                continuousTestSteps.append(
+                    metrics_arr_to_dicts(host_history["test_metrics"][j])
+                )
+                objectiveSteps.append(host_history["objective"][j])
+                learningRateSteps.append(host_history["lr"][j])
+                interationsSinceImprovementSteps.append(
+                    host_history["iters_since_improvement"][j]
+                )
+                stepSteps.append(step_j)
+                if val_fraction > 0:
+                    validationSteps.append(
+                        metrics_arr_to_dicts(host_history["val_metrics"][j])
+                    )
 
-                train_metrics_list.append(train_metrics)
-                continuous_test_metrics_list.append(continuous_test_metrics)
-
-            # Compute validation metrics if val_fraction > 0 (for early stopping and saving)
-            if val_fraction > 0:
-                val_metrics_list = []
-                for param_idx in range(n_parameter_sets):
-                    # Validation period: from effective_train_length to original_bout_length
-                    val_dict = {
-                        "value": continuous_outputs["value"][param_idx, data_dict["bout_length"]:original_bout_length],
-                        "reserves": continuous_outputs["reserves"][param_idx, data_dict["bout_length"]:original_bout_length, :],
-                    }
-
-                    val_metrics = calculate_period_metrics(val_dict, val_prices)
-                    val_metrics_list.append(val_metrics)
-                # Collect validation metrics for saving
-                validationSteps.append(val_metrics_list)
-                # Compute current_val_metric for early stopping
-                val_metrics_per_set = np.array([
-                    t.get(selection_metric, np.nan) for t in val_metrics_list
-                ])
-                current_val_metric = np.nanmean(val_metrics_per_set)
-            else:
-                val_metrics_list = None
-                current_val_metric = None
-
-            # Update BestParamsTracker - handles both best_train and best_val selection
-            tracker_improved = params_tracker.update(
-                iteration=step,
-                params=params,
-                continuous_outputs=continuous_outputs,
-                train_metrics_list=train_metrics_list,
-                val_metrics_list=val_metrics_list,
-                continuous_test_metrics_list=continuous_test_metrics_list,
-            )
-
-            # Track iterations since improvement for learning rate decay
-            # This uses the tracker's improvement signal
-            if tracker_improved:
-                iterations_since_improvement = 0
-            else:
-                iterations_since_improvement += 1
-
-            if iterations_since_improvement > max_iterations_with_no_improvement:
-                local_learning_rate = local_learning_rate * decay_lr_ratio
-                iterations_since_improvement = 0
-                if local_learning_rate < min_lr:
-                    local_learning_rate = min_lr
-
-            # Save step data for checkpointing
-            paramSteps.append(deepcopy(params))
-            trainingSteps.append(train_metrics_list)
-            continuousTestSteps.append(continuous_test_metrics_list)
-            objectiveSteps.append(np.array(objective_value.copy()))
-            learningRateSteps.append(deepcopy(local_learning_rate))
-            interationsSinceImprovementSteps.append(iterations_since_improvement)
-            stepSteps.append(step)
-
-            # Early stopping based on validation or test metrics
-            # Note: Early stopping only controls WHEN to stop training.
-            # Final param selection is handled by params_tracker.
-            if use_early_stopping:
-                if use_validation_for_early_stopping and val_metrics_list:
-                    # Reuse current_val_metric computed above (same value)
-                    current_early_stopping_metric = current_val_metric
-                    metric_source = "validation"
-                    # Warn on first occurrence of NaN (not just iteration 0)
-                    if np.isnan(current_early_stopping_metric) and not warned_about_nan:
-                        import warnings
-                        warnings.warn(
-                            f"Validation {selection_metric} is NaN at iteration {i}. "
-                            f"Early stopping may not work correctly. "
-                            f"Check that validation period has sufficient data.",
-                            UserWarning
+            # ── Python-side: checkpoint tracking ─────────────────────
+            if track_checkpoints:
+                for j in range(actual):
+                    global_step = int(carry["step"]) - actual + j
+                    if global_step % checkpoint_interval == 0:
+                        ckpt_params = _extract_params_at(host_history["params"], j)
+                        ckpt_outputs = partial_forward_pass_nograd_continuous(
+                            ckpt_params, (_start_idx, 0), data_dict["prices"],
                         )
-                        warned_about_nan = True
-                elif continuous_test_metrics_list:
-                    # Fallback to continuous test metrics (not recommended - causes data leakage)
-                    # Note: When using test metrics for early stopping, param SELECTION still uses
-                    # training-best (since val_fraction=0). This is intentional - we don't want to
-                    # select params based on test performance, only use it as a stopping heuristic.
-                    # Use nanmean to ignore NaN param sets
-                    current_early_stopping_metric = np.nanmean([
-                        t.get(selection_metric, np.nan) for t in continuous_test_metrics_list
-                    ])
-                    metric_source = "continuous_test"
-                else:
-                    current_early_stopping_metric = -float("inf")
-                    metric_source = "none"
+                        ckpt_train_values = ckpt_outputs["value"][:, :_bout_length]
+                        ckpt_train_prices = data_dict["prices"][_start_idx:_start_idx + _bout_length]
+                        price_ratios = ckpt_train_prices / (ckpt_train_prices[0:1] + 1e-10)
+                        uniform_hodl_value = price_ratios.mean(axis=-1)
+                        model_log_returns = jnp.diff(jnp.log(ckpt_train_values + 1e-10), axis=-1)
+                        hodl_log_returns = jnp.diff(jnp.log(uniform_hodl_value + 1e-10))
+                        excess_returns = model_log_returns - hodl_log_returns[None, :]
+                        checkpoint_excess_returns = np.array(excess_returns.mean(axis=0))
+                        minutes_per_day = 1440
+                        n_full_days = len(checkpoint_excess_returns) // minutes_per_day
+                        if n_full_days > 0:
+                            daily_excess = checkpoint_excess_returns[:n_full_days * minutes_per_day]
+                            daily_excess = daily_excess.reshape(n_full_days, minutes_per_day).sum(axis=1)
+                            if not np.isnan(daily_excess).any():
+                                checkpoint_returns_list.append(daily_excess)
 
-                # Track early stopping metric for patience countdown
-                metric_improved = (current_early_stopping_metric * metric_direction) > (best_early_stopping_metric * metric_direction)
-                if metric_improved:
-                    best_early_stopping_metric = current_early_stopping_metric
-                    iterations_since_early_stopping_improvement = 0
-                else:
-                    iterations_since_early_stopping_improvement += 1
+            # ── Python-side: display ─────────────────────────────────
+            if verbose:
+                last_train = host_history["train_metrics"][-1]
+                last_test = host_history["test_metrics"][-1]
+                obj_val = float(np.mean(last_objective_value))
+                current_step = int(carry["step"]) - 1
+                print(f"\n[Iter {current_step}] objective={obj_val:.4f}")
 
-                if iterations_since_early_stopping_improvement >= early_stopping_patience:
-                    if verbose:
-                        print(f"\n[Early stopping] No {metric_source} {selection_metric} improvement for {early_stopping_patience} iterations")
-                        print(f"  Stopped at iteration {step}, best {selection_metric}={best_early_stopping_metric:+.4f}")
-                    # Just break - param selection happens at the end using params_tracker
-                    break
+                sharpe_idx = _METRIC_KEYS.index("sharpe")
+                roh_idx = _METRIC_KEYS.index("returns_over_uniform_hodl")
+                print(f"  Train (IS):  sharpe={float(np.nanmean(last_train[:, sharpe_idx])):+.4f}"
+                      f"  ret_over_hodl={float(np.nanmean(last_train[:, roh_idx])):+.4f}")
 
-            # SWA: collect parameters after swa_start_frac of training
-            if use_swa and i >= int(n_iterations * swa_start_frac) and i % swa_freq == 0:
-                swa_params_list.append(deepcopy(params))
+                if val_fraction > 0:
+                    last_val = host_history["val_metrics"][-1]
+                    print(f"  Val:         sharpe={float(np.nanmean(last_val[:, sharpe_idx])):+.4f}"
+                          f"  ret_over_hodl={float(np.nanmean(last_val[:, roh_idx])):+.4f}")
+                    if use_early_stopping:
+                        print(f"  Early stop:  {selection_metric}={float(carry['es_metric']):+.4f} "
+                              f"(wait={int(carry['es_counter'])}/{early_stopping_patience})")
 
-            # Checkpoint tracking for Rademacher complexity
-            # Save DAILY EXCESS returns (vs uniform HODL) at checkpoint intervals
-            # Daily aggregation gives more meaningful Rademacher values
-            if track_checkpoints and i % checkpoint_interval == 0:
-                # Extract values and prices from the training period
-                # continuous_outputs["value"] has shape (n_parameter_sets, time_steps)
-                train_values = continuous_outputs["value"][:, :data_dict["bout_length"]]
-                train_prices = data_dict["prices"][data_dict["start_idx"]:data_dict["start_idx"] + data_dict["bout_length"]]
+                print(f"  Test (OOS):  sharpe={float(np.nanmean(last_test[:, sharpe_idx])):+.4f}"
+                      f"  ret_over_hodl={float(np.nanmean(last_test[:, roh_idx])):+.4f}")
 
-                # Compute uniform HODL benchmark (equal weight, no rebalancing)
-                # Price ratio for each asset: p_t / p_0
-                price_ratios = train_prices / (train_prices[0:1] + 1e-10)  # (T, n_assets)
-                # Uniform HODL value = initial_value * mean(price_ratios across assets)
-                uniform_hodl_value = price_ratios.mean(axis=-1)  # (T,)
+            # ── Python-side: save checkpoint ─────────────────────────
+            save_multi_params(
+                deepcopy(run_fingerprint),
+                paramSteps,
+                continuousTestSteps,
+                trainingSteps,
+                objectiveSteps,
+                learningRateSteps,
+                interationsSinceImprovementSteps,
+                stepSteps,
+                continuousTestSteps,
+                validation_metrics=validationSteps if validationSteps else None,
+                sorted_tokens=True,
+            )
+            paramSteps = []
+            trainingSteps = []
+            continuousTestSteps = []
+            validationSteps = []
+            objectiveSteps = []
+            learningRateSteps = []
+            interationsSinceImprovementSteps = []
+            stepSteps = []
 
-                # Compute log returns for model and benchmark
-                # Shape: (n_parameter_sets, bout_length - 1)
-                model_log_returns = jnp.diff(jnp.log(train_values + 1e-10), axis=-1)
-                hodl_log_returns = jnp.diff(jnp.log(uniform_hodl_value + 1e-10))  # (bout_length - 1,)
-
-                # Excess returns = model returns - benchmark returns
-                excess_returns = model_log_returns - hodl_log_returns[None, :]
-
-                # Take mean across parameter sets (they're independent runs)
-                # Shape: (bout_length - 1,)
-                checkpoint_excess_returns = np.array(excess_returns.mean(axis=0))
-
-                # Aggregate to daily resolution (1440 minutes per day)
-                # This gives more meaningful Rademacher values
-                minutes_per_day = 1440
-                n_full_days = len(checkpoint_excess_returns) // minutes_per_day
-                if n_full_days > 0:
-                    # Sum minute returns to get daily returns (log returns are additive)
-                    daily_excess = checkpoint_excess_returns[:n_full_days * minutes_per_day]
-                    daily_excess = daily_excess.reshape(n_full_days, minutes_per_day).sum(axis=1)
-
-                    # Only save if no NaN values (training didn't explode)
-                    if not np.isnan(daily_excess).any():
-                        checkpoint_returns_list.append(daily_excess)
-
-            if step % iterations_per_print == 0:
+            # ── Python-side: early stopping break ────────────────────
+            if use_early_stopping and bool(carry["es_counter"] >= early_stopping_patience):
                 if verbose:
-                    # Format metrics for display
-                    obj_val = float(np.mean(objective_value)) if hasattr(objective_value, '__len__') else float(objective_value)
-                    print(f"\n[Iter {step}] objective={obj_val:.4f}")
+                    print(f"\n[Early stopping] No {metric_source} {selection_metric} improvement for {early_stopping_patience} iterations")
+                    print(f"  Stopped at iteration {int(carry['step']) - 1}, best {selection_metric}={float(carry['es_metric']):+.4f}")
+                break
 
-                    # Training metrics (in-sample)
-                    if train_metrics_list:
-                        train_sharpes = [t.get("sharpe", np.nan) for t in train_metrics_list]
-                        train_rohs = [t.get("returns_over_uniform_hodl", np.nan) for t in train_metrics_list]
-                        print(f"  Train (IS):  sharpe={np.nanmean(train_sharpes):+.4f}  ret_over_hodl={np.nanmean(train_rohs):+.4f}")
+        # ── Post-loop: reconstruct results via BestParamsTracker ─────
+        # Reconstruct continuous_outputs for best and last params
+        # (not stored in carry to keep carry small)
+        best_continuous_outputs = partial_forward_pass_nograd_continuous(
+            carry["tracker"]["best_params"], (_start_idx, 0), data_dict["prices"],
+        )
+        last_continuous_outputs = partial_forward_pass_nograd_continuous(
+            carry["params"], (_start_idx, 0), data_dict["prices"],
+        )
 
-                    # Validation metrics (if using validation holdout)
-                    if val_fraction > 0 and val_metrics_list:
-                        val_sharpe = np.nanmean([t.get("sharpe", np.nan) for t in val_metrics_list])
-                        val_roh = np.nanmean([t.get("returns_over_uniform_hodl", np.nan) for t in val_metrics_list])
-                        print(f"  Val:         sharpe={val_sharpe:+.4f}  ret_over_hodl={val_roh:+.4f}")
-                        if use_early_stopping:
-                            print(f"  Early stop:  {selection_metric}={current_early_stopping_metric:+.4f} "
-                                  f"(best={best_early_stopping_metric:+.4f}, wait={iterations_since_early_stopping_improvement}/{early_stopping_patience})")
+        # Convert tracker metric arrays to list-of-dicts for compatibility
+        best_train_metrics_list = metrics_arr_to_dicts(carry["tracker"]["best_train_metrics"])
+        best_test_metrics_list = metrics_arr_to_dicts(carry["tracker"]["best_test_metrics"])
+        best_val_metrics_list = metrics_arr_to_dicts(carry["tracker"]["best_val_metrics"]) if val_fraction > 0 else None
 
-                    # Continuous test metrics (out-of-sample, from continuous forward pass)
-                    if continuous_test_metrics_list:
-                        test_sharpes = [t.get("sharpe", np.nan) for t in continuous_test_metrics_list]
-                        test_rohs = [t.get("returns_over_uniform_hodl", np.nan) for t in continuous_test_metrics_list]
-                        print(f"  Test (OOS):  sharpe={np.nanmean(test_sharpes):+.4f}  ret_over_hodl={np.nanmean(test_rohs):+.4f}")
-                save_multi_params(
-                    deepcopy(run_fingerprint),
-                    paramSteps,
-                    continuousTestSteps,  # Used as test_objective for backward compat
-                    trainingSteps,
-                    objectiveSteps,
-                    learningRateSteps,
-                    interationsSinceImprovementSteps,
-                    stepSteps,
-                    continuousTestSteps,
-                    validation_metrics=validationSteps if validationSteps else None,
-                    sorted_tokens=True,
-                )
+        # Compute last-iteration metrics from one more forward pass
+        last_train_values = last_continuous_outputs["value"][:, :_bout_length]
+        last_train_reserves = last_continuous_outputs["reserves"][:, :_bout_length, :]
+        last_train_arr, last_train_dr = _compute_all_metrics_batched(last_train_values, last_train_reserves, train_prices)
+        last_train_metrics_list = metrics_arr_to_dicts(last_train_arr, last_train_dr)
 
-                paramSteps = []
-                trainingSteps = []
-                continuousTestSteps = []
-                validationSteps = []
-                objectiveSteps = []
-                learningRateSteps = []
-                interationsSinceImprovementSteps = []
-                stepSteps = []
-        # Get results from tracker (includes both last and best state)
+        last_test_values = last_continuous_outputs["value"][:, _test_start:_test_end]
+        last_test_reserves = last_continuous_outputs["reserves"][:, _test_start:_test_end, :]
+        last_test_arr, last_test_dr = _compute_all_metrics_batched(last_test_values, last_test_reserves, continuous_prices[_test_start:_test_end])
+        last_test_metrics_list = metrics_arr_to_dicts(last_test_arr, last_test_dr)
+
+        if val_fraction > 0:
+            last_val_values = last_continuous_outputs["value"][:, _bout_length:original_bout_length]
+            last_val_reserves = last_continuous_outputs["reserves"][:, _bout_length:original_bout_length, :]
+            last_val_arr, last_val_dr = _compute_all_metrics_batched(last_val_values, last_val_reserves, val_prices)
+            last_val_metrics_list = metrics_arr_to_dicts(last_val_arr, last_val_dr)
+        else:
+            last_val_metrics_list = None
+
+        # Populate BestParamsTracker for get_results() compatibility
+        params_tracker.best_params = carry["tracker"]["best_params"]
+        params_tracker.best_metric_value = carry["tracker"]["best_metric_value"]
+        params_tracker.best_iteration = carry["tracker"]["best_iteration"]
+        params_tracker.best_param_idx = carry["tracker"]["best_param_idx"]
+        params_tracker.best_train_metrics = best_train_metrics_list
+        params_tracker.best_continuous_test_metrics = best_test_metrics_list
+        params_tracker.best_val_metrics = best_val_metrics_list
+        params_tracker.best_continuous_outputs = {
+            "reserves": best_continuous_outputs["reserves"],
+            "weights": best_continuous_outputs["weights"],
+        }
+
+        params_tracker.last_params = carry["params"]
+        params_tracker.last_iteration = int(carry["step"]) - 1
+        params_tracker.last_param_idx = carry["tracker"]["best_param_idx"]  # Use best as proxy for last selection
+        params_tracker.last_train_metrics = last_train_metrics_list
+        params_tracker.last_continuous_test_metrics = last_test_metrics_list
+        params_tracker.last_val_metrics = last_val_metrics_list
+        params_tracker.last_continuous_outputs = {
+            "reserves": last_continuous_outputs["reserves"],
+            "weights": last_continuous_outputs["weights"],
+        }
+
+        # Compute last_param_idx properly for last iteration
+        from quantammsim.runners.jax_runner_utils import compute_selection_metric
+        _, last_param_idx = compute_selection_metric(
+            last_train_metrics_list,
+            last_val_metrics_list,
+            last_test_metrics_list,
+            method=tracker_selection_method,
+            metric=selection_metric,
+        )
+        params_tracker.last_param_idx = last_param_idx
+
         tracker_results = params_tracker.get_results(n_parameter_sets, original_bout_length)
+
+        # Update objective_value and i for post-loop code
+        objective_value = last_objective_value
+        i = completed - 1
 
         if verbose:
             obj_val = float(np.mean(objective_value)) if hasattr(objective_value, '__len__') else float(objective_value)
@@ -973,16 +1183,17 @@ def train_on_historic_data(
         # SWA averages params across TIME (different training iterations), not across param sets.
         # After SWA averaging, we still have n_parameter_sets param sets - we then select the
         # best one based on the tracker's best_param_idx.
-        if use_swa and len(swa_params_list) > 0 and val_fraction == 0:
+        if use_swa and int(carry["swa_count"]) > 0 and val_fraction == 0:
             if verbose:
-                print(f"Applying SWA: averaging {len(swa_params_list)} parameter snapshots across time")
-            swa_params = {}
-            for key in swa_params_list[0].keys():
-                if key == "subsidary_params":
-                    swa_params[key] = swa_params_list[-1][key]
-                else:
-                    stacked = jnp.stack([p[key] for p in swa_params_list], axis=0)
-                    swa_params[key] = jnp.mean(stacked, axis=0)
+                print(f"Applying SWA: averaged {int(carry['swa_count'])} parameter snapshots")
+            swa_params = tree_map(
+                lambda s: s / carry["swa_count"],
+                carry["swa_sum"],
+            )
+            # Handle scalars: use last params for scalar keys
+            for key in swa_params:
+                if hasattr(swa_params[key], 'shape') and swa_params[key].ndim == 0:
+                    swa_params[key] = carry["params"][key]
             # Select param set using tracker's best_param_idx
             selected_params = params_tracker.select_param_set(swa_params, tracker_results["best_param_idx"], n_parameter_sets)
             if return_training_metadata:
@@ -1065,17 +1276,6 @@ def train_on_historic_data(
             Partial(
                 forward_pass_nograd,
                 static_dict=Hashabledict(reserves_values_train_static_dict),
-                pool=pool,
-            )
-        )
-
-        reserves_values_test_static_dict = base_static_dict.copy()
-        reserves_values_test_static_dict["return_val"] = "reserves_and_values"
-        reserves_values_test_static_dict["bout_length"] = data_dict["bout_length_test"]
-        partial_forward_pass_nograd_batch_reserves_values_test = jit(
-            Partial(
-                forward_pass_nograd,
-                static_dict=Hashabledict(reserves_values_test_static_dict),
                 pool=pool,
             )
         )
@@ -1379,7 +1579,7 @@ def train_on_historic_data(
             n_failed = n_total - n_completed - n_pruned
 
             print(f"\n{'='*60}")
-            print(f"OPTUNA OPTIMIZATION COMPLETE")
+            print("OPTUNA OPTIMIZATION COMPLETE")
             print(f"{'='*60}")
             print(f"Trials: {n_completed} completed, {n_pruned} pruned, {n_failed} failed (of {n_total} total)")
 
@@ -1531,7 +1731,7 @@ def train_on_historic_data(
 
                 if verbose:
                     # Print continuous test metrics (computed from actual forward pass)
-                    print(f"\nContinuous test metrics (from forward pass):")
+                    print("\nContinuous test metrics (from forward pass):")
                     print(f"  Best trial #{best_trial.number}:")
                     print(f"    Train (IS):  sharpe={best_train_metrics.get('sharpe', 0):+.4f}  "
                           f"ret_over_hodl={best_train_metrics.get('returns_over_hodl', 0):+.4f}")
@@ -1590,7 +1790,7 @@ def train_on_historic_data(
 
 def do_run_on_historic_data(
     run_fingerprint,
-    params={},
+    params=None,
     root=None,
     price_data=None,
     verbose=False,
@@ -1667,16 +1867,12 @@ def do_run_on_historic_data(
         For multiple parameter sets, each value in the dict is a list
         (one entry per parameter set).
     """
+    if params is None:
+        params = {}
 
     # Set default values for run_fingerprint and its optimisation_settings
     recursive_default_set(run_fingerprint, run_fingerprint_defaults)
     # Extract various settings from run_fingerprint
-    chunk_period = run_fingerprint["chunk_period"]
-    weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
-    use_alt_lamb = run_fingerprint["use_alt_lamb"]
-    use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-    weight_interpolation_method = run_fingerprint["weight_interpolation_method"]
-    arb_frequency = run_fingerprint["arb_frequency"]
     rule = run_fingerprint["rule"]
 
     # Create a list of unique tokens
@@ -1857,7 +2053,7 @@ def do_run_on_historic_data(
 def do_run_on_historic_data_with_provided_coarse_weights(
     run_fingerprint,
     coarse_weights,
-    params={},
+    params=None,
     root=None,
     price_data=None,
     verbose=False,
@@ -1924,6 +2120,8 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     dict or tuple[dict, dict]
         Same structure as :func:`do_run_on_historic_data`.
     """
+    if params is None:
+        params = {}
     from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
         _jax_calc_coarse_weights,
         _jax_fine_weights_from_actual_starts_and_diffs,
@@ -1936,12 +2134,6 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     recursive_default_set(run_fingerprint, run_fingerprint_defaults)
     # Extract various settings from run_fingerprint
     chunk_period = run_fingerprint["chunk_period"]
-    weight_interpolation_period = run_fingerprint["weight_interpolation_period"]
-    use_alt_lamb = run_fingerprint["use_alt_lamb"]
-    use_pre_exp_scaling = run_fingerprint["use_pre_exp_scaling"]
-    weight_interpolation_method = run_fingerprint["weight_interpolation_method"]
-    arb_frequency = run_fingerprint["arb_frequency"]
-    rule = run_fingerprint["rule"]
 
     # Create a list of unique tokens
     unique_tokens = get_unique_tokens(run_fingerprint)
@@ -1993,9 +2185,6 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         # TODO: Handle MC data for post-training analysis
         raise NotImplementedError
 
-    # create pool
-    pool = create_pool(rule)
-
     # Create static dict using helper - with run-specific overrides
     base_static_dict = create_static_dict(
         run_fingerprint,
@@ -2021,10 +2210,8 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     static_dict["return_val"] = "reserves_and_values"
     static_dict["bout_length"] = data_dict["bout_length"]
 
-    training_data_kind = static_dict["training_data_kind"]
     minimum_weight = static_dict.get("minimum_weight")
     n_assets = static_dict["n_assets"]
-    return_val = static_dict["return_val"]
     bout_length = static_dict["bout_length"]
 
     # filter coarse weights using the start and end indices
@@ -2060,15 +2247,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     # undo padding
     weights = weights[: (-1 * chunk_period + 1)]
 
-    # Check that weights[::chunk_period] matches coarse_weights["weights"]
-    # Get weights at coarse timesteps
-    coarse_timestep_weights = weights[::chunk_period]
     weights = weights[:-1]
-
-    # Compare with original coarse weights
-    weights_match = jnp.allclose(
-        coarse_timestep_weights, coarse_weights["weights"], rtol=1e-10
-    )
 
     start_index = data_dict["start_idx"]
     end_index = data_dict["end_idx"] - 1
@@ -2143,6 +2322,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     # if we are doing trades, the trades array must be of the same length as the other arrays
     if run_fingerprint["do_trades"]:
         assert trade_array.shape[0] == max_len
+    protocol_fee_split = run_fingerprint.get("protocol_fee_split", 0.0)
     reserves = _jax_calc_quantAMM_reserves_with_dynamic_inputs(
         initial_reserves,
         weights,
@@ -2156,6 +2336,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         run_fingerprint["do_arb"],
         run_fingerprint["noise_trader_ratio"],
         lp_supply_array_broadcast,
+        protocol_fee_split=protocol_fee_split,
     )
 
     value_over_time = jnp.sum(jnp.multiply(reserves, local_prices), axis=-1)

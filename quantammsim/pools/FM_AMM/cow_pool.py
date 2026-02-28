@@ -26,18 +26,14 @@ else:
     config.update("jax_platform_name", "cpu")
 
 import jax.numpy as jnp
-from jax import jit, vmap
-from jax import device_put
-from jax import tree_util
-from jax.lax import stop_gradient, dynamic_slice
+from jax import jit
+from jax.lax import dynamic_slice
 
-from typing import Dict, Any, Optional, Callable
 from functools import partial
 import numpy as np
 
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.pools.FM_AMM.cow_reserves import (
-    _jax_calc_cowamm_reserve_ratio_vmapped,
     _jax_calc_cowamm_reserves_with_fees,
     _jax_calc_cowamm_reserves_one_arb_zero_fees,
     _jax_calc_cowamm_reserves_one_arb_with_fees,

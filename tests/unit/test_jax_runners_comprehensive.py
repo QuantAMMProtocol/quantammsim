@@ -395,95 +395,73 @@ class TestDoRunOnHistoricData:
 # ============================================================================
 
 class TestValidationAndEarlyStopping:
-    """Tests for validation holdout and early stopping."""
+    """End-to-end tests for validation holdout and early stopping."""
 
-    def test_validation_fraction_splits_data(self, minimal_run_fingerprint):
-        """Test that val_fraction properly splits the data."""
-        fp = deepcopy(minimal_run_fingerprint)
+    def test_validation_metrics_populated(self, defaulted_run_fingerprint):
+        """With val_fraction > 0, metadata must include val metrics."""
+        fp = deepcopy(defaulted_run_fingerprint)
         fp["optimisation_settings"]["val_fraction"] = 0.2
-        fp["optimisation_settings"]["n_iterations"] = 2  # Minimal iterations
+        fp["optimisation_settings"]["n_iterations"] = 2
+        fp["optimisation_settings"]["n_parameter_sets"] = 1
+        _, metadata = train_on_historic_data(
+            fp, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=999999,
+        )
+        assert metadata["selection_method"] == "best_val"
+        assert metadata["best_val_metrics"] is not None
+        assert len(metadata["best_val_metrics"]) == 1
+        assert "sharpe" in metadata["best_val_metrics"][0]
+        assert np.isfinite(float(metadata["best_metric_value"]))
 
-        # Validate val_fraction is set correctly
-        assert fp["optimisation_settings"]["val_fraction"] == 0.2
+    def test_no_val_uses_best_train(self, defaulted_run_fingerprint):
+        """With val_fraction=0, selection falls back to best_train."""
+        fp = deepcopy(defaulted_run_fingerprint)
+        fp["optimisation_settings"]["val_fraction"] = 0.0
+        fp["optimisation_settings"]["n_iterations"] = 2
+        fp["optimisation_settings"]["n_parameter_sets"] = 1
+        _, metadata = train_on_historic_data(
+            fp, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=999999,
+        )
+        assert metadata["selection_method"] == "best_train"
 
     def test_invalid_val_fraction_raises(self, defaulted_run_fingerprint):
-        """Test invalid val_fraction raises error."""
+        """val_fraction >= 1.0 must raise ValueError."""
         fp = deepcopy(defaulted_run_fingerprint)
-        fp["optimisation_settings"]["val_fraction"] = 1.5  # Invalid
-
+        fp["optimisation_settings"]["val_fraction"] = 1.5
         with pytest.raises(ValueError, match="val_fraction"):
             train_on_historic_data(
-                fp,
-                root=TEST_DATA_DIR,
-                verbose=False,
-                force_init=True,
+                fp, root=str(TEST_DATA_DIR), verbose=False, force_init=True,
             )
-
-    def test_early_stopping_metric_validation(self, minimal_run_fingerprint):
-        """Test that invalid early stopping metric raises error."""
-        fp = deepcopy(minimal_run_fingerprint)
-        fp["optimisation_settings"]["early_stopping"] = True
-        fp["optimisation_settings"]["early_stopping_metric"] = "invalid_metric"
-        fp["optimisation_settings"]["val_fraction"] = 0.2
-
-        # Metric validation happens during training setup
-        # This should raise ValueError when training starts
-
-
-class TestLRSchedules:
-    """Tests for learning rate schedules."""
-
-    def test_plateau_decay_reduces_lr(self, minimal_run_fingerprint):
-        """Test that plateau decay reduces LR after no improvement."""
-        fp = deepcopy(minimal_run_fingerprint)
-        fp["optimisation_settings"]["decay_lr_plateau"] = 2
-        fp["optimisation_settings"]["decay_lr_ratio"] = 0.5
-        fp["optimisation_settings"]["base_lr"] = 0.1
-        fp["optimisation_settings"]["min_lr"] = 0.01
-
-        # LR should decay when no improvement for decay_lr_plateau iterations
-        # Initial LR: 0.1, after decay: 0.05
-
-    def test_min_lr_floor(self, minimal_run_fingerprint):
-        """Test that LR doesn't go below min_lr."""
-        fp = deepcopy(minimal_run_fingerprint)
-        min_lr = fp["optimisation_settings"]["min_lr"]
-
-        assert min_lr > 0
-
-
-# ============================================================================
-# SWA Tests
-# ============================================================================
-
-class TestSWA:
-    """Tests for Stochastic Weight Averaging."""
-
-    def test_swa_settings(self, minimal_run_fingerprint):
-        """Test SWA settings are properly configured."""
-        fp = deepcopy(minimal_run_fingerprint)
-        fp["optimisation_settings"]["use_swa"] = True
-        fp["optimisation_settings"]["swa_start_frac"] = 0.75
-        fp["optimisation_settings"]["swa_freq"] = 10
-
-        assert fp["optimisation_settings"]["use_swa"] == True
-        assert fp["optimisation_settings"]["swa_start_frac"] == 0.75
 
 
 # ============================================================================
 # Checkpoint Tracking Tests
 # ============================================================================
 
-class TestCheckpointTracking:
-    """Tests for checkpoint tracking (Rademacher complexity)."""
+class TestCheckpointTrackingEndToEnd:
+    """End-to-end test for Rademacher checkpoint returns."""
 
-    def test_checkpoint_settings(self, minimal_run_fingerprint):
-        """Test checkpoint tracking settings."""
-        fp = deepcopy(minimal_run_fingerprint)
+    def test_checkpoint_returns_in_metadata(self, defaulted_run_fingerprint):
+        fp = deepcopy(defaulted_run_fingerprint)
         fp["optimisation_settings"]["track_checkpoints"] = True
-        fp["optimisation_settings"]["checkpoint_interval"] = 10
-
-        assert fp["optimisation_settings"]["track_checkpoints"] == True
+        fp["optimisation_settings"]["checkpoint_interval"] = 1
+        fp["optimisation_settings"]["n_iterations"] = 3
+        fp["optimisation_settings"]["n_parameter_sets"] = 1
+        fp["optimisation_settings"]["val_fraction"] = 0.0
+        _, metadata = train_on_historic_data(
+            fp, root=str(TEST_DATA_DIR), verbose=False,
+            force_init=True, return_training_metadata=True,
+            iterations_per_print=999999,
+        )
+        assert "checkpoint_returns" in metadata
+        ckpt = metadata["checkpoint_returns"]
+        assert ckpt is not None, "checkpoint_returns should not be None"
+        assert ckpt.ndim == 2  # (n_checkpoints, n_days)
+        assert ckpt.shape[0] >= 1  # At least one checkpoint
+        assert not np.isnan(ckpt).all(), "All checkpoint returns are NaN"
 
 
 # ============================================================================

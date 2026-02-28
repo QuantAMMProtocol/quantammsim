@@ -212,15 +212,39 @@ class AbstractPool(ABC):
         pass
 
     def add_noise(
-        self, params: Dict[str, np.ndarray], noise: str, n_parameter_sets: int, noise_scale: float = 1.0
+        self,
+        params: Dict[str, np.ndarray],
+        noise: str,
+        n_parameter_sets: int,
+        noise_scale: float = 1.0,
+        per_param_noise_scale: Optional[Dict[str, float]] = None,
     ) -> Dict[str, jnp.ndarray]:
+        """Add noise to parameter sets for initialization diversity.
+
+        Parameters
+        ----------
+        params : dict
+            Parameter arrays, each with shape (n_parameter_sets, ...).
+        noise : str
+            Noise method: "gaussian", "sobol", "lhs", "centered_lhs".
+        n_parameter_sets : int
+            Number of parameter sets. First set is left unaltered.
+        noise_scale : float
+            Global noise scale (default 1.0).
+        per_param_noise_scale : dict, optional
+            Per-parameter noise scale overrides. Keys are param names,
+            values are scale multipliers. Params not in this dict use
+            the global noise_scale. Useful for wider exploration of
+            under-studied params (e.g., raw_width, pre_exp_scaling).
+        """
         if n_parameter_sets > 1:
             if noise == "gaussian":
                 for key in params.keys():
                     if key != "subsidary_params" and key != "initial_weights_logits":
-                        # Leave first row of each jax parameter unaltered, add
-                        # gaussian noise to subsequent rows.
-                        params[key][1:] = params[key][1:] + noise_scale * np.random.randn(
+                        scale = noise_scale
+                        if per_param_noise_scale and key in per_param_noise_scale:
+                            scale = per_param_noise_scale[key]
+                        params[key][1:] = params[key][1:] + scale * np.random.randn(
                             *params[key][1:].shape
                         )
             elif noise in ("sobol", "lhs", "centered_lhs"):
@@ -234,7 +258,17 @@ class AbstractPool(ABC):
 
                 # Transform [0,1] → normal offsets, clip to avoid inf at boundaries
                 samples = np.clip(samples, 1e-6, 1.0 - 1e-6)
-                normal_offsets = norm.ppf(samples) * noise_scale
+
+                if per_param_noise_scale:
+                    # Apply per-param scales: build a scale vector matching sample columns
+                    col_scales = np.full(samples.shape[1], noise_scale)
+                    for key in trainable_keys:
+                        if key in per_param_noise_scale:
+                            start_col, n_dims, _ = dim_map[key]
+                            col_scales[start_col:start_col + n_dims] = per_param_noise_scale[key]
+                    normal_offsets = norm.ppf(samples) * col_scales[np.newaxis, :]
+                else:
+                    normal_offsets = norm.ppf(samples) * noise_scale
 
                 # Distribute offsets back to each param array
                 for key in trainable_keys:

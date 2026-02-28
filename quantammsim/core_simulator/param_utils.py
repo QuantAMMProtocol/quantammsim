@@ -105,6 +105,8 @@ def check_run_fingerprint(run_fingerprint):
         run_fingerprint["weight_interpolation_period"]
         <= run_fingerprint["chunk_period"]
     )
+    protocol_fee_split = run_fingerprint.get("protocol_fee_split", 0.0)
+    assert 0.0 <= protocol_fee_split <= 1.0
 
 def default_set_or_get(dictionary, key, default, augment=True):
     """
@@ -216,6 +218,9 @@ class NumpyEncoder(json.JSONEncoder):
         elif isinstance(o, np.floating):
             return float(o)
         elif isinstance(o, np.ndarray):
+            return o.tolist()
+        elif hasattr(o, "dtype") and hasattr(o, "tolist"):
+            # JAX ArrayImpl (and any other array-like with .tolist())
             return o.tolist()
         return json.JSONEncoder.default(self, o)
 
@@ -2056,7 +2061,7 @@ def split_param_combinations(param_combinations):
 
 
 def make_vmap_in_axes_dict(
-    input_dict, in_axes, keys_to_recur_on, keys_with_no_vamp=[], n_repeats_of_recurred=0
+    input_dict, in_axes, keys_to_recur_on, keys_with_no_vamp=None, n_repeats_of_recurred=0
 ):
     """Create a ``vmap`` in_axes specification dict matching a parameter dict structure.
 
@@ -2085,6 +2090,8 @@ def make_vmap_in_axes_dict(
         or None for each leaf.
     """
 
+    if keys_with_no_vamp is None:
+        keys_with_no_vamp = []
     in_axes_dict = dict()
     for key, _ in input_dict.items():
         in_axes_dict[key] = in_axes

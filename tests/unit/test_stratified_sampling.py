@@ -96,12 +96,10 @@ def test_uniform_unchanged():
     assert jnp.all(start_indexes[:, 0] >= 0)
 
 
-def test_batch_size_floor_in_tuner():
-    """Tuner search space has batch_size low=8."""
+def test_batch_size_fixed_not_searched():
+    """batch_size is now fixed from domain knowledge, not in search space."""
     from quantammsim.runners.hyperparam_tuner import HyperparamSpace
 
     space = HyperparamSpace.create()
-    assert "batch_size" in space.params
-    assert space.params["batch_size"]["low"] == 8, (
-        f"Expected batch_size low=8, got {space.params['batch_size']['low']}"
-    )
+    # batch_size is fixed (set on fingerprint directly), not searched
+    assert "batch_size" not in space.params
