@@ -95,6 +95,17 @@ run_fingerprint_defaults = {
     "do_trades": False,
     "numeraire": None,
     "do_arb": True,
+    "reclamm_interpolation_method": "geometric",  # "geometric" or "constant_arc_length"
+    "reclamm_arc_length_speed": None,  # auto-calibrate from geometric onset if None
+    "reclamm_centeredness_scaling": False,  # scale speed by margin/centeredness
+    "reclamm_learn_arc_length_speed": False,  # include arc_length_speed in trainable params
+    "reclamm_use_shift_exponent": False,  # parametrise shift rate as shift_exponent (log-friendly)
+    "reclamm_learn_fees": False,  # include fees in trainable params (Optuna search over fee level)
+    "initial_arc_length_speed": 1e-4,  # default initial value when learning arc_length_speed
+    "initial_shift_exponent": 1.0,  # default shift_exponent when using that parametrisation
+    "initial_price_ratio": 4.0,
+    "initial_centeredness_margin": 0.2,
+    "initial_daily_price_shift_base": 1.0 - 1.0 / 124000.0,
     "max_memory_days": 365,
     "noise_trader_ratio": 0.0,
     "minimum_weight": None,  # will be set to 0.1 / n_assets
