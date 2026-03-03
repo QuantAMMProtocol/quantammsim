@@ -28,7 +28,7 @@ from .jax_runners import (
 from .jax_runner_utils import (
     nan_rollback,
     Hashabledict,
-    get_trades_and_fees,
+    prepare_dynamic_inputs,
     get_unique_tokens,
     OptunaManager,
     generate_evaluation_points,
@@ -80,7 +80,7 @@ __all__ = [
     # Utilities
     "nan_rollback",
     "Hashabledict",
-    "get_trades_and_fees",
+    "prepare_dynamic_inputs",
     "get_unique_tokens",
     "OptunaManager",
     "generate_evaluation_points",

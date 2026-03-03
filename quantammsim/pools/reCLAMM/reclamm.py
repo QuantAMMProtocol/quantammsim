@@ -275,11 +275,7 @@ class ReClammPool(AbstractPool):
         run_fingerprint: Dict[str, Any],
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
-        fees_array: jnp.ndarray,
-        arb_thresh_array: jnp.ndarray,
-        arb_fees_array: jnp.ndarray,
-        trade_array: jnp.ndarray,
-        lp_supply_array: jnp.ndarray = None,
+        dynamic_inputs,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ):
         """Calculate reserves and LP fee revenue with time-varying inputs.
@@ -291,6 +287,9 @@ class ReClammPool(AbstractPool):
             LP fee revenue per timestep in USD.
         """
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
+        fees_array = dynamic_inputs.fees
+        arb_thresh_array = dynamic_inputs.gas_cost
+        arb_fees_array = dynamic_inputs.arb_fees
 
         bout_length = run_fingerprint["bout_length"]
         max_len = bout_length - 1
@@ -367,14 +366,13 @@ class ReClammPool(AbstractPool):
         run_fingerprint: Dict[str, Any],
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
-        fees_array: jnp.ndarray,
-        arb_thresh_array: jnp.ndarray,
-        arb_fees_array: jnp.ndarray,
-        trade_array: jnp.ndarray,
-        lp_supply_array: jnp.ndarray = None,
+        dynamic_inputs,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
+        fees_array = dynamic_inputs.fees
+        arb_thresh_array = dynamic_inputs.gas_cost
+        arb_fees_array = dynamic_inputs.arb_fees
 
         bout_length = run_fingerprint["bout_length"]
         max_len = bout_length - 1

@@ -117,16 +117,13 @@ class TestF821UndefinedNames:
         prices = jnp.ones((20, 2))
         start_index = jnp.array([0, 0])
 
-        # __wrapped__ arg order: params, start_index, prices, trades, fees,
-        # gas_cost, arb_fees, pool, static_dict
+        # __wrapped__ arg order: params, start_index, prices, dynamic_inputs,
+        # pool, static_dict
         result = forward_pass.__wrapped__(
             {},            # params
             start_index,   # start_index
             prices,        # prices
-            None,          # trades_array
-            None,          # fees_array
-            None,          # gas_cost_array
-            None,          # arb_fees_array
+            None,          # dynamic_inputs
             _MockPool(),   # pool
             static_dict,   # static_dict
         )

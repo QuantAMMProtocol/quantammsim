@@ -13,6 +13,7 @@ import warnings
 import pytest
 import numpy as np
 import jax.numpy as jnp
+import pandas as pd
 
 
 class TestHashabledict:
@@ -159,6 +160,21 @@ class TestCreateStaticDictExcludesParamInitFields:
         h = hash(hd)
         assert isinstance(h, int)
 
+    def test_static_dict_accepts_dynamic_input_flags(self):
+        """Nested dynamic-input flags must remain hashable for JIT cache keys."""
+        from quantammsim.core_simulator.dynamic_inputs import default_dynamic_input_flags
+        from quantammsim.runners.jax_runner_utils import create_static_dict, Hashabledict
+
+        fp = self._make_fingerprint()
+        static = create_static_dict(
+            fp,
+            bout_length=10080,
+            overrides={"dynamic_input_flags": default_dynamic_input_flags()},
+        )
+
+        assert static["dynamic_input_flags"]["use_dynamic_inputs"] is False
+        assert isinstance(hash(Hashabledict(static)), int)
+
     def test_unknown_array_fields_dropped_with_warning(self):
         """Arrays not in _TRAINING_ONLY_FIELDS are dropped with a warning.
 
@@ -235,6 +251,226 @@ class TestNestedHashabledict:
         assert d != "not a dict"
         assert d != 123
         assert d != [1, 2, 3]
+
+
+class TestDynamicInputPreparation:
+    """Tests for dynamic input container construction and normalization."""
+
+    def test_empty_dynamic_input_arrays_have_stable_shapes(self):
+        """The empty hot-path bundle should have canonical placeholder arrays."""
+        from quantammsim.core_simulator.dynamic_inputs import empty_dynamic_input_arrays
+
+        dynamic_inputs = empty_dynamic_input_arrays()
+
+        assert dynamic_inputs.trades.shape == (1, 3)
+        assert dynamic_inputs.fees.shape == (1,)
+        assert dynamic_inputs.gas_cost.shape == (1,)
+        assert dynamic_inputs.arb_fees.shape == (1,)
+        assert dynamic_inputs.lp_supply.shape == (1,)
+
+    def test_dynamic_input_flags_reflect_present_frames(self):
+        """Frame-presence flags should drive static dynamic-input dispatch."""
+        from quantammsim.core_simulator.dynamic_inputs import (
+            DynamicInputFrames,
+            dynamic_input_flags_from_frames,
+        )
+
+        flags = dynamic_input_flags_from_frames(
+            DynamicInputFrames(
+                trades=pd.DataFrame({"unix": [1], "token_in": ["ETH"], "token_out": ["USDC"], "amount_in": [1.0]}),
+                fees=pd.DataFrame({"unix": [1], "fees": [0.003]}),
+                gas_cost=pd.DataFrame({"unix": [1], "trade_gas_cost_usd": [2.0]}),
+            )
+        )
+
+        assert flags["use_dynamic_inputs"] is True
+        assert flags["has_trades"] is True
+        assert flags["has_dynamic_fees"] is True
+        assert flags["has_dynamic_gas_cost"] is True
+        assert flags["has_dynamic_arb_fees"] is False
+        assert flags["has_lp_supply"] is False
+
+    def test_prepare_dynamic_inputs_preserves_fixed_hot_path_structure(self):
+        """Normalization should return fixed bundles plus static dispatch flags."""
+        from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
+        from quantammsim.runners.jax_runner_utils import prepare_dynamic_inputs
+
+        run_fingerprint = {
+            "tokens": ["ETH", "USDC"],
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-01 00:02:00",
+            "endTestDateString": "2023-01-01 00:04:00",
+        }
+
+        dynamic_input_frames = DynamicInputFrames(
+            trades=pd.DataFrame(
+                {
+                    "unix": [1672531200000, 1672531320000],
+                    "token_in": ["ETH", "USDC"],
+                    "token_out": ["USDC", "ETH"],
+                    "amount_in": [1.5, 2.0],
+                }
+            ),
+            fees=pd.DataFrame({"unix": [1672531200000], "fees": [0.003]}),
+            gas_cost=pd.DataFrame({"unix": [1672531200000], "trade_gas_cost_usd": [3.25]}),
+            arb_fees=pd.DataFrame({"unix": [1672531200000], "arb_fees": [0.0005]}),
+            lp_supply=pd.DataFrame({"unix": [1672531200000], "lp_supply": [1250.0]}),
+        )
+
+        prepared = prepare_dynamic_inputs(
+            run_fingerprint,
+            dynamic_input_frames=dynamic_input_frames,
+            do_test_period=True,
+        )
+
+        train_inputs = prepared["train_dynamic_inputs"]
+        test_inputs = prepared["test_dynamic_inputs"]
+        flags = prepared["dynamic_input_flags"]
+
+        assert flags["use_dynamic_inputs"] is True
+        assert flags["has_trades"] is True
+        assert flags["has_dynamic_fees"] is True
+        assert flags["has_dynamic_gas_cost"] is True
+        assert flags["has_dynamic_arb_fees"] is True
+        assert flags["has_lp_supply"] is True
+        assert train_inputs.trades.shape == (2, 3)
+        assert train_inputs.fees.shape == (2,)
+        assert train_inputs.gas_cost.shape == (2,)
+        assert train_inputs.arb_fees.shape == (2,)
+        assert train_inputs.lp_supply.shape == (2,)
+        assert test_inputs.trades.shape == (2, 3)
+        assert test_inputs.fees.shape == (2,)
+        assert test_inputs.gas_cost.shape == (2,)
+        assert test_inputs.arb_fees.shape == (2,)
+        assert test_inputs.lp_supply.shape == (2,)
+        np.testing.assert_allclose(np.asarray(train_inputs.fees), np.array([0.003, 0.003]))
+
+    def test_prepare_dynamic_inputs_uses_correct_test_period_values(self):
+        """Test-period arrays should use values effective from the test window onward."""
+        from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
+        from quantammsim.runners.jax_runner_utils import prepare_dynamic_inputs
+
+        run_fingerprint = {
+            "tokens": ["ETH", "USDC"],
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-01 00:02:00",
+            "endTestDateString": "2023-01-01 00:04:00",
+        }
+        end_unix = pd.Timestamp(run_fingerprint["endDateString"]).value // 10**6
+
+        prepared = prepare_dynamic_inputs(
+            run_fingerprint,
+            dynamic_input_frames=DynamicInputFrames(
+                fees=pd.DataFrame(
+                    {"unix": [1672531200000, end_unix], "fees": [0.003, 0.004]}
+                ),
+                gas_cost=pd.DataFrame(
+                    {
+                        "unix": [1672531200000, end_unix],
+                        "trade_gas_cost_usd": [1.5, 2.5],
+                    }
+                ),
+                arb_fees=pd.DataFrame(
+                    {"unix": [1672531200000, end_unix], "arb_fees": [0.0001, 0.0002]}
+                ),
+                lp_supply=pd.DataFrame(
+                    {"unix": [1672531200000, end_unix], "lp_supply": [1000.0, 2000.0]}
+                ),
+            ),
+            do_test_period=True,
+        )
+
+        np.testing.assert_allclose(
+            np.asarray(prepared["test_dynamic_inputs"].fees),
+            np.array([0.004, 0.004]),
+        )
+        np.testing.assert_allclose(
+            np.asarray(prepared["test_dynamic_inputs"].gas_cost),
+            np.array([2.5, 2.5]),
+        )
+        np.testing.assert_allclose(
+            np.asarray(prepared["test_dynamic_inputs"].arb_fees),
+            np.array([0.0002, 0.0002]),
+        )
+        np.testing.assert_allclose(
+            np.asarray(prepared["test_dynamic_inputs"].lp_supply),
+            np.array([2000.0, 2000.0]),
+        )
+
+    def test_resolve_dynamic_input_flags_promotes_explicit_bundle(self):
+        """Passing a bundle directly should force dynamic-path dispatch."""
+        from quantammsim.core_simulator.dynamic_inputs import (
+            empty_dynamic_input_arrays,
+            resolve_dynamic_input_flags,
+        )
+
+        flags = resolve_dynamic_input_flags(
+            empty_dynamic_input_arrays(),
+            {
+                "use_dynamic_inputs": False,
+                "has_trades": False,
+                "has_dynamic_fees": False,
+                "has_dynamic_gas_cost": False,
+                "has_dynamic_arb_fees": False,
+                "has_lp_supply": False,
+            },
+        )
+
+        assert flags["use_dynamic_inputs"] is True
+
+    def test_resolve_dynamic_input_components_falls_back_to_static_scalars(self):
+        """Static scalar config should materialize as singleton arrays when no frames are present."""
+        from quantammsim.core_simulator.dynamic_inputs import (
+            default_dynamic_input_flags,
+            resolve_dynamic_input_components,
+        )
+
+        resolved = resolve_dynamic_input_components(
+            dynamic_inputs=None,
+            dynamic_input_flags=default_dynamic_input_flags(),
+            static_dict={"fees": 0.003, "gas_cost": 2.5, "arb_fees": 0.0001},
+        )
+
+        assert resolved["trades"] is None
+        np.testing.assert_allclose(np.asarray(resolved["fees"]), np.array([0.003]))
+        np.testing.assert_allclose(np.asarray(resolved["gas_cost"]), np.array([2.5]))
+        np.testing.assert_allclose(np.asarray(resolved["arb_fees"]), np.array([0.0001]))
+        np.testing.assert_allclose(np.asarray(resolved["lp_supply"]), np.array([1.0]))
+
+    def test_resolve_dynamic_input_components_prefers_dynamic_values(self):
+        """Dynamic arrays should override static scalar defaults for enabled fields."""
+        from quantammsim.core_simulator.dynamic_inputs import (
+            DynamicInputArrays,
+            resolve_dynamic_input_components,
+        )
+
+        dynamic_inputs = DynamicInputArrays(
+            trades=jnp.array([[0.0, 1.0, 5.0]]),
+            fees=jnp.array([0.004]),
+            gas_cost=jnp.array([3.0]),
+            arb_fees=jnp.array([0.0003]),
+            lp_supply=jnp.array([1500.0]),
+        )
+        flags = {
+            "use_dynamic_inputs": True,
+            "has_trades": True,
+            "has_dynamic_fees": True,
+            "has_dynamic_gas_cost": True,
+            "has_dynamic_arb_fees": True,
+            "has_lp_supply": True,
+        }
+
+        resolved = resolve_dynamic_input_components(
+            dynamic_inputs=dynamic_inputs,
+            dynamic_input_flags=flags,
+            static_dict={"fees": 0.0, "gas_cost": 0.0, "arb_fees": 0.0},
+        )
+
+        np.testing.assert_allclose(np.asarray(resolved["trades"]), np.array([[0.0, 1.0, 5.0]]))
+        np.testing.assert_allclose(np.asarray(resolved["fees"]), np.array([0.004]))
+        np.testing.assert_allclose(np.asarray(resolved["gas_cost"]), np.array([3.0]))
+        np.testing.assert_allclose(np.asarray(resolved["arb_fees"]), np.array([0.0003]))
+        np.testing.assert_allclose(np.asarray(resolved["lp_supply"]), np.array([1500.0]))
 
 
 class TestGetSigVariations:

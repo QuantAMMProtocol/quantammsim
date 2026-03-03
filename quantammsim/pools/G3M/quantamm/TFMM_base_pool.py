@@ -254,11 +254,7 @@ class TFMMBasePool(AbstractPool):
         run_fingerprint: Dict[str, Any],
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
-        fees_array: jnp.ndarray,
-        arb_thresh_array: jnp.ndarray,
-        arb_fees_array: jnp.ndarray,
-        trade_array: jnp.ndarray,
-        lp_supply_array: jnp.ndarray = None,
+        dynamic_inputs,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         bout_length = run_fingerprint["bout_length"]
@@ -277,6 +273,12 @@ class TFMMBasePool(AbstractPool):
         else:
             arb_acted_upon_weights = weights
             arb_acted_upon_local_prices = local_prices
+
+        fees_array = dynamic_inputs.fees
+        arb_thresh_array = dynamic_inputs.gas_cost
+        arb_fees_array = dynamic_inputs.arb_fees
+        trade_array = dynamic_inputs.trades
+        lp_supply_array = dynamic_inputs.lp_supply
 
         initial_pool_value = run_fingerprint["initial_pool_value"]
         initial_value_per_token = arb_acted_upon_weights[0] * initial_pool_value

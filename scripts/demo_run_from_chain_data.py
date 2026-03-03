@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
 from quantammsim.core_simulator.param_utils import (
     memory_days_to_logit_lamb,
 )
@@ -997,10 +998,12 @@ if __name__ == "__main__":
             run_fingerprint=config["fingerprint"],
             coarse_weights=config["coarse_weights"],
             params=config["params"],
-            fees_df=config["fees_df"],
-            gas_cost_df=config["gas_cost_df"],
-            lp_supply_df=config["lp_supply_df"],
-            arb_fees_df=config["arb_fees_df"],
+            dynamic_input_frames=DynamicInputFrames(
+                fees=config["fees_df"],
+                gas_cost=config["gas_cost_df"],
+                lp_supply=config["lp_supply_df"],
+                arb_fees=config["arb_fees_df"],
+            ),
         )
         print("-" * 80)
         print(f"Pool Type: {config['fingerprint']['rule']}")

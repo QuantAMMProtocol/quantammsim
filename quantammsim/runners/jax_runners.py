@@ -52,6 +52,10 @@ from quantammsim.core_simulator.forward_pass import (
     forward_pass_nograd,
     _calculate_return_value,
 )
+from quantammsim.core_simulator.dynamic_inputs import (
+    DynamicInputFrames,
+    resolve_dynamic_input_components,
+)
 from quantammsim.core_simulator.windowing_utils import get_indices, filter_coarse_weights_by_data_indices
 
 import hashlib
@@ -79,7 +83,7 @@ from quantammsim.core_simulator.result_exporter import (
 
 from quantammsim.runners.jax_runner_utils import (
     Hashabledict,
-    get_trades_and_fees,
+    prepare_dynamic_inputs,
     get_unique_tokens,
     OptunaManager,
     generate_evaluation_points,
@@ -639,6 +643,14 @@ def train_on_historic_data(
             "n_assets": n_assets,
             "training_data_kind": run_fingerprint["optimisation_settings"]["training_data_kind"],
             "do_trades": False,
+            "dynamic_input_flags": {
+                "use_dynamic_inputs": False,
+                "has_trades": False,
+                "has_dynamic_fees": False,
+                "has_dynamic_gas_cost": False,
+                "has_dynamic_arb_fees": False,
+                "has_lp_supply": False,
+            },
         },
     )
 
@@ -653,6 +665,7 @@ def train_on_historic_data(
     continuous_static_dict["bout_length"] = original_bout_length + data_dict["bout_length_test"]
     partial_forward_pass_nograd_batch_continuous = Partial(
         forward_pass_nograd,
+        dynamic_inputs=None,
         static_dict=Hashabledict(continuous_static_dict),
         pool=pool,
     )
@@ -798,6 +811,7 @@ def train_on_historic_data(
             # Build scan-compatible update (prices as explicit arg, not closure)
             partial_step_no_prices = Partial(
                 forward_pass,
+                dynamic_inputs=None,
                 static_dict=Hashabledict(base_static_dict),
                 pool=pool,
             )
@@ -1798,14 +1812,10 @@ def do_run_on_historic_data(
     root=None,
     price_data=None,
     verbose=False,
-    raw_trades=None,
     fees=None,
     gas_cost=None,
     arb_fees=None,
-    fees_df=None,
-    gas_cost_df=None,
-    arb_fees_df=None,
-    lp_supply_df=None,
+    dynamic_input_frames: DynamicInputFrames = None,
     do_test_period=False,
     low_data_mode=False,
     preslice_burnin=True,
@@ -1831,23 +1841,14 @@ def do_run_on_historic_data(
         Pre-loaded price data.  When None, loaded from parquet files.
     verbose : bool, optional
         Print progress information (default False).
-    raw_trades : DataFrame, optional
-        Real trade data to inject.  Columns: unix timestamp (minute),
-        token_in, token_out, amount_in.
     fees : float, optional
         Swap fee override (e.g. 0.003 for 30 bps).
     gas_cost : float, optional
         Gas cost override per transaction.
     arb_fees : float, optional
         Arbitrageur fee override.
-    fees_df : DataFrame, optional
-        Time-varying swap fees (columns: unix, fee).
-    gas_cost_df : DataFrame, optional
-        Time-varying gas costs (columns: unix, gas_cost).
-    arb_fees_df : DataFrame, optional
-        Time-varying arb fees (columns: unix, arb_fee).
-    lp_supply_df : DataFrame, optional
-        Time-varying LP supply changes.
+    dynamic_input_frames : DynamicInputFrames, optional
+        Optional container of trades / fee / gas / arb / LP supply DataFrames.
     do_test_period : bool, optional
         If True, also run the OOS test period defined by
         ``endDateString`` to ``endTestDateString`` (default False).
@@ -1892,14 +1893,20 @@ def do_run_on_historic_data(
 
     np.random.seed(0)
 
-    dynamic_inputs_dict = get_trades_and_fees(
+    dynamic_inputs_dict = prepare_dynamic_inputs(
         run_fingerprint,
-        raw_trades,
-        fees_df,
-        gas_cost_df,
-        arb_fees_df,
-        lp_supply_df,
+        dynamic_input_frames=dynamic_input_frames,
         do_test_period=do_test_period,
+    )
+    train_dynamic_inputs = (
+        dynamic_inputs_dict["train_dynamic_inputs"]
+        if dynamic_inputs_dict["dynamic_input_flags"]["use_dynamic_inputs"]
+        else None
+    )
+    test_dynamic_inputs = (
+        dynamic_inputs_dict.get("test_dynamic_inputs")
+        if dynamic_inputs_dict["dynamic_input_flags"]["use_dynamic_inputs"]
+        else None
     )
 
     # Load price data if not provided
@@ -1944,7 +1951,8 @@ def do_run_on_historic_data(
             "fees": fees if fees is not None else run_fingerprint["fees"],
             "arb_fees": arb_fees if arb_fees is not None else run_fingerprint["arb_fees"],
             "gas_cost": gas_cost if gas_cost is not None else run_fingerprint["gas_cost"],
-            "do_trades": False if raw_trades is None else run_fingerprint["do_trades"],
+            "do_trades": dynamic_inputs_dict["dynamic_input_flags"]["has_trades"],
+            "dynamic_input_flags": dynamic_inputs_dict["dynamic_input_flags"],
             # Include date strings for run-time use
             "startDateString": run_fingerprint["startDateString"],
             "endDateString": run_fingerprint["endDateString"],
@@ -2000,10 +2008,7 @@ def do_run_on_historic_data(
             param,
             (data_dict["start_idx"], 0),
             data_dict["prices"],
-            dynamic_inputs_dict["train_period_trades"],
-            dynamic_inputs_dict["fees_array"],
-            dynamic_inputs_dict["gas_cost_array"],
-            dynamic_inputs_dict["arb_fees_array"],
+            train_dynamic_inputs,
         )
         if low_data_mode:
             output_dict["final_prices"] = output_dict["prices"][-1]
@@ -2019,10 +2024,7 @@ def do_run_on_historic_data(
                 param,
                 (data_dict["start_idx_test"], 0),
                 data_dict["prices"],
-                dynamic_inputs_dict["test_period_trades"],
-                dynamic_inputs_dict["test_fees_array"],
-                dynamic_inputs_dict["test_gas_cost_array"],
-                dynamic_inputs_dict["test_arb_fees_array"],
+                test_dynamic_inputs,
             )
             if low_data_mode:
                 output_dict_test["final_prices"] = output_dict_test["prices"][-1]
@@ -2061,14 +2063,10 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     root=None,
     price_data=None,
     verbose=False,
-    raw_trades=None,
     fees=None,
     gas_cost=None,
     arb_fees=None,
-    fees_df=None,
-    gas_cost_df=None,
-    arb_fees_df=None,
-    lp_supply_df=None,
+    dynamic_input_frames: DynamicInputFrames = None,
     do_test_period=False,
     low_data_mode=False,
 ):
@@ -2098,22 +2096,14 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         Pre-loaded price data.
     verbose : bool, optional
         Print progress (default False).
-    raw_trades : DataFrame, optional
-        Real trade data to inject.
     fees : float, optional
         Swap fee override.
     gas_cost : float, optional
         Gas cost override.
     arb_fees : float, optional
         Arbitrageur fee override.
-    fees_df : DataFrame, optional
-        Time-varying swap fees.
-    gas_cost_df : DataFrame, optional
-        Time-varying gas costs.
-    arb_fees_df : DataFrame, optional
-        Time-varying arb fees.
-    lp_supply_df : DataFrame, optional
-        Time-varying LP supply changes.
+    dynamic_input_frames : DynamicInputFrames, optional
+        Optional container of trades / fee / gas / arb / LP supply DataFrames.
     do_test_period : bool, optional
         Run OOS test period (default False).
     low_data_mode : bool, optional
@@ -2152,13 +2142,9 @@ def do_run_on_historic_data_with_provided_coarse_weights(
 
     np.random.seed(0)
 
-    dynamic_inputs_dict = get_trades_and_fees(
+    dynamic_inputs_dict = prepare_dynamic_inputs(
         run_fingerprint,
-        raw_trades,
-        fees_df,
-        gas_cost_df,
-        arb_fees_df,
-        lp_supply_df,
+        dynamic_input_frames=dynamic_input_frames,
         do_test_period=do_test_period,
     )
 
@@ -2201,7 +2187,8 @@ def do_run_on_historic_data_with_provided_coarse_weights(
             "fees": fees if fees is not None else run_fingerprint["fees"],
             "arb_fees": arb_fees if arb_fees is not None else run_fingerprint["arb_fees"],
             "gas_cost": gas_cost if gas_cost is not None else run_fingerprint["gas_cost"],
-            "do_trades": False if raw_trades is None else run_fingerprint["do_trades"],
+            "do_trades": dynamic_inputs_dict["dynamic_input_flags"]["has_trades"],
+            "dynamic_input_flags": dynamic_inputs_dict["dynamic_input_flags"],
             # Include date strings for run-time use
             "startDateString": run_fingerprint["startDateString"],
             "endDateString": run_fingerprint["endDateString"],
@@ -2268,18 +2255,18 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     #     weights=HashableArrayWrapper(weights),
     #     initial_reserves=HashableArrayWrapper(params["initial_reserves"]),
     # )
-    fees_array = dynamic_inputs_dict.get("fees_array")
-    arb_thresh_array = dynamic_inputs_dict.get("gas_cost_array")
-    arb_fees_array = dynamic_inputs_dict.get("arb_fees_array")
-    trade_array = dynamic_inputs_dict.get("trades")
-    lp_supply_array = dynamic_inputs_dict.get("lp_supply_array")
-
-    if fees_array is None:
-        fees_array = jnp.array([static_dict["fees"]])
-    if arb_thresh_array is None:
-        arb_thresh_array = jnp.array([static_dict["gas_cost"]])
-    if arb_fees_array is None:
-        arb_fees_array = jnp.array([static_dict["arb_fees"]])
+    dynamic_input_flags = dynamic_inputs_dict["dynamic_input_flags"]
+    dynamic_inputs = dynamic_inputs_dict["train_dynamic_inputs"]
+    resolved_dynamic_inputs = resolve_dynamic_input_components(
+        dynamic_inputs,
+        dynamic_input_flags,
+        static_dict,
+    )
+    fees_array = resolved_dynamic_inputs["fees"]
+    arb_thresh_array = resolved_dynamic_inputs["gas_cost"]
+    arb_fees_array = resolved_dynamic_inputs["arb_fees"]
+    trade_array = resolved_dynamic_inputs["trades"]
+    lp_supply_array = resolved_dynamic_inputs["lp_supply"]
 
         # initial_pool_value = run_fingerprint["initial_pool_value"]
         # initial_value_per_token = arb_acted_upon_weights[0] * initial_pool_value
@@ -2298,10 +2285,8 @@ def do_run_on_historic_data_with_provided_coarse_weights(
 
     fees_array = fees_array[:max_len]
     arb_thresh_array = arb_thresh_array[:max_len]
-    arb_thresh_array = arb_thresh_array * 0.0
     arb_fees_array = arb_fees_array[:max_len]
-    if lp_supply_array is not None:
-        lp_supply_array = lp_supply_array[:max_len]
+    lp_supply_array = lp_supply_array[:max_len]
     if trade_array is not None:
         trade_array = trade_array[:max_len]
     # Broadcast input arrays to match the maximum leading dimension.
@@ -2316,10 +2301,6 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     arb_fees_array_broadcast = jnp.broadcast_to(
         arb_fees_array, (max_len,) + arb_fees_array.shape[1:]
     )
-    # if lp_supply_array is not provided, we set it to a constant of 1.0
-    if lp_supply_array is None:
-        lp_supply_array = jnp.array(1.0)
-
     lp_supply_array_broadcast = jnp.broadcast_to(
         lp_supply_array, (max_len,) + lp_supply_array.shape[1:]
     )

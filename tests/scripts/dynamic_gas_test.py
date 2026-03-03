@@ -1,6 +1,8 @@
-from quantammsim.runners.jax_runners import do_run_on_historic_data
 import jax.numpy as jnp
 import pandas as pd
+
+from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
+from quantammsim.runners.jax_runners import do_run_on_historic_data
 
 # Print the results
 print("=" * 100)
@@ -32,11 +34,21 @@ fees_df["fees"] = fees_df["fees"] / 10000
 run_fingerprint["do_trades"] = False
 
 result_w_gas_and_fees = do_run_on_historic_data(
-    run_fingerprint, params, gas_cost_df=gas_df, fees_df=fees_df
+    run_fingerprint,
+    params,
+    dynamic_input_frames=DynamicInputFrames(gas_cost=gas_df, fees=fees_df),
 )
-result_w_gas_only = do_run_on_historic_data(run_fingerprint, params, gas_cost_df=gas_df)
+result_w_gas_only = do_run_on_historic_data(
+    run_fingerprint,
+    params,
+    dynamic_input_frames=DynamicInputFrames(gas_cost=gas_df),
+)
 
-result_w_fees_only = do_run_on_historic_data(run_fingerprint, params, fees_df=fees_df)
+result_w_fees_only = do_run_on_historic_data(
+    run_fingerprint,
+    params,
+    dynamic_input_frames=DynamicInputFrames(fees=fees_df),
+)
 
 print(result_w_gas_and_fees["value"][-1440+1])
 print(result_w_gas_only["value"][-1440+1])

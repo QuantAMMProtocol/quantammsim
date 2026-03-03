@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 
 from quantammsim.runners.jax_runners import do_run_on_historic_data
 from quantammsim.runners.jax_runner_utils import optimized_output_conversion
+from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
 import quantammsim.simulator_analysis_tools.finance.financial_analysis_calculator as fac
 import quantammsim.simulator_analysis_tools.finance.financial_analysis_functions as faf
 import quantammsim.simulator_analysis_tools.finance.financial_analysis_utils as fau
@@ -238,6 +239,12 @@ def run_pool_simulation(simulationRunDto):
         run_fingerprint["fees"] = static_fee
         fee_steps_df = None
 
+    dynamic_input_frames = DynamicInputFrames(
+        trades=raw_trades,
+        fees=fee_steps_df,
+        gas_cost=gas_cost_df,
+    )
+
     print("run fingerprint-------------------", run_fingerprint)
     print("update rule parameter dict converted-------------------", update_rule_parameter_dict_converted)
     outputDict = do_run_on_historic_data(
@@ -247,9 +254,7 @@ def run_pool_simulation(simulationRunDto):
         price_data=price_data_local,
         verbose=True,
         do_test_period=False,
-        raw_trades=raw_trades,
-        gas_cost_df=gas_cost_df,
-        fees_df=fee_steps_df
+        dynamic_input_frames=dynamic_input_frames,
     )
     print("outputDict: ", outputDict.keys())
     resultTimeSteps = optimized_output_conversion(simulationRunDto, outputDict, tokens)
@@ -293,9 +298,7 @@ def run_pool_simulation(simulationRunDto):
         price_data=price_data_local,
         verbose=False,
         do_test_period=False,
-        raw_trades=raw_trades,
-        gas_cost_df=gas_cost_df,
-        fees_df=fee_steps_df,
+        dynamic_input_frames=dynamic_input_frames,
     )
 
     # Extract final weights from the result.

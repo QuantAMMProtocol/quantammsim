@@ -58,10 +58,9 @@ class CowPool(AbstractPool):
     start_index, additional_oracle_input=None) -> jnp.ndarray:
         Calculates the reserves of the pool without considering fees.
 
-    calculate_reserves_with_dynamic_inputs(params, run_fingerprint, prices, 
-    start_index, fees_array, arb_thresh_array, arb_fees_array, trade_array, 
-    additional_oracle_input=None) -> jnp.ndarray:
-        Calculates the reserves of the pool with dynamic inputs for fees, 
+    calculate_reserves_with_dynamic_inputs(params, run_fingerprint, prices,
+    start_index, dynamic_inputs, additional_oracle_input=None) -> jnp.ndarray:
+        Calculates the reserves of the pool with dynamic inputs for fees,
         arbitrage thresholds, arbitrage fees, and trades.
 
     init_base_parameters(initial_values_dict, run_fingerprint, n_assets, 
@@ -196,11 +195,7 @@ class CowPool(AbstractPool):
         run_fingerprint: Dict[str, Any],
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
-        fees_array: jnp.ndarray,
-        arb_thresh_array: jnp.ndarray,
-        arb_fees_array: jnp.ndarray,
-        trade_array: jnp.ndarray,
-        lp_supply_array: jnp.ndarray = None,
+        dynamic_inputs,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         bout_length = run_fingerprint["bout_length"]
@@ -215,6 +210,11 @@ class CowPool(AbstractPool):
             ]
         else:
             arb_acted_upon_local_prices = local_prices
+
+        fees_array = dynamic_inputs.fees
+        arb_thresh_array = dynamic_inputs.gas_cost
+        arb_fees_array = dynamic_inputs.arb_fees
+        trade_array = dynamic_inputs.trades
 
         initial_pool_value = run_fingerprint["initial_pool_value"]
         initial_value_per_token = weights * initial_pool_value

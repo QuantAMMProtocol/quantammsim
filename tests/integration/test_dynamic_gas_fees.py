@@ -9,6 +9,7 @@ import pandas as pd
 import jax.numpy as jnp
 from pathlib import Path
 
+from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
 from quantammsim.runners.jax_runners import do_run_on_historic_data
 
 
@@ -78,8 +79,12 @@ class TestDynamicGasAndFees:
     @pytest.mark.requires_data
     def test_run_with_gas_and_fees(self, base_fingerprint, base_params, gas_df, fees_df, data_root):
         """Test simulation with both gas costs and dynamic fees."""
+        dynamic_input_frames = DynamicInputFrames(gas_cost=gas_df, fees=fees_df)
         result = do_run_on_historic_data(
-            base_fingerprint, base_params, root=data_root, gas_cost_df=gas_df, fees_df=fees_df
+            base_fingerprint,
+            base_params,
+            root=data_root,
+            dynamic_input_frames=dynamic_input_frames,
         )
 
         assert result is not None
@@ -92,8 +97,12 @@ class TestDynamicGasAndFees:
     @pytest.mark.requires_data
     def test_run_with_gas_only(self, base_fingerprint, base_params, gas_df, data_root):
         """Test simulation with gas costs only."""
+        dynamic_input_frames = DynamicInputFrames(gas_cost=gas_df)
         result = do_run_on_historic_data(
-            base_fingerprint, base_params, root=data_root, gas_cost_df=gas_df
+            base_fingerprint,
+            base_params,
+            root=data_root,
+            dynamic_input_frames=dynamic_input_frames,
         )
 
         assert result is not None
@@ -104,8 +113,12 @@ class TestDynamicGasAndFees:
     @pytest.mark.requires_data
     def test_run_with_fees_only(self, base_fingerprint, base_params, fees_df, data_root):
         """Test simulation with dynamic fees only."""
+        dynamic_input_frames = DynamicInputFrames(fees=fees_df)
         result = do_run_on_historic_data(
-            base_fingerprint, base_params, root=data_root, fees_df=fees_df
+            base_fingerprint,
+            base_params,
+            root=data_root,
+            dynamic_input_frames=dynamic_input_frames,
         )
 
         assert result is not None
@@ -120,8 +133,12 @@ class TestDynamicGasAndFees:
         result_no_gas = do_run_on_historic_data(base_fingerprint, base_params, root=data_root)
 
         # Run with gas
+        dynamic_input_frames = DynamicInputFrames(gas_cost=gas_df)
         result_with_gas = do_run_on_historic_data(
-            base_fingerprint, base_params, root=data_root, gas_cost_df=gas_df
+            base_fingerprint,
+            base_params,
+            root=data_root,
+            dynamic_input_frames=dynamic_input_frames,
         )
 
         if "final_value" in result_no_gas and "final_value" in result_with_gas:
@@ -139,8 +156,12 @@ class TestDynamicGasAndFees:
         result_no_fees = do_run_on_historic_data(base_fingerprint, base_params, root=data_root)
 
         # Run with fees
+        dynamic_input_frames = DynamicInputFrames(fees=fees_df)
         result_with_fees = do_run_on_historic_data(
-            base_fingerprint, base_params, root=data_root, fees_df=fees_df
+            base_fingerprint,
+            base_params,
+            root=data_root,
+            dynamic_input_frames=dynamic_input_frames,
         )
 
         if "final_value" in result_no_fees and "final_value" in result_with_fees:
