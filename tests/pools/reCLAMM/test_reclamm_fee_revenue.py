@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 
+from quantammsim.core_simulator.dynamic_inputs import DynamicInputArrays
 from quantammsim.pools.reCLAMM.reclamm_reserves import (
     initialise_reclamm_reserves,
     _jax_calc_reclamm_reserves_with_fees,
