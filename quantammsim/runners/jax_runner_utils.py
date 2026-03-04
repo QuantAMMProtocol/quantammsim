@@ -1060,8 +1060,9 @@ def get_unique_tokens(run_fingerprint):
     >>> get_unique_tokens(fingerprint)
     ['BTC', 'DAI', 'ETH']
     """
+    subsidary_pools = run_fingerprint.get("subsidary_pools", [])
     all_tokens = [run_fingerprint["tokens"]] + [
-        cprd["tokens"] for cprd in run_fingerprint["subsidary_pools"]
+        cprd["tokens"] for cprd in subsidary_pools
     ]
     all_tokens = [item for sublist in all_tokens for item in sublist]
     unique_tokens = list(set(all_tokens))
@@ -1228,10 +1229,10 @@ def _to_dynamic_input_arrays(
     arb_fees_array,
     lp_supply_array,
 ) -> DynamicInputArrays:
-    """Normalize optional numpy arrays into the fixed hot-path container."""
+    """Normalize optional numpy arrays into the hot-path container."""
     empty = empty_dynamic_input_arrays()
     return DynamicInputArrays(
-        trades=empty.trades if trades_array is None else jnp.asarray(trades_array, dtype=jnp.float64),
+        trades=None if trades_array is None else jnp.asarray(trades_array, dtype=jnp.float64),
         fees=empty.fees if fees_array is None else jnp.asarray(fees_array, dtype=jnp.float64),
         gas_cost=empty.gas_cost if gas_cost_array is None else jnp.asarray(gas_cost_array, dtype=jnp.float64),
         arb_fees=empty.arb_fees if arb_fees_array is None else jnp.asarray(arb_fees_array, dtype=jnp.float64),
@@ -1244,7 +1245,7 @@ def prepare_dynamic_inputs(
     dynamic_input_frames: Optional[DynamicInputFrames] = None,
     do_test_period: bool = False,
 ):
-    """Convert optional pandas inputs into fixed-structure dynamic input bundles."""
+    """Convert optional pandas inputs into dynamic input bundles."""
     if dynamic_input_frames is None:
         dynamic_input_frames = DynamicInputFrames()
 
@@ -1367,6 +1368,19 @@ def prepare_dynamic_inputs(
             if lp_supply_df is not None
             else None
         )
+
+    # Unit LP supply is the neutral case; keep it on the static hot path.
+    if lp_supply_array is not None and np.allclose(lp_supply_array, 1.0):
+        lp_supply_array = None
+        if not do_test_period or test_lp_supply_array is None or np.allclose(test_lp_supply_array, 1.0):
+            dynamic_input_flags["has_lp_supply"] = False
+            dynamic_input_flags["use_dynamic_inputs"] = any(
+                value for key, value in dynamic_input_flags.items() if key != "use_dynamic_inputs"
+            )
+
+    if do_test_period and test_lp_supply_array is not None and np.allclose(test_lp_supply_array, 1.0):
+        test_lp_supply_array = None
+    if do_test_period:
         return {
             "train_dynamic_inputs": _to_dynamic_input_arrays(
                 train_period_trades,

@@ -32,6 +32,7 @@ from functools import partial
 from typing import Dict, Any, Optional, Tuple
 import numpy as np
 
+from quantammsim.core_simulator.dynamic_inputs import materialize_dynamic_inputs
 from quantammsim.pools.base_pool import AbstractPool
 
 from quantammsim.pools.ECLP.gyroscope_reserves import (
@@ -342,11 +343,6 @@ class GyroscopePool(AbstractPool):
         else:
             arb_acted_upon_local_prices = local_prices
 
-        fees_array = dynamic_inputs.fees
-        arb_thresh_array = dynamic_inputs.gas_cost
-        arb_fees_array = dynamic_inputs.arb_fees
-        trade_array = dynamic_inputs.trades
-
         # calculate initial reserves
         initial_pool_value = run_fingerprint["initial_pool_value"]
         initial_reserves = initialise_gyroscope_reserves_given_value(
@@ -358,34 +354,27 @@ class GyroscopePool(AbstractPool):
             sin=jnp.sin(phi),
             cos=jnp.cos(phi),
         )
-        # any of fees_array, arb_thresh_array, arb_fees_array, trade_array
-        # can be singletons, in which case we repeat them for the length of the bout
-
-        # Determine the maximum leading dimension
         max_len = bout_length - 1
         if run_fingerprint["arb_frequency"] != 1:
             max_len = max_len // run_fingerprint["arb_frequency"]
+        materialized_inputs = materialize_dynamic_inputs(
+            dynamic_inputs,
+            run_fingerprint.get("dynamic_input_flags"),
+            run_fingerprint,
+            scan_len=max_len,
+            do_trades=run_fingerprint["do_trades"],
+            dtype=arb_acted_upon_local_prices.dtype,
+        )
 
         # Handle trade array reordering if needed
         if run_fingerprint["do_trades"]:
-            # if we are doing trades, the trades array must be of the same length as the other arrays
-            assert trade_array.shape[0] == max_len
             if needs_swap:
                 # Swap trade indices (0->1, 1->0) but keep amounts unchanged
-                trade_array = trade_array.at[:, :2].set(1 - trade_array[:, :2])
-
-        # Broadcast input arrays to match the maximum leading dimension.
-        # If they are singletons, this will just repeat them for the length of the bout.
-        # If they are arrays of length bout_length, this will cause no change.
-        fees_array_broadcast = jnp.broadcast_to(
-            fees_array, (max_len,) + fees_array.shape[1:]
-        )
-        arb_thresh_array_broadcast = jnp.broadcast_to(
-            arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:]
-        )
-        arb_fees_array_broadcast = jnp.broadcast_to(
-            arb_fees_array, (max_len,) + arb_fees_array.shape[1:]
-        )
+                materialized_inputs = materialized_inputs._replace(
+                    trades=materialized_inputs.trades.at[:, :2].set(
+                        1 - materialized_inputs.trades[:, :2]
+                    )
+                )
 
         # Calculate reserves
         reserves = _jax_calc_gyroscope_reserves_with_dynamic_inputs(
@@ -396,10 +385,10 @@ class GyroscopePool(AbstractPool):
             sin=jnp.sin(phi),
             cos=jnp.cos(phi),
             lam=lam,
-            fees=fees_array_broadcast,
-            arb_thresh=arb_thresh_array_broadcast,
-            arb_fees=arb_fees_array_broadcast,
-            trades=trade_array,
+            fees=materialized_inputs.fees,
+            arb_thresh=materialized_inputs.gas_cost,
+            arb_fees=materialized_inputs.arb_fees,
+            trades=materialized_inputs.trades,
             do_trades=run_fingerprint["do_trades"],
         )
         # Restore original order if we swapped

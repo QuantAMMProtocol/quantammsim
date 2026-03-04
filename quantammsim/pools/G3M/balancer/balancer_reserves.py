@@ -364,7 +364,7 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
     gamma = input_list[4]
     arb_thresh = input_list[5]
     arb_fees = input_list[6]
-    trade = input_list[7]
+    trade = input_list[7] if do_trades else None
 
     fees_are_being_charged = gamma != 1.0
 
@@ -499,6 +499,8 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
     arb_fees = jnp.where(
         arb_fees.size == 1, jnp.full(prices.shape[0], arb_fees), arb_fees
     )
+    if do_trades and trades is None:
+        raise ValueError("Trades must be provided when do_trades=True.")
 
     # pre-calculate some values that are repeatedly used in optimal arb calculations
     _, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
@@ -533,19 +535,17 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
         initial_reserves,
         0,
     ]
-    _, reserves = scan(
-        scan_fn,
-        carry_list_init,
-        [
-            prices,
-            active_initial_weights,
-            per_asset_ratios,
-            all_other_assets_ratios,
-            gamma,
-            arb_thresh,
-            arb_fees,
-            trades,
-        ],
-    )
+    scan_inputs = [
+        prices,
+        active_initial_weights,
+        per_asset_ratios,
+        all_other_assets_ratios,
+        gamma,
+        arb_thresh,
+        arb_fees,
+    ]
+    if do_trades:
+        scan_inputs.append(trades)
+    _, reserves = scan(scan_fn, carry_list_init, scan_inputs)
 
     return reserves

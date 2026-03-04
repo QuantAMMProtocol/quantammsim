@@ -206,11 +206,12 @@ def raw_fee_like_amounts_to_fee_like_array(
         ).astype(int)
         // 10**6
     )[:-1]
+    fill_value = np.nan if fill_method == "ffill" else 0.0
     full_index_df = pd.DataFrame(
-        index=full_index, 
-        columns=names, 
-        data=0,
-        dtype=np.float64
+        index=full_index,
+        columns=names,
+        data=fill_value,
+        dtype=np.float64,
     )
 
     # Map raw data to the full index DataFrame
@@ -236,15 +237,16 @@ def raw_fee_like_amounts_to_fee_like_array(
             # Ensure unix values are valid
             valid_unix = pd.to_numeric(raw_inputs['unix'], errors='coerce')
             valid_mask = valid_unix.notna()
+            valid_inputs = raw_inputs.loc[valid_mask].copy()
+            valid_inputs["unix"] = valid_unix.loc[valid_mask].astype(np.int64)
+            valid_inputs = valid_inputs.sort_values("unix")
 
             for name in names:
                 initial_value = None
 
-                if valid_mask.any():
+                if not valid_inputs.empty:
                     # Try to get the last value before our start date
-                    previous_values = raw_inputs[
-                        valid_mask & (valid_unix < start_unix)
-                    ]
+                    previous_values = valid_inputs[valid_inputs["unix"] < start_unix]
 
                     if not previous_values.empty:
                         try:
@@ -254,9 +256,7 @@ def raw_fee_like_amounts_to_fee_like_array(
 
                     if initial_value is None or pd.isna(initial_value):
                         # Try to get first value in our date range
-                        in_range_values = raw_inputs[
-                            valid_mask & (valid_unix >= start_unix)
-                        ]
+                        in_range_values = valid_inputs[valid_inputs["unix"] >= start_unix]
                         if not in_range_values.empty:
                             try:
                                 initial_value = pd.to_numeric(in_range_values[name].iloc[0])
@@ -264,17 +264,12 @@ def raw_fee_like_amounts_to_fee_like_array(
                                 initial_value = None
 
                 if initial_value is not None and pd.notna(initial_value):
-                    # this more complex logic is because of how we have started with prior-to-start values
-                    # filled in, and then we want to ffill the rest
-                    # Fill initial values
-                    full_index_df[name] = full_index_df[name].mask(
-                        full_index_df[name] == 0, 
-                        initial_value
-                    )
-                    # Use ffill()
-                    full_index_df[name] = full_index_df[name].where(
-                        full_index_df[name] != 0
-                    ).ffill()
+                    # Seed only the leading gap; explicit in-range updates must remain intact.
+                    first_row = full_index_df.index[0]
+                    if pd.isna(full_index_df.at[first_row, name]):
+                        full_index_df.at[first_row, name] = initial_value
+
+                full_index_df[name] = full_index_df[name].ffill().fillna(0.0)
         except (ValueError, KeyError, TypeError) as e:
             print(f"Warning: Error during ffill processing: {str(e)}")
             # On any error, return the original zero-filled DataFrame

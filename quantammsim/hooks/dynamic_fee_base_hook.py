@@ -119,7 +119,7 @@ class BaseDynamicFeeHook(ABC):
         dynamic_fees = raw_dynamic_fees.repeat(chunk_period, axis=0).squeeze()
         empty_inputs = empty_dynamic_input_arrays()
         dynamic_inputs = DynamicInputArrays(
-            trades=empty_inputs.trades,
+            trades=None,
             fees=dynamic_fees,
             gas_cost=jnp.asarray(run_fingerprint["gas_cost"], dtype=jnp.float64),
             arb_fees=jnp.asarray(run_fingerprint["arb_fees"], dtype=jnp.float64),

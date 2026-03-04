@@ -54,7 +54,7 @@ from quantammsim.core_simulator.forward_pass import (
 )
 from quantammsim.core_simulator.dynamic_inputs import (
     DynamicInputFrames,
-    resolve_dynamic_input_components,
+    materialize_dynamic_inputs,
 )
 from quantammsim.core_simulator.windowing_utils import get_indices, filter_coarse_weights_by_data_indices
 
@@ -160,7 +160,10 @@ def _build_scan_infrastructure(
     run_scan_chunk : callable
         ``@jit`` wrapped ``lax.scan(scan_body, carry, None, length=chunk_size)``.
     scan_body : callable
-        The raw scan body (for partial-chunk Python fallback).
+        The raw scan body.
+    run_scan_step : callable
+        ``@jit`` wrapped single-step execution used for remainder iterations so
+        partial chunks follow the same numerics as the full scan path.
     """
     # Local aliases for closed-over constants
     _start_idx = start_idx
@@ -310,7 +313,11 @@ def _build_scan_infrastructure(
     def _run_scan_chunk(carry):
         return lax.scan(scan_body, carry, None, length=chunk_size)
 
-    return _run_scan_chunk, scan_body
+    @jit
+    def _run_scan_step(carry):
+        return scan_body(carry, None)
+
+    return _run_scan_chunk, scan_body, _run_scan_step
 
 
 def train_on_historic_data(
@@ -806,7 +813,7 @@ def train_on_historic_data(
         )
 
         if config_key in _scan_infra_cache:
-            _run_scan_chunk, scan_body = _scan_infra_cache[config_key]
+            _run_scan_chunk, scan_body, _run_scan_step = _scan_infra_cache[config_key]
         else:
             # Build scan-compatible update (prices as explicit arg, not closure)
             partial_step_no_prices = Partial(
@@ -825,7 +832,7 @@ def train_on_historic_data(
                     partial_step_no_prices, params_in_axes_dict,
                 )
 
-            _run_scan_chunk, scan_body = _build_scan_infrastructure(
+            _run_scan_chunk, scan_body, _run_scan_step = _build_scan_infrastructure(
                 chunk_size,
                 partial_step_no_prices=partial_step_no_prices,
                 forward_nograd_continuous=partial_forward_pass_nograd_continuous,
@@ -851,7 +858,7 @@ def train_on_historic_data(
                 swa_freq=swa_freq,
                 n_parameter_sets=n_parameter_sets,
             )
-            _scan_infra_cache[config_key] = (_run_scan_chunk, scan_body)
+            _scan_infra_cache[config_key] = (_run_scan_chunk, scan_body, _run_scan_step)
 
         # ── Initialize carry (prices & nan_bank in carry, not closures) ──
         carry = {
@@ -906,7 +913,7 @@ def train_on_historic_data(
                     "params": {k: [] for k in carry["params"]},
                 }
                 for _ in range(actual):
-                    carry, step_out = scan_body(carry, None)
+                    carry, step_out = _run_scan_step(carry)
                     all_per_steps["objective"].append(step_out["objective"])
                     all_per_steps["train_metrics"].append(step_out["train_metrics"])
                     all_per_steps["test_metrics"].append(step_out["test_metrics"])
@@ -2219,10 +2226,15 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         initial_weights,
         minimum_weight,
         params,
+        jnp.zeros_like(initial_weights),
+        jnp.ones_like(initial_weights),
         run_fingerprint["max_memory_days"],
         chunk_period,
         chunk_period,
         1.0,
+        False,
+        False,
+        False,
         False,
     )
 
@@ -2257,70 +2269,33 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     # )
     dynamic_input_flags = dynamic_inputs_dict["dynamic_input_flags"]
     dynamic_inputs = dynamic_inputs_dict["train_dynamic_inputs"]
-    resolved_dynamic_inputs = resolve_dynamic_input_components(
-        dynamic_inputs,
-        dynamic_input_flags,
-        static_dict,
-    )
-    fees_array = resolved_dynamic_inputs["fees"]
-    arb_thresh_array = resolved_dynamic_inputs["gas_cost"]
-    arb_fees_array = resolved_dynamic_inputs["arb_fees"]
-    trade_array = resolved_dynamic_inputs["trades"]
-    lp_supply_array = resolved_dynamic_inputs["lp_supply"]
-
-        # initial_pool_value = run_fingerprint["initial_pool_value"]
-        # initial_value_per_token = arb_acted_upon_weights[0] * initial_pool_value
-        # initial_reserves = initial_value_per_token / arb_acted_upon_local_prices[0]
-
     initial_reserves = params["initial_reserves"]
-
-    # any of fees_array, arb_thresh_array, arb_fees_array, trade_array, and lp_supply_array
-    # can be singletons, in which case we repeat them for the length of the bout.
-
-    # Determine the maximum leading dimension
     max_len = bout_length - 1
 
     if run_fingerprint["arb_frequency"] != 1:
         max_len = max_len // run_fingerprint["arb_frequency"]
-
-    fees_array = fees_array[:max_len]
-    arb_thresh_array = arb_thresh_array[:max_len]
-    arb_fees_array = arb_fees_array[:max_len]
-    lp_supply_array = lp_supply_array[:max_len]
-    if trade_array is not None:
-        trade_array = trade_array[:max_len]
-    # Broadcast input arrays to match the maximum leading dimension.
-    # If they are singletons, this will just repeat them for the length of the bout.
-    # If they are arrays of length bout_length, this will cause no change.
-    fees_array_broadcast = jnp.broadcast_to(
-        fees_array, (max_len,) + fees_array.shape[1:]
+    materialized_inputs = materialize_dynamic_inputs(
+        dynamic_inputs,
+        dynamic_input_flags,
+        static_dict,
+        scan_len=max_len,
+        do_trades=run_fingerprint["do_trades"],
+        dtype=local_prices.dtype,
     )
-    arb_thresh_array_broadcast = jnp.broadcast_to(
-        arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:]
-    )
-    arb_fees_array_broadcast = jnp.broadcast_to(
-        arb_fees_array, (max_len,) + arb_fees_array.shape[1:]
-    )
-    lp_supply_array_broadcast = jnp.broadcast_to(
-        lp_supply_array, (max_len,) + lp_supply_array.shape[1:]
-    )
-    # if we are doing trades, the trades array must be of the same length as the other arrays
-    if run_fingerprint["do_trades"]:
-        assert trade_array.shape[0] == max_len
     protocol_fee_split = run_fingerprint.get("protocol_fee_split", 0.0)
     reserves = _jax_calc_quantAMM_reserves_with_dynamic_inputs(
         initial_reserves,
         weights,
         local_prices,
-        fees_array_broadcast,
-        arb_thresh_array_broadcast,
-        arb_fees_array_broadcast,
+        materialized_inputs.fees,
+        materialized_inputs.gas_cost,
+        materialized_inputs.arb_fees,
         jnp.array(static_dict["all_sig_variations"]),
-        None,
+        materialized_inputs.trades,
         run_fingerprint["do_trades"],
         run_fingerprint["do_arb"],
         run_fingerprint["noise_trader_ratio"],
-        lp_supply_array_broadcast,
+        materialized_inputs.lp_supply,
         protocol_fee_split=protocol_fee_split,
     )
 

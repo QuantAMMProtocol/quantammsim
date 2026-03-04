@@ -57,7 +57,6 @@ from functools import partial
 from quantammsim.core_simulator.dynamic_inputs import (
     DynamicInputArrays,
     default_dynamic_input_flags,
-    empty_dynamic_input_arrays,
     resolve_dynamic_input_flags,
 )
 
@@ -66,13 +65,11 @@ np.seterr(under="print")
 
 
 def _resolve_dynamic_inputs(dynamic_inputs, static_dict):
-    """Return a stable hot-path bundle plus static dispatch flags."""
+    """Return the incoming bundle plus static dispatch flags."""
     dynamic_input_flags = resolve_dynamic_input_flags(
         dynamic_inputs,
         static_dict.get("dynamic_input_flags"),
     )
-    if dynamic_inputs is None:
-        dynamic_inputs = empty_dynamic_input_arrays()
     return dynamic_inputs, dynamic_input_flags
 
 
@@ -1107,7 +1104,15 @@ def forward_pass_nograd(
     prices = stop_gradient(prices)
     if dynamic_inputs is not None:
         dynamic_inputs = DynamicInputArrays(
-            *(stop_gradient(arr) for arr in dynamic_inputs)
+            trades=(
+                None
+                if dynamic_inputs.trades is None
+                else stop_gradient(dynamic_inputs.trades)
+            ),
+            fees=stop_gradient(dynamic_inputs.fees),
+            gas_cost=stop_gradient(dynamic_inputs.gas_cost),
+            arb_fees=stop_gradient(dynamic_inputs.arb_fees),
+            lp_supply=stop_gradient(dynamic_inputs.lp_supply),
         )
     return forward_pass(
         params,

@@ -20,6 +20,7 @@ from jax import devices, device_put
 from jax.lax import dynamic_slice, scan, fori_loop
 from jax.tree_util import Partial
 
+from quantammsim.core_simulator.dynamic_inputs import materialize_dynamic_inputs
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.pools.G3M.quantamm.quantamm_reserves import (
     _jax_calc_quantAMM_reserve_ratios,
@@ -274,59 +275,35 @@ class TFMMBasePool(AbstractPool):
             arb_acted_upon_weights = weights
             arb_acted_upon_local_prices = local_prices
 
-        fees_array = dynamic_inputs.fees
-        arb_thresh_array = dynamic_inputs.gas_cost
-        arb_fees_array = dynamic_inputs.arb_fees
-        trade_array = dynamic_inputs.trades
-        lp_supply_array = dynamic_inputs.lp_supply
-
         initial_pool_value = run_fingerprint["initial_pool_value"]
         initial_value_per_token = arb_acted_upon_weights[0] * initial_pool_value
         initial_reserves = initial_value_per_token / arb_acted_upon_local_prices[0]
 
-        # any of fees_array, arb_thresh_array, arb_fees_array, trade_array, and lp_supply_array
-        # can be singletons, in which case we repeat them for the length of the bout.
-
-        # Determine the maximum leading dimension
         max_len = bout_length - 1
         if run_fingerprint["arb_frequency"] != 1:
             max_len = max_len // run_fingerprint["arb_frequency"]
-        # Broadcast input arrays to match the maximum leading dimension.
-        # If they are singletons, this will just repeat them for the length of the bout.
-        # If they are arrays of length bout_length, this will cause no change.
-        fees_array_broadcast = jnp.broadcast_to(
-            fees_array, (max_len,) + fees_array.shape[1:]
+        materialized_inputs = materialize_dynamic_inputs(
+            dynamic_inputs,
+            run_fingerprint.get("dynamic_input_flags"),
+            run_fingerprint,
+            scan_len=max_len,
+            do_trades=run_fingerprint["do_trades"],
+            dtype=arb_acted_upon_local_prices.dtype,
         )
-        arb_thresh_array_broadcast = jnp.broadcast_to(
-            arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:]
-        )
-        arb_fees_array_broadcast = jnp.broadcast_to(
-            arb_fees_array, (max_len,) + arb_fees_array.shape[1:]
-        )
-        # if lp_supply_array is not provided, we set it to a constant of 1.0
-        if lp_supply_array is None:
-            lp_supply_array = jnp.array(1.0)
-
-        lp_supply_array_broadcast = jnp.broadcast_to(
-            lp_supply_array, (max_len,) + lp_supply_array.shape[1:]
-        )
-        # if we are doing trades, the trades array must be of the same length as the other arrays
-        if run_fingerprint["do_trades"]:
-            assert trade_array.shape[0] == max_len
         protocol_fee_split = run_fingerprint.get("protocol_fee_split", 0.0)
         reserves = _jax_calc_quantAMM_reserves_with_dynamic_inputs(
             initial_reserves,
             arb_acted_upon_weights,
             arb_acted_upon_local_prices,
-            fees_array_broadcast,
-            arb_thresh_array_broadcast,
-            arb_fees_array_broadcast,
+            materialized_inputs.fees,
+            materialized_inputs.gas_cost,
+            materialized_inputs.arb_fees,
             jnp.array(run_fingerprint["all_sig_variations"]),
-            trade_array,
+            materialized_inputs.trades,
             run_fingerprint["do_trades"],
             run_fingerprint["do_arb"],
             run_fingerprint["noise_trader_ratio"],
-            lp_supply_array_broadcast,
+            materialized_inputs.lp_supply,
             protocol_fee_split=protocol_fee_split,
         )
         return reserves
@@ -1461,10 +1438,15 @@ class TFMMBasePool(AbstractPool):
             initial_weights,
             minimum_weight,
             params,
+            jnp.zeros_like(initial_weights),
+            jnp.ones_like(initial_weights),
             local_fingerprint["max_memory_days"],
             local_fingerprint["chunk_period"],
             local_fingerprint["weight_interpolation_period"],
             maximum_change,
+            False,
+            False,
+            False,
             False,
         )
 
