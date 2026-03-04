@@ -257,12 +257,12 @@ class TestDynamicInputPreparation:
     """Tests for dynamic input container construction and normalization."""
 
     def test_empty_dynamic_input_arrays_have_stable_shapes(self):
-        """The empty hot-path bundle should have canonical placeholder arrays."""
+        """The empty hot-path bundle should use singleton fee-like placeholders only."""
         from quantammsim.core_simulator.dynamic_inputs import empty_dynamic_input_arrays
 
         dynamic_inputs = empty_dynamic_input_arrays()
 
-        assert dynamic_inputs.trades.shape == (1, 3)
+        assert dynamic_inputs.trades is None
         assert dynamic_inputs.fees.shape == (1,)
         assert dynamic_inputs.gas_cost.shape == (1,)
         assert dynamic_inputs.arb_fees.shape == (1,)
@@ -471,6 +471,57 @@ class TestDynamicInputPreparation:
         np.testing.assert_allclose(np.asarray(resolved["gas_cost"]), np.array([3.0]))
         np.testing.assert_allclose(np.asarray(resolved["arb_fees"]), np.array([0.0003]))
         np.testing.assert_allclose(np.asarray(resolved["lp_supply"]), np.array([1500.0]))
+
+    def test_materialize_dynamic_inputs_leaves_trades_optional(self):
+        """No-trade paths should not expand placeholder trades into the scan inputs."""
+        from quantammsim.core_simulator.dynamic_inputs import (
+            empty_dynamic_input_arrays,
+            materialize_dynamic_inputs,
+        )
+
+        materialized = materialize_dynamic_inputs(
+            empty_dynamic_input_arrays(),
+            {
+                "use_dynamic_inputs": True,
+                "has_trades": False,
+                "has_dynamic_fees": False,
+                "has_dynamic_gas_cost": False,
+                "has_dynamic_arb_fees": False,
+                "has_lp_supply": False,
+            },
+            static_dict={"fees": 0.003, "gas_cost": 2.5, "arb_fees": 0.0001},
+            scan_len=4,
+            do_trades=False,
+        )
+
+        assert materialized.trades is None
+        np.testing.assert_allclose(np.asarray(materialized.fees), np.full(4, 0.003))
+        np.testing.assert_allclose(np.asarray(materialized.gas_cost), np.full(4, 2.5))
+        np.testing.assert_allclose(np.asarray(materialized.arb_fees), np.full(4, 0.0001))
+        np.testing.assert_allclose(np.asarray(materialized.lp_supply), np.ones(4))
+
+    def test_materialize_dynamic_inputs_requires_trades_when_enabled(self):
+        """Trade-enabled scans should fail fast if no trade path is available."""
+        from quantammsim.core_simulator.dynamic_inputs import (
+            empty_dynamic_input_arrays,
+            materialize_dynamic_inputs,
+        )
+
+        with pytest.raises(ValueError, match="Trades must be provided"):
+            materialize_dynamic_inputs(
+                empty_dynamic_input_arrays(),
+                {
+                    "use_dynamic_inputs": True,
+                    "has_trades": False,
+                    "has_dynamic_fees": True,
+                    "has_dynamic_gas_cost": False,
+                    "has_dynamic_arb_fees": False,
+                    "has_lp_supply": False,
+                },
+                static_dict={"fees": 0.003, "gas_cost": 0.0, "arb_fees": 0.0},
+                scan_len=2,
+                do_trades=True,
+            )
 
 
 class TestGetSigVariations:
