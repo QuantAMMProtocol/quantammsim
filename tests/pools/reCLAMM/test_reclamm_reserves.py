@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 
+from tests.conftest import TEST_DATA_DIR
 from quantammsim.pools.reCLAMM.reclamm_reserves import (
     compute_invariant,
     compute_price_ratio,
@@ -734,8 +735,8 @@ class TestReClammTrainable:
         fp_common = {
             "rule": "reclamm",
             "tokens": ["ETH", "USDC"],
-            "startDateString": "2024-06-01 00:00:00",
-            "endDateString": "2024-06-15 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-15 00:00:00",
             "initial_pool_value": 1_000_000.0,
             "do_arb": True,
             "fees": 0.0,
@@ -748,6 +749,7 @@ class TestReClammTrainable:
                 "centeredness_margin": jnp.array(0.2),
                 "daily_price_shift_base": jnp.array(base),
             },
+            root=str(TEST_DATA_DIR),
         )
         result_exp = do_run_on_historic_data(
             run_fingerprint={**fp_common, "reclamm_use_shift_exponent": True},
@@ -756,6 +758,7 @@ class TestReClammTrainable:
                 "centeredness_margin": jnp.array(0.2),
                 "shift_exponent": jnp.array(shift_exp),
             },
+            root=str(TEST_DATA_DIR),
         )
 
         np.testing.assert_allclose(
@@ -772,10 +775,9 @@ class TestReClammTrainable:
         fp = {
             "rule": "reclamm",
             "tokens": ["ETH", "USDC"],
-            "startDateString": "2024-06-01 00:00:00",
-            "endDateString": "2024-06-15 00:00:00",
-            "endTestDateString": "2024-07-01 00:00:00",
-            "endTestDateString": "2024-08-01 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-15 00:00:00",
+            "endTestDateString": "2023-02-01 00:00:00",
             "initial_pool_value": 1_000_000.0,
             "do_arb": True,
             "fees": 0.0025,
@@ -810,5 +812,5 @@ class TestReClammTrainable:
                 },
             },
         }
-        result = train_on_historic_data(fp, verbose=False)
+        result = train_on_historic_data(fp, root=str(TEST_DATA_DIR), verbose=False)
         assert result is not None
