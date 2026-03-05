@@ -198,6 +198,11 @@ class ReClammPool(AbstractPool):
             return jnp.squeeze(params["fees"])
         return run_fingerprint["fees"]
 
+    @staticmethod
+    def _resolve_ste_temperature(run_fingerprint):
+        """Resolve STE gate temperature for differentiable reCLAMM transitions."""
+        return run_fingerprint.get("ste_temperature", 10.0)
+
     @partial(jit, static_argnums=(2,))
     def calculate_reserves_with_fees(
         self,
@@ -208,6 +213,7 @@ class ReClammPool(AbstractPool):
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
+        ste_temperature = self._resolve_ste_temperature(run_fingerprint)
 
         if run_fingerprint["do_arb"]:
             return _jax_calc_reclamm_reserves_with_fees(
@@ -225,6 +231,7 @@ class ReClammPool(AbstractPool):
                 arc_length_speed=s.arc_length_speed,
                 centeredness_scaling=s.centeredness_scaling,
                 protocol_fee_split=run_fingerprint.get("protocol_fee_split", 0.0),
+                ste_temperature=ste_temperature,
             )
         return jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape)
 
@@ -246,6 +253,7 @@ class ReClammPool(AbstractPool):
             LP fee revenue per timestep in USD.
         """
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
+        ste_temperature = self._resolve_ste_temperature(run_fingerprint)
 
         if run_fingerprint["do_arb"]:
             return _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
@@ -263,6 +271,7 @@ class ReClammPool(AbstractPool):
                 arc_length_speed=s.arc_length_speed,
                 centeredness_scaling=s.centeredness_scaling,
                 protocol_fee_split=run_fingerprint.get("protocol_fee_split", 0.0),
+                ste_temperature=ste_temperature,
             )
         return (
             jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape),
@@ -288,6 +297,7 @@ class ReClammPool(AbstractPool):
             LP fee revenue per timestep in USD.
         """
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
+        ste_temperature = self._resolve_ste_temperature(run_fingerprint)
         bout_length = run_fingerprint["bout_length"]
         max_len = bout_length - 1
         if run_fingerprint["arb_frequency"] != 1:
@@ -317,6 +327,7 @@ class ReClammPool(AbstractPool):
             arc_length_speed=s.arc_length_speed,
             centeredness_scaling=s.centeredness_scaling,
             protocol_fee_split=run_fingerprint.get("protocol_fee_split", 0.0),
+            ste_temperature=ste_temperature,
         )
 
     @partial(jit, static_argnums=(2,))
@@ -330,6 +341,7 @@ class ReClammPool(AbstractPool):
     ) -> jnp.ndarray:
         """Protected zero-fee implementation for hooks and weight calculation."""
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
+        ste_temperature = self._resolve_ste_temperature(run_fingerprint)
 
         if run_fingerprint["do_arb"]:
             return _jax_calc_reclamm_reserves_zero_fees(
@@ -340,6 +352,7 @@ class ReClammPool(AbstractPool):
                 s.seconds_per_step,
                 arc_length_speed=s.arc_length_speed,
                 centeredness_scaling=s.centeredness_scaling,
+                ste_temperature=ste_temperature,
             )
         return jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape)
 
@@ -366,6 +379,7 @@ class ReClammPool(AbstractPool):
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
+        ste_temperature = self._resolve_ste_temperature(run_fingerprint)
         bout_length = run_fingerprint["bout_length"]
         max_len = bout_length - 1
         if run_fingerprint["arb_frequency"] != 1:
@@ -395,6 +409,7 @@ class ReClammPool(AbstractPool):
             arc_length_speed=s.arc_length_speed,
             centeredness_scaling=s.centeredness_scaling,
             protocol_fee_split=run_fingerprint.get("protocol_fee_split", 0.0),
+            ste_temperature=ste_temperature,
         )
 
     def init_base_parameters(
