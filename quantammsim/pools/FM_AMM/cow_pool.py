@@ -14,8 +14,6 @@ from jax import config
 from jax import default_backend
 from jax import devices, tree_util
 
-config.update("jax_enable_x64", True)
-
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
 if DEFAULT_BACKEND != "cpu":

@@ -26,11 +26,17 @@ TEST_DATA_DIR = Path(__file__).parent / "data"
 config.update("jax_enable_x64", True)
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(autouse=True)
 def configure_jax():
-    """Configure JAX settings for the test session."""
+    """Ensure x64 is enabled before every test.
+
+    Function-scoped (the default) so that tests which toggle x64 off
+    (e.g. float32 tests, BFGS with compute_dtype='float32') don't leak
+    that state to subsequent tests.
+    """
     config.update("jax_enable_x64", True)
     yield
+    config.update("jax_enable_x64", True)
 
 
 @pytest.fixture

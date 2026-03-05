@@ -9,8 +9,6 @@ from jax import default_backend
 
 from quantammsim.pools.base_pool import AbstractPool
 
-config.update("jax_enable_x64", True)
-
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
 if DEFAULT_BACKEND != "cpu":
