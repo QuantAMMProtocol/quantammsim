@@ -30,8 +30,8 @@ from quantammsim.pools.reCLAMM.reclamm_reserves import (
     initialise_reclamm_reserves,
     _jax_calc_reclamm_reserves_zero_fees,
     _jax_calc_reclamm_reserves_with_fees,
-    _jax_calc_reclamm_reserves_zero_fees_full_state,
 )
+from tests.pools.reCLAMM.helpers import _jax_calc_reclamm_reserves_zero_fees_full_state
 
 ALL_SIG_VARIATIONS_2 = jnp.array([[1, -1], [-1, 1]])
 

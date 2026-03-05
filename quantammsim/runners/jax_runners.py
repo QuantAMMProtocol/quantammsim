@@ -657,6 +657,7 @@ def train_on_historic_data(
                 "has_dynamic_gas_cost": False,
                 "has_dynamic_arb_fees": False,
                 "has_lp_supply": False,
+                "has_reclamm_price_ratio_updates": False,
             },
         },
     )

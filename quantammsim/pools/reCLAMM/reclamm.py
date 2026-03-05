@@ -310,6 +310,7 @@ class ReClammPool(AbstractPool):
             fees=materialized_inputs.fees,
             arb_thresh=materialized_inputs.gas_cost,
             arb_fees=materialized_inputs.arb_fees,
+            price_ratio_updates=materialized_inputs.reclamm_price_ratio_updates,
             all_sig_variations=jnp.array(
                 run_fingerprint["all_sig_variations"]
             ),
@@ -387,6 +388,7 @@ class ReClammPool(AbstractPool):
             fees=materialized_inputs.fees,
             arb_thresh=materialized_inputs.gas_cost,
             arb_fees=materialized_inputs.arb_fees,
+            price_ratio_updates=materialized_inputs.reclamm_price_ratio_updates,
             all_sig_variations=jnp.array(
                 run_fingerprint["all_sig_variations"]
             ),

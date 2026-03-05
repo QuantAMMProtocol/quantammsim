@@ -17,7 +17,7 @@ config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
 from jax import jit
-from jax.lax import scan
+from jax.lax import scan, cond
 from jax.tree_util import Partial
 from functools import partial
 
@@ -556,6 +556,40 @@ def initialise_reclamm_reserves(initial_pool_value, initial_prices, price_ratio)
 # Scan-based reserve calculations
 # ---------------------------------------------------------------------------
 
+def apply_target_price_ratio_to_virtual_balances(Ra, Rb, Va, Vb, target_price_ratio):
+    """Retarget virtual balances to a desired price ratio while preserving orientation.
+
+    The overvalued-side virtual balance is preserved (subject to floor), and the
+    undervalued-side virtual balance is solved from the reCLAMM ratio constraint.
+    """
+    safe_ratio = jnp.maximum(target_price_ratio, 1.0 + 1e-12)
+    sqrt_ratio = jnp.sqrt(safe_ratio)
+    fourth_root_ratio = jnp.sqrt(sqrt_ratio)
+    centeredness, is_above = compute_centeredness(Ra, Rb, Va, Vb)
+
+    # Above center => B overvalued, so keep Vb and solve Va.
+    v_over_b_floor = Rb / jnp.maximum(fourth_root_ratio - 1.0, 1e-30)
+    Vb_kept = jnp.maximum(Vb, v_over_b_floor)
+    Va_from_b = Ra * (Vb_kept + Rb) / jnp.maximum(
+        (sqrt_ratio - 1.0) * Vb_kept - Rb, 1e-30
+    )
+
+    # Below center => A overvalued, so keep Va and solve Vb.
+    v_over_a_floor = Ra / jnp.maximum(fourth_root_ratio - 1.0, 1e-30)
+    Va_kept = jnp.maximum(Va, v_over_a_floor)
+    Vb_from_a = Rb * (Va_kept + Ra) / jnp.maximum(
+        (sqrt_ratio - 1.0) * Va_kept - Ra, 1e-30
+    )
+
+    Va_new = jnp.where(is_above, Va_from_b, Va_kept)
+    Vb_new = jnp.where(is_above, Vb_kept, Vb_from_a)
+
+    # When centeredness is degenerate (e.g. both sides zero), preserve current virtuals.
+    invalid_centeredness = ~jnp.isfinite(centeredness)
+    Va_new = jnp.where(invalid_centeredness, Va, Va_new)
+    Vb_new = jnp.where(invalid_centeredness, Vb, Vb_new)
+    return Va_new, Vb_new
+
 def _reclamm_scan_step_zero_fees(
     carry_list,
     prices,
@@ -653,6 +687,13 @@ def _reclamm_scan_step_zero_fees(
     return [new_reserves, Va, Vb], new_reserves
 
 
+# ---------------------------------------------------------------------------
+# Test-only diagnostic helpers (virtual-balance history)
+# ---------------------------------------------------------------------------
+# These helpers mirror production kernels but additionally return Va/Vb
+# trajectories for assertions in tests. Production pool paths should use the
+# reserve-only kernels above.
+
 def _reclamm_scan_step_zero_fees_full_state(
     carry_list,
     prices,
@@ -662,7 +703,7 @@ def _reclamm_scan_step_zero_fees_full_state(
     arc_length_speed=0.0,
     centeredness_scaling=False,
 ):
-    """Like _reclamm_scan_step_zero_fees but outputs (reserves, Va, Vb)."""
+    """TEST-ONLY: scan step that outputs (reserves, Va, Vb)."""
     new_carry, new_reserves = _reclamm_scan_step_zero_fees(
         carry_list, prices, centeredness_margin, daily_price_shift_base, seconds_per_step,
         arc_length_speed=arc_length_speed,
@@ -689,9 +730,10 @@ def _reclamm_scan_step_with_fees_and_revenue(
 
     Primary implementation — ``_reclamm_scan_step_with_fees`` wraps this.
 
-    Carry: [real_reserves (2,), Va (0-d), Vb (0-d)]
+    Carry: [real_reserves (2,), Va, Vb, step_idx, active_start_ratio,
+            active_target_ratio, active_start_step, active_end_step, active_enabled]
     Input: [prices, active_initial_weights, per_asset_ratios,
-            all_other_assets_ratios, gamma, arb_thresh, arb_fees]
+            all_other_assets_ratios, gamma, arb_thresh, arb_fees, price_ratio_update]
 
     Returns
     -------
@@ -702,6 +744,12 @@ def _reclamm_scan_step_with_fees_and_revenue(
     prev_reserves = carry_list[0]
     Va = carry_list[1]
     Vb = carry_list[2]
+    step_idx = carry_list[3]
+    active_start_ratio = carry_list[4]
+    active_target_ratio = carry_list[5]
+    active_start_step = carry_list[6]
+    active_end_step = carry_list[7]
+    active_enabled = carry_list[8]
 
     Ra = prev_reserves[0]
     Rb = prev_reserves[1]
@@ -713,6 +761,86 @@ def _reclamm_scan_step_with_fees_and_revenue(
     gamma = input_list[4]
     arb_thresh = input_list[5]
     arb_fees = input_list[6]
+    price_ratio_update = input_list[7]
+
+    event_has = price_ratio_update[0] > 0.5
+    event_target_ratio = jnp.maximum(
+        jnp.where(jnp.isfinite(price_ratio_update[1]), price_ratio_update[1], 1.0),
+        1.0 + 1e-12,
+    )
+    event_end_step = jnp.where(
+        jnp.isfinite(price_ratio_update[2]), price_ratio_update[2], step_idx
+    )
+    event_start_override = price_ratio_update[3]
+
+    def _apply_schedule_state(_):
+        current_price_ratio = compute_price_ratio(Ra, Rb, Va, Vb)
+        start_ratio_from_event = jnp.where(
+            jnp.isfinite(event_start_override),
+            event_start_override,
+            current_price_ratio,
+        )
+        next_active_start_ratio = jnp.where(
+            event_has, start_ratio_from_event, active_start_ratio
+        )
+        next_active_target_ratio = jnp.where(
+            event_has, event_target_ratio, active_target_ratio
+        )
+        next_active_start_step = jnp.where(event_has, step_idx, active_start_step)
+        next_active_end_step = jnp.where(
+            event_has, jnp.maximum(event_end_step, step_idx), active_end_step
+        )
+        next_active_enabled = jnp.where(event_has, True, active_enabled)
+
+        schedule_duration = next_active_end_step - next_active_start_step
+        schedule_progress = jnp.where(
+            schedule_duration <= 0.0,
+            1.0,
+            jnp.clip((step_idx - next_active_start_step) / schedule_duration, 0.0, 1.0),
+        )
+        scheduled_price_ratio = (
+            next_active_start_ratio
+            + (next_active_target_ratio - next_active_start_ratio) * schedule_progress
+        )
+        Va_scheduled, Vb_scheduled = apply_target_price_ratio_to_virtual_balances(
+            Ra, Rb, Va, Vb, scheduled_price_ratio
+        )
+        return (
+            Va_scheduled,
+            Vb_scheduled,
+            next_active_start_ratio,
+            next_active_target_ratio,
+            next_active_start_step,
+            next_active_end_step,
+            next_active_enabled,
+        )
+
+    def _skip_schedule_state(_):
+        return (
+            Va,
+            Vb,
+            active_start_ratio,
+            active_target_ratio,
+            active_start_step,
+            active_end_step,
+            active_enabled,
+        )
+
+    schedule_active = jnp.logical_or(event_has, active_enabled)
+    (
+        Va,
+        Vb,
+        active_start_ratio,
+        active_target_ratio,
+        active_start_step,
+        active_end_step,
+        active_enabled,
+    ) = cond(
+        schedule_active,
+        _apply_schedule_state,
+        _skip_schedule_state,
+        operand=None,
+    )
 
     # Step 1: Update virtual balances if out of range
     centeredness, is_above = compute_centeredness(Ra, Rb, Va, Vb)
@@ -827,7 +955,17 @@ def _reclamm_scan_step_with_fees_and_revenue(
     lp_fee_revenue_usd = (lp_fee_income * prices).sum()
 
     new_reserves = jnp.array([Ra_new, Rb_new])
-    return [new_reserves, Va, Vb], (new_reserves, lp_fee_revenue_usd)
+    return [
+        new_reserves,
+        Va,
+        Vb,
+        step_idx + 1.0,
+        active_start_ratio,
+        active_target_ratio,
+        active_start_step,
+        active_end_step,
+        active_enabled,
+    ], (new_reserves, lp_fee_revenue_usd)
 
 
 def _reclamm_scan_step_with_fees(
@@ -863,6 +1001,37 @@ def _reclamm_scan_step_with_fees(
         protocol_fee_split=protocol_fee_split,
     )
     return new_carry, new_reserves
+
+
+def _reclamm_scan_step_with_fees_full_state(
+    carry_list,
+    input_list,
+    weights,
+    tokens_to_drop,
+    active_trade_directions,
+    n,
+    centeredness_margin,
+    daily_price_shift_base,
+    seconds_per_step,
+    arc_length_speed=0.0,
+    centeredness_scaling=False,
+    protocol_fee_split=0.0,
+):
+    """TEST-ONLY: fee scan step that also outputs virtual balances."""
+    new_carry, (new_reserves, _fee_rev) = _reclamm_scan_step_with_fees_and_revenue(
+        carry_list, input_list,
+        weights=weights,
+        tokens_to_drop=tokens_to_drop,
+        active_trade_directions=active_trade_directions,
+        n=n,
+        centeredness_margin=centeredness_margin,
+        daily_price_shift_base=daily_price_shift_base,
+        seconds_per_step=seconds_per_step,
+        arc_length_speed=arc_length_speed,
+        centeredness_scaling=centeredness_scaling,
+        protocol_fee_split=protocol_fee_split,
+    )
+    return new_carry, (new_reserves, new_carry[1], new_carry[2])
 
 
 @jit
@@ -929,7 +1098,7 @@ def _jax_calc_reclamm_reserves_zero_fees_full_state(
     arc_length_speed=0.0,
     centeredness_scaling=False,
 ):
-    """Like _jax_calc_reclamm_reserves_zero_fees but also returns virtual balances.
+    """TEST-ONLY: Like _jax_calc_reclamm_reserves_zero_fees but returns Va/Vb.
 
     Returns
     -------
@@ -992,6 +1161,8 @@ def _jax_calc_reclamm_reserves_with_fees(
     gamma_array = jnp.full(prices.shape[0], gamma)
     arb_thresh_array = jnp.full(prices.shape[0], arb_thresh)
     arb_fees_array = jnp.full(prices.shape[0], arb_fees)
+    price_ratio_updates = jnp.zeros((prices.shape[0], 4), dtype=prices.dtype)
+    price_ratio_updates = price_ratio_updates.at[:, 3].set(jnp.nan)
 
     scan_fn = Partial(
         _reclamm_scan_step_with_fees,
@@ -1007,17 +1178,27 @@ def _jax_calc_reclamm_reserves_with_fees(
         protocol_fee_split=protocol_fee_split,
     )
 
-    carry_init = [initial_reserves, initial_Va, initial_Vb]
+    carry_init = [
+        initial_reserves,
+        initial_Va,
+        initial_Vb,
+        jnp.float64(0.0),  # step_idx
+        jnp.float64(0.0),  # active_start_ratio
+        jnp.float64(0.0),  # active_target_ratio
+        jnp.float64(0.0),  # active_start_step
+        jnp.float64(0.0),  # active_end_step
+        jnp.array(False),  # active_enabled
+    ]
     _, reserves = scan(
         scan_fn,
         carry_init,
         [prices, active_initial_weights, per_asset_ratios,
-         all_other_assets_ratios, gamma_array, arb_thresh_array, arb_fees_array],
+         all_other_assets_ratios, gamma_array, arb_thresh_array, arb_fees_array, price_ratio_updates],
     )
     return reserves
 
 
-@partial(jit, static_argnums=(10,))
+@partial(jit, static_argnums=(11,))
 def _jax_calc_reclamm_reserves_with_dynamic_inputs(
     initial_reserves,
     initial_Va,
@@ -1029,6 +1210,7 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
     fees,
     arb_thresh,
     arb_fees,
+    price_ratio_updates=None,
     do_trades=False,
     trades=None,
     all_sig_variations=None,
@@ -1048,6 +1230,18 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
     arb_fees = jnp.where(
         arb_fees.size == 1, jnp.full(prices.shape[0], arb_fees), arb_fees
     )
+    if price_ratio_updates is None:
+        price_ratio_updates = jnp.zeros((prices.shape[0], 4), dtype=prices.dtype)
+        price_ratio_updates = price_ratio_updates.at[:, 3].set(jnp.nan)
+    else:
+        if price_ratio_updates.ndim == 1:
+            price_ratio_updates = jnp.broadcast_to(
+                price_ratio_updates, (prices.shape[0], price_ratio_updates.shape[0])
+            )
+        elif price_ratio_updates.shape[0] == 1 and prices.shape[0] != 1:
+            price_ratio_updates = jnp.broadcast_to(
+                price_ratio_updates, (prices.shape[0], price_ratio_updates.shape[1])
+            )
 
     _, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
         precalc_shared_values_for_all_signatures(all_sig_variations, n_assets)
@@ -1074,14 +1268,113 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
         protocol_fee_split=protocol_fee_split,
     )
 
-    carry_init = [initial_reserves, initial_Va, initial_Vb]
+    carry_init = [
+        initial_reserves,
+        initial_Va,
+        initial_Vb,
+        jnp.float64(0.0),  # step_idx
+        jnp.float64(0.0),  # active_start_ratio
+        jnp.float64(0.0),  # active_target_ratio
+        jnp.float64(0.0),  # active_start_step
+        jnp.float64(0.0),  # active_end_step
+        jnp.array(False),  # active_enabled
+    ]
     _, reserves = scan(
         scan_fn,
         carry_init,
         [prices, active_initial_weights, per_asset_ratios,
-         all_other_assets_ratios, gamma, arb_thresh, arb_fees],
+         all_other_assets_ratios, gamma, arb_thresh, arb_fees, price_ratio_updates],
     )
     return reserves
+
+
+@partial(jit, static_argnums=(11,))
+def _jax_calc_reclamm_reserves_with_dynamic_inputs_full_state(
+    initial_reserves,
+    initial_Va,
+    initial_Vb,
+    prices,
+    centeredness_margin,
+    daily_price_shift_base,
+    seconds_per_step,
+    fees,
+    arb_thresh,
+    arb_fees,
+    price_ratio_updates=None,
+    do_trades=False,
+    trades=None,
+    all_sig_variations=None,
+    arc_length_speed=0.0,
+    centeredness_scaling=False,
+    protocol_fee_split=0.0,
+):
+    """TEST-ONLY: dynamic-input reserve path returning virtual-balance history."""
+    n_assets = 2
+    weights = jnp.array([0.5, 0.5])
+
+    gamma = jnp.where(fees.size == 1, jnp.full(prices.shape[0], 1.0 - fees), 1.0 - fees)
+    arb_thresh = jnp.where(
+        arb_thresh.size == 1, jnp.full(prices.shape[0], arb_thresh), arb_thresh
+    )
+    arb_fees = jnp.where(
+        arb_fees.size == 1, jnp.full(prices.shape[0], arb_fees), arb_fees
+    )
+    if price_ratio_updates is None:
+        price_ratio_updates = jnp.zeros((prices.shape[0], 4), dtype=prices.dtype)
+        price_ratio_updates = price_ratio_updates.at[:, 3].set(jnp.nan)
+    else:
+        if price_ratio_updates.ndim == 1:
+            price_ratio_updates = jnp.broadcast_to(
+                price_ratio_updates, (prices.shape[0], price_ratio_updates.shape[0])
+            )
+        elif price_ratio_updates.shape[0] == 1 and prices.shape[0] != 1:
+            price_ratio_updates = jnp.broadcast_to(
+                price_ratio_updates, (prices.shape[0], price_ratio_updates.shape[1])
+            )
+
+    _, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
+        precalc_shared_values_for_all_signatures(all_sig_variations, n_assets)
+    )
+
+    active_initial_weights, per_asset_ratios, all_other_assets_ratios = (
+        precalc_components_of_optimal_trade_across_prices_and_dynamic_fees(
+            weights, prices, gamma, tokens_to_drop,
+            active_trade_directions, leave_one_out_idxs,
+        )
+    )
+
+    scan_fn = Partial(
+        _reclamm_scan_step_with_fees_full_state,
+        weights=weights,
+        tokens_to_drop=tokens_to_drop,
+        active_trade_directions=active_trade_directions,
+        n=n_assets,
+        centeredness_margin=centeredness_margin,
+        daily_price_shift_base=daily_price_shift_base,
+        seconds_per_step=seconds_per_step,
+        arc_length_speed=arc_length_speed,
+        centeredness_scaling=centeredness_scaling,
+        protocol_fee_split=protocol_fee_split,
+    )
+
+    carry_init = [
+        initial_reserves,
+        initial_Va,
+        initial_Vb,
+        jnp.float64(0.0),  # step_idx
+        jnp.float64(0.0),  # active_start_ratio
+        jnp.float64(0.0),  # active_target_ratio
+        jnp.float64(0.0),  # active_start_step
+        jnp.float64(0.0),  # active_end_step
+        jnp.array(False),  # active_enabled
+    ]
+    _, (reserves, Va_history, Vb_history) = scan(
+        scan_fn,
+        carry_init,
+        [prices, active_initial_weights, per_asset_ratios,
+         all_other_assets_ratios, gamma, arb_thresh, arb_fees, price_ratio_updates],
+    )
+    return reserves, Va_history, Vb_history
 
 
 @jit
@@ -1127,6 +1420,8 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
     gamma_array = jnp.full(prices.shape[0], gamma)
     arb_thresh_array = jnp.full(prices.shape[0], arb_thresh)
     arb_fees_array = jnp.full(prices.shape[0], arb_fees)
+    price_ratio_updates = jnp.zeros((prices.shape[0], 4), dtype=prices.dtype)
+    price_ratio_updates = price_ratio_updates.at[:, 3].set(jnp.nan)
 
     scan_fn = Partial(
         _reclamm_scan_step_with_fees_and_revenue,
@@ -1142,17 +1437,27 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
         protocol_fee_split=protocol_fee_split,
     )
 
-    carry_init = [initial_reserves, initial_Va, initial_Vb]
+    carry_init = [
+        initial_reserves,
+        initial_Va,
+        initial_Vb,
+        jnp.float64(0.0),  # step_idx
+        jnp.float64(0.0),  # active_start_ratio
+        jnp.float64(0.0),  # active_target_ratio
+        jnp.float64(0.0),  # active_start_step
+        jnp.float64(0.0),  # active_end_step
+        jnp.array(False),  # active_enabled
+    ]
     _, (reserves, fee_revenue) = scan(
         scan_fn,
         carry_init,
         [prices, active_initial_weights, per_asset_ratios,
-         all_other_assets_ratios, gamma_array, arb_thresh_array, arb_fees_array],
+         all_other_assets_ratios, gamma_array, arb_thresh_array, arb_fees_array, price_ratio_updates],
     )
     return reserves, fee_revenue
 
 
-@partial(jit, static_argnums=(10,))
+@partial(jit, static_argnums=(11,))
 def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
     initial_reserves,
     initial_Va,
@@ -1164,6 +1469,7 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
     fees,
     arb_thresh,
     arb_fees,
+    price_ratio_updates=None,
     do_trades=False,
     trades=None,
     all_sig_variations=None,
@@ -1189,6 +1495,18 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
     arb_fees = jnp.where(
         arb_fees.size == 1, jnp.full(prices.shape[0], arb_fees), arb_fees
     )
+    if price_ratio_updates is None:
+        price_ratio_updates = jnp.zeros((prices.shape[0], 4), dtype=prices.dtype)
+        price_ratio_updates = price_ratio_updates.at[:, 3].set(jnp.nan)
+    else:
+        if price_ratio_updates.ndim == 1:
+            price_ratio_updates = jnp.broadcast_to(
+                price_ratio_updates, (prices.shape[0], price_ratio_updates.shape[0])
+            )
+        elif price_ratio_updates.shape[0] == 1 and prices.shape[0] != 1:
+            price_ratio_updates = jnp.broadcast_to(
+                price_ratio_updates, (prices.shape[0], price_ratio_updates.shape[1])
+            )
 
     _, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
         precalc_shared_values_for_all_signatures(all_sig_variations, n_assets)
@@ -1215,11 +1533,21 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
         protocol_fee_split=protocol_fee_split,
     )
 
-    carry_init = [initial_reserves, initial_Va, initial_Vb]
+    carry_init = [
+        initial_reserves,
+        initial_Va,
+        initial_Vb,
+        jnp.float64(0.0),  # step_idx
+        jnp.float64(0.0),  # active_start_ratio
+        jnp.float64(0.0),  # active_target_ratio
+        jnp.float64(0.0),  # active_start_step
+        jnp.float64(0.0),  # active_end_step
+        jnp.array(False),  # active_enabled
+    ]
     _, (reserves, fee_revenue) = scan(
         scan_fn,
         carry_init,
         [prices, active_initial_weights, per_asset_ratios,
-         all_other_assets_ratios, gamma, arb_thresh, arb_fees],
+         all_other_assets_ratios, gamma, arb_thresh, arb_fees, price_ratio_updates],
     )
     return reserves, fee_revenue

@@ -355,6 +355,7 @@ class TestPoolMethodWithDynamicInputs:
             gas_cost=arb_thresh_array,
             arb_fees=arb_fees_array,
             lp_supply=jnp.ones((1,)),
+            reclamm_price_ratio_updates=jnp.array([[0.0, 0.0, 0.0, jnp.nan]]),
         )
 
         reserves, fee_revenue = pool.calculate_reserves_and_fee_revenue_with_dynamic_inputs(

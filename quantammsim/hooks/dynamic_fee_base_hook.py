@@ -124,6 +124,7 @@ class BaseDynamicFeeHook(ABC):
             gas_cost=jnp.asarray(run_fingerprint["gas_cost"], dtype=jnp.float64),
             arb_fees=jnp.asarray(run_fingerprint["arb_fees"], dtype=jnp.float64),
             lp_supply=empty_inputs.lp_supply,
+            reclamm_price_ratio_updates=empty_inputs.reclamm_price_ratio_updates,
         )
 
         return self.calculate_reserves_with_dynamic_inputs(

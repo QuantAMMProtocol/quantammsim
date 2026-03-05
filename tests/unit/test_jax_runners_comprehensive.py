@@ -606,6 +606,115 @@ class TestDoRunOnHistoricData:
             atol=1e-6,
         )
 
+    def test_reclamm_schedule_only_dynamic_input_changes_path(self, defaulted_run_fingerprint):
+        """Schedule-only reCLAMM dynamic inputs should alter reserve trajectory."""
+        fp = deepcopy(defaulted_run_fingerprint)
+        fp["rule"] = "reclamm"
+        fp["do_arb"] = True
+        fp["fees"] = 0.0
+        fp["gas_cost"] = 0.0
+        fp["arb_fees"] = 0.0
+        fp["reclamm_interpolation_method"] = "geometric"
+        params = {
+            "price_ratio": jnp.array(4.0),
+            "centeredness_margin": jnp.array(0.2),
+            "daily_price_shift_base": jnp.array(1.0 - 1.0 / 124000.0),
+        }
+
+        start_unix = pd.Timestamp(fp["startDateString"]).value // 10**6
+        schedule_df = pd.DataFrame(
+            {
+                "unix": [start_unix + 2 * 60_000],
+                "end_unix": [start_unix + 8 * 60_000],
+                "price_ratio": [7.5],
+            }
+        )
+
+        baseline = do_run_on_historic_data(
+            fp,
+            params=params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+        )
+        with_schedule = do_run_on_historic_data(
+            fp,
+            params=params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+            dynamic_input_frames=DynamicInputFrames(
+                reclamm_price_ratio_updates=schedule_df
+            ),
+        )
+
+        assert not np.allclose(
+            np.asarray(baseline["reserves"]),
+            np.asarray(with_schedule["reserves"]),
+        )
+
+    def test_reclamm_schedule_test_period_does_not_leak_into_train(self, defaulted_run_fingerprint):
+        """Test-only schedule updates should affect test path only."""
+        fp = deepcopy(defaulted_run_fingerprint)
+        fp["rule"] = "reclamm"
+        fp["do_arb"] = True
+        fp["fees"] = 0.0
+        fp["gas_cost"] = 0.0
+        fp["arb_fees"] = 0.0
+        params = {
+            "price_ratio": jnp.array(4.0),
+            "centeredness_margin": jnp.array(0.2),
+            "daily_price_shift_base": jnp.array(1.0 - 1.0 / 124000.0),
+        }
+
+        test_start_unix = pd.Timestamp(fp["endDateString"]).value // 10**6
+        baseline_updates = pd.DataFrame(
+            {
+                "unix": [test_start_unix + 60_000],
+                "end_unix": [test_start_unix + 6 * 60_000],
+                # Keep baseline on the initial ratio so it is a no-op schedule.
+                "price_ratio": [4.0],
+                "start_price_ratio": [4.0],
+            }
+        )
+        test_only_updates = pd.DataFrame(
+            {
+                "unix": [test_start_unix + 60_000],
+                "end_unix": [test_start_unix + 6 * 60_000],
+                "price_ratio": [8.0],
+            }
+        )
+
+        train_base, test_base = do_run_on_historic_data(
+            fp,
+            params=params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+            do_test_period=True,
+            dynamic_input_frames=DynamicInputFrames(
+                reclamm_price_ratio_updates=baseline_updates
+            ),
+        )
+        train_sched, test_sched = do_run_on_historic_data(
+            fp,
+            params=params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+            do_test_period=True,
+            dynamic_input_frames=DynamicInputFrames(
+                reclamm_price_ratio_updates=test_only_updates
+            ),
+        )
+
+        np.testing.assert_allclose(
+            np.asarray(train_sched["value"]),
+            np.asarray(train_base["value"]),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        assert not np.allclose(
+            np.asarray(test_sched["value"]),
+            np.asarray(test_base["value"]),
+        )
+
 
 # ============================================================================
 # Validation and Early Stopping Tests

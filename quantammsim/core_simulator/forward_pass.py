@@ -1113,6 +1113,9 @@ def forward_pass_nograd(
             gas_cost=stop_gradient(dynamic_inputs.gas_cost),
             arb_fees=stop_gradient(dynamic_inputs.arb_fees),
             lp_supply=stop_gradient(dynamic_inputs.lp_supply),
+            reclamm_price_ratio_updates=stop_gradient(
+                dynamic_inputs.reclamm_price_ratio_updates
+            ),
         )
     return forward_pass(
         params,
