@@ -100,6 +100,7 @@ from quantammsim.pools.creator import create_pool
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.utils.post_train_analysis import (
     calculate_continuous_test_metrics,
+    calculate_period_metrics,
     _compute_all_metrics_batched,
     _METRIC_KEYS,
     metrics_arr_to_dicts,
