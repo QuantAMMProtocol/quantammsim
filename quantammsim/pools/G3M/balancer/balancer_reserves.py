@@ -1,8 +1,5 @@
 from functools import partial
 
-# again, this only works on startup!
-from jax import config
-
 import jax.numpy as jnp
 
 from jax import jit, vmap, devices
@@ -19,8 +16,6 @@ from quantammsim.pools.G3M.optimal_n_pool_arb import (
 )
 from quantammsim.pools.G3M.G3M_trades import jitted_G3M_cond_trade
 
-
-config.update("jax_enable_x64", True)
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]

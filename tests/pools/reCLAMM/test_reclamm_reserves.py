@@ -18,6 +18,7 @@ from quantammsim.pools.reCLAMM.reclamm_reserves import (
     _jax_calc_reclamm_reserves_zero_fees,
     _jax_calc_reclamm_reserves_with_fees,
 )
+from tests.conftest import TEST_DATA_DIR
 
 # For n=2: sig variations with exactly one +1 and one -1
 ALL_SIG_VARIATIONS_2 = jnp.array([[1, -1], [-1, 1]])
@@ -749,7 +750,7 @@ class TestReClammTrainable:
                 "centeredness_margin": jnp.array(0.2),
                 "daily_price_shift_base": jnp.array(base),
             },
-            root=str(TEST_DATA_DIR),
+            root=TEST_DATA_DIR,
         )
         result_exp = do_run_on_historic_data(
             run_fingerprint={**fp_common, "reclamm_use_shift_exponent": True},
@@ -758,7 +759,7 @@ class TestReClammTrainable:
                 "centeredness_margin": jnp.array(0.2),
                 "shift_exponent": jnp.array(shift_exp),
             },
-            root=str(TEST_DATA_DIR),
+            root=TEST_DATA_DIR,
         )
 
         np.testing.assert_allclose(
@@ -778,6 +779,7 @@ class TestReClammTrainable:
             "startDateString": "2023-01-01 00:00:00",
             "endDateString": "2023-01-15 00:00:00",
             "endTestDateString": "2023-02-01 00:00:00",
+            "endTestDateString": "2023-03-01 00:00:00",
             "initial_pool_value": 1_000_000.0,
             "do_arb": True,
             "fees": 0.0025,
@@ -812,5 +814,5 @@ class TestReClammTrainable:
                 },
             },
         }
-        result = train_on_historic_data(fp, root=str(TEST_DATA_DIR), verbose=False)
+        result = train_on_historic_data(fp, verbose=False, root=TEST_DATA_DIR)
         assert result is not None

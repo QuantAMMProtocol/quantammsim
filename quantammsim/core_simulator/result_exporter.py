@@ -3,12 +3,8 @@ import json
 import os
 
 import numpy as np
-from jax import config
 
 from quantammsim.core_simulator.param_utils import NumpyEncoder, dict_of_jnp_to_np
-
-# again, this only works on startup!
-config.update("jax_enable_x64", True)
 
 np.seterr(all="raise")
 np.seterr(under="print")
