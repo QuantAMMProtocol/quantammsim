@@ -654,7 +654,8 @@ def _calculate_ulcer_index(value_over_time, duration=7 * 24 * 60):
 
 @partial(jit, static_argnums=(0,))
 def _calculate_return_value(
-    return_val, reserves, local_prices, value_over_time, initial_reserves=None
+    return_val, reserves, local_prices, value_over_time, initial_reserves=None,
+    fee_revenue=None,
 ):
     """Dispatch registry for all financial metrics computable from a forward pass.
 
@@ -819,6 +820,11 @@ def _calculate_return_value(
             value_over_time, duration=30 * 24 * 60
         ),
         "calmar": lambda: _calculate_calmar_ratio(value_over_time),
+        "fee_revenue_over_value": lambda: (
+            fee_revenue.sum() / value_over_time[0]
+            if fee_revenue is not None
+            else jnp.float64(0.0)
+        ),
         "reserves_and_values": lambda: {
             "final_reserves": reserves[-1],
             "final_value": (reserves[-1] * local_prices[-1]).sum(),
@@ -1025,6 +1031,7 @@ def forward_pass(
     # 1. Any of Fees, gas costs, and arb fees are provided as arrays, or trades are provided
     # 2. Any of Fees, gas costs, and arb fees are nonzero scalar values, with no trades provided
     # 3. Fees, gas costs, and arb fees are all zero, with no trades provided
+    fee_revenue = None
     if any(
         ele is not None
         for ele in [fees_array, gas_cost_array, arb_fees_array, trades_array]
@@ -1036,16 +1043,28 @@ def forward_pass(
             gas_cost_array = jnp.array([static_dict["gas_cost"]])
         if arb_fees_array is None:
             arb_fees_array = jnp.array([static_dict["arb_fees"]])
-        reserves = pool.calculate_reserves_with_dynamic_inputs(
-            params,
-            static_dict,
-            prices,
-            start_index,
-            fees_array=fees_array,
-            arb_thresh_array=gas_cost_array,
-            arb_fees_array=arb_fees_array,
-            trade_array=trades_array,
-        )
+        if hasattr(pool, "calculate_reserves_and_fee_revenue_with_dynamic_inputs"):
+            reserves, fee_revenue = pool.calculate_reserves_and_fee_revenue_with_dynamic_inputs(
+                params,
+                static_dict,
+                prices,
+                start_index,
+                fees_array=fees_array,
+                arb_thresh_array=gas_cost_array,
+                arb_fees_array=arb_fees_array,
+                trade_array=trades_array,
+            )
+        else:
+            reserves = pool.calculate_reserves_with_dynamic_inputs(
+                params,
+                static_dict,
+                prices,
+                start_index,
+                fees_array=fees_array,
+                arb_thresh_array=gas_cost_array,
+                arb_fees_array=arb_fees_array,
+                trade_array=trades_array,
+            )
     elif True in (
         ele > 0.0
         for ele in [
@@ -1055,9 +1074,14 @@ def forward_pass(
         ]
     ):
         # Case 2, at least one of fees, gas costs, or arb fees is a nonzero scalar value
-        reserves = pool.calculate_reserves_with_fees(
-            params, static_dict, prices, start_index
-        )
+        if hasattr(pool, "calculate_reserves_and_fee_revenue_with_fees"):
+            reserves, fee_revenue = pool.calculate_reserves_and_fee_revenue_with_fees(
+                params, static_dict, prices, start_index
+            )
+        else:
+            reserves = pool.calculate_reserves_with_fees(
+                params, static_dict, prices, start_index
+            )
     else:
         reserves = pool.calculate_reserves_zero_fees(
             params, static_dict, prices, start_index
@@ -1070,6 +1094,20 @@ def forward_pass(
             axis=0,
             total_repeat_length=bout_length - 1,
         )
+        if fee_revenue is not None:
+            # Fee revenue occurs only at arb steps; expand to minute resolution
+            # by repeating each value and zeroing non-arb steps.
+            arb_freq = static_dict["arb_frequency"]
+            fee_revenue_expanded = jnp.repeat(
+                fee_revenue, arb_freq, total_repeat_length=bout_length - 1,
+            )
+            # Zero out non-arb steps (only the first of each repeated group is real)
+            arb_mask = jnp.zeros(bout_length - 1)
+            arb_mask = arb_mask.at[::arb_freq].set(1.0)
+            fee_revenue = fee_revenue_expanded * arb_mask
+
+    if fee_revenue is None:
+        fee_revenue = jnp.zeros(reserves.shape[0])
 
     if return_val == "reserves":
         return {
@@ -1089,6 +1127,7 @@ def forward_pass(
             "value": value_over_time,
             "prices": local_prices,
             "reserves": reserves,
+            "fee_revenue": fee_revenue,
             "weights": pool.calculate_weights(
                 params, static_dict, prices, start_index, additional_oracle_input=None
             ),
@@ -1121,6 +1160,7 @@ def forward_pass(
         local_prices,
         value_over_time,
         initial_reserves=reserves[0],
+        fee_revenue=fee_revenue,
     )
     turnover_penalty = static_dict.get("turnover_penalty", 0.0)
     if turnover_penalty > 0.0:

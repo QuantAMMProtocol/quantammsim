@@ -434,20 +434,6 @@ def _train_on_historic_data_impl(
         run_fingerprint["optimisation_settings"]["initial_random_key"]
     )
 
-    learnable_bounds = run_fingerprint.get("learnable_bounds_settings", {})
-    initial_params = {
-        "initial_memory_length": run_fingerprint["initial_memory_length"],
-        "initial_memory_length_delta": run_fingerprint["initial_memory_length_delta"],
-        "initial_k_per_day": run_fingerprint["initial_k_per_day"],
-        "initial_weights_logits": run_fingerprint["initial_weights_logits"],
-        "initial_log_amplitude": run_fingerprint["initial_log_amplitude"],
-        "initial_raw_width": run_fingerprint["initial_raw_width"],
-        "initial_raw_exponents": run_fingerprint["initial_raw_exponents"],
-        "initial_pre_exp_scaling": run_fingerprint["initial_pre_exp_scaling"],
-        "min_weights_per_asset": learnable_bounds.get("min_weights_per_asset"),
-        "max_weights_per_asset": learnable_bounds.get("max_weights_per_asset"),
-    }
-
     unique_tokens = get_unique_tokens(run_fingerprint)
     n_tokens = len(unique_tokens)
     n_assets = n_tokens
@@ -560,6 +546,7 @@ def _train_on_historic_data_impl(
         loaded = False
     # Create pool
     pool = create_pool(rule)
+    initial_params = pool.get_initial_values(run_fingerprint)
 
     # pool must be trainable
     assert pool.is_trainable(), "The selected pool must be trainable for this operation"
@@ -1394,12 +1381,17 @@ def _train_on_historic_data_impl(
                     end_idx = start_idx + data_dict["bout_length"]
 
                     # Slice the relevant portions of the full trajectory
+                    _fee_rev_slice = (
+                        train_outputs["fee_revenue"][start_idx:end_idx]
+                        if "fee_revenue" in train_outputs else None
+                    )
                     train_value = _calculate_return_value(
                         run_fingerprint["return_val"],
                         train_outputs["reserves"][start_idx:end_idx],
                         data_dict["prices"][start_idx:end_idx],
                         train_outputs["value"][start_idx:end_idx],
                         initial_reserves=train_outputs["reserves"][start_idx],
+                        fee_revenue=_fee_rev_slice,
                     )
                     train_objectives.append(train_value)
 
@@ -1410,6 +1402,7 @@ def _train_on_historic_data_impl(
                     train_outputs["prices"],
                     train_outputs["value"],
                     initial_reserves=train_outputs["reserves"][0],
+                    fee_revenue=train_outputs.get("fee_revenue"),
                 )
 
                 train_sharpe = _calculate_return_value(
@@ -1455,6 +1448,8 @@ def _train_on_historic_data_impl(
                     "value": continuous_outputs["value"],
                     "reserves": continuous_outputs["reserves"],
                 }
+                if "fee_revenue" in continuous_outputs:
+                    continuous_test_dict["fee_revenue"] = continuous_outputs["fee_revenue"]
                 continuous_test_metrics = calculate_continuous_test_metrics(
                     continuous_test_dict,
                     original_bout_length,
@@ -1470,12 +1465,17 @@ def _train_on_historic_data_impl(
                     validation_value_arr = continuous_outputs["value"][train_length:original_bout_length]
                     validation_prices = continuous_outputs["prices"][train_length:original_bout_length]
 
+                    _val_fee_rev = (
+                        continuous_outputs["fee_revenue"][train_length:original_bout_length]
+                        if "fee_revenue" in continuous_outputs else None
+                    )
                     validation_value = _calculate_return_value(
                         run_fingerprint["return_val"],
                         validation_reserves,
                         validation_prices,
                         validation_value_arr,
                         initial_reserves=validation_reserves[0],
+                        fee_revenue=_val_fee_rev,
                     )
 
                     validation_sharpe = _calculate_return_value(
@@ -1636,12 +1636,16 @@ def _train_on_historic_data_impl(
                     print(f"  ... and {len(optuna_manager.study.best_trials) - 5} more")
             else:
                 best = optuna_manager.study.best_trial
-                train_sharpe = best.user_attrs.get('train_sharpe', best.value)
-                test_sharpe = best.user_attrs.get('validation_value', 0)
+                obj_name = run_fingerprint.get("return_val", "objective")
+                train_obj = best.user_attrs.get('train_value', best.value)
+                val_obj = best.user_attrs.get('validation_value', 0)
+                train_sharpe = best.user_attrs.get('train_sharpe', 0)
+                val_sharpe = best.user_attrs.get('validation_sharpe', 0)
                 train_roh = best.user_attrs.get('train_returns_over_hodl', 0)
                 print(f"\nBest trial: #{best.number}")
-                print(f"  Train (IS):  sharpe={train_sharpe:+.4f}  ret_over_hodl={train_roh:+.4f}")
-                print(f"  Test (OOS):  sharpe={test_sharpe:+.4f}")
+                print(f"  Objective:   {obj_name}")
+                print(f"  Train (IS):  {obj_name}={train_obj:+.4f}  sharpe={train_sharpe:+.4f}  ret_over_hodl={train_roh:+.4f}")
+                print(f"  Val (OOS):   {obj_name}={val_obj:+.4f}  sharpe={val_sharpe:+.4f}")
             print(f"{'='*60}")
 
         if completed_trials:

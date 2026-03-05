@@ -183,6 +183,12 @@ def calculate_period_metrics(results_dict, prices=None):
 
     result = {k: metrics_arr[i] for i, k in enumerate(_METRIC_KEYS)}
     result["daily_returns"] = daily_returns
+
+    # Fee revenue metric (only when fee_revenue is in the results)
+    if "fee_revenue" in results_dict and results_dict["fee_revenue"] is not None:
+        fee_rev = results_dict["fee_revenue"]
+        result["fee_revenue_over_value"] = fee_rev.sum() / value[0]
+
     return result
 
 def calculate_continuous_test_metrics(continuous_results, train_len, test_len, prices):
@@ -218,6 +224,10 @@ def calculate_continuous_test_metrics(continuous_results, train_len, test_len, p
         "reserves": continuous_results["reserves"][train_len : train_len + test_len],
         "prices": price_data[train_len : train_len + test_len],
     }
+    if "fee_revenue" in continuous_results and continuous_results["fee_revenue"] is not None:
+        continuous_test_results["fee_revenue"] = continuous_results["fee_revenue"][
+            train_len : train_len + test_len
+        ]
 
     metrics = calculate_period_metrics(continuous_test_results)
     return metrics

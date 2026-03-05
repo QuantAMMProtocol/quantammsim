@@ -676,6 +676,25 @@ def create_objective(
                 if "optuna_settings" not in fp["optimisation_settings"]:
                     fp["optimisation_settings"]["optuna_settings"] = {}
                 fp["optimisation_settings"]["optuna_settings"]["n_trials"] = int(value)
+            # reClAMM variant selection (categorical outer dimensions)
+            elif key == "reclamm_interp_method":
+                fp["reclamm_interpolation_method"] = value
+                is_arc = value == "constant_arc_length"
+                fp["reclamm_learn_arc_length_speed"] = is_arc
+                # Conditionally include/exclude arc_length_speed from inner param_config
+                optuna_cfg = fp.get("optimisation_settings", {}).get("optuna_settings", {})
+                param_cfg = optuna_cfg.get("parameter_config", {})
+                if is_arc:
+                    # Restore arc_length_speed if it was stashed
+                    stashed = fp.pop("_arc_length_speed_config", None)
+                    if stashed and "arc_length_speed" not in param_cfg:
+                        param_cfg["arc_length_speed"] = stashed
+                else:
+                    # Remove arc_length_speed from inner search and stash it
+                    if "arc_length_speed" in param_cfg:
+                        fp["_arc_length_speed_config"] = param_cfg.pop("arc_length_speed")
+            elif key == "reclamm_scaling":
+                fp["reclamm_centeredness_scaling"] = bool(value)
             # Inner BFGS settings (for method="bfgs")
             elif key == "bfgs_maxiter":
                 if "bfgs_settings" not in fp["optimisation_settings"]:
