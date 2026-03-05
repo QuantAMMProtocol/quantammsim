@@ -100,6 +100,8 @@ run_fingerprint_defaults = {
     "minimum_weight": None,  # will be set to 0.1 / n_assets
     "ste_max_change": False,
     "ste_min_max_weight": False,
+    "use_fused_reserves": True,  # Fused chunked reserve path: ~89% memory reduction, ~2.3x speedup
+    "checkpoint_fused": "scan",  # "none", "vmap", or "scan" — scan gives best memory savings
     "weight_calculation_method": "auto",  # "auto", "vectorized", or "scan"
     # Learnable bounds settings - for per-asset min/max weight constraints
     # Control is via rule string prefix (e.g., "bounded__momentum")
@@ -213,3 +215,24 @@ optuna_settings = {
 }
 
 run_fingerprint_defaults["optimisation_settings"]["optuna_settings"] = optuna_settings
+
+bfgs_settings = {
+    "maxiter": 100,
+    "tol": 1e-6,
+    "n_evaluation_points": 20,
+    "compute_dtype": "float32",
+}
+
+run_fingerprint_defaults["optimisation_settings"]["bfgs_settings"] = bfgs_settings
+
+cma_es_settings = {
+    "population_size": None,    # Auto: 4 + floor(3 * ln(n))
+    "memory_budget": None,      # Max concurrent forward passes (from probe); auto-sizes λ
+    "n_generations": 300,
+    "sigma0": 0.5,
+    "tol": 1e-8,
+    "n_evaluation_points": 20,
+    "compute_dtype": "float32",
+}
+
+run_fingerprint_defaults["optimisation_settings"]["cma_es_settings"] = cma_es_settings

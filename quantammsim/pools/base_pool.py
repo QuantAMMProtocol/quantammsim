@@ -45,6 +45,11 @@ class AbstractPool(ABC):
     specific behaviors for different types of liquidity pools.
     """
 
+    @property
+    def supports_fused_reserves(self) -> bool:
+        """Whether this pool supports the fused chunked reserve computation path."""
+        return False
+
     def __init__(self):
         pass
 
