@@ -688,6 +688,13 @@ def _train_on_historic_data_impl(
         },
     )
 
+    partial_training_step = Partial(
+        forward_pass,
+        prices=data_dict["prices"],
+        static_dict=Hashabledict(base_static_dict),
+        pool=pool,
+    )
+
     # Note: Validation and test metrics are now computed by slicing from the continuous
     # forward pass (which covers train + validation + test) rather than running separate
     # passes. This ensures metrics reflect continuous simulation state.
