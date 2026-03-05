@@ -754,6 +754,8 @@ class RandomBaselineWrapper(TrainerWrapper):
             "value": output["value"][:train_bout_length],
             "reserves": output["reserves"][:train_bout_length],
         }
+        if "fee_revenue" in output:
+            train_dict["fee_revenue"] = output["fee_revenue"][:train_bout_length]
         train_prices = data_dict["prices"][train_start_idx:train_start_idx + train_bout_length]
         train_metrics = calculate_period_metrics(train_dict, train_prices)
 
@@ -762,6 +764,8 @@ class RandomBaselineWrapper(TrainerWrapper):
             "value": output["value"],
             "reserves": output["reserves"],
         }
+        if "fee_revenue" in output:
+            continuous_dict["fee_revenue"] = output["fee_revenue"]
         continuous_prices = data_dict["prices"][train_start_idx:train_start_idx + continuous_bout_length]
         test_metrics = calculate_continuous_test_metrics(
             continuous_dict, train_bout_length, test_bout_length, continuous_prices

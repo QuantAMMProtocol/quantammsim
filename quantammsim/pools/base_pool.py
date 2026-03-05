@@ -45,6 +45,11 @@ class AbstractPool(ABC):
     specific behaviors for different types of liquidity pools.
     """
 
+    @property
+    def supports_fused_reserves(self) -> bool:
+        """Whether this pool supports the fused chunked reserve computation path."""
+        return False
+
     def __init__(self):
         pass
 
@@ -308,6 +313,13 @@ class AbstractPool(ABC):
             vmap axes configuration
         """
         return make_vmap_in_axes_dict(params, 0, [], [], n_repeats_of_recurred)
+
+    def get_initial_values(self, run_fingerprint):
+        """Extract initial parameter values from run_fingerprint.
+
+        Override in subclasses to define pool-specific initial values.
+        """
+        return {}
 
     @abstractmethod
     def is_trainable(self):

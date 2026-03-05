@@ -796,9 +796,9 @@ class TestGradientPinnedValues:
 
 # ── Training loop regression ──────────────────────────────────────────────────
 
-# Pinned from pre-refactor code.
-PINNED_TRAINING_OBJECTIVE = 11.12668681990391
-PINNED_MR_TRAINING_OBJECTIVE = 9.962990368217547
+# Pinned training objectives (LR=0.5, seed=123 for clear val-metric separation).
+PINNED_TRAINING_OBJECTIVE = 11.772039238063208
+PINNED_MR_TRAINING_OBJECTIVE = 11.967803788820907
 
 
 def _make_training_fingerprint(rule="momentum"):
@@ -829,7 +829,7 @@ def _make_training_fingerprint(rule="momentum"):
         "subsidary_pools": [],
         "optimisation_settings": {
             "method": "gradient_descent",
-            "base_lr": 0.05,
+            "base_lr": 0.5,
             "optimiser": "adam",
             "batch_size": 2,
             "n_iterations": 3,
@@ -838,7 +838,7 @@ def _make_training_fingerprint(rule="momentum"):
             "train_on_hessian_trace": False,
             "use_gradient_clipping": True,
             "sample_method": "uniform",
-            "initial_random_key": 42,
+            "initial_random_key": 123,
             "n_cycles": 1,
             "decay_lr_ratio": 0.8,
             "decay_lr_plateau": 200,

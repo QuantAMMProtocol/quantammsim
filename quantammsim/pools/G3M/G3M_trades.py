@@ -5,12 +5,10 @@ a token pair, and an input amount, computes the output amount and
 resulting reserve changes. Also provides a conditional wrapper for
 use inside ``jax.lax.scan`` loops where trades may or may not be present.
 """
-from jax import config, jit, devices
+from jax import jit, devices
 import jax.numpy as jnp
 from jax.lax import cond
 from jax import default_backend
-
-config.update("jax_enable_x64", True)
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
@@ -61,6 +59,54 @@ def _jax_calc_G3M_trade_from_exact_out_given_in(
     overall_trade = overall_trade.at[token_in].set(amount_in)
     overall_trade = overall_trade.at[token_out].set(-amount_out)
     return jnp.where(amount_in != 0, overall_trade, 0)
+
+
+@jit
+def _jax_calc_G3M_trade_from_exact_in_given_out(
+    reserves, weights, token_in, token_out, amount_out, gamma=0.997
+):
+    """Compute the trade that achieves a given output amount.
+
+    Inverse of ``_jax_calc_G3M_trade_from_exact_out_given_in``: given a
+    desired ``amount_out`` of ``token_out``, returns the trade array with
+    the required ``amount_in`` of ``token_in``.
+
+    For weights ratio r = w_in / w_out::
+
+        amount_in = reserves[token_in] / gamma
+                    * ((1 - amount_out / reserves[token_out]) ** (-1/r) - 1)
+
+    Parameters
+    ----------
+    reserves : jnp.ndarray
+        Current reserves of all tokens in the AMM.
+    weights : jnp.ndarray
+        Current weights of all tokens in the AMM.
+    token_in : int
+        Index of the input token.
+    token_out : int
+        Index of the output token.
+    amount_out : float
+        Desired output of ``token_out``.
+    gamma : float, optional
+        Fee parameter (1 - fee percentage). Default is 0.997.
+
+    Returns
+    -------
+    jnp.ndarray
+        Reserve changes: positive at ``token_in``, negative at ``token_out``.
+    """
+    token_in = jnp.int32(token_in)
+    token_out = jnp.int32(token_out)
+
+    inv_weights_ratio = weights[token_out] / weights[token_in]
+    amount_in = (reserves[token_in] / gamma) * (
+        (1.0 - amount_out / reserves[token_out]) ** (-inv_weights_ratio) - 1.0
+    )
+    overall_trade = jnp.zeros(len(weights))
+    overall_trade = overall_trade.at[token_in].set(amount_in)
+    overall_trade = overall_trade.at[token_out].set(-amount_out)
+    return jnp.where(amount_out != 0, overall_trade, 0)
 
 
 # version of _jax_calc_G3M_trade_from_exact_out_given_in that

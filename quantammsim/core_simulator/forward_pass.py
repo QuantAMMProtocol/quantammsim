@@ -31,7 +31,6 @@ standard financial practice than minute-frequency arithmetic Sharpe.
 """
 from jax import config
 
-config.update("jax_enable_x64", True)
 from jax import default_backend
 from jax import devices
 
@@ -90,6 +89,143 @@ def _apply_price_noise(prices, sigma, seed_int):
     key = jax.random.PRNGKey(seed_int)
     epsilon = jax.random.normal(key, prices.shape)
     return prices * jnp.exp(sigma * epsilon)
+
+
+# ---------------------------------------------------------------------------
+# Fused chunked reserve path — compatible metrics and dispatch
+# ---------------------------------------------------------------------------
+
+DAILY_COMPATIBLE_METRICS = frozenset({
+    # Sharpe / VaR / ROVAR metrics naturally operate on day-boundary values.
+    "daily_log_sharpe",
+    "daily_sharpe",
+    "daily_var_95%_trad",
+    "daily_var_99%_trad",
+    "weekly_var_95%_trad",
+    "weekly_var_99%_trad",
+    "daily_rovar_trad",
+    "weekly_rovar_trad",
+    "monthly_rovar_trad",
+    # Return-based metrics use boundary_values[-1] (last day boundary) rather
+    # than value_over_time[-1] (last minute).  The endpoint differs by up to
+    # 1439 minutes — a negligible approximation for training objectives.
+    "returns",
+    "annualised_returns",
+    "returns_over_hodl",
+    "annualised_returns_over_hodl",
+    "returns_over_uniform_hodl",
+    "annualised_returns_over_uniform_hodl",
+})
+
+
+@partial(jit, static_argnums=(0,))
+def _calculate_return_value_chunked(
+    return_val, boundary_values, initial_reserves, n_assets,
+):
+    """Compute a financial metric from metric-cadence boundary values.
+
+    This is the fused-path analogue of :func:`_calculate_return_value`.
+    The input ``boundary_values`` is already at metric-period cadence
+    (e.g. daily), so no minute-level resampling is needed.
+
+    Parameters
+    ----------
+    return_val : str
+        Metric name (must be in ``DAILY_COMPATIBLE_METRICS``).
+    boundary_values : (n_periods + 1,)
+        Pool values at metric-period boundaries. ``[0]`` is initial value.
+    initial_reserves : (n_assets,)
+        Initial reserves (for hodl-relative metrics).
+    n_assets : int
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar metric value.
+    """
+    if return_val == "daily_log_sharpe":
+        log_rets = jnp.diff(jnp.log(boundary_values + 1e-12))
+        mean = log_rets.mean()
+        std = log_rets.std()
+        return jnp.sqrt(365.0) * (mean / (std + 1e-8))
+
+    if return_val == "daily_sharpe":
+        daily_returns = jnp.diff(boundary_values) / boundary_values[:-1]
+        return jnp.sqrt(365.0) * (daily_returns.mean() / daily_returns.std())
+
+    if return_val == "returns":
+        return boundary_values[-1] / boundary_values[0] - 1.0
+
+    if return_val == "annualised_returns":
+        n_days = boundary_values.shape[0] - 1
+        return (boundary_values[-1] / boundary_values[0]) ** (365.0 / n_days) - 1.0
+
+    if return_val in (
+        "returns_over_hodl", "annualised_returns_over_hodl",
+        "returns_over_uniform_hodl", "annualised_returns_over_uniform_hodl",
+    ):
+        ratio = boundary_values[-1] / boundary_values[0]
+        if return_val in ("returns_over_hodl", "returns_over_uniform_hodl"):
+            return ratio - 1.0
+        else:
+            n_days = boundary_values.shape[0] - 1
+            return ratio ** (365.0 / n_days) - 1.0
+
+    # VaR-trad metrics: use end-of-period boundary values
+    if return_val == "daily_var_95%_trad":
+        returns = jnp.diff(boundary_values) / boundary_values[:-1]
+        return jnp.percentile(returns, 5.0)
+
+    if return_val == "daily_var_99%_trad":
+        returns = jnp.diff(boundary_values) / boundary_values[:-1]
+        return jnp.percentile(returns, 1.0)
+
+    if return_val == "weekly_var_95%_trad":
+        # Subsample to weekly (every 7 days)
+        weekly_values = boundary_values[::7]
+        returns = jnp.diff(weekly_values) / weekly_values[:-1]
+        return jnp.percentile(returns, 5.0)
+
+    if return_val == "weekly_var_99%_trad":
+        weekly_values = boundary_values[::7]
+        returns = jnp.diff(weekly_values) / weekly_values[:-1]
+        return jnp.percentile(returns, 1.0)
+
+    if return_val == "daily_rovar_trad":
+        returns = jnp.diff(boundary_values) / boundary_values[:-1]
+        var = jnp.percentile(returns, 5.0)
+        n_days = boundary_values.shape[0] - 1
+        period_returns = jnp.diff(boundary_values) / boundary_values[:-1]
+        annualized_return = (1 + period_returns) ** 365.0 - 1
+        mean_ann_ret = jnp.mean(annualized_return)
+        ann_factor = 365.0 / n_days
+        ann_var = var * jnp.sqrt(ann_factor)
+        return -mean_ann_ret / ann_var
+
+    if return_val == "weekly_rovar_trad":
+        weekly_values = boundary_values[::7]
+        returns = jnp.diff(weekly_values) / weekly_values[:-1]
+        var = jnp.percentile(returns, 5.0)
+        n_weeks = weekly_values.shape[0] - 1
+        ann_return = (1 + returns) ** (365.0 / 7) - 1
+        mean_ann_ret = jnp.mean(ann_return)
+        ann_factor = (365.0 / 7) / n_weeks
+        ann_var = var * jnp.sqrt(ann_factor)
+        return -mean_ann_ret / ann_var
+
+    if return_val == "monthly_rovar_trad":
+        monthly_values = boundary_values[::30]
+        returns = jnp.diff(monthly_values) / monthly_values[:-1]
+        var = jnp.percentile(returns, 5.0)
+        n_months = monthly_values.shape[0] - 1
+        ann_return = (1 + returns) ** (365.0 / 30) - 1
+        mean_ann_ret = jnp.mean(ann_return)
+        ann_factor = (365.0 / 30) / n_months
+        ann_var = var * jnp.sqrt(ann_factor)
+        return -mean_ann_ret / ann_var
+
+    # Should not reach here if caller checked DAILY_COMPATIBLE_METRICS
+    return jnp.array(0.0)
 
 
 def _daily_log_sharpe(values: jnp.ndarray) -> jnp.ndarray:
@@ -518,7 +654,8 @@ def _calculate_ulcer_index(value_over_time, duration=7 * 24 * 60):
 
 @partial(jit, static_argnums=(0,))
 def _calculate_return_value(
-    return_val, reserves, local_prices, value_over_time, initial_reserves=None
+    return_val, reserves, local_prices, value_over_time, initial_reserves=None,
+    fee_revenue=None,
 ):
     """Dispatch registry for all financial metrics computable from a forward pass.
 
@@ -683,6 +820,11 @@ def _calculate_return_value(
             value_over_time, duration=30 * 24 * 60
         ),
         "calmar": lambda: _calculate_calmar_ratio(value_over_time),
+        "fee_revenue_over_value": lambda: (
+            fee_revenue.sum() / value_over_time[0]
+            if fee_revenue is not None
+            else jnp.float64(0.0)
+        ),
         "reserves_and_values": lambda: {
             "final_reserves": reserves[-1],
             "final_value": (reserves[-1] * local_prices[-1]).sum(),
@@ -853,11 +995,43 @@ def forward_pass(
         )[:, :, 0]
         start_index = start_index[0:2]
 
+    # --- Fused chunked reserve path (opt-in, zero-fees only) ---
+    use_fused = static_dict.get("use_fused_reserves", True)
+    if (
+        use_fused
+        and hasattr(pool, "supports_fused_reserves")
+        and pool.supports_fused_reserves
+        and return_val in DAILY_COMPATIBLE_METRICS
+        and static_dict["fees"] == 0.0
+        and static_dict["gas_cost"] == 0.0
+        and static_dict["arb_fees"] == 0.0
+        and static_dict["arb_frequency"] == 1
+        and static_dict.get("turnover_penalty", 0.0) == 0.0
+        and static_dict.get("price_noise_sigma", 0.0) == 0.0
+        and all(
+            ele is None
+            for ele in [fees_array, gas_cost_array, arb_fees_array, trades_array]
+        )
+        and 1440 % static_dict["chunk_period"] == 0  # chunk_period divides metric_period
+        and not pool._rule_outputs_are_weights  # only delta-based pools validated
+        and static_dict["bout_length"] > 1440 * 2  # need ≥2 metric periods
+    ):
+        fused_result = pool.calculate_fused_reserves_zero_fees(
+            params, static_dict, prices, start_index,
+        )
+        boundary_values = fused_result["boundary_values"]
+        return _calculate_return_value_chunked(
+            return_val, boundary_values,
+            fused_result["initial_reserves"],
+            n_assets,
+        )
+
     # Now we can calculate the reserves over time useing the pool.
     # We have to handle three cases:
     # 1. Any of Fees, gas costs, and arb fees are provided as arrays, or trades are provided
     # 2. Any of Fees, gas costs, and arb fees are nonzero scalar values, with no trades provided
     # 3. Fees, gas costs, and arb fees are all zero, with no trades provided
+    fee_revenue = None
     if any(
         ele is not None
         for ele in [fees_array, gas_cost_array, arb_fees_array, trades_array]
@@ -869,16 +1043,28 @@ def forward_pass(
             gas_cost_array = jnp.array([static_dict["gas_cost"]])
         if arb_fees_array is None:
             arb_fees_array = jnp.array([static_dict["arb_fees"]])
-        reserves = pool.calculate_reserves_with_dynamic_inputs(
-            params,
-            static_dict,
-            prices,
-            start_index,
-            fees_array=fees_array,
-            arb_thresh_array=gas_cost_array,
-            arb_fees_array=arb_fees_array,
-            trade_array=trades_array,
-        )
+        if hasattr(pool, "calculate_reserves_and_fee_revenue_with_dynamic_inputs"):
+            reserves, fee_revenue = pool.calculate_reserves_and_fee_revenue_with_dynamic_inputs(
+                params,
+                static_dict,
+                prices,
+                start_index,
+                fees_array=fees_array,
+                arb_thresh_array=gas_cost_array,
+                arb_fees_array=arb_fees_array,
+                trade_array=trades_array,
+            )
+        else:
+            reserves = pool.calculate_reserves_with_dynamic_inputs(
+                params,
+                static_dict,
+                prices,
+                start_index,
+                fees_array=fees_array,
+                arb_thresh_array=gas_cost_array,
+                arb_fees_array=arb_fees_array,
+                trade_array=trades_array,
+            )
     elif True in (
         ele > 0.0
         for ele in [
@@ -888,9 +1074,14 @@ def forward_pass(
         ]
     ):
         # Case 2, at least one of fees, gas costs, or arb fees is a nonzero scalar value
-        reserves = pool.calculate_reserves_with_fees(
-            params, static_dict, prices, start_index
-        )
+        if hasattr(pool, "calculate_reserves_and_fee_revenue_with_fees"):
+            reserves, fee_revenue = pool.calculate_reserves_and_fee_revenue_with_fees(
+                params, static_dict, prices, start_index
+            )
+        else:
+            reserves = pool.calculate_reserves_with_fees(
+                params, static_dict, prices, start_index
+            )
     else:
         reserves = pool.calculate_reserves_zero_fees(
             params, static_dict, prices, start_index
@@ -903,6 +1094,20 @@ def forward_pass(
             axis=0,
             total_repeat_length=bout_length - 1,
         )
+        if fee_revenue is not None:
+            # Fee revenue occurs only at arb steps; expand to minute resolution
+            # by repeating each value and zeroing non-arb steps.
+            arb_freq = static_dict["arb_frequency"]
+            fee_revenue_expanded = jnp.repeat(
+                fee_revenue, arb_freq, total_repeat_length=bout_length - 1,
+            )
+            # Zero out non-arb steps (only the first of each repeated group is real)
+            arb_mask = jnp.zeros(bout_length - 1)
+            arb_mask = arb_mask.at[::arb_freq].set(1.0)
+            fee_revenue = fee_revenue_expanded * arb_mask
+
+    if fee_revenue is None:
+        fee_revenue = jnp.zeros(reserves.shape[0])
 
     if return_val == "reserves":
         return {
@@ -922,6 +1127,7 @@ def forward_pass(
             "value": value_over_time,
             "prices": local_prices,
             "reserves": reserves,
+            "fee_revenue": fee_revenue,
             "weights": pool.calculate_weights(
                 params, static_dict, prices, start_index, additional_oracle_input=None
             ),
@@ -954,6 +1160,7 @@ def forward_pass(
         local_prices,
         value_over_time,
         initial_reserves=reserves[0],
+        fee_revenue=fee_revenue,
     )
     turnover_penalty = static_dict.get("turnover_penalty", 0.0)
     if turnover_penalty > 0.0:

@@ -1,23 +1,14 @@
 # again, this only works on startup!
 from jax import config
 
-config.update("jax_enable_x64", True)
 from jax import default_backend
 from jax import devices
 
 DEFAULT_BACKEND = default_backend()
-CPU_DEVICE = devices("cpu")[0]
-if DEFAULT_BACKEND != "cpu":
-    GPU_DEVICE = devices("gpu")[0]
-    config.update("jax_platform_name", "gpu")
-else:
-    GPU_DEVICE = devices("cpu")[0]
-    config.update("jax_platform_name", "cpu")
 
 import jax.numpy as jnp
-from jax import jit
-from jax import devices, device_put
-from jax.lax import dynamic_slice, scan, fori_loop
+from jax import jit, vmap, device_put
+from jax.lax import stop_gradient, dynamic_slice, scan, fori_loop
 from jax.tree_util import Partial
 
 from quantammsim.pools.base_pool import AbstractPool
@@ -25,10 +16,13 @@ from quantammsim.pools.G3M.quantamm.quantamm_reserves import (
     _jax_calc_quantAMM_reserve_ratios,
     _jax_calc_quantAMM_reserves_with_fees_using_precalcs,
     _jax_calc_quantAMM_reserves_with_dynamic_inputs,
+    _fused_chunked_reserves,
 )
 from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     _jax_calc_coarse_weights,
     _jax_calc_coarse_weight_scan_function,
+    calc_coarse_weight_output_from_weight_changes,
+    calc_coarse_weight_output_from_weights,
 )
 from quantammsim.pools.G3M.quantamm.weight_calculations.linear_interpolation import (
     _jax_calc_linear_interpolation_block,
@@ -70,11 +64,39 @@ class TFMMBasePool(AbstractPool):
         to this separation of concerns this class does not hold any state, for example pool parameters.
     """
 
+    # Subclasses must set this: True if calculate_fine_weights uses
+    # calc_fine_weight_output_from_weights (target-weight rules like min_variance),
+    # False if it uses calc_fine_weight_output_from_weight_changes (delta rules
+    # like momentum). Needed by the fused reserve path to handle the
+    # initial-weight block prepended by delta-based pools.
+    _rule_outputs_are_weights = False  # default; overridden in weight-based subclasses
+
+    @property
+    def supports_fused_reserves(self) -> bool:
+        """Whether this pool supports the fused chunked reserve computation path."""
+        return True
+
     def __init__(self):
         """
         Initialize a new TFMMBasePool instance.
         """
         super().__init__()
+
+    def get_initial_values(self, run_fingerprint):
+        """Extract initial TFMM parameter values from run_fingerprint."""
+        learnable_bounds = run_fingerprint.get("learnable_bounds_settings", {})
+        return {
+            "initial_memory_length": run_fingerprint["initial_memory_length"],
+            "initial_memory_length_delta": run_fingerprint["initial_memory_length_delta"],
+            "initial_k_per_day": run_fingerprint["initial_k_per_day"],
+            "initial_weights_logits": run_fingerprint["initial_weights_logits"],
+            "initial_log_amplitude": run_fingerprint["initial_log_amplitude"],
+            "initial_raw_width": run_fingerprint["initial_raw_width"],
+            "initial_raw_exponents": run_fingerprint["initial_raw_exponents"],
+            "initial_pre_exp_scaling": run_fingerprint["initial_pre_exp_scaling"],
+            "min_weights_per_asset": learnable_bounds.get("min_weights_per_asset"),
+            "max_weights_per_asset": learnable_bounds.get("max_weights_per_asset"),
+        }
 
     @partial(jit, static_argnums=(2, 6, 7, 8))
     def calculate_reserves_with_fees(
@@ -230,6 +252,127 @@ class TFMMBasePool(AbstractPool):
             )
 
         return reserves
+
+    def calculate_fused_reserves_zero_fees(
+        self,
+        params: Dict[str, Any],
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        start_index: jnp.ndarray,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+    ) -> Dict[str, jnp.ndarray]:
+        """Compute metric-cadence boundary values via the fused chunked path.
+
+        This method avoids materialising the full ``(T_fine, n_assets)`` weight
+        and reserve arrays by computing per-chunk interpolation + ratio products
+        inline, then aggregating to metric-period (e.g. daily) granularity.
+
+        Parameters
+        ----------
+        params, run_fingerprint, prices, start_index, additional_oracle_input
+            Same as :meth:`calculate_reserves_zero_fees`.
+
+        Returns
+        -------
+        dict with keys:
+            ``boundary_values`` : (n_metric_periods + 1,)
+                Pool values at metric-period boundaries (e.g. daily).
+                ``boundary_values[0]`` = initial value, ``boundary_values[k]``
+                = value at end of metric period k.
+            ``final_reserves`` : (n_assets,)
+            ``initial_reserves`` : (n_assets,)
+            ``boundary_prices`` : (n_metric_periods + 1, n_assets)
+        """
+        chunk_period = run_fingerprint["chunk_period"]
+        bout_length = run_fingerprint["bout_length"]
+        n_assets = run_fingerprint["n_assets"]
+        weight_interpolation_method = run_fingerprint.get(
+            "weight_interpolation_method", "linear"
+        )
+        metric_period = 1440  # always daily for fused path
+        interpol_num = run_fingerprint["weight_interpolation_period"] + 1
+        chunks_per_metric = metric_period // chunk_period
+
+        rule_outputs_are_weights = self._rule_outputs_are_weights
+
+        # --- How many daily values / metric periods? ---
+        # Full-resolution values has (bout_length - 1) entries.
+        # daily_values = values[::metric_period] samples at indices
+        # 0, metric_period, 2*metric_period, ... up to bout_length - 2.
+        n_daily_values = (bout_length - 2) // metric_period + 1
+        n_metric_periods = n_daily_values - 1
+
+        # --- How many coarse chunks do we need? ---
+        # n_chunks_total: chunks that cover the metric periods
+        #   (includes virtual block for delta pools).
+        n_chunks_total = n_metric_periods * chunks_per_metric
+
+        # --- Rule outputs → coarse weights ---
+        # CRITICAL: slice rule_outputs with the SAME size as
+        # calculate_weights_vectorized to get identical dynamic_slice
+        # clipping behaviour.  JAX's dynamic_slice clips the start index
+        # when the requested window would exceed the array bounds, so
+        # requesting a different size from the same start can yield a
+        # different effective start.
+        raw_weight_additional_offset = 0 if bout_length % chunk_period == 0 else 1
+        n_coarse_for_slice = int(bout_length / chunk_period) + raw_weight_additional_offset
+
+        rule_outputs = self.calculate_rule_outputs(
+            params, run_fingerprint, prices, additional_oracle_input
+        )
+        initial_weights = self.calculate_initial_weights(params)
+
+        start_index_coarse = (start_index[0] / chunk_period).astype("int64")
+        rule_outputs = dynamic_slice(
+            rule_outputs,
+            (start_index_coarse, 0),
+            (n_coarse_for_slice, n_assets),
+        )
+
+        # Get coarse weights
+        if rule_outputs_are_weights:
+            actual_starts, scaled_diffs = calc_coarse_weight_output_from_weights(
+                rule_outputs, initial_weights, run_fingerprint, params,
+            )
+        else:
+            actual_starts, scaled_diffs = calc_coarse_weight_output_from_weight_changes(
+                rule_outputs, initial_weights, run_fingerprint, params,
+            )
+
+        # --- Local prices for the bout ---
+        local_prices = dynamic_slice(prices, start_index, (bout_length - 1, n_assets))
+
+        # Initial reserves
+        initial_pool_value = run_fingerprint["initial_pool_value"]
+        initial_value_per_token = initial_weights * initial_pool_value
+        initial_reserves = initial_value_per_token / local_prices[0]
+
+        # --- Select interpolation function ---
+        if weight_interpolation_method == "linear":
+            interpolation_fn = _jax_calc_linear_interpolation_block
+        elif weight_interpolation_method == "approx_optimal":
+            interpolation_fn = _jax_calc_approx_optimal_interpolation_block
+        else:
+            raise ValueError(
+                f"Invalid interpolation method: {weight_interpolation_method}"
+            )
+
+        checkpoint_mode = run_fingerprint.get("checkpoint_fused", "scan")
+
+        boundary_values, final_reserves = _fused_chunked_reserves(
+            actual_starts, scaled_diffs, local_prices, initial_reserves,
+            initial_weights,
+            chunk_period, interpol_num, metric_period,
+            interpolation_fn, rule_outputs_are_weights,
+            n_chunks_total, n_metric_periods,
+            checkpoint_mode,
+        )
+
+        return {
+            "boundary_values": boundary_values,
+            "final_reserves": final_reserves,
+            "initial_reserves": initial_reserves,
+        }
 
     @partial(jit, static_argnums=(2))
     def calculate_reserves_with_dynamic_inputs(
@@ -877,12 +1020,9 @@ class TFMMBasePool(AbstractPool):
                 n_assets,
             ),
         )
-        rule_outputs_cpu = device_put(rule_outputs, CPU_DEVICE)
-        initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
-
         weights = self.calculate_fine_weights(
-            rule_outputs_cpu,
-            initial_weights_cpu,
+            rule_outputs,
+            initial_weights,
             run_fingerprint,
             params,
         )
@@ -1083,12 +1223,9 @@ class TFMMBasePool(AbstractPool):
                 n_assets,
             ),
         )
-        rule_outputs_cpu = device_put(rule_outputs, CPU_DEVICE)
-        initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
-
         weights = self.calculate_fine_weights(
-            rule_outputs_cpu,
-            initial_weights_cpu,
+            rule_outputs,
+            initial_weights,
             run_fingerprint,
             params,
         )
@@ -1154,12 +1291,9 @@ class TFMMBasePool(AbstractPool):
                 n_assets,
             ),
         )
-        rule_outputs_cpu = device_put(rule_outputs, CPU_DEVICE)
-        initial_weights_cpu = device_put(initial_weights, CPU_DEVICE)
-
         weights = self.calculate_fine_weights(
-            rule_outputs_cpu,
-            initial_weights_cpu,
+            rule_outputs,
+            initial_weights,
             run_fingerprint,
             params,
         )
