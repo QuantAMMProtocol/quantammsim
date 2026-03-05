@@ -21,7 +21,7 @@ DEFAULT_INITIAL_PRICES = jnp.array([2500.0, 1.0], dtype=jnp.float64)
 DEFAULT_PRICE_RATIO = 4.0
 DEFAULT_DAILY_PRICE_SHIFT_BASE = 1.0 - 1.0 / 124000.0
 DEFAULT_SECONDS_PER_STEP = 60.0
-ALL_SIG_VARIATIONS_2 = tuple(map(tuple, [[1, -1], [-1, 1]]))
+ALL_SIG_VARIATIONS_2 = jnp.array([[1, -1], [-1, 1]])
 
 
 def _init_pool(price_ratio=DEFAULT_PRICE_RATIO):
@@ -142,6 +142,111 @@ class TestReclammPriceRatioUpdates:
             )
         )
         assert ratio_at_end == pytest.approx(9.0, rel=1e-5, abs=1e-5)
+
+    def test_schedule_interpolates_geometrically_in_ratio_space(self):
+        reserves, Va, Vb = _init_pool()
+        n_steps = 8
+        prices = _flat_prices(n_steps)
+        fees = jnp.zeros((n_steps,), dtype=jnp.float64)
+        arb_thresh = jnp.zeros((n_steps,), dtype=jnp.float64)
+        arb_fees = jnp.zeros((n_steps,), dtype=jnp.float64)
+
+        start_step = 1
+        end_step = 5
+        start_ratio = 4.0
+        target_ratio = 16.0
+        schedule = _single_event_schedule(
+            n_steps,
+            start_step=start_step,
+            end_step=end_step,
+            target_price_ratio=target_ratio,
+            start_price_ratio_override=start_ratio,
+        )
+
+        reserves_out, Va_history, Vb_history = (
+            _jax_calc_reclamm_reserves_with_dynamic_inputs_full_state(
+                reserves,
+                Va,
+                Vb,
+                prices,
+                centeredness_margin=0.0,
+                daily_price_shift_base=DEFAULT_DAILY_PRICE_SHIFT_BASE,
+                seconds_per_step=DEFAULT_SECONDS_PER_STEP,
+                fees=fees,
+                arb_thresh=arb_thresh,
+                arb_fees=arb_fees,
+                price_ratio_updates=schedule,
+                all_sig_variations=ALL_SIG_VARIATIONS_2,
+            )
+        )
+
+        mid_step = 3
+        ratio_at_mid = float(
+            compute_price_ratio(
+                reserves_out[mid_step, 0],
+                reserves_out[mid_step, 1],
+                Va_history[mid_step],
+                Vb_history[mid_step],
+            )
+        )
+        progress = (mid_step - start_step) / (end_step - start_step)
+        expected_geometric = start_ratio * (target_ratio / start_ratio) ** progress
+        assert ratio_at_mid == pytest.approx(expected_geometric, rel=1e-5, abs=1e-5)
+
+    def test_schedule_stops_applying_after_end_step(self):
+        reserves, Va, Vb = _init_pool()
+        n_steps = 10
+        prices = jnp.stack(
+            [jnp.linspace(DEFAULT_INITIAL_PRICES[0], 5000.0, n_steps), jnp.ones((n_steps,))],
+            axis=1,
+        )
+        fees = jnp.zeros((n_steps,), dtype=jnp.float64)
+        arb_thresh = jnp.zeros((n_steps,), dtype=jnp.float64)
+        arb_fees = jnp.zeros((n_steps,), dtype=jnp.float64)
+
+        end_step = 3
+        schedule = _single_event_schedule(
+            n_steps,
+            start_step=1,
+            end_step=end_step,
+            target_price_ratio=9.0,
+            start_price_ratio_override=DEFAULT_PRICE_RATIO,
+        )
+        reserves_out, Va_history, Vb_history = (
+            _jax_calc_reclamm_reserves_with_dynamic_inputs_full_state(
+                reserves,
+                Va,
+                Vb,
+                prices,
+                centeredness_margin=0.0,  # disable thermostat to isolate schedule behavior
+                daily_price_shift_base=DEFAULT_DAILY_PRICE_SHIFT_BASE,
+                seconds_per_step=DEFAULT_SECONDS_PER_STEP,
+                fees=fees,
+                arb_thresh=arb_thresh,
+                arb_fees=arb_fees,
+                price_ratio_updates=schedule,
+                all_sig_variations=ALL_SIG_VARIATIONS_2,
+            )
+        )
+
+        # Reserves continue evolving under changing market prices...
+        assert not np.allclose(
+            np.asarray(reserves_out[end_step + 1]),
+            np.asarray(reserves_out[end_step + 2]),
+        )
+        # ...but virtual balances should be frozen once the schedule has ended.
+        npt.assert_allclose(
+            np.asarray(Va_history[end_step + 1 :]),
+            np.full((n_steps - (end_step + 1),), float(Va_history[end_step])),
+            rtol=1e-9,
+            atol=1e-9,
+        )
+        npt.assert_allclose(
+            np.asarray(Vb_history[end_step + 1 :]),
+            np.full((n_steps - (end_step + 1),), float(Vb_history[end_step])),
+            rtol=1e-9,
+            atol=1e-9,
+        )
 
     def test_replacement_event_supersedes_active_event(self):
         reserves, Va, Vb = _init_pool()

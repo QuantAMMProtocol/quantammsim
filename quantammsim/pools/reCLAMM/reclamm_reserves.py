@@ -791,6 +791,9 @@ def _reclamm_scan_step_with_fees_and_revenue(
             event_has, jnp.maximum(event_end_step, step_idx), active_end_step
         )
         next_active_enabled = jnp.where(event_has, True, active_enabled)
+        next_active_enabled = jnp.logical_and(
+            next_active_enabled, step_idx <= next_active_end_step
+        )
 
         schedule_duration = next_active_end_step - next_active_start_step
         schedule_progress = jnp.where(
@@ -798,16 +801,22 @@ def _reclamm_scan_step_with_fees_and_revenue(
             1.0,
             jnp.clip((step_idx - next_active_start_step) / schedule_duration, 0.0, 1.0),
         )
-        scheduled_price_ratio = (
-            next_active_start_ratio
-            + (next_active_target_ratio - next_active_start_ratio) * schedule_progress
+        safe_start_ratio = jnp.maximum(next_active_start_ratio, 1.0 + 1e-12)
+        safe_target_ratio = jnp.maximum(next_active_target_ratio, 1.0 + 1e-12)
+        scheduled_price_ratio = safe_start_ratio * (
+            safe_target_ratio / safe_start_ratio
+        ) ** schedule_progress
+        scheduled_price_ratio = jnp.where(
+            next_active_enabled, scheduled_price_ratio, current_price_ratio
         )
         Va_scheduled, Vb_scheduled = apply_target_price_ratio_to_virtual_balances(
             Ra, Rb, Va, Vb, scheduled_price_ratio
         )
+        next_Va = jnp.where(next_active_enabled, Va_scheduled, Va)
+        next_Vb = jnp.where(next_active_enabled, Vb_scheduled, Vb)
         return (
-            Va_scheduled,
-            Vb_scheduled,
+            next_Va,
+            next_Vb,
             next_active_start_ratio,
             next_active_target_ratio,
             next_active_start_step,
@@ -816,6 +825,9 @@ def _reclamm_scan_step_with_fees_and_revenue(
         )
 
     def _skip_schedule_state(_):
+        retained_active_enabled = jnp.logical_and(
+            active_enabled, step_idx <= active_end_step
+        )
         return (
             Va,
             Vb,
@@ -823,10 +835,11 @@ def _reclamm_scan_step_with_fees_and_revenue(
             active_target_ratio,
             active_start_step,
             active_end_step,
-            active_enabled,
+            retained_active_enabled,
         )
 
-    schedule_active = jnp.logical_or(event_has, active_enabled)
+    active_not_expired = jnp.logical_and(active_enabled, step_idx <= active_end_step)
+    schedule_active = jnp.logical_or(event_has, active_not_expired)
     (
         Va,
         Vb,
