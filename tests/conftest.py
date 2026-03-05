@@ -25,6 +25,14 @@ TEST_DATA_DIR = Path(__file__).parent / "data"
 # Configure JAX for testing - enable float64 for numerical precision
 config.update("jax_enable_x64", True)
 
+# Pin the original (non-partitionable) threefry PRNG split algorithm.
+# JAX 0.6 changed the default to True, which produces different subkeys from
+# jax.random.split for the same seed.  Training is stochastic (batch sampling
+# via random.choice), so different subkeys → different batches → different
+# training trajectories → pinned objective values no longer match.
+# This only affects tests; production code uses whatever JAX defaults to.
+config.update("jax_threefry_partitionable", False)
+
 
 @pytest.fixture(autouse=True)
 def configure_jax():
