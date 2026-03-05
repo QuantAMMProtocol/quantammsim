@@ -87,11 +87,7 @@ def _jax_ewma_at_infinity_via_scan(arr_in, lamb):
         The vector of gradients, same length / shape as ``arr_in``
 
     """
-    n = arr_in.shape[0]
-    n_grads = arr_in.shape[1]
-
     G_inf = 1.0 / (1.0 - lamb)
-    saturated_b = lamb / ((1 - lamb) ** 3)
     # scan_fn = Partial(_jax_gradient_scan_function, {'G_inf': G_inf, 'lamb': lamb})
     scan_fn = Partial(_jax_ewma_scan_function, G_inf=G_inf)
 
@@ -146,7 +142,6 @@ def make_ewma_kernel(lamb, max_memory_days, chunk_period):
     jnp.ndarray
         The EWMA kernel matrix, with each row corresponding to a different decay factor.
     """
-    memory = lamb_to_memory(lamb)
     kernel = lamb[:, jnp.newaxis] ** jnp.arange(
         int(max_memory_days * 1440 / chunk_period)
     )
@@ -164,7 +159,6 @@ def make_ewma_kernel(lamb, max_memory_days, chunk_period):
     ),
 )
 def make_a_kernel(lamb, max_memory_days, chunk_period):
-    memory = lamb_to_memory(lamb)
     kernel = lamb[:, jnp.newaxis] ** jnp.arange(
         int(max_memory_days * 1440 / chunk_period)
     )
@@ -182,7 +176,6 @@ def make_a_kernel(lamb, max_memory_days, chunk_period):
     ),
 )
 def make_cov_kernel(lamb, max_memory_days, chunk_period):
-    memory = lamb_to_memory(lamb)
     kernel = lamb[:, jnp.newaxis] ** jnp.arange(
         int(max_memory_days * 1440 / chunk_period)
     )
@@ -364,8 +357,8 @@ def _jax_covariance_at_infinity_via_conv(arr_in, ewma, kernel, lamb):
 
     outer = jnp.einsum("...i,...j->...ij", diff_old, diff_new)
     a = conv_vmap(outer, kernel)
-    cov = a[: outer.shape[0]] * (1 - lamb)
-    return jnp.concatenate([jnp.zeros((1, n, n), dtype=arr_in.dtype), cov], axis=0)
+    cov = a[: len(outer)] * (1 - lamb)
+    return jnp.concatenate([jnp.zeros((1, n, n), dtype=jnp.float64), cov], axis=0)
 
 
 # _jax_covariance_at_infinity_via_conv = vmap(
@@ -458,7 +451,6 @@ def _jax_gradients_at_infinity_via_scan(arr_in, lamb, carry_list_init=None):
         The vector of gradients, same length / shape as ``arr_in``
 
     """
-    n = arr_in.shape[0]
     n_grads = arr_in.shape[1]
 
     G_inf = 1.0 / (1.0 - lamb)
@@ -499,7 +491,6 @@ def _jax_gradients_at_infinity_via_scan_with_readout(arr_in, lamb):
         of which is a vector, same length / shape as ``arr_in``
 
     """
-    n = arr_in.shape[0]
     n_grads = arr_in.shape[1]
 
     G_inf = 1.0 / (1.0 - lamb)
@@ -543,7 +534,6 @@ def _jax_gradients_at_infinity_via_scan_with_alt_ewma(arr_in, lamb, alt_lamb):
         The vector of gradients, same length / shape as ``arr_in``
 
     """
-    n = arr_in.shape[0]
     n_grads = arr_in.shape[1]
 
     G_inf = 1.0 / (1.0 - lamb)
@@ -586,7 +576,6 @@ def _jax_gradients_at_infinity_via_scan_alt1(arr_in, lamb):
         The vector of gradients, same length / shape as ``arr_in``
 
     """
-    n = arr_in.shape[0]
     n_grads = arr_in.shape[1]
 
     G_inf = 1.0 / (1.0 - lamb)
@@ -677,7 +666,6 @@ def _jax_covariance_matrix_at_infinity_via_scan(arr_in, lamb):
         The series of covariance matrices, same length as ``arr_in``
 
     """
-    n = arr_in.shape[0]
     dim = arr_in.shape[1]
     # covariance = np.empty(
     #     (
@@ -736,7 +724,6 @@ def _jax_variance_at_infinity_via_scan(arr_in, lamb):
     jnp.ndarray
         Variance estimates of shape (time, features)
     """
-    n = arr_in.shape[0]
     n_features = arr_in.shape[1]
 
     G_inf = 1.0 / (1.0 - lamb)

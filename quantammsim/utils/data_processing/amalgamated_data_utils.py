@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime
 from pathlib import Path
 from quantammsim.utils.data_processing.binance_data_utils import plot_exchange_data
 

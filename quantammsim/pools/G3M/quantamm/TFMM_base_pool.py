@@ -2,11 +2,12 @@
 from jax import config
 
 from jax import default_backend
+from jax import devices
 
 DEFAULT_BACKEND = default_backend()
 
 import jax.numpy as jnp
-from jax import jit, vmap
+from jax import jit, vmap, device_put
 from jax.lax import stop_gradient, dynamic_slice, scan, fori_loop
 from jax.tree_util import Partial
 
@@ -22,8 +23,6 @@ from quantammsim.pools.G3M.quantamm.weight_calculations.fine_weights import (
     _jax_calc_coarse_weight_scan_function,
     calc_coarse_weight_output_from_weight_changes,
     calc_coarse_weight_output_from_weights,
-    scale_diff,
-    ste,
 )
 from quantammsim.pools.G3M.quantamm.weight_calculations.linear_interpolation import (
     _jax_calc_linear_interpolation_block,
@@ -176,6 +175,7 @@ class TFMMBasePool(AbstractPool):
                 arb_fees=run_fingerprint["arb_fees"],
                 all_sig_variations=jnp.array(run_fingerprint["all_sig_variations"]),
                 noise_trader_ratio=run_fingerprint["noise_trader_ratio"],
+                protocol_fee_split=run_fingerprint.get("protocol_fee_split", 0.0),
             )
         else:
             reserves = jnp.broadcast_to(
@@ -422,6 +422,7 @@ class TFMMBasePool(AbstractPool):
         # if we are doing trades, the trades array must be of the same length as the other arrays
         if run_fingerprint["do_trades"]:
             assert trade_array.shape[0] == max_len
+        protocol_fee_split = run_fingerprint.get("protocol_fee_split", 0.0)
         reserves = _jax_calc_quantAMM_reserves_with_dynamic_inputs(
             initial_reserves,
             arb_acted_upon_weights,
@@ -435,6 +436,7 @@ class TFMMBasePool(AbstractPool):
             run_fingerprint["do_arb"],
             run_fingerprint["noise_trader_ratio"],
             lp_supply_array_broadcast,
+            protocol_fee_split=protocol_fee_split,
         )
         return reserves
 
@@ -611,7 +613,6 @@ class TFMMBasePool(AbstractPool):
             Raw weight outputs with same shape and values as calculate_rule_outputs
         """
         chunkwise_price_values = prices[:: run_fingerprint["chunk_period"]]
-        n_assets = chunkwise_price_values.shape[1]
 
         # Initialize carry from first price
         initial_carry = self.get_initial_rule_state(
@@ -1265,8 +1266,6 @@ class TFMMBasePool(AbstractPool):
         # if the chunk period is not a divisor of bout_length, we need to pad the rule_outputs.
         # this can require more data to be available, potentially beyond the end of the bout.
         raw_weight_additional_offset = jnp.where(bout_length % chunk_period != 0, 1, 0).astype("int64")
-        from jax.lax import slice as jax_slice
-        alt_slice = jax_slice(rule_outputs, start_index_coarse, int((len(prices)/chunk_period), n_assets))
 
         rule_outputs = dynamic_slice(
             rule_outputs,
@@ -1443,7 +1442,6 @@ class TFMMBasePool(AbstractPool):
         for urp in update_rule_parameters:
             if urp.name == "memory_days":
                 logit_lamb_vals = []
-                memory_days_values = urp.value
                 for tokenValue in urp.value:
                     initial_lamb = memory_days_to_lamb(tokenValue, chunk_period)
                     logit_lamb = np.log(initial_lamb / (1.0 - initial_lamb))
@@ -1543,7 +1541,6 @@ class TFMMBasePool(AbstractPool):
         -------
             jnp.ndarray: Calculated weights for each asset in the pool.
         """
-        n_assets = prices.shape[1]
         local_fingerprint = {
             "chunk_period": 1,
             "weight_interpolation_period": 1,
@@ -1571,4 +1568,4 @@ class TFMMBasePool(AbstractPool):
             False,
         )
 
-        return weights
+        return target_weights_cpu

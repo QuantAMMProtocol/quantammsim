@@ -52,9 +52,9 @@ def convert_simulation_timeseries_to_run_metric(
         for i in range(len(timeseries)):
             if (
                 "daily" in timeSeriesName.lower()
-                and not "per week" in timeSeriesName.lower()
-                and not "per month" in timeSeriesName.lower()
-                and not "per year" in timeSeriesName.lower()
+                and "per week" not in timeSeriesName.lower()
+                and "per month" not in timeSeriesName.lower()
+                and "per year" not in timeSeriesName.lower()
             ):
                 timeseries[i]["date"] = currentUnix + (i * 86400)
             elif "week" in timeSeriesName.lower():
@@ -124,9 +124,9 @@ def convert_return_analysis_to_run_metric(return_analysis, rf_name, startDateStr
                     )
                 else:
                     metric_value_float = return_analysis[key][risk_metric]
-                    if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
+                    if isinstance(metric_value_float, np.float64) and not np.isnan(metric_value_float):
                         metric_value_float = return_analysis[key][risk_metric].item()
-                    if type(metric_value_float) == np.float64 and np.isnan(metric_value_float):
+                    if isinstance(metric_value_float, np.float64) and np.isnan(metric_value_float):
                         metric_value_float = None
                     run_metrics.append(
                         SimulationRunMetric(
@@ -152,9 +152,9 @@ def convert_return_analysis_to_run_metric(return_analysis, rf_name, startDateStr
                     )
                 else:
                     metric_value_float = return_analysis[key][drawdown_metric]
-                    if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
+                    if isinstance(metric_value_float, np.float64) and not np.isnan(metric_value_float):
                         metric_value_float = return_analysis[key][drawdown_metric].item()
-                    if type(metric_value_float) == np.float64 and np.isnan(metric_value_float):
+                    if isinstance(metric_value_float, np.float64) and np.isnan(metric_value_float):
                             metric_value_float = None
                     run_metrics.append(
                         SimulationRunMetric(
@@ -167,9 +167,9 @@ def convert_return_analysis_to_run_metric(return_analysis, rf_name, startDateStr
                     )
         else:
             metric_value_float = return_analysis[key]
-            if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
+            if isinstance(metric_value_float, np.float64) and not np.isnan(metric_value_float):
                 metric_value_float = return_analysis[key].item()
-            if type(metric_value_float) == np.float64 and np.isnan(metric_value_float):
+            if isinstance(metric_value_float, np.float64) and np.isnan(metric_value_float):
                 metric_value_float = None
             run_metrics.append(
                 SimulationRunMetric(rf_name, key, metric_value_float, "", "Daily")
@@ -223,10 +223,10 @@ def convert_benchmark_analysis_to_run_metric(
                         )
                     else:
                         metric_value_float = element["risk_metrics"][risk_metric]
-                        if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):                            
+                        if isinstance(metric_value_float, np.float64) and not np.isnan(metric_value_float):                            
                             metric_value_float = element["risk_metrics"][risk_metric].item()
 
-                        if type(metric_value_float) == np.float64 and np.isnan(metric_value_float):
+                        if isinstance(metric_value_float, np.float64) and np.isnan(metric_value_float):
                             metric_value_float = None
 
                         run_metrics.append(
@@ -252,9 +252,9 @@ def convert_benchmark_analysis_to_run_metric(
                     else:
                         metric_value_float = element["capture_ratios"][capture_ratio]
 
-                        if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
+                        if isinstance(metric_value_float, np.float64) and not np.isnan(metric_value_float):
                             metric_value_float = element["capture_ratios"][capture_ratio].item()
-                        if type(metric_value_float) == np.float64 and np.isnan(metric_value_float):
+                        if isinstance(metric_value_float, np.float64) and np.isnan(metric_value_float):
                             metric_value_float = None
 
                         run_metrics.append(
@@ -276,9 +276,9 @@ def convert_benchmark_analysis_to_run_metric(
                     )
                 else:
                     metric_value_float = element[key]
-                    if type(metric_value_float) == np.float64 and not np.isnan(metric_value_float):
+                    if isinstance(metric_value_float, np.float64) and not np.isnan(metric_value_float):
                         metric_value_float = element[key].item()
-                    if type(metric_value_float) == np.float64 and np.isnan(metric_value_float):
+                    if isinstance(metric_value_float, np.float64) and np.isnan(metric_value_float):
                             metric_value_float = None    
                     run_metrics.append(
                         SimulationRunMetric(

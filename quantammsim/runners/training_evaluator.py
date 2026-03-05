@@ -81,10 +81,9 @@ import jax.numpy as jnp
 from jax import jit
 from jax.tree_util import Partial
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Any, Callable, Union, Generator
+from typing import List, Dict, Tuple, Optional, Any, Callable, Generator
 from copy import deepcopy
 from datetime import datetime
-from functools import partial
 
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
 from quantammsim.core_simulator.param_utils import recursive_default_set
@@ -719,12 +718,7 @@ class RandomBaselineWrapper(TrainerWrapper):
         test_metrics : dict
             Metric dict for the test window.
         """
-        from jax import jit
-        from functools import partial as Partial
-        from quantammsim.core_simulator.forward_pass import forward_pass_nograd
-        from quantammsim.runners.jax_runner_utils import Hashabledict, create_static_dict
-        from quantammsim.runners.jax_runners import get_sig_variations
-        from quantammsim.utils.post_train_analysis import calculate_period_metrics, calculate_continuous_test_metrics
+        from quantammsim.utils.post_train_analysis import calculate_continuous_test_metrics
 
         all_sig_variations = get_sig_variations(n_assets)
 
@@ -1526,7 +1520,7 @@ class TrainingEvaluator:
             if result.adjusted_mean_oos_sharpe is not None:
                 print(f"Adjusted Sharpe:  {result.adjusted_mean_oos_sharpe:.4f}")
 
-        print(f"\n--- Verdict ---")
+        print("\n--- Verdict ---")
         print(f"Effective: {'YES' if result.is_effective else 'NO'}")
         for reason in result.effectiveness_reasons:
             print(f"  • {reason}")

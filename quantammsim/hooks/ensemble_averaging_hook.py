@@ -53,12 +53,10 @@ Usage::
     run_fingerprint["ensemble_init_scale"] = 0.5     # Spread scale
 """
 from typing import Dict, Any, Optional, Tuple
-import numpy as np
 import jax.numpy as jnp
 from jax import vmap
 
-from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
-from quantammsim.utils.sampling import generate_ensemble_samples, generate_param_space_samples
+from quantammsim.utils.sampling import generate_param_space_samples
 
 
 class EnsembleAveragingHook:

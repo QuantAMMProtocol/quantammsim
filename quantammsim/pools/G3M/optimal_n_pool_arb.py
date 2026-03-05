@@ -9,7 +9,6 @@ inside the simulation scan loop.
 """
 
 import numpy as np
-from itertools import product
 
 from functools import partial
 
