@@ -1011,10 +1011,7 @@ def forward_pass(
         and static_dict["arb_frequency"] == 1
         and static_dict.get("turnover_penalty", 0.0) == 0.0
         and static_dict.get("price_noise_sigma", 0.0) == 0.0
-        and all(
-            ele is None
-            for ele in [fees_array, gas_cost_array, arb_fees_array, trades_array]
-        )
+        and dynamic_inputs is None
         and 1440 % static_dict["chunk_period"] == 0  # chunk_period divides metric_period
         and not pool._rule_outputs_are_weights  # only delta-based pools validated
         and static_dict["bout_length"] > 1440 * 2  # need ≥2 metric periods
