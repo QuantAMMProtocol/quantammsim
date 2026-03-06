@@ -1,11 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
+from functools import partial
 import numpy as np
 
 import jax.numpy as jnp
 from jax.nn import softmax
-from jax.lax import stop_gradient
-from jax import tree_util
+from jax.lax import stop_gradient, dynamic_slice
+from jax import tree_util, jit, vmap
 
 from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
 
@@ -93,7 +94,11 @@ class AbstractPool(ABC):
         run_fingerprint: Dict[str, Any],
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
-        dynamic_inputs: Any,
+        fees_array: jnp.ndarray,
+        arb_thresh_array: jnp.ndarray,
+        arb_fees_array: jnp.ndarray,
+        trade_array: jnp.ndarray,
+        lp_supply_array: jnp.ndarray = None,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         pass
@@ -277,6 +282,99 @@ class AbstractPool(ABC):
             if key != "subsidary_params":
                 params[key] = jnp.array(params[key])
         return params
+
+    @partial(jit, static_argnums=(2, 3))
+    def calculate_volatility_array(self, prices, run_fingerprint, subsample_freq=5):
+        """Annualised daily realised volatility broadcast to minute-level array.
+
+        Pure-JAX implementation (vmap + dynamic_slice) — JIT-compatible and
+        callable from within traced contexts (e.g. forward_pass).
+
+        Parameters
+        ----------
+        prices : jnp.ndarray, shape (T, 2)
+            Minute-level prices for two tokens.
+        run_fingerprint : dict
+            Must contain ``tokens`` and ``numeraire`` for ordering.
+        subsample_freq : int
+            Subsample within each day to reduce microstructure noise.
+
+        Returns
+        -------
+        jnp.ndarray, shape (T,)
+            Annualised volatility, constant within each day.
+        """
+        ordered_prices, needs_swap = self._handle_numeraire_ordering(
+            prices, run_fingerprint,
+        )
+        asset_prices = ordered_prices[:, 0] / ordered_prices[:, 1]
+        n_minutes = len(asset_prices)
+
+        # Guard: need at least one full day for vmap + dynamic_slice
+        if n_minutes < 1440:
+            return jnp.full(n_minutes, 0.1) * jnp.sqrt(365.0)
+
+        n_days = n_minutes // 1440
+
+        def calculate_daily_volatility(day_idx):
+            start_idx = day_idx * 1440
+            window_prices = dynamic_slice(asset_prices, [start_idx], [1440])
+            subsampled_prices = window_prices[::subsample_freq]
+            log_prices = jnp.log(jnp.maximum(subsampled_prices, 1e-8))
+            returns = jnp.diff(log_prices)
+            num_nonzero_returns = jnp.sum(returns != 0)
+            total_returns = len(returns)
+            adjusted_variance = (
+                num_nonzero_returns * jnp.var(returns) / total_returns
+            )
+            dt = subsample_freq / 1440
+            vol = jnp.sqrt(adjusted_variance) / jnp.sqrt(dt)
+            return vol
+
+        daily_volatilities = vmap(calculate_daily_volatility)(jnp.arange(n_days))
+        volatility_array = jnp.repeat(daily_volatilities, 1440)
+
+        remaining_minutes = n_minutes - len(volatility_array)
+        if remaining_minutes > 0:
+            last_vol = (
+                daily_volatilities[-1] if len(daily_volatilities) > 0 else 0.1
+            )
+            volatility_array = jnp.concatenate(
+                [volatility_array, jnp.full(remaining_minutes, last_vol)]
+            )
+
+        return volatility_array * jnp.sqrt(365.0)
+
+    @partial(jit, static_argnums=(2,))
+    def _handle_numeraire_ordering(
+        self,
+        prices: jnp.ndarray,
+        run_fingerprint: Dict[str, Any],
+    ) -> Tuple[jnp.ndarray, bool]:
+        """Reorder prices so numeraire token is in second position.
+
+        Parameters
+        ----------
+        prices : jnp.ndarray, shape (..., 2)
+            Price array with two tokens.
+        run_fingerprint : dict
+            Must contain ``tokens`` (sorted) and ``numeraire``.
+
+        Returns
+        -------
+        (ordered_prices, needs_swap) : (jnp.ndarray, bool)
+        """
+        tokens = sorted(run_fingerprint["tokens"])
+        numeraire = run_fingerprint["numeraire"]
+        if numeraire is None or numeraire not in tokens:
+            numeraire = tokens[-1]
+        needs_swap = tokens.index(numeraire) == 0
+
+        if needs_swap:
+            ordered_prices = prices[..., ::-1]
+        else:
+            ordered_prices = prices
+        return ordered_prices, needs_swap
 
     def _tree_flatten(self):
         children = ()
