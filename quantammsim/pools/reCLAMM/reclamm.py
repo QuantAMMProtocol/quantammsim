@@ -201,7 +201,7 @@ class ReClammPool(AbstractPool):
     @staticmethod
     def _resolve_ste_temperature(run_fingerprint):
         """Resolve STE gate temperature for differentiable reCLAMM transitions."""
-        return run_fingerprint.get("ste_temperature", 10.0)
+        return run_fingerprint.get("ste_temperature")
 
     @partial(jit, static_argnums=(2,))
     def calculate_reserves_with_fees(
