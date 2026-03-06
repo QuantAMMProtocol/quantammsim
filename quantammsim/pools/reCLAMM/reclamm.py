@@ -10,7 +10,7 @@ from jax import config
 config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
-from jax import jit, tree_util
+from jax import jit, tree_util, vmap
 from jax.lax import dynamic_slice
 from functools import partial
 from typing import Dict, Any, Optional, NamedTuple
@@ -32,6 +32,73 @@ from quantammsim.pools.reCLAMM.reclamm_reserves import (
 
 # Solidity constant: daily_price_shift_base = 1 - shift_exponent / DIVISOR
 SHIFT_EXPONENT_DIVISOR = 124649.0
+
+
+def _prepare_dynamic_array(arr, start_index, bout_length, arb_frequency, max_len):
+    """Slice and decimate a dynamic input array to match arb_prices shape."""
+    arr = jnp.asarray(arr)
+    if arr.ndim == 0:
+        return jnp.full((max_len,), arr, dtype=arr.dtype)
+    if arr.shape[0] <= 1:
+        return jnp.broadcast_to(arr, (max_len,) + arr.shape[1:])
+
+    start = (start_index[0],) + (0,) * (arr.ndim - 1)
+    slice_sizes = (bout_length - 1,) + arr.shape[1:]
+    sliced = dynamic_slice(arr, start, slice_sizes)
+    if arb_frequency != 1:
+        sliced = sliced[::arb_frequency]
+    return sliced
+
+
+def _align_prices_to_numeraire(prices, run_fingerprint):
+    """Ensure the numeraire token is in column 1 for ratio-volatility calc."""
+    tokens = run_fingerprint.get("tokens")
+    numeraire = run_fingerprint.get("numeraire")
+    if tokens is None or numeraire is None or len(tokens) != 2:
+        return prices
+
+    token_labels = [str(token).lower() for token in tokens]
+    numeraire_label = str(numeraire).lower()
+    if token_labels[0] == numeraire_label:
+        return prices[:, ::-1]
+    return prices
+
+
+def _calculate_annualized_ratio_volatility(
+    prices, run_fingerprint, subsample_freq=5,
+):
+    """Annualized daily realized volatility broadcast to minute-level array."""
+    ordered_prices = _align_prices_to_numeraire(prices, run_fingerprint)
+    asset_prices = ordered_prices[:, 0] / ordered_prices[:, 1]
+    n_minutes = asset_prices.shape[0]
+
+    if n_minutes < 1440:
+        return jnp.full((n_minutes,), 0.1 * jnp.sqrt(365.0), dtype=prices.dtype)
+
+    n_days = n_minutes // 1440
+
+    def calculate_daily_volatility(day_idx):
+        start_idx = day_idx * 1440
+        window_prices = dynamic_slice(asset_prices, (start_idx,), (1440,))
+        subsampled_prices = window_prices[::subsample_freq]
+        log_prices = jnp.log(jnp.maximum(subsampled_prices, 1e-8))
+        returns = jnp.diff(log_prices)
+        num_nonzero_returns = jnp.sum(returns != 0)
+        total_returns = jnp.maximum(returns.shape[0], 1)
+        adjusted_variance = num_nonzero_returns * jnp.var(returns) / total_returns
+        dt = subsample_freq / 1440
+        return jnp.sqrt(adjusted_variance) / jnp.sqrt(dt)
+
+    daily_volatilities = vmap(calculate_daily_volatility)(jnp.arange(n_days))
+    volatility_array = jnp.repeat(daily_volatilities, 1440)
+
+    remaining_minutes = n_minutes - volatility_array.shape[0]
+    if remaining_minutes > 0:
+        volatility_array = jnp.concatenate(
+            [volatility_array, jnp.full((remaining_minutes,), daily_volatilities[-1])]
+        )
+
+    return volatility_array * jnp.sqrt(365.0)
 
 
 class _PoolState(NamedTuple):
@@ -203,6 +270,48 @@ class ReClammPool(AbstractPool):
         """Resolve STE gate temperature for differentiable reCLAMM transitions."""
         return run_fingerprint.get("ste_temperature")
 
+    def _resolve_noise_inputs(
+        self,
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        start_index: jnp.ndarray,
+        arb_len: int,
+        lp_supply_array: Optional[jnp.ndarray] = None,
+    ):
+        """Prepare optional lp-supply and noise-model inputs for reserve scans."""
+        bout_length = run_fingerprint["bout_length"]
+        arb_freq = run_fingerprint["arb_frequency"]
+
+        lp_prepared = None
+        if lp_supply_array is not None:
+            lp_prepared = _prepare_dynamic_array(
+                lp_supply_array,
+                start_index=start_index,
+                bout_length=bout_length,
+                arb_frequency=arb_freq,
+                max_len=arb_len,
+            )
+
+        noise_model = run_fingerprint.get("noise_model", "ratio")
+        noise_params = run_fingerprint.get("reclamm_noise_params", None)
+        if noise_params is not None and type(noise_params) is not dict:
+            noise_params = dict(noise_params)
+
+        arb_vol = None
+        if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
+            volatility_array = _calculate_annualized_ratio_volatility(
+                prices, run_fingerprint
+            )
+            arb_vol = _prepare_dynamic_array(
+                volatility_array,
+                start_index=start_index,
+                bout_length=bout_length,
+                arb_frequency=arb_freq,
+                max_len=arb_len,
+            )
+
+        return lp_prepared, noise_model, noise_params, arb_vol
+
     @partial(jit, static_argnums=(2,))
     def calculate_reserves_with_fees(
         self,
@@ -211,9 +320,17 @@ class ReClammPool(AbstractPool):
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
+        lp_supply_array: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
         ste_temperature = self._resolve_ste_temperature(run_fingerprint)
+        lp_prepared, noise_model, noise_params, arb_vol = self._resolve_noise_inputs(
+            run_fingerprint,
+            prices,
+            start_index,
+            s.arb_prices.shape[0],
+            lp_supply_array=lp_supply_array,
+        )
 
         if run_fingerprint["do_arb"]:
             return _jax_calc_reclamm_reserves_with_fees(
@@ -232,6 +349,11 @@ class ReClammPool(AbstractPool):
                 centeredness_scaling=s.centeredness_scaling,
                 protocol_fee_split=run_fingerprint.get("protocol_fee_split", 0.0),
                 ste_temperature=ste_temperature,
+                noise_trader_ratio=run_fingerprint.get("noise_trader_ratio", 0.0),
+                lp_supply_array=lp_prepared,
+                noise_model=noise_model,
+                noise_params=noise_params,
+                volatility_array=arb_vol,
             )
         return jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape)
 
@@ -243,6 +365,7 @@ class ReClammPool(AbstractPool):
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
+        lp_supply_array: Optional[jnp.ndarray] = None,
     ):
         """Calculate reserves and LP fee revenue with fees.
 
@@ -254,6 +377,13 @@ class ReClammPool(AbstractPool):
         """
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
         ste_temperature = self._resolve_ste_temperature(run_fingerprint)
+        lp_prepared, noise_model, noise_params, arb_vol = self._resolve_noise_inputs(
+            run_fingerprint,
+            prices,
+            start_index,
+            s.arb_prices.shape[0],
+            lp_supply_array=lp_supply_array,
+        )
 
         if run_fingerprint["do_arb"]:
             return _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
@@ -272,6 +402,11 @@ class ReClammPool(AbstractPool):
                 centeredness_scaling=s.centeredness_scaling,
                 protocol_fee_split=run_fingerprint.get("protocol_fee_split", 0.0),
                 ste_temperature=ste_temperature,
+                noise_trader_ratio=run_fingerprint.get("noise_trader_ratio", 0.0),
+                lp_supply_array=lp_prepared,
+                noise_model=noise_model,
+                noise_params=noise_params,
+                volatility_array=arb_vol,
             )
         return (
             jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape),
@@ -298,10 +433,7 @@ class ReClammPool(AbstractPool):
         """
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
         ste_temperature = self._resolve_ste_temperature(run_fingerprint)
-        bout_length = run_fingerprint["bout_length"]
-        max_len = bout_length - 1
-        if run_fingerprint["arb_frequency"] != 1:
-            max_len = max_len // run_fingerprint["arb_frequency"]
+        max_len = s.arb_prices.shape[0]
         materialized_inputs = materialize_dynamic_inputs(
             dynamic_inputs,
             run_fingerprint.get("dynamic_input_flags"),
@@ -309,6 +441,13 @@ class ReClammPool(AbstractPool):
             scan_len=max_len,
             do_trades=False,
             dtype=s.arb_prices.dtype,
+        )
+        _, noise_model, noise_params, arb_vol = self._resolve_noise_inputs(
+            run_fingerprint,
+            prices,
+            start_index,
+            s.arb_prices.shape[0],
+            lp_supply_array=None,
         )
 
         return _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
@@ -321,6 +460,7 @@ class ReClammPool(AbstractPool):
             arb_thresh=materialized_inputs.gas_cost,
             arb_fees=materialized_inputs.arb_fees,
             price_ratio_updates=materialized_inputs.reclamm_price_ratio_updates,
+            lp_supply_array=materialized_inputs.lp_supply,
             all_sig_variations=jnp.array(
                 run_fingerprint["all_sig_variations"]
             ),
@@ -328,6 +468,10 @@ class ReClammPool(AbstractPool):
             centeredness_scaling=s.centeredness_scaling,
             protocol_fee_split=run_fingerprint.get("protocol_fee_split", 0.0),
             ste_temperature=ste_temperature,
+            noise_trader_ratio=run_fingerprint.get("noise_trader_ratio", 0.0),
+            noise_model=noise_model,
+            noise_params=noise_params,
+            volatility_array=arb_vol,
         )
 
     @partial(jit, static_argnums=(2,))
@@ -338,10 +482,20 @@ class ReClammPool(AbstractPool):
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
+        lp_supply_array: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         """Protected zero-fee implementation for hooks and weight calculation."""
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
         ste_temperature = self._resolve_ste_temperature(run_fingerprint)
+        lp_prepared = None
+        if lp_supply_array is not None:
+            lp_prepared = _prepare_dynamic_array(
+                lp_supply_array,
+                start_index=start_index,
+                bout_length=run_fingerprint["bout_length"],
+                arb_frequency=run_fingerprint["arb_frequency"],
+                max_len=s.arb_prices.shape[0],
+            )
 
         if run_fingerprint["do_arb"]:
             return _jax_calc_reclamm_reserves_zero_fees(
@@ -353,6 +507,7 @@ class ReClammPool(AbstractPool):
                 arc_length_speed=s.arc_length_speed,
                 centeredness_scaling=s.centeredness_scaling,
                 ste_temperature=ste_temperature,
+                lp_supply_array=lp_prepared,
             )
         return jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape)
 
@@ -363,9 +518,15 @@ class ReClammPool(AbstractPool):
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
         additional_oracle_input: Optional[jnp.ndarray] = None,
+        lp_supply_array: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         return self._calculate_reserves_zero_fees(
-            params, run_fingerprint, prices, start_index, additional_oracle_input
+            params,
+            run_fingerprint,
+            prices,
+            start_index,
+            additional_oracle_input,
+            lp_supply_array,
         )
 
     @partial(jit, static_argnums=(2,))
@@ -380,10 +541,7 @@ class ReClammPool(AbstractPool):
     ) -> jnp.ndarray:
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
         ste_temperature = self._resolve_ste_temperature(run_fingerprint)
-        bout_length = run_fingerprint["bout_length"]
-        max_len = bout_length - 1
-        if run_fingerprint["arb_frequency"] != 1:
-            max_len = max_len // run_fingerprint["arb_frequency"]
+        max_len = s.arb_prices.shape[0]
         materialized_inputs = materialize_dynamic_inputs(
             dynamic_inputs,
             run_fingerprint.get("dynamic_input_flags"),
@@ -391,6 +549,13 @@ class ReClammPool(AbstractPool):
             scan_len=max_len,
             do_trades=False,
             dtype=s.arb_prices.dtype,
+        )
+        _, noise_model, noise_params, arb_vol = self._resolve_noise_inputs(
+            run_fingerprint,
+            prices,
+            start_index,
+            s.arb_prices.shape[0],
+            lp_supply_array=None,
         )
 
         return _jax_calc_reclamm_reserves_with_dynamic_inputs(
@@ -403,6 +568,7 @@ class ReClammPool(AbstractPool):
             arb_thresh=materialized_inputs.gas_cost,
             arb_fees=materialized_inputs.arb_fees,
             price_ratio_updates=materialized_inputs.reclamm_price_ratio_updates,
+            lp_supply_array=materialized_inputs.lp_supply,
             all_sig_variations=jnp.array(
                 run_fingerprint["all_sig_variations"]
             ),
@@ -410,6 +576,10 @@ class ReClammPool(AbstractPool):
             centeredness_scaling=s.centeredness_scaling,
             protocol_fee_split=run_fingerprint.get("protocol_fee_split", 0.0),
             ste_temperature=ste_temperature,
+            noise_trader_ratio=run_fingerprint.get("noise_trader_ratio", 0.0),
+            noise_model=noise_model,
+            noise_params=noise_params,
+            volatility_array=arb_vol,
         )
 
     def init_base_parameters(
