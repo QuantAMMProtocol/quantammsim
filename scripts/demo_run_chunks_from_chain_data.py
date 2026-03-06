@@ -28,7 +28,6 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 import matplotlib as mpl
-from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
 import matplotlib.pyplot as plt
 import jax.numpy as jnp
 
@@ -475,12 +474,10 @@ def run_windows(data_dir: str, out_dir: Path, dump_diagnostics: bool, debug_wind
             run_fingerprint=fingerprint,
             coarse_weights=cw_window,
             params=params,
-            dynamic_input_frames=DynamicInputFrames(
-                fees=scraped["fees_df"],
-                gas_cost=scraped["gas_cost_df"],
-                lp_supply=scraped["lp_supply_df"],
-                arb_fees=scraped["arb_fees_df"],
-            ),
+            fees_df=scraped["fees_df"],
+            gas_cost_df=scraped["gas_cost_df"],
+            lp_supply_df=scraped["lp_supply_df"],
+            arb_fees_df=scraped["arb_fees_df"],
         )
 
         # ---------------- Correct, window-aligned plotting block (time-aware + plain y) ----------------

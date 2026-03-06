@@ -38,6 +38,17 @@ def main():
     parser.add_argument("--interpolation", default="geometric",
                         choices=["geometric", "constant_arc_length"])
     parser.add_argument("--centeredness-scaling", action="store_true")
+    parser.add_argument("--noise-trader-ratio", type=float, default=0.0)
+    parser.add_argument("--start-date", default="2024-06-01 00:00:00")
+    parser.add_argument("--end-date", default="2025-01-01 00:00:00",
+                        help="End of training / start of test")
+    parser.add_argument("--end-test-date", default="2025-06-01 00:00:00")
+    parser.add_argument("--bout-offset", type=int, default=None,
+                        help="bout_offset in minutes (default: 10080 = 7 days)")
+    parser.add_argument("--val-fraction", type=float, default=None,
+                        help="Validation holdout fraction (default: 0.2, use 0 to disable)")
+    parser.add_argument("--overfitting-penalty", type=float, default=None,
+                        help="Overfitting penalty weight (default: 0.2)")
     args = parser.parse_args()
 
     learn_speed = args.interpolation == "constant_arc_length"
@@ -48,29 +59,33 @@ def main():
     fp = {
         "rule": "reclamm",
         "tokens": ["AAVE", "ETH"],
-        "startDateString": "2024-06-01 00:00:00",
-        "endDateString": "2025-01-01 00:00:00",
-        "endTestDateString": "2025-06-01 00:00:00",
+        "startDateString": args.start_date,
+        "endDateString": args.end_date,
+        "endTestDateString": args.end_test_date,
         "initial_pool_value": 1_000_000.0,
         "do_arb": True,
         "fees": args.fees,
         "gas_cost": args.gas_cost,
         "arb_fees": 0.0,
         "protocol_fee_split": 0.5,
+        "noise_trader_ratio": args.noise_trader_ratio,
         "return_val": args.objective,
         "reclamm_interpolation_method": args.interpolation,
         "reclamm_centeredness_scaling": args.centeredness_scaling,
         "reclamm_learn_arc_length_speed": learn_speed,
         "reclamm_use_shift_exponent": True,
+        **({"bout_offset": args.bout_offset} if args.bout_offset is not None else {}),
         "optimisation_settings": {
             "method": "optuna",
             "n_parameter_sets": 1,
+            **({"val_fraction": args.val_fraction} if args.val_fraction is not None else {}),
             "optuna_settings": {
                 "make_scalar": True,
                 "expand_around": False,
                 "n_trials": args.n_trials,
                 "multi_objective": False,
                 "parameter_config": param_config,
+                **({"overfitting_penalty": args.overfitting_penalty} if args.overfitting_penalty is not None else {}),
             },
         },
     }
