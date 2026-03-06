@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 
+from tests.conftest import TEST_DATA_DIR
 from quantammsim.pools.reCLAMM.reclamm_reserves import (
     compute_invariant,
     compute_price_ratio,

@@ -10,6 +10,7 @@ Tests cover:
 """
 import pytest
 import numpy as np
+import pandas as pd
 import jax.numpy as jnp
 import jax
 from copy import deepcopy
@@ -18,6 +19,7 @@ from unittest.mock import patch, MagicMock
 from quantammsim.runners.jax_runners import (
     train_on_historic_data,
     do_run_on_historic_data,
+    do_run_on_historic_data_with_provided_coarse_weights,
 )
 from quantammsim.runners.jax_runner_utils import (
     NestedHashabledict,
@@ -31,8 +33,10 @@ from quantammsim.runners.jax_runner_utils import (
     create_static_dict,
 )
 from quantammsim.runners.default_run_fingerprint import run_fingerprint_defaults
+from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
 from quantammsim.core_simulator.param_utils import recursive_default_set, check_run_fingerprint
 from quantammsim.pools.creator import create_pool
+from quantammsim.utils.data_processing.historic_data_utils import get_data_dict
 from tests.conftest import TEST_DATA_DIR
 
 
@@ -388,6 +392,219 @@ class TestDoRunOnHistoricData:
 
         assert isinstance(results, list)
         assert len(results) == 2
+
+    def test_dynamic_trades_change_balancer_reserves(self, defaulted_run_fingerprint):
+        """Dynamic trade input should change the reserve path in the runner."""
+        fp = deepcopy(defaulted_run_fingerprint)
+        fp["rule"] = "balancer"
+        fp["do_arb"] = False
+        fp["fees"] = 0.0
+        fp["gas_cost"] = 0.0
+        fp["arb_fees"] = 0.0
+        params = {"initial_weights_logits": jnp.array([0.0, 0.0])}
+
+        trade_unix = pd.Timestamp(fp["startDateString"]).value // 10**6
+        trades_df = pd.DataFrame(
+            {
+                "unix": [trade_unix],
+                "token_in": ["ETH"],
+                "token_out": ["USDC"],
+                "amount_in": [100.0],
+            }
+        )
+
+        result_without_trades = do_run_on_historic_data(
+            fp,
+            params=params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+        )
+        result_with_trades = do_run_on_historic_data(
+            fp,
+            params=params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+            dynamic_input_frames=DynamicInputFrames(trades=trades_df),
+        )
+
+        assert not np.allclose(
+            np.asarray(result_without_trades["reserves"]),
+            np.asarray(result_with_trades["reserves"]),
+        )
+        assert result_with_trades["reserves"][0, 0] > result_without_trades["reserves"][0, 0]
+        assert result_with_trades["reserves"][0, 1] < result_without_trades["reserves"][0, 1]
+
+    def test_dynamic_arb_fees_match_scalar_arb_fees(self, defaulted_run_fingerprint):
+        """Constant dynamic arb fees should match the scalar arb-fee path."""
+        fp = deepcopy(defaulted_run_fingerprint)
+        fp["rule"] = "balancer"
+        fp["fees"] = 0.003
+        fp["do_arb"] = True
+        params = {"initial_weights_logits": jnp.array([0.0, 0.0])}
+
+        arb_fee = 0.002
+        arb_fees_df = pd.DataFrame(
+            {
+                "unix": [pd.Timestamp(fp["startDateString"]).value // 10**6],
+                "arb_fees": [arb_fee],
+            }
+        )
+
+        result_scalar = do_run_on_historic_data(
+            fp,
+            params=params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+            arb_fees=arb_fee,
+        )
+        result_dynamic = do_run_on_historic_data(
+            fp,
+            params=params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+            dynamic_input_frames=DynamicInputFrames(arb_fees=arb_fees_df),
+        )
+
+        np.testing.assert_allclose(
+            np.asarray(result_dynamic["value"]),
+            np.asarray(result_scalar["value"]),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+
+    def test_dynamic_lp_supply_changes_momentum_runner_path(self, defaulted_run_fingerprint, sample_params):
+        """LP supply changes should affect the main momentum runner path."""
+        fp = deepcopy(defaulted_run_fingerprint)
+        fp["protocol_fee_split"] = 0.25
+
+        start_unix = pd.Timestamp(fp["startDateString"]).value // 10**6
+        midpoint_unix = start_unix + 3 * 1440 * 60 * 1000
+        constant_lp_supply_df = pd.DataFrame(
+            {
+                "unix": [start_unix],
+                "lp_supply": [1.0],
+            }
+        )
+        stepped_lp_supply_df = pd.DataFrame(
+            {
+                "unix": [start_unix, midpoint_unix],
+                "lp_supply": [1.0, 2.0],
+            }
+        )
+
+        result_without_lp_supply = do_run_on_historic_data(
+            fp,
+            params=sample_params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+        )
+        result_with_constant_lp_supply = do_run_on_historic_data(
+            fp,
+            params=sample_params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+            dynamic_input_frames=DynamicInputFrames(lp_supply=constant_lp_supply_df),
+        )
+        result_with_stepped_lp_supply = do_run_on_historic_data(
+            fp,
+            params=sample_params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+            dynamic_input_frames=DynamicInputFrames(lp_supply=stepped_lp_supply_df),
+        )
+
+        np.testing.assert_allclose(
+            np.asarray(result_with_constant_lp_supply["value"]),
+            np.asarray(result_without_lp_supply["value"]),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        assert not np.allclose(
+            np.asarray(result_with_stepped_lp_supply["reserves"][-1]),
+            np.asarray(result_without_lp_supply["reserves"][-1]),
+        )
+        assert float(result_with_stepped_lp_supply["final_value"]) != pytest.approx(
+            float(result_without_lp_supply["final_value"])
+        )
+
+    def test_provided_coarse_weights_respect_scalar_and_dynamic_gas(self, defaulted_run_fingerprint, sample_params):
+        """Provided-coarse-weight path should honor both scalar gas and dynamic gas arrays."""
+        fp = deepcopy(defaulted_run_fingerprint)
+        fp["protocol_fee_split"] = 0.0
+
+        data_dict = get_data_dict(
+            list_of_tickers=fp["tokens"],
+            run_fingerprint=fp,
+            data_kind=fp["optimisation_settings"]["training_data_kind"],
+            root=TEST_DATA_DIR,
+            max_memory_days=fp["max_memory_days"],
+            start_date_string=fp["startDateString"],
+            end_time_string=fp["endDateString"],
+            start_time_test_string=fp["endDateString"],
+            end_time_test_string=fp["endTestDateString"],
+            max_mc_version=fp["optimisation_settings"]["max_mc_version"],
+            do_test_period=False,
+        )
+
+        coarse_unix_values = (
+            pd.date_range(
+                start=pd.Timestamp(fp["startDateString"]),
+                end=pd.Timestamp(fp["endDateString"]),
+                freq=f"{fp['chunk_period']}min",
+            )
+            .astype(np.int64)
+            // 10**6
+        )
+        coarse_weights = {
+            "weights": jnp.tile(jnp.array([[0.5, 0.5]]), (len(coarse_unix_values), 1)),
+            "unix_values": jnp.asarray(coarse_unix_values),
+        }
+
+        params = deepcopy(sample_params)
+        initial_prices = jnp.asarray(data_dict["prices"][data_dict["start_idx"]], dtype=jnp.float64)
+        params["initial_reserves"] = (jnp.array([0.5, 0.5]) * fp["initial_pool_value"]) / initial_prices
+
+        gas_cost = 50.0
+        gas_cost_df = pd.DataFrame(
+            {
+                "unix": [pd.Timestamp(fp["startDateString"]).value // 10**6],
+                "trade_gas_cost_usd": [gas_cost],
+            }
+        )
+
+        result_no_gas = do_run_on_historic_data_with_provided_coarse_weights(
+            fp,
+            coarse_weights=coarse_weights,
+            params=params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+        )
+        result_scalar_gas = do_run_on_historic_data_with_provided_coarse_weights(
+            fp,
+            coarse_weights=coarse_weights,
+            params=params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+            gas_cost=gas_cost,
+        )
+        result_dynamic_gas = do_run_on_historic_data_with_provided_coarse_weights(
+            fp,
+            coarse_weights=coarse_weights,
+            params=params,
+            root=TEST_DATA_DIR,
+            verbose=False,
+            dynamic_input_frames=DynamicInputFrames(gas_cost=gas_cost_df),
+        )
+
+        assert float(result_scalar_gas["final_value"]) != pytest.approx(
+            float(result_no_gas["final_value"])
+        )
+        np.testing.assert_allclose(
+            np.asarray(result_dynamic_gas["value"]),
+            np.asarray(result_scalar_gas["value"]),
+            rtol=1e-6,
+            atol=1e-6,
+        )
 
 
 # ============================================================================

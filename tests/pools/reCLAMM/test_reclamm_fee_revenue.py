@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 
+from quantammsim.core_simulator.dynamic_inputs import DynamicInputArrays
 from quantammsim.pools.reCLAMM.reclamm_reserves import (
     initialise_reclamm_reserves,
     _jax_calc_reclamm_reserves_with_fees,
@@ -267,6 +268,7 @@ class TestPoolMethodWithFees:
     """pool.calculate_reserves_and_fee_revenue_with_fees returns correct tuple."""
 
     def test_pool_method_with_fees(self):
+        from quantammsim.core_simulator.dynamic_inputs import DynamicInputArrays
         from quantammsim.pools.creator import create_pool
         from quantammsim.runners.jax_runner_utils import Hashabledict
 
@@ -347,13 +349,20 @@ class TestPoolMethodWithDynamicInputs:
         fees_array = jnp.array([0.003])
         arb_thresh_array = jnp.array([0.0])
         arb_fees_array = jnp.array([0.0])
+        dynamic_inputs = DynamicInputArrays(
+            trades=jnp.zeros((1, 3)),
+            fees=fees_array,
+            gas_cost=arb_thresh_array,
+            arb_fees=arb_fees_array,
+            lp_supply=jnp.ones((1,)),
+        )
 
         reserves, fee_revenue = pool.calculate_reserves_and_fee_revenue_with_dynamic_inputs(
-            params, run_fingerprint, prices, start_index,
-            fees_array=fees_array,
-            arb_thresh_array=arb_thresh_array,
-            arb_fees_array=arb_fees_array,
-            trade_array=None,
+            params,
+            run_fingerprint,
+            prices,
+            start_index,
+            dynamic_inputs=dynamic_inputs,
         )
 
         assert reserves.shape == (n_steps, 2)

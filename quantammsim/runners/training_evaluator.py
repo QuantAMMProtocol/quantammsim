@@ -742,6 +742,7 @@ class RandomBaselineWrapper(TrainerWrapper):
 
         eval_fn = jit(Partial(
             forward_pass_nograd,
+            dynamic_inputs=None,
             prices=data_dict["prices"],
             static_dict=Hashabledict(static_dict),
             pool=pool,

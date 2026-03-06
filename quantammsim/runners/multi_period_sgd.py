@@ -430,6 +430,7 @@ def multi_period_sgd_training(
     # Create base forward pass
     base_forward_pass = Partial(
         forward_pass,
+        dynamic_inputs=None,
         prices=data_dict["prices"],
         static_dict=Hashabledict(static_dict),
         pool=pool,
@@ -506,6 +507,7 @@ def multi_period_sgd_training(
 
     partial_nograd = jit(Partial(
         forward_pass_nograd,
+        dynamic_inputs=None,
         prices=data_dict["prices"],
         static_dict=Hashabledict(static_dict),
         pool=pool,

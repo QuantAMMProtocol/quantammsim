@@ -16,6 +16,7 @@ from functools import partial
 from typing import Dict, Any, Optional, NamedTuple
 import numpy as np
 
+from quantammsim.core_simulator.dynamic_inputs import materialize_dynamic_inputs
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.pools.reCLAMM.reclamm_reserves import (
     initialise_reclamm_reserves,
@@ -275,11 +276,7 @@ class ReClammPool(AbstractPool):
         run_fingerprint: Dict[str, Any],
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
-        fees_array: jnp.ndarray,
-        arb_thresh_array: jnp.ndarray,
-        arb_fees_array: jnp.ndarray,
-        trade_array: jnp.ndarray,
-        lp_supply_array: jnp.ndarray = None,
+        dynamic_inputs,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ):
         """Calculate reserves and LP fee revenue with time-varying inputs.
@@ -291,20 +288,17 @@ class ReClammPool(AbstractPool):
             LP fee revenue per timestep in USD.
         """
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
-
         bout_length = run_fingerprint["bout_length"]
         max_len = bout_length - 1
         if run_fingerprint["arb_frequency"] != 1:
             max_len = max_len // run_fingerprint["arb_frequency"]
-
-        fees_array_broadcast = jnp.broadcast_to(
-            fees_array, (max_len,) + fees_array.shape[1:]
-        )
-        arb_thresh_array_broadcast = jnp.broadcast_to(
-            arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:]
-        )
-        arb_fees_array_broadcast = jnp.broadcast_to(
-            arb_fees_array, (max_len,) + arb_fees_array.shape[1:]
+        materialized_inputs = materialize_dynamic_inputs(
+            dynamic_inputs,
+            run_fingerprint.get("dynamic_input_flags"),
+            run_fingerprint,
+            scan_len=max_len,
+            do_trades=False,
+            dtype=s.arb_prices.dtype,
         )
 
         return _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
@@ -313,9 +307,9 @@ class ReClammPool(AbstractPool):
             s.centeredness_margin,
             s.daily_price_shift_base,
             s.seconds_per_step,
-            fees=fees_array_broadcast,
-            arb_thresh=arb_thresh_array_broadcast,
-            arb_fees=arb_fees_array_broadcast,
+            fees=materialized_inputs.fees,
+            arb_thresh=materialized_inputs.gas_cost,
+            arb_fees=materialized_inputs.arb_fees,
             all_sig_variations=jnp.array(
                 run_fingerprint["all_sig_variations"]
             ),
@@ -367,28 +361,21 @@ class ReClammPool(AbstractPool):
         run_fingerprint: Dict[str, Any],
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
-        fees_array: jnp.ndarray,
-        arb_thresh_array: jnp.ndarray,
-        arb_fees_array: jnp.ndarray,
-        trade_array: jnp.ndarray,
-        lp_supply_array: jnp.ndarray = None,
+        dynamic_inputs,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
-
         bout_length = run_fingerprint["bout_length"]
         max_len = bout_length - 1
         if run_fingerprint["arb_frequency"] != 1:
             max_len = max_len // run_fingerprint["arb_frequency"]
-
-        fees_array_broadcast = jnp.broadcast_to(
-            fees_array, (max_len,) + fees_array.shape[1:]
-        )
-        arb_thresh_array_broadcast = jnp.broadcast_to(
-            arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:]
-        )
-        arb_fees_array_broadcast = jnp.broadcast_to(
-            arb_fees_array, (max_len,) + arb_fees_array.shape[1:]
+        materialized_inputs = materialize_dynamic_inputs(
+            dynamic_inputs,
+            run_fingerprint.get("dynamic_input_flags"),
+            run_fingerprint,
+            scan_len=max_len,
+            do_trades=False,
+            dtype=s.arb_prices.dtype,
         )
 
         return _jax_calc_reclamm_reserves_with_dynamic_inputs(
@@ -397,9 +384,9 @@ class ReClammPool(AbstractPool):
             s.centeredness_margin,
             s.daily_price_shift_base,
             s.seconds_per_step,
-            fees=fees_array_broadcast,
-            arb_thresh=arb_thresh_array_broadcast,
-            arb_fees=arb_fees_array_broadcast,
+            fees=materialized_inputs.fees,
+            arb_thresh=materialized_inputs.gas_cost,
+            arb_fees=materialized_inputs.arb_fees,
             all_sig_variations=jnp.array(
                 run_fingerprint["all_sig_variations"]
             ),

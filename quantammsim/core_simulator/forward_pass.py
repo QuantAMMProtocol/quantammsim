@@ -53,9 +53,23 @@ from jax.lax import stop_gradient, dynamic_slice, associative_scan
 import numpy as np
 
 from functools import partial
+from quantammsim.core_simulator.dynamic_inputs import (
+    DynamicInputArrays,
+    default_dynamic_input_flags,
+    resolve_dynamic_input_flags,
+)
 
 np.seterr(all="raise")
 np.seterr(under="print")
+
+
+def _resolve_dynamic_inputs(dynamic_inputs, static_dict):
+    """Return the incoming bundle plus static dispatch flags."""
+    dynamic_input_flags = resolve_dynamic_input_flags(
+        dynamic_inputs,
+        static_dict.get("dynamic_input_flags"),
+    )
+    return dynamic_inputs, dynamic_input_flags
 
 
 def _apply_price_noise(prices, sigma, seed_int):
@@ -839,15 +853,12 @@ def _calculate_return_value(
     return return_metrics[return_val]()
 
 
-@partial(jit, static_argnums=(7, 8))
+@partial(jit, static_argnums=(4, 5))
 def forward_pass(
     params,
     start_index,
     prices,
-    trades_array=None,
-    fees_array=None,
-    gas_cost_array=None,
-    arb_fees_array=None,
+    dynamic_inputs=None,
     pool=None,
     static_dict=None,
 ):
@@ -870,17 +881,8 @@ def forward_pass(
     prices : array-like
         A 2D array of market prices for the assets involved in the simulation.
 
-    trades_array : array-like, optional
-        An array of trades to be considered in the simulation. Defaults to None.
-
-    fees_array : array-like, optional
-        An array of fees to be applied during the simulation. Defaults to None.
-
-    gas_cost_array : array-like, optional
-        An array of gas costs to be considered in the simulation. Defaults to None.
-
-    arb_fees_array : array-like, optional
-        An array of arbitrage fees to be applied during the simulation. Defaults to None.
+    dynamic_inputs : DynamicInputArrays, optional
+        Fixed-structure bundle of dynamic trades/fees/gas/arb/LP arrays.
 
     pool : object
         An instance of a pool object that provides methods 
@@ -930,8 +932,8 @@ def forward_pass(
     - The function handles different cases for fees and trades, 
       adjusting the calculation method accordingly:
 
-      1. If any of `fees_array`, `gas_cost_array`, `arb_fees_array`, 
-         or `trades_array` is provided, it uses `pool.calculate_reserves_with_dynamic_inputs`.
+      1. If any dynamic-input flags are enabled, it uses
+         `pool.calculate_reserves_with_dynamic_inputs`.
 
       2. If any of `fees`, `gas_cost`, or `arb_fees` in `static_dict` is a nonzero scalar value, 
          it uses `pool.calculate_reserves_with_fees`.
@@ -972,6 +974,7 @@ def forward_pass(
             "training_data_kind": "historic",
             "arb_frequency": 1,
             "do_trades": False,
+            "dynamic_input_flags": default_dynamic_input_flags(),
         }
 
     # 'pool' has default of None only to handle how partial function
@@ -1008,10 +1011,7 @@ def forward_pass(
         and static_dict["arb_frequency"] == 1
         and static_dict.get("turnover_penalty", 0.0) == 0.0
         and static_dict.get("price_noise_sigma", 0.0) == 0.0
-        and all(
-            ele is None
-            for ele in [fees_array, gas_cost_array, arb_fees_array, trades_array]
-        )
+        and dynamic_inputs is None
         and 1440 % static_dict["chunk_period"] == 0  # chunk_period divides metric_period
         and not pool._rule_outputs_are_weights  # only delta-based pools validated
         and static_dict["bout_length"] > 1440 * 2  # need ≥2 metric periods
@@ -1031,28 +1031,20 @@ def forward_pass(
     # 1. Any of Fees, gas costs, and arb fees are provided as arrays, or trades are provided
     # 2. Any of Fees, gas costs, and arb fees are nonzero scalar values, with no trades provided
     # 3. Fees, gas costs, and arb fees are all zero, with no trades provided
+    dynamic_inputs, dynamic_input_flags = _resolve_dynamic_inputs(
+        dynamic_inputs, static_dict
+    )
+
     fee_revenue = None
-    if any(
-        ele is not None
-        for ele in [fees_array, gas_cost_array, arb_fees_array, trades_array]
-    ):
-        # Case 1, at least one of fees, gas costs, or arb fees is not None
-        if fees_array is None:
-            fees_array = jnp.array([static_dict["fees"]])
-        if gas_cost_array is None:
-            gas_cost_array = jnp.array([static_dict["gas_cost"]])
-        if arb_fees_array is None:
-            arb_fees_array = jnp.array([static_dict["arb_fees"]])
+    if dynamic_input_flags["use_dynamic_inputs"]:
+        # Case 1, at least one dynamic input is enabled
         if hasattr(pool, "calculate_reserves_and_fee_revenue_with_dynamic_inputs"):
             reserves, fee_revenue = pool.calculate_reserves_and_fee_revenue_with_dynamic_inputs(
                 params,
                 static_dict,
                 prices,
                 start_index,
-                fees_array=fees_array,
-                arb_thresh_array=gas_cost_array,
-                arb_fees_array=arb_fees_array,
-                trade_array=trades_array,
+                dynamic_inputs=dynamic_inputs,
             )
         else:
             reserves = pool.calculate_reserves_with_dynamic_inputs(
@@ -1060,10 +1052,7 @@ def forward_pass(
                 static_dict,
                 prices,
                 start_index,
-                fees_array=fees_array,
-                arb_thresh_array=gas_cost_array,
-                arb_fees_array=arb_fees_array,
-                trade_array=trades_array,
+                dynamic_inputs=dynamic_inputs,
             )
     elif True in (
         ele > 0.0
@@ -1170,15 +1159,12 @@ def forward_pass(
     return base_metric
 
 
-@partial(jit, static_argnums=(7, 8))
+@partial(jit, static_argnums=(4, 5))
 def forward_pass_nograd(
     params,
     start_index,
     prices,
-    trades_array=None,
-    fees_array=None,
-    gas_cost_array=None,
-    arb_fees_array=None,
+    dynamic_inputs=None,
     pool=None,
     static_dict=None,
 ):
@@ -1203,17 +1189,8 @@ def forward_pass_nograd(
     prices : array-like
         A 2D array of market prices for the assets involved in the simulation.
 
-    trades_array : array-like, optional
-        An array of trades to be considered in the simulation. Defaults to None.
-
-    fees_array : array-like, optional
-        An array of fees to be applied during the simulation. Defaults to None.
-
-    gas_cost_array : array-like, optional
-        An array of gas costs to be considered in the simulation. Defaults to None.
-
-    arb_fees_array : array-like, optional
-        An array of arbitrage fees to be applied during the simulation. Defaults to None.
+    dynamic_inputs : DynamicInputArrays, optional
+        Fixed-structure bundle of dynamic trades/fees/gas/arb/LP arrays.
 
     pool : object
         An instance of a pool object that provides methods
@@ -1263,8 +1240,8 @@ def forward_pass_nograd(
     - The function handles different cases for fees and trades,
       adjusting the calculation method accordingly:
 
-      1. If any of `fees_array`, `gas_cost_array`, `arb_fees_array`,
-         or `trades_array` is provided, it uses `pool.calculate_reserves_with_dynamic_inputs`.
+      1. If any dynamic-input flags are enabled, it uses
+         `pool.calculate_reserves_with_dynamic_inputs`.
 
       2. If any of `fees`, `gas_cost`, or `arb_fees` in `static_dict` is a nonzero scalar value,
          it uses `pool.calculate_reserves_with_fees`.
@@ -1289,14 +1266,23 @@ def forward_pass_nograd(
     params = {k: stop_gradient(v) for k, v in params.items()}
     start_index = stop_gradient(start_index)
     prices = stop_gradient(prices)
+    if dynamic_inputs is not None:
+        dynamic_inputs = DynamicInputArrays(
+            trades=(
+                None
+                if dynamic_inputs.trades is None
+                else stop_gradient(dynamic_inputs.trades)
+            ),
+            fees=stop_gradient(dynamic_inputs.fees),
+            gas_cost=stop_gradient(dynamic_inputs.gas_cost),
+            arb_fees=stop_gradient(dynamic_inputs.arb_fees),
+            lp_supply=stop_gradient(dynamic_inputs.lp_supply),
+        )
     return forward_pass(
         params,
         start_index,
         prices,
-        trades_array,
-        fees_array,
-        gas_cost_array,
-        arb_fees_array,
+        dynamic_inputs,
         pool,
         static_dict,
     )

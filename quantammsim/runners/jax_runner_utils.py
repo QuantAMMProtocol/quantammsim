@@ -14,6 +14,12 @@ from quantammsim.core_simulator.windowing_utils import (
     raw_fee_like_amounts_to_fee_like_array,
     raw_trades_to_trade_array,
 )
+from quantammsim.core_simulator.dynamic_inputs import (
+    DynamicInputArrays,
+    DynamicInputFrames,
+    dynamic_input_flags_from_frames,
+    empty_dynamic_input_arrays,
+)
 
 from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
     LiquidityPoolCoinDto,
@@ -1053,8 +1059,9 @@ def get_unique_tokens(run_fingerprint):
     >>> get_unique_tokens(fingerprint)
     ['BTC', 'DAI', 'ETH']
     """
+    subsidary_pools = run_fingerprint.get("subsidary_pools", [])
     all_tokens = [run_fingerprint["tokens"]] + [
-        cprd["tokens"] for cprd in run_fingerprint["subsidary_pools"]
+        cprd["tokens"] for cprd in subsidary_pools
     ]
     all_tokens = [item for sublist in all_tokens for item in sublist]
     unique_tokens = list(set(all_tokens))
@@ -1214,39 +1221,40 @@ def unpermute_list_of_params(list_of_params):
     return list_of_params_to_return
 
 
-def get_trades_and_fees(
-    run_fingerprint, raw_trades, fees_df, gas_cost_df, arb_fees_df, lp_supply_df, do_test_period=False
+def _to_dynamic_input_arrays(
+    trades_array,
+    fees_array,
+    gas_cost_array,
+    arb_fees_array,
+    lp_supply_array,
+) -> DynamicInputArrays:
+    """Normalize optional numpy arrays into the hot-path container."""
+    empty = empty_dynamic_input_arrays()
+    return DynamicInputArrays(
+        trades=None if trades_array is None else jnp.asarray(trades_array, dtype=jnp.float64),
+        fees=empty.fees if fees_array is None else jnp.asarray(fees_array, dtype=jnp.float64),
+        gas_cost=empty.gas_cost if gas_cost_array is None else jnp.asarray(gas_cost_array, dtype=jnp.float64),
+        arb_fees=empty.arb_fees if arb_fees_array is None else jnp.asarray(arb_fees_array, dtype=jnp.float64),
+        lp_supply=empty.lp_supply if lp_supply_array is None else jnp.asarray(lp_supply_array, dtype=jnp.float64),
+    )
+
+
+def prepare_dynamic_inputs(
+    run_fingerprint,
+    dynamic_input_frames: Optional[DynamicInputFrames] = None,
+    do_test_period: bool = False,
 ):
-    """
-    Process trade and fee data for a simulation run.
+    """Convert optional pandas inputs into dynamic input bundles."""
+    if dynamic_input_frames is None:
+        dynamic_input_frames = DynamicInputFrames()
 
-    Takes raw trades, fees, gas costs and arbitrage fees and converts them into arrays
-    suitable for simulation. Handles both training and test periods if specified.
+    raw_trades = dynamic_input_frames.trades
+    fees_df = dynamic_input_frames.fees
+    gas_cost_df = dynamic_input_frames.gas_cost
+    arb_fees_df = dynamic_input_frames.arb_fees
+    lp_supply_df = dynamic_input_frames.lp_supply
+    dynamic_input_flags = dynamic_input_flags_from_frames(dynamic_input_frames)
 
-    Parameters
-    ----------
-    run_fingerprint : dict
-        Dictionary containing run configuration including start/end dates and tokens
-    raw_trades : pd.DataFrame, optional
-        DataFrame containing raw trade data
-    fees_df : pd.DataFrame, optional
-        DataFrame containing fee data
-    gas_cost_df : pd.DataFrame, optional
-        DataFrame containing gas cost data
-    arb_fees_df : pd.DataFrame, optional
-        DataFrame containing arbitrage fee data
-    lp_supply_df : pd.DataFrame, optional
-        DataFrame containing LP supply data
-    do_test_period : bool, optional
-        Whether to process data for a test period after training period (default False)
-
-    Returns
-    -------
-    dict
-        Contains processed arrays for trades, fees, gas costs and arb fees for both
-        training and test periods as applicable
-    """
-    # Process raw trades if provided
     if raw_trades is not None:
         train_period_trades = raw_trades_to_trade_array(
             raw_trades,
@@ -1264,7 +1272,7 @@ def get_trades_and_fees(
     else:
         train_period_trades = None
         test_period_trades = None
-    # Process fees, gas costs, and arb fees if provided
+
     fees_array = (
         raw_fee_like_amounts_to_fee_like_array(
             fees_df,
@@ -1280,8 +1288,8 @@ def get_trades_and_fees(
         test_fees_array = (
             raw_fee_like_amounts_to_fee_like_array(
                 fees_df,
-                run_fingerprint["startDateString"],
                 run_fingerprint["endDateString"],
+                run_fingerprint["endTestDateString"],
                 names=["fees"],
                 fill_method="ffill",
             )
@@ -1359,26 +1367,46 @@ def get_trades_and_fees(
             if lp_supply_df is not None
             else None
         )
+
+    # Unit LP supply is the neutral case; keep it on the static hot path.
+    if lp_supply_array is not None and np.allclose(lp_supply_array, 1.0):
+        lp_supply_array = None
+        if not do_test_period or test_lp_supply_array is None or np.allclose(test_lp_supply_array, 1.0):
+            dynamic_input_flags["has_lp_supply"] = False
+            dynamic_input_flags["use_dynamic_inputs"] = any(
+                value for key, value in dynamic_input_flags.items() if key != "use_dynamic_inputs"
+            )
+
+    if do_test_period and test_lp_supply_array is not None and np.allclose(test_lp_supply_array, 1.0):
+        test_lp_supply_array = None
+    if do_test_period:
         return {
-            "train_period_trades": train_period_trades,
-            "test_period_trades": test_period_trades,
-            "fees_array": fees_array,
-            "gas_cost_array": gas_cost_array,
-            "arb_fees_array": arb_fees_array,
-            "lp_supply_array": lp_supply_array,
-            "test_fees_array": test_fees_array,
-            "test_gas_cost_array": test_gas_cost_array,
-            "test_arb_fees_array": test_arb_fees_array,
-            "test_lp_supply_array": test_lp_supply_array,
+            "train_dynamic_inputs": _to_dynamic_input_arrays(
+                train_period_trades,
+                fees_array,
+                gas_cost_array,
+                arb_fees_array,
+                lp_supply_array,
+            ),
+            "test_dynamic_inputs": _to_dynamic_input_arrays(
+                test_period_trades,
+                test_fees_array,
+                test_gas_cost_array,
+                test_arb_fees_array,
+                test_lp_supply_array,
+            ),
+            "dynamic_input_flags": dynamic_input_flags,
         }
-    else:
-        return {
-            "train_period_trades": train_period_trades,
-            "fees_array": fees_array,
-            "gas_cost_array": gas_cost_array,
-            "arb_fees_array": arb_fees_array,
-            "lp_supply_array": lp_supply_array,
-        }
+    return {
+        "train_dynamic_inputs": _to_dynamic_input_arrays(
+            train_period_trades,
+            fees_array,
+            gas_cost_array,
+            arb_fees_array,
+            lp_supply_array,
+        ),
+        "dynamic_input_flags": dynamic_input_flags,
+    }
 
 
 def create_daily_unix_array(start_date_str, end_date_str):
@@ -1621,12 +1649,21 @@ def probe_max_n_parameter_sets(
                     "n_assets": n_tokens,
                     "training_data_kind": probe_fingerprint["optimisation_settings"]["training_data_kind"],
                     "do_trades": False,
+                    "dynamic_input_flags": {
+                        "use_dynamic_inputs": False,
+                        "has_trades": False,
+                        "has_dynamic_fees": False,
+                        "has_dynamic_gas_cost": False,
+                        "has_dynamic_arb_fees": False,
+                        "has_lp_supply": False,
+                    },
                 },
             )
 
             # Create vmapped forward pass
             partial_forward = Partial(
                 forward_pass_nograd,
+                dynamic_inputs=None,
                 prices=data_dict["prices"],
                 static_dict=static_dict,
                 pool=pool,

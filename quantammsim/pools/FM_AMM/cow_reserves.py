@@ -729,7 +729,7 @@ def _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function(
     gamma = input_list[1]
     arb_thresh = input_list[2]
     arb_fees = input_list[3]
-    trade = input_list[4]
+    trade = input_list[4] if do_trades else None
 
     if do_arb:
         reserves_with_perfect_arb = _jax_calc_cowamm_reserves_with_fees_scan_function(
@@ -827,6 +827,8 @@ def _jax_calc_cowamm_reserves_with_dynamic_inputs(
     initial_prices = prices[0]
 
     gamma = 1.0 - fees
+    if do_trades and trades is None:
+        raise ValueError("Trades must be provided when do_trades=True.")
 
     scan_fn = Partial(
         _jax_calc_cowamm_reserves_with_dynamic_fees_and_trades_scan_function,
@@ -838,8 +840,9 @@ def _jax_calc_cowamm_reserves_with_dynamic_inputs(
     )
 
     carry_list_init = [initial_prices, initial_reserves]
-    _, reserves = scan(
-        scan_fn, carry_list_init, [prices, gamma, arb_thresh, arb_fees, trades]
-    )
+    scan_inputs = [prices, gamma, arb_thresh, arb_fees]
+    if do_trades:
+        scan_inputs.append(trades)
+    _, reserves = scan(scan_fn, carry_list_init, scan_inputs)
 
     return reserves

@@ -605,7 +605,7 @@ def _jax_calc_gyroscope_reserves_with_dynamic_fees_and_trades_scan_function_usin
     gamma = input_list[1]
     arb_thresh = input_list[2]
     arb_fees = input_list[3]
-    trade = input_list[4]
+    trade = input_list[4] if do_trades else None
 
 
 
@@ -727,6 +727,8 @@ def _jax_calc_gyroscope_reserves_with_dynamic_inputs(
     arb_fees = jnp.where(
         arb_fees.size == 1, jnp.full(prices.shape[0], arb_fees), arb_fees
     )
+    if do_trades and trades is None:
+        raise ValueError("Trades must be provided when do_trades=True.")
 
     scan_fn = Partial(
         _jax_calc_gyroscope_reserves_with_dynamic_fees_and_trades_scan_function_using_precalcs,
@@ -745,17 +747,15 @@ def _jax_calc_gyroscope_reserves_with_dynamic_inputs(
         initial_reserves,
         0
     ]
-    carry_list_end, reserves = scan(
-        scan_fn,
-        carry_list_init,
-        [
-            prices,
-            gamma,
-            arb_thresh,
-            arb_fees,
-            trades,
-        ],
-    )
+    scan_inputs = [
+        prices,
+        gamma,
+        arb_thresh,
+        arb_fees,
+    ]
+    if do_trades:
+        scan_inputs.append(trades)
+    carry_list_end, reserves = scan(scan_fn, carry_list_init, scan_inputs)
 
     return reserves
 

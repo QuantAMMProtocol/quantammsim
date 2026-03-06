@@ -540,9 +540,14 @@ def _jax_calc_quantAMM_reserves_with_dynamic_fees_and_trades_scan_function_using
     gamma = input_list[8]
     arb_thresh = input_list[9]
     arb_fees = input_list[10]
-    trade = input_list[11]
-    do_arb = input_list[12]
-    lp_supply = input_list[13]
+    if do_trades:
+        trade = input_list[11]
+        do_arb = input_list[12]
+        lp_supply = input_list[13]
+    else:
+        trade = None
+        do_arb = input_list[11]
+        lp_supply = input_list[12]
     fees_are_being_charged = gamma != 1.0
     protocol_fee_amount_step = jnp.zeros_like(prev_reserves)
 
@@ -826,6 +831,8 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
     arb_fees = jnp.where(
         arb_fees.size == 1, jnp.full(weights.shape[0], arb_fees), arb_fees
     )
+    if do_trades and trades is None:
+        raise ValueError("Trades must be provided when do_trades=True.")
 
     if lp_supply_array is None:
         lp_supply_array = jnp.array(1.0)
@@ -899,26 +906,23 @@ def _jax_calc_quantAMM_reserves_with_dynamic_inputs(
     ]
     # carry_list_init = [initial_weights, initial_i]
     # nojit_scan = jax.disable_jit()(jax.lax.scan)
-    carry_list_end, reserves = scan(
-        scan_fn,
-        carry_list_init,
-        [
-            weights,
-            prices,
-            active_initial_weights,
-            per_asset_ratios,
-            all_other_assets_ratios,
-            lagged_active_initial_weights,
-            lagged_per_asset_ratios,
-            lagged_all_other_assets_ratios,
-            gamma,
-            arb_thresh,
-            arb_fees,
-            trades,
-            do_arb,
-            lp_supply_array,
-        ],
-    )
+    scan_inputs = [
+        weights,
+        prices,
+        active_initial_weights,
+        per_asset_ratios,
+        all_other_assets_ratios,
+        lagged_active_initial_weights,
+        lagged_per_asset_ratios,
+        lagged_all_other_assets_ratios,
+        gamma,
+        arb_thresh,
+        arb_fees,
+    ]
+    if do_trades:
+        scan_inputs.append(trades)
+    scan_inputs.extend([do_arb, lp_supply_array])
+    carry_list_end, reserves = scan(scan_fn, carry_list_init, scan_inputs)
 
     return reserves
 

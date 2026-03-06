@@ -3,6 +3,10 @@ from typing import Dict, Any, Optional
 import jax.numpy as jnp
 from jax.lax import dynamic_slice
 
+from quantammsim.core_simulator.dynamic_inputs import (
+    DynamicInputArrays,
+    empty_dynamic_input_arrays,
+)
 
 class BaseDynamicFeeHook(ABC):
     """Mixin class to add dynamic fee calculation capabilities to pools.
@@ -113,16 +117,21 @@ class BaseDynamicFeeHook(ABC):
             (int((bout_length) / chunk_period), 1),
         )
         dynamic_fees = raw_dynamic_fees.repeat(chunk_period, axis=0).squeeze()
-        # Use existing dynamic inputs infrastructure
+        empty_inputs = empty_dynamic_input_arrays()
+        dynamic_inputs = DynamicInputArrays(
+            trades=None,
+            fees=dynamic_fees,
+            gas_cost=jnp.asarray(run_fingerprint["gas_cost"], dtype=jnp.float64),
+            arb_fees=jnp.asarray(run_fingerprint["arb_fees"], dtype=jnp.float64),
+            lp_supply=empty_inputs.lp_supply,
+        )
+
         return self.calculate_reserves_with_dynamic_inputs(
             params,
             run_fingerprint,
             prices,
             start_index,
-            dynamic_fees,
-            run_fingerprint["gas_cost"],
-            run_fingerprint["arb_fees"],
-            dynamic_fees,
+            dynamic_inputs,
             additional_oracle_input,
         )
 

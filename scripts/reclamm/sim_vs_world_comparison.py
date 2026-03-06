@@ -34,6 +34,7 @@ import jax.numpy as jnp
 from pathlib import Path
 from datetime import datetime, timezone
 
+from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
 from quantammsim.runners.jax_runners import do_run_on_historic_data
 
 # ── On-chain reClAMM params ───────────────────────────────────────────────────
@@ -187,9 +188,18 @@ def sample_at_timestamps(minute_vals, start_unix_sec, timestamps_sec):
     return minute_vals[indices]
 
 
-def run_pool(tokens, start, end, rule, fees, params, gas_cost=0.0,
-             protocol_fee_split=0.0, gas_cost_df=None,
-             onchain_initial_state=None):
+def run_pool(
+    tokens,
+    start,
+    end,
+    rule,
+    fees,
+    params,
+    gas_cost=0.0,
+    protocol_fee_split=0.0,
+    dynamic_input_frames=None,
+    onchain_initial_state=None,
+):
     """Run a quantammsim pool and return minute-level results.
 
     Returns (val_eth, price_ratio, start_unix_sec) where val_eth and
@@ -220,7 +230,9 @@ def run_pool(tokens, start, end, rule, fees, params, gas_cost=0.0,
         fp["reclamm_initial_state"] = onchain_initial_state
 
     result = do_run_on_historic_data(
-        run_fingerprint=fp, params=params, gas_cost_df=gas_cost_df,
+        run_fingerprint=fp,
+        params=params,
+        dynamic_input_frames=dynamic_input_frames,
     )
 
     # Prices: sorted tokens → [AAVE, ETH] in USD
@@ -291,7 +303,8 @@ def run_gas_experiment(args):
         gas_df = load_gas_csv(pct)
         val_eth_min, _, _ = run_pool(
             tokens, start, end, "reclamm", ONCHAIN_FEES, pool_params,
-            protocol_fee_split=PROTOCOL_FEE_SPLIT, gas_cost_df=gas_df,
+            protocol_fee_split=PROTOCOL_FEE_SPLIT,
+            dynamic_input_frames=DynamicInputFrames(gas_cost=gas_df),
         )
         gas_results_min[pct] = val_eth_min
 
@@ -433,7 +446,8 @@ def run_gas_scale_experiment(args):
             gas_df["trade_gas_cost_usd"] = gas_df_raw["trade_gas_cost_usd"] * scale
             val_eth_min, pr_min, start_sec = run_pool(
                 tokens, start, end, "reclamm", ONCHAIN_FEES, pool_params,
-                protocol_fee_split=PROTOCOL_FEE_SPLIT, gas_cost_df=gas_df,
+                protocol_fee_split=PROTOCOL_FEE_SPLIT,
+                dynamic_input_frames=DynamicInputFrames(gas_cost=gas_df),
                 onchain_initial_state=onchain_state,
             )
             results_min[(pct, scale)] = (val_eth_min, start_sec)
@@ -662,7 +676,8 @@ def run_best_gas_experiment(args):
     gas_df_50p = load_gas_csv("50p")
     g50_min, _, _ = run_pool(
         tokens, start, end, "reclamm", ONCHAIN_FEES, pool_params,
-        protocol_fee_split=PROTOCOL_FEE_SPLIT, gas_cost_df=gas_df_50p,
+        protocol_fee_split=PROTOCOL_FEE_SPLIT,
+        dynamic_input_frames=DynamicInputFrames(gas_cost=gas_df_50p),
         onchain_initial_state=onchain_state,
     )
 
@@ -674,7 +689,8 @@ def run_best_gas_experiment(args):
     gas_df_75p_scaled["trade_gas_cost_usd"] *= 0.75
     g75_min, _, _ = run_pool(
         tokens, start, end, "reclamm", ONCHAIN_FEES, pool_params,
-        protocol_fee_split=PROTOCOL_FEE_SPLIT, gas_cost_df=gas_df_75p_scaled,
+        protocol_fee_split=PROTOCOL_FEE_SPLIT,
+        dynamic_input_frames=DynamicInputFrames(gas_cost=gas_df_75p_scaled),
         onchain_initial_state=onchain_state,
     )
 
@@ -686,7 +702,8 @@ def run_best_gas_experiment(args):
     gas_df_90p_scaled["trade_gas_cost_usd"] *= 0.25
     g90_min, _, _ = run_pool(
         tokens, start, end, "reclamm", ONCHAIN_FEES, pool_params,
-        protocol_fee_split=PROTOCOL_FEE_SPLIT, gas_cost_df=gas_df_90p_scaled,
+        protocol_fee_split=PROTOCOL_FEE_SPLIT,
+        dynamic_input_frames=DynamicInputFrames(gas_cost=gas_df_90p_scaled),
         onchain_initial_state=onchain_state,
     )
 

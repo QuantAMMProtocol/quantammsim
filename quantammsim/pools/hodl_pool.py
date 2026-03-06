@@ -37,9 +37,9 @@ class HODLPool(AbstractPool):
     additional_oracle_input=None):
         Calculates the reserves without fees, assuming no trading activity.
 
-    calculate_reserves_with_dynamic_inputs(params, run_fingerprint, prices, start_index, 
-    fees_array, arb_thresh_array, arb_fees_array, trade_array, additional_oracle_input=None):
-        Calculates the reserves with dynamic inputs, which in this case is 
+    calculate_reserves_with_dynamic_inputs(params, run_fingerprint, prices, start_index,
+    dynamic_inputs, additional_oracle_input=None):
+        Calculates the reserves with dynamic inputs, which in this case is
         the same as reserves without fees due to no activity.
 
     init_base_parameters(initial_values_dict, run_fingerprint, n_assets, 
@@ -124,11 +124,7 @@ class HODLPool(AbstractPool):
         run_fingerprint: Dict[str, Any],
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
-        fees_array: jnp.ndarray,
-        arb_thresh_array: jnp.ndarray,
-        arb_fees_array: jnp.ndarray,
-        trade_array: jnp.ndarray,
-        lp_supply_array: jnp.ndarray = None,
+        dynamic_inputs,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         # hodl means no activity, so reserves are just the initial reserves
