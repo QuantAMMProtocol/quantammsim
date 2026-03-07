@@ -10,7 +10,7 @@ from jax import config
 config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
-from jax import jit, tree_util, vmap
+from jax import jit, tree_util
 from jax.lax import dynamic_slice
 from functools import partial
 from typing import Dict, Any, Optional, NamedTuple
@@ -48,57 +48,6 @@ def _prepare_dynamic_array(arr, start_index, bout_length, arb_frequency, max_len
     if arb_frequency != 1:
         sliced = sliced[::arb_frequency]
     return sliced
-
-
-def _align_prices_to_numeraire(prices, run_fingerprint):
-    """Ensure the numeraire token is in column 1 for ratio-volatility calc."""
-    tokens = run_fingerprint.get("tokens")
-    numeraire = run_fingerprint.get("numeraire")
-    if tokens is None or numeraire is None or len(tokens) != 2:
-        return prices
-
-    token_labels = [str(token).lower() for token in tokens]
-    numeraire_label = str(numeraire).lower()
-    if token_labels[0] == numeraire_label:
-        return prices[:, ::-1]
-    return prices
-
-
-def _calculate_annualized_ratio_volatility(
-    prices, run_fingerprint, subsample_freq=5,
-):
-    """Annualized daily realized volatility broadcast to minute-level array."""
-    ordered_prices = _align_prices_to_numeraire(prices, run_fingerprint)
-    asset_prices = ordered_prices[:, 0] / ordered_prices[:, 1]
-    n_minutes = asset_prices.shape[0]
-
-    if n_minutes < 1440:
-        return jnp.full((n_minutes,), 0.1 * jnp.sqrt(365.0), dtype=prices.dtype)
-
-    n_days = n_minutes // 1440
-
-    def calculate_daily_volatility(day_idx):
-        start_idx = day_idx * 1440
-        window_prices = dynamic_slice(asset_prices, (start_idx,), (1440,))
-        subsampled_prices = window_prices[::subsample_freq]
-        log_prices = jnp.log(jnp.maximum(subsampled_prices, 1e-8))
-        returns = jnp.diff(log_prices)
-        num_nonzero_returns = jnp.sum(returns != 0)
-        total_returns = jnp.maximum(returns.shape[0], 1)
-        adjusted_variance = num_nonzero_returns * jnp.var(returns) / total_returns
-        dt = subsample_freq / 1440
-        return jnp.sqrt(adjusted_variance) / jnp.sqrt(dt)
-
-    daily_volatilities = vmap(calculate_daily_volatility)(jnp.arange(n_days))
-    volatility_array = jnp.repeat(daily_volatilities, 1440)
-
-    remaining_minutes = n_minutes - volatility_array.shape[0]
-    if remaining_minutes > 0:
-        volatility_array = jnp.concatenate(
-            [volatility_array, jnp.full((remaining_minutes,), daily_volatilities[-1])]
-        )
-
-    return volatility_array * jnp.sqrt(365.0)
 
 
 class _PoolState(NamedTuple):
@@ -299,9 +248,7 @@ class ReClammPool(AbstractPool):
 
         arb_vol = None
         if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
-            volatility_array = _calculate_annualized_ratio_volatility(
-                prices, run_fingerprint
-            )
+            volatility_array = self.calculate_volatility_array(prices, run_fingerprint)
             arb_vol = _prepare_dynamic_array(
                 volatility_array,
                 start_index=start_index,
