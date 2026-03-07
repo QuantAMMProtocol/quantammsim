@@ -1227,6 +1227,7 @@ def _to_dynamic_input_arrays(
     gas_cost_array,
     arb_fees_array,
     lp_supply_array,
+    streaming_fee_multiplier_array=None,
 ) -> DynamicInputArrays:
     """Normalize optional numpy arrays into the hot-path container."""
     empty = empty_dynamic_input_arrays()
@@ -1236,6 +1237,11 @@ def _to_dynamic_input_arrays(
         gas_cost=empty.gas_cost if gas_cost_array is None else jnp.asarray(gas_cost_array, dtype=jnp.float64),
         arb_fees=empty.arb_fees if arb_fees_array is None else jnp.asarray(arb_fees_array, dtype=jnp.float64),
         lp_supply=empty.lp_supply if lp_supply_array is None else jnp.asarray(lp_supply_array, dtype=jnp.float64),
+        streaming_fee_multiplier=(
+            empty.streaming_fee_multiplier
+            if streaming_fee_multiplier_array is None
+            else jnp.asarray(streaming_fee_multiplier_array, dtype=jnp.float64)
+        ),
     )
 
 
@@ -1253,6 +1259,7 @@ def prepare_dynamic_inputs(
     gas_cost_df = dynamic_input_frames.gas_cost
     arb_fees_df = dynamic_input_frames.arb_fees
     lp_supply_df = dynamic_input_frames.lp_supply
+    streaming_fee_multiplier_df = dynamic_input_frames.streaming_fee_multiplier
     dynamic_input_flags = dynamic_input_flags_from_frames(dynamic_input_frames)
 
     if raw_trades is not None:
@@ -1367,6 +1374,29 @@ def prepare_dynamic_inputs(
             if lp_supply_df is not None
             else None
         )
+    streaming_fee_multiplier_array = (
+        raw_fee_like_amounts_to_fee_like_array(
+            streaming_fee_multiplier_df,
+            run_fingerprint["startDateString"],
+            run_fingerprint["endDateString"],
+            names=["streaming_fee_multiplier"],
+            fill_method="ffill",
+        )
+        if streaming_fee_multiplier_df is not None
+        else None
+    )
+    if do_test_period:
+        test_streaming_fee_multiplier_array = (
+            raw_fee_like_amounts_to_fee_like_array(
+                streaming_fee_multiplier_df,
+                run_fingerprint["endDateString"],
+                run_fingerprint["endTestDateString"],
+                names=["streaming_fee_multiplier"],
+                fill_method="ffill",
+            )
+            if streaming_fee_multiplier_df is not None
+            else None
+        )
 
     # Unit LP supply is the neutral case; keep it on the static hot path.
     if lp_supply_array is not None and np.allclose(lp_supply_array, 1.0):
@@ -1379,6 +1409,29 @@ def prepare_dynamic_inputs(
 
     if do_test_period and test_lp_supply_array is not None and np.allclose(test_lp_supply_array, 1.0):
         test_lp_supply_array = None
+    if (
+        streaming_fee_multiplier_array is not None
+        and np.allclose(streaming_fee_multiplier_array, 1.0)
+    ):
+        streaming_fee_multiplier_array = None
+        if (
+            not do_test_period
+            or test_streaming_fee_multiplier_array is None
+            or np.allclose(test_streaming_fee_multiplier_array, 1.0)
+        ):
+            dynamic_input_flags["has_streaming_fee_multiplier"] = False
+            dynamic_input_flags["use_dynamic_inputs"] = any(
+                value
+                for key, value in dynamic_input_flags.items()
+                if key != "use_dynamic_inputs"
+            )
+
+    if (
+        do_test_period
+        and test_streaming_fee_multiplier_array is not None
+        and np.allclose(test_streaming_fee_multiplier_array, 1.0)
+    ):
+        test_streaming_fee_multiplier_array = None
     if do_test_period:
         return {
             "train_dynamic_inputs": _to_dynamic_input_arrays(
@@ -1387,6 +1440,7 @@ def prepare_dynamic_inputs(
                 gas_cost_array,
                 arb_fees_array,
                 lp_supply_array,
+                streaming_fee_multiplier_array,
             ),
             "test_dynamic_inputs": _to_dynamic_input_arrays(
                 test_period_trades,
@@ -1394,6 +1448,7 @@ def prepare_dynamic_inputs(
                 test_gas_cost_array,
                 test_arb_fees_array,
                 test_lp_supply_array,
+                test_streaming_fee_multiplier_array,
             ),
             "dynamic_input_flags": dynamic_input_flags,
         }
@@ -1404,6 +1459,7 @@ def prepare_dynamic_inputs(
             gas_cost_array,
             arb_fees_array,
             lp_supply_array,
+            streaming_fee_multiplier_array,
         ),
         "dynamic_input_flags": dynamic_input_flags,
     }
@@ -1656,6 +1712,7 @@ def probe_max_n_parameter_sets(
                         "has_dynamic_gas_cost": False,
                         "has_dynamic_arb_fees": False,
                         "has_lp_supply": False,
+                        "has_streaming_fee_multiplier": False,
                     },
                 },
             )

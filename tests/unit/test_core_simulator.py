@@ -542,6 +542,265 @@ class TestForwardPassBranches:
                 static_dict=static_dict,
             )
 
+    def test_streaming_fee_multiplier_scales_reserves_cumulatively(self):
+        """Streaming fee multipliers should reduce reserves cumulatively over time."""
+        from quantammsim.core_simulator.dynamic_inputs import (
+            DynamicInputArrays,
+            default_dynamic_input_flags,
+        )
+        from quantammsim.core_simulator.forward_pass import forward_pass
+        from quantammsim.pools.G3M.balancer.balancer import BalancerPool
+        from quantammsim.runners.jax_runner_utils import NestedHashabledict
+
+        pool = BalancerPool()
+        params = {"initial_weights_logits": jnp.array([0.0, 0.0])}
+        prices = jnp.array(
+            [
+                [100.0, 50.0],
+                [100.0, 50.0],
+                [100.0, 50.0],
+                [100.0, 50.0],
+            ]
+        )
+        start_index = jnp.array([0, 0])
+        static_base = {
+            "bout_length": 5,
+            "n_assets": 2,
+            "initial_pool_value": 1000.0,
+            "fees": 0.0,
+            "gas_cost": 0.0,
+            "arb_fees": 0.0,
+            "arb_frequency": 1,
+            "do_trades": False,
+            "do_arb": False,
+            "return_val": "reserves",
+        }
+        base_result = forward_pass(
+            params,
+            start_index,
+            prices,
+            pool=pool,
+            static_dict=NestedHashabledict(static_base),
+        )
+
+        flags = default_dynamic_input_flags()
+        flags["use_dynamic_inputs"] = True
+        flags["has_streaming_fee_multiplier"] = True
+        static_streaming = dict(static_base)
+        static_streaming["dynamic_input_flags"] = flags
+        streaming_multiplier = jnp.array([1.0, 0.5, 1.0, 0.5])
+        dynamic_inputs = DynamicInputArrays(
+            trades=None,
+            fees=jnp.array([0.0]),
+            gas_cost=jnp.array([0.0]),
+            arb_fees=jnp.array([0.0]),
+            lp_supply=jnp.array([1.0]),
+            streaming_fee_multiplier=streaming_multiplier,
+        )
+        stream_result = forward_pass(
+            params,
+            start_index,
+            prices,
+            dynamic_inputs=dynamic_inputs,
+            pool=pool,
+            static_dict=NestedHashabledict(static_streaming),
+        )
+
+        cumulative = jnp.cumprod(streaming_multiplier)
+        expected = base_result["reserves"] * cumulative[:, None]
+        np.testing.assert_allclose(
+            np.asarray(stream_result["reserves"]),
+            np.asarray(expected),
+            rtol=1e-10,
+            atol=1e-10,
+        )
+
+    def test_streaming_fee_multiplier_preserves_zero_reserve_legs(self):
+        """Zero reserve legs should remain zero while non-zero legs reduce proportionally."""
+        from quantammsim.core_simulator.forward_pass import _apply_streaming_fee_multiplier
+
+        reserves = jnp.array(
+            [
+                [0.0, 100.0, 50.0],
+                [0.0, 120.0, 60.0],
+                [0.0, 80.0, 40.0],
+            ]
+        )
+        streaming_multiplier = jnp.array([1.0, 0.5, 0.5])
+
+        adjusted = _apply_streaming_fee_multiplier(reserves, streaming_multiplier)
+        cumulative = jnp.cumprod(streaming_multiplier)
+        expected = reserves * cumulative[:, None]
+
+        np.testing.assert_allclose(np.asarray(adjusted), np.asarray(expected))
+        assert np.allclose(np.asarray(adjusted[:, 0]), 0.0)
+
+    def test_streaming_fee_multiplier_raises_on_length_mismatch(self):
+        """Streaming multiplier length must be singleton or match reserve path length."""
+        from quantammsim.core_simulator.forward_pass import _apply_streaming_fee_multiplier
+
+        reserves = jnp.array([[1.0, 2.0], [1.0, 2.0], [1.0, 2.0]])
+        with pytest.raises(
+            ValueError,
+            match="streaming_fee_multiplier length must be 1 or match reserve path length",
+        ):
+            _apply_streaming_fee_multiplier(reserves, jnp.array([1.0, 0.99]))
+
+    def test_streaming_only_inputs_skip_pool_dynamic_reserve_path(self):
+        """Streaming-only dynamic inputs should not dispatch to pool dynamic-input reserve kernels."""
+        from quantammsim.core_simulator.dynamic_inputs import (
+            DynamicInputArrays,
+            default_dynamic_input_flags,
+        )
+        from quantammsim.core_simulator.forward_pass import forward_pass
+        from quantammsim.runners.jax_runner_utils import NestedHashabledict
+
+        class StaticOnlyPool:
+            supports_fused_reserves = False
+            _rule_outputs_are_weights = False
+
+            def calculate_reserves_with_dynamic_inputs(self, *args, **kwargs):
+                raise AssertionError("dynamic-input reserve path should not be used")
+
+            def calculate_reserves_with_fees(self, *args, **kwargs):
+                raise AssertionError("fee reserve path should not be used")
+
+            def calculate_reserves_zero_fees(self, *args, **kwargs):
+                return jnp.array(
+                    [
+                        [10.0, 20.0],
+                        [10.0, 20.0],
+                        [10.0, 20.0],
+                        [10.0, 20.0],
+                    ]
+                )
+
+        flags = default_dynamic_input_flags()
+        flags["use_dynamic_inputs"] = True
+        flags["has_streaming_fee_multiplier"] = True
+
+        static_dict = NestedHashabledict(
+            {
+                "bout_length": 5,
+                "n_assets": 2,
+                "initial_pool_value": 1000.0,
+                "fees": 0.0,
+                "gas_cost": 0.0,
+                "arb_fees": 0.0,
+                "arb_frequency": 1,
+                "do_trades": False,
+                "do_arb": False,
+                "training_data_kind": "historic",
+                "return_val": "reserves",
+                "dynamic_input_flags": flags,
+            }
+        )
+
+        dynamic_inputs = DynamicInputArrays(
+            trades=None,
+            fees=jnp.array([0.0]),
+            gas_cost=jnp.array([0.0]),
+            arb_fees=jnp.array([0.0]),
+            lp_supply=jnp.array([1.0]),
+            streaming_fee_multiplier=jnp.array([1.0, 0.5, 1.0, 0.5]),
+        )
+
+        result = forward_pass(
+            params={"initial_weights_logits": jnp.array([0.0, 0.0])},
+            start_index=jnp.array([0, 0]),
+            prices=jnp.array(
+                [
+                    [100.0, 100.0],
+                    [100.0, 100.0],
+                    [100.0, 100.0],
+                    [100.0, 100.0],
+                ]
+            ),
+            dynamic_inputs=dynamic_inputs,
+            pool=StaticOnlyPool(),
+            static_dict=static_dict,
+        )
+
+        cumulative = jnp.cumprod(dynamic_inputs.streaming_fee_multiplier)
+        expected = jnp.array(
+            [
+                [10.0, 20.0],
+                [10.0, 20.0],
+                [10.0, 20.0],
+                [10.0, 20.0],
+            ]
+        ) * cumulative[:, None]
+        np.testing.assert_allclose(np.asarray(result["reserves"]), np.asarray(expected))
+
+    def test_fused_path_supports_streaming_only_dynamic_inputs(self):
+        """Streaming-only dynamic inputs should preserve fused chunked path eligibility."""
+        from quantammsim.core_simulator.dynamic_inputs import (
+            DynamicInputArrays,
+            default_dynamic_input_flags,
+        )
+        from quantammsim.core_simulator.forward_pass import forward_pass
+        from quantammsim.runners.jax_runner_utils import NestedHashabledict
+
+        class FusedOnlyPool:
+            supports_fused_reserves = True
+            _rule_outputs_are_weights = False
+
+            def calculate_fused_reserves_zero_fees(self, *args, **kwargs):
+                return {
+                    "boundary_values": jnp.array([100.0, 200.0, 300.0]),
+                    "initial_reserves": jnp.array([1.0, 1.0]),
+                }
+
+            def calculate_reserves_with_dynamic_inputs(self, *args, **kwargs):
+                raise AssertionError("fused path should be used")
+
+            def calculate_reserves_with_fees(self, *args, **kwargs):
+                raise AssertionError("fused path should be used")
+
+            def calculate_reserves_zero_fees(self, *args, **kwargs):
+                raise AssertionError("fused path should be used")
+
+        flags = default_dynamic_input_flags()
+        flags["use_dynamic_inputs"] = True
+        flags["has_streaming_fee_multiplier"] = True
+
+        static_dict = NestedHashabledict(
+            {
+                "bout_length": 2882,
+                "n_assets": 2,
+                "chunk_period": 60,
+                "weight_interpolation_period": 60,
+                "initial_pool_value": 1000.0,
+                "fees": 0.0,
+                "gas_cost": 0.0,
+                "arb_fees": 0.0,
+                "arb_frequency": 1,
+                "do_trades": False,
+                "do_arb": False,
+                "training_data_kind": "historic",
+                "return_val": "returns",
+                "dynamic_input_flags": flags,
+            }
+        )
+        dynamic_inputs = DynamicInputArrays(
+            trades=None,
+            fees=jnp.array([0.0]),
+            gas_cost=jnp.array([0.0]),
+            arb_fees=jnp.array([0.0]),
+            lp_supply=jnp.array([1.0]),
+            streaming_fee_multiplier=jnp.array([1.0]),
+        )
+
+        returns = forward_pass(
+            params={"initial_weights_logits": jnp.array([0.0, 0.0])},
+            start_index=jnp.array([0, 0]),
+            prices=jnp.ones((3000, 2)),
+            dynamic_inputs=dynamic_inputs,
+            pool=FusedOnlyPool(),
+            static_dict=static_dict,
+        )
+        np.testing.assert_allclose(np.asarray(returns), np.array(2.0))
+
 
 class TestForwardPassNograd:
     """Test forward_pass_nograd function."""

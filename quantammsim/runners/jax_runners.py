@@ -691,6 +691,7 @@ def _train_on_historic_data_impl(
                 "has_dynamic_gas_cost": False,
                 "has_dynamic_arb_fees": False,
                 "has_lp_supply": False,
+                "has_streaming_fee_multiplier": False,
             },
         },
     )

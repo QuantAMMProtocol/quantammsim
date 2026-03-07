@@ -13,6 +13,7 @@ class DynamicInputFrames:
     gas_cost: Optional[Any] = None
     arb_fees: Optional[Any] = None
     lp_supply: Optional[Any] = None
+    streaming_fee_multiplier: Optional[Any] = None
 
 
 class DynamicInputArrays(NamedTuple):
@@ -23,6 +24,7 @@ class DynamicInputArrays(NamedTuple):
     gas_cost: jnp.ndarray
     arb_fees: jnp.ndarray
     lp_supply: jnp.ndarray
+    streaming_fee_multiplier: jnp.ndarray = jnp.ones((1,), dtype=jnp.float64)
 
 
 def default_dynamic_input_flags() -> dict:
@@ -34,6 +36,7 @@ def default_dynamic_input_flags() -> dict:
         "has_dynamic_gas_cost": False,
         "has_dynamic_arb_fees": False,
         "has_lp_supply": False,
+        "has_streaming_fee_multiplier": False,
     }
 
 
@@ -49,6 +52,9 @@ def dynamic_input_flags_from_frames(dynamic_input_frames: Optional[DynamicInputF
         "has_dynamic_gas_cost": dynamic_input_frames.gas_cost is not None,
         "has_dynamic_arb_fees": dynamic_input_frames.arb_fees is not None,
         "has_lp_supply": dynamic_input_frames.lp_supply is not None,
+        "has_streaming_fee_multiplier": (
+            dynamic_input_frames.streaming_fee_multiplier is not None
+        ),
     }
     flags["use_dynamic_inputs"] = any(flags.values())
     return flags
@@ -59,11 +65,9 @@ def resolve_dynamic_input_flags(
     dynamic_input_flags: Optional[dict] = None,
 ) -> dict:
     """Return a safe dispatch flag set for the provided hot-path bundle."""
-    flags = (
-        default_dynamic_input_flags()
-        if dynamic_input_flags is None
-        else dict(dynamic_input_flags)
-    )
+    flags = default_dynamic_input_flags()
+    if dynamic_input_flags is not None:
+        flags.update(dict(dynamic_input_flags))
     if dynamic_inputs is not None:
         flags["use_dynamic_inputs"] = True
     return flags
@@ -77,6 +81,7 @@ def empty_dynamic_input_arrays() -> DynamicInputArrays:
         gas_cost=jnp.zeros((1,), dtype=jnp.float64),
         arb_fees=jnp.zeros((1,), dtype=jnp.float64),
         lp_supply=jnp.ones((1,), dtype=jnp.float64),
+        streaming_fee_multiplier=jnp.ones((1,), dtype=jnp.float64),
     )
 
 
@@ -101,12 +106,17 @@ def resolve_dynamic_input_components(
         ),
         "arb_fees": (
             arrays.arb_fees
-            if dynamic_input_flags["has_dynamic_arb_fees"]
+            if dynamic_input_flags.get("has_dynamic_arb_fees", False)
             else jnp.asarray([static_dict["arb_fees"]], dtype=jnp.float64)
         ),
         "lp_supply": (
             arrays.lp_supply
-            if dynamic_input_flags["has_lp_supply"]
+            if dynamic_input_flags.get("has_lp_supply", False)
+            else jnp.ones((1,), dtype=jnp.float64)
+        ),
+        "streaming_fee_multiplier": (
+            arrays.streaming_fee_multiplier
+            if dynamic_input_flags.get("has_streaming_fee_multiplier", False)
             else jnp.ones((1,), dtype=jnp.float64)
         ),
     }
@@ -148,6 +158,7 @@ def materialize_dynamic_inputs(
             "has_dynamic_gas_cost": True,
             "has_dynamic_arb_fees": True,
             "has_lp_supply": True,
+            "has_streaming_fee_multiplier": True,
         }
     else:
         flags = resolve_dynamic_input_flags(dynamic_inputs, dynamic_input_flags)
@@ -173,5 +184,8 @@ def materialize_dynamic_inputs(
         ),
         lp_supply=_broadcast_dynamic_input_leaf(
             "lp_supply", resolved["lp_supply"], scan_len, dtype
+        ),
+        streaming_fee_multiplier=jnp.asarray(
+            resolved["streaming_fee_multiplier"], dtype=dtype
         ),
     )

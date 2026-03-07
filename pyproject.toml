@@ -20,6 +20,7 @@ dependencies = [
     "matplotlib",
     "tqdm",
     "optuna",
+    "numpyro",
     "pyarrow",
     "plotly",
     "dask",

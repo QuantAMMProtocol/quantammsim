@@ -72,6 +72,67 @@ def _resolve_dynamic_inputs(dynamic_inputs, static_dict):
     return dynamic_inputs, dynamic_input_flags
 
 
+def _apply_streaming_fee_multiplier(
+    reserves: jnp.ndarray, streaming_fee_multiplier: jnp.ndarray
+) -> jnp.ndarray:
+    """Apply per-step streaming-fee multipliers to reserves.
+
+    Multipliers are applied cumulatively through time so each step reduces
+    all constituent reserves proportionally. Zero reserves remain zero.
+    """
+    streaming_fee_multiplier = _materialize_streaming_fee_multiplier(
+        streaming_fee_multiplier,
+        scan_len=reserves.shape[0],
+        dtype=reserves.dtype,
+    )
+    cumulative_multiplier = jnp.cumprod(streaming_fee_multiplier, axis=0)
+    return reserves * cumulative_multiplier[:, jnp.newaxis]
+
+
+def _materialize_streaming_fee_multiplier(
+    streaming_fee_multiplier: jnp.ndarray,
+    scan_len: int,
+    dtype,
+) -> jnp.ndarray:
+    """Normalize streaming multipliers to a 1D minute-level vector."""
+    streaming_fee_multiplier = jnp.asarray(streaming_fee_multiplier, dtype=dtype)
+    if streaming_fee_multiplier.ndim == 0:
+        streaming_fee_multiplier = streaming_fee_multiplier.reshape((1,))
+    elif streaming_fee_multiplier.ndim == 2 and streaming_fee_multiplier.shape[1] == 1:
+        streaming_fee_multiplier = streaming_fee_multiplier[:, 0]
+    elif streaming_fee_multiplier.ndim != 1:
+        raise ValueError(
+            "streaming_fee_multiplier must be a scalar, 1D array, or (T, 1) column array"
+        )
+
+    if streaming_fee_multiplier.shape[0] == scan_len:
+        return streaming_fee_multiplier
+    if streaming_fee_multiplier.shape[0] == 1:
+        return jnp.broadcast_to(streaming_fee_multiplier, (scan_len,))
+    raise ValueError(
+        "streaming_fee_multiplier length must be 1 or match reserve path length"
+    )
+
+
+def _apply_streaming_fee_multiplier_to_boundary_values(
+    boundary_values: jnp.ndarray,
+    streaming_fee_multiplier: jnp.ndarray,
+    scan_len: int,
+    metric_period: int = 1440,
+) -> jnp.ndarray:
+    """Apply streaming multipliers to fused-path metric boundary values."""
+    streaming_fee_multiplier = _materialize_streaming_fee_multiplier(
+        streaming_fee_multiplier,
+        scan_len=scan_len,
+        dtype=boundary_values.dtype,
+    )
+    cumulative_multiplier = jnp.cumprod(streaming_fee_multiplier, axis=0)
+    boundary_indices = (
+        jnp.arange(boundary_values.shape[0], dtype=jnp.int32) * metric_period
+    )
+    return boundary_values * cumulative_multiplier[boundary_indices]
+
+
 def _apply_price_noise(prices, sigma, seed_int):
     """Apply multiplicative log-normal noise to prices.
 
@@ -982,7 +1043,7 @@ def forward_pass(
     # the forward pass cannot be performed.
     if pool is None:
         raise ValueError("Pool must be provided to forward_pass")
-    training_data_kind = static_dict["training_data_kind"]
+    training_data_kind = static_dict.get("training_data_kind", "historic")
     minimum_weight = static_dict.get("minimum_weight")
     n_assets = static_dict["n_assets"]
     return_val = static_dict["return_val"]
@@ -998,7 +1059,21 @@ def forward_pass(
         )[:, :, 0]
         start_index = start_index[0:2]
 
+    static_dynamic_input_flags = static_dict.get("dynamic_input_flags")
+    static_streaming_only_dynamic_inputs = (
+        dynamic_inputs is not None
+        and static_dynamic_input_flags is not None
+        and static_dynamic_input_flags.get("has_streaming_fee_multiplier", False)
+        and not static_dynamic_input_flags.get("has_trades", False)
+        and not static_dynamic_input_flags.get("has_dynamic_fees", False)
+        and not static_dynamic_input_flags.get("has_dynamic_gas_cost", False)
+        and not static_dynamic_input_flags.get("has_dynamic_arb_fees", False)
+        and not static_dynamic_input_flags.get("has_lp_supply", False)
+    )
+
     # --- Fused chunked reserve path (opt-in, zero-fees only) ---
+    # Keep fused path enabled when dynamic inputs are streaming-only because the
+    # streaming multiplier is a post-reserve proportional scaling.
     use_fused = static_dict.get("use_fused_reserves", True)
     if (
         use_fused
@@ -1011,7 +1086,10 @@ def forward_pass(
         and static_dict["arb_frequency"] == 1
         and static_dict.get("turnover_penalty", 0.0) == 0.0
         and static_dict.get("price_noise_sigma", 0.0) == 0.0
-        and dynamic_inputs is None
+        and (
+            dynamic_inputs is None
+            or static_streaming_only_dynamic_inputs
+        )
         and 1440 % static_dict["chunk_period"] == 0  # chunk_period divides metric_period
         and not pool._rule_outputs_are_weights  # only delta-based pools validated
         and static_dict["bout_length"] > 1440 * 2  # need ≥2 metric periods
@@ -1020,6 +1098,12 @@ def forward_pass(
             params, static_dict, prices, start_index,
         )
         boundary_values = fused_result["boundary_values"]
+        if static_streaming_only_dynamic_inputs:
+            boundary_values = _apply_streaming_fee_multiplier_to_boundary_values(
+                boundary_values,
+                dynamic_inputs.streaming_fee_multiplier,
+                scan_len=bout_length - 1,
+            )
         return _calculate_return_value_chunked(
             return_val, boundary_values,
             fused_result["initial_reserves"],
@@ -1033,6 +1117,13 @@ def forward_pass(
     # 3. Fees, gas costs, and arb fees are all zero, with no trades provided
     dynamic_inputs, dynamic_input_flags = _resolve_dynamic_inputs(
         dynamic_inputs, static_dict
+    )
+    if static_streaming_only_dynamic_inputs:
+        dynamic_input_flags = dict(dynamic_input_flags)
+        dynamic_input_flags["use_dynamic_inputs"] = False
+    use_streaming_fee_multiplier = (
+        dynamic_inputs is not None
+        and dynamic_input_flags.get("has_streaming_fee_multiplier", False)
     )
 
     fee_revenue = None
@@ -1094,6 +1185,12 @@ def forward_pass(
             arb_mask = jnp.zeros(bout_length - 1)
             arb_mask = arb_mask.at[::arb_freq].set(1.0)
             fee_revenue = fee_revenue_expanded * arb_mask
+
+    # Streaming fee reduction applies uniformly across pool types.
+    if use_streaming_fee_multiplier:
+        reserves = _apply_streaming_fee_multiplier(
+            reserves, dynamic_inputs.streaming_fee_multiplier
+        )
 
     if fee_revenue is None:
         fee_revenue = jnp.zeros(reserves.shape[0])
@@ -1277,6 +1374,9 @@ def forward_pass_nograd(
             gas_cost=stop_gradient(dynamic_inputs.gas_cost),
             arb_fees=stop_gradient(dynamic_inputs.arb_fees),
             lp_supply=stop_gradient(dynamic_inputs.lp_supply),
+            streaming_fee_multiplier=stop_gradient(
+                dynamic_inputs.streaming_fee_multiplier
+            ),
         )
     return forward_pass(
         params,

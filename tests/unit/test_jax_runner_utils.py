@@ -267,6 +267,7 @@ class TestDynamicInputPreparation:
         assert dynamic_inputs.gas_cost.shape == (1,)
         assert dynamic_inputs.arb_fees.shape == (1,)
         assert dynamic_inputs.lp_supply.shape == (1,)
+        assert dynamic_inputs.streaming_fee_multiplier.shape == (1,)
 
     def test_dynamic_input_flags_reflect_present_frames(self):
         """Frame-presence flags should drive static dynamic-input dispatch."""
@@ -289,6 +290,7 @@ class TestDynamicInputPreparation:
         assert flags["has_dynamic_gas_cost"] is True
         assert flags["has_dynamic_arb_fees"] is False
         assert flags["has_lp_supply"] is False
+        assert flags["has_streaming_fee_multiplier"] is False
 
     def test_prepare_dynamic_inputs_preserves_fixed_hot_path_structure(self):
         """Normalization should return fixed bundles plus static dispatch flags."""
@@ -315,6 +317,9 @@ class TestDynamicInputPreparation:
             gas_cost=pd.DataFrame({"unix": [1672531200000], "trade_gas_cost_usd": [3.25]}),
             arb_fees=pd.DataFrame({"unix": [1672531200000], "arb_fees": [0.0005]}),
             lp_supply=pd.DataFrame({"unix": [1672531200000], "lp_supply": [1250.0]}),
+            streaming_fee_multiplier=pd.DataFrame(
+                {"unix": [1672531200000], "streaming_fee_multiplier": [0.999]}
+            ),
         )
 
         prepared = prepare_dynamic_inputs(
@@ -333,16 +338,19 @@ class TestDynamicInputPreparation:
         assert flags["has_dynamic_gas_cost"] is True
         assert flags["has_dynamic_arb_fees"] is True
         assert flags["has_lp_supply"] is True
+        assert flags["has_streaming_fee_multiplier"] is True
         assert train_inputs.trades.shape == (2, 3)
         assert train_inputs.fees.shape == (2,)
         assert train_inputs.gas_cost.shape == (2,)
         assert train_inputs.arb_fees.shape == (2,)
         assert train_inputs.lp_supply.shape == (2,)
+        assert train_inputs.streaming_fee_multiplier.shape == (2,)
         assert test_inputs.trades.shape == (2, 3)
         assert test_inputs.fees.shape == (2,)
         assert test_inputs.gas_cost.shape == (2,)
         assert test_inputs.arb_fees.shape == (2,)
         assert test_inputs.lp_supply.shape == (2,)
+        assert test_inputs.streaming_fee_multiplier.shape == (2,)
         np.testing.assert_allclose(np.asarray(train_inputs.fees), np.array([0.003, 0.003]))
 
     def test_prepare_dynamic_inputs_uses_correct_test_period_values(self):
@@ -376,6 +384,12 @@ class TestDynamicInputPreparation:
                 lp_supply=pd.DataFrame(
                     {"unix": [1672531200000, end_unix], "lp_supply": [1000.0, 2000.0]}
                 ),
+                streaming_fee_multiplier=pd.DataFrame(
+                    {
+                        "unix": [1672531200000, end_unix],
+                        "streaming_fee_multiplier": [0.999, 0.998],
+                    }
+                ),
             ),
             do_test_period=True,
         )
@@ -396,6 +410,10 @@ class TestDynamicInputPreparation:
             np.asarray(prepared["test_dynamic_inputs"].lp_supply),
             np.array([2000.0, 2000.0]),
         )
+        np.testing.assert_allclose(
+            np.asarray(prepared["test_dynamic_inputs"].streaming_fee_multiplier),
+            np.array([0.998, 0.998]),
+        )
 
     def test_resolve_dynamic_input_flags_promotes_explicit_bundle(self):
         """Passing a bundle directly should force dynamic-path dispatch."""
@@ -413,6 +431,7 @@ class TestDynamicInputPreparation:
                 "has_dynamic_gas_cost": False,
                 "has_dynamic_arb_fees": False,
                 "has_lp_supply": False,
+                "has_streaming_fee_multiplier": False,
             },
         )
 
@@ -436,6 +455,9 @@ class TestDynamicInputPreparation:
         np.testing.assert_allclose(np.asarray(resolved["gas_cost"]), np.array([2.5]))
         np.testing.assert_allclose(np.asarray(resolved["arb_fees"]), np.array([0.0001]))
         np.testing.assert_allclose(np.asarray(resolved["lp_supply"]), np.array([1.0]))
+        np.testing.assert_allclose(
+            np.asarray(resolved["streaming_fee_multiplier"]), np.array([1.0])
+        )
 
     def test_resolve_dynamic_input_components_prefers_dynamic_values(self):
         """Dynamic arrays should override static scalar defaults for enabled fields."""
@@ -450,6 +472,7 @@ class TestDynamicInputPreparation:
             gas_cost=jnp.array([3.0]),
             arb_fees=jnp.array([0.0003]),
             lp_supply=jnp.array([1500.0]),
+            streaming_fee_multiplier=jnp.array([0.999]),
         )
         flags = {
             "use_dynamic_inputs": True,
@@ -458,6 +481,7 @@ class TestDynamicInputPreparation:
             "has_dynamic_gas_cost": True,
             "has_dynamic_arb_fees": True,
             "has_lp_supply": True,
+            "has_streaming_fee_multiplier": True,
         }
 
         resolved = resolve_dynamic_input_components(
@@ -471,6 +495,9 @@ class TestDynamicInputPreparation:
         np.testing.assert_allclose(np.asarray(resolved["gas_cost"]), np.array([3.0]))
         np.testing.assert_allclose(np.asarray(resolved["arb_fees"]), np.array([0.0003]))
         np.testing.assert_allclose(np.asarray(resolved["lp_supply"]), np.array([1500.0]))
+        np.testing.assert_allclose(
+            np.asarray(resolved["streaming_fee_multiplier"]), np.array([0.999])
+        )
 
     def test_materialize_dynamic_inputs_leaves_trades_optional(self):
         """No-trade paths should not expand placeholder trades into the scan inputs."""
@@ -499,6 +526,9 @@ class TestDynamicInputPreparation:
         np.testing.assert_allclose(np.asarray(materialized.gas_cost), np.full(4, 2.5))
         np.testing.assert_allclose(np.asarray(materialized.arb_fees), np.full(4, 0.0001))
         np.testing.assert_allclose(np.asarray(materialized.lp_supply), np.ones(4))
+        np.testing.assert_allclose(
+            np.asarray(materialized.streaming_fee_multiplier), np.ones(1)
+        )
 
     def test_materialize_dynamic_inputs_requires_trades_when_enabled(self):
         """Trade-enabled scans should fail fast if no trade path is available."""
@@ -517,6 +547,7 @@ class TestDynamicInputPreparation:
                     "has_dynamic_gas_cost": False,
                     "has_dynamic_arb_fees": False,
                     "has_lp_supply": False,
+                    "has_streaming_fee_multiplier": False,
                 },
                 static_dict={"fees": 0.003, "gas_cost": 0.0, "arb_fees": 0.0},
                 scan_len=2,

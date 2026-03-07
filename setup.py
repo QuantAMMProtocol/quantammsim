@@ -17,6 +17,7 @@ setup(
         "matplotlib",
         "tqdm",
         "optuna",
+        "numpyro",
         "pyarrow",
         "plotly",
         "bidask",
