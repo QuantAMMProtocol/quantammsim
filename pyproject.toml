@@ -24,6 +24,8 @@ dependencies = [
     "plotly",
     "dask",
     "Historic-Crypto",
+    "gdown",
+    "binance_historical_data",
     "bidask",
     "optax",
     "jsonpickle",

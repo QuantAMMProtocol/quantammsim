@@ -20,7 +20,7 @@ setup(
         "pyarrow",
         "plotly",
         "bidask",
-        "Historic_Crypto",
+        "Historic-Crypto",
         "gdown",
         "binance_historical_data",
         "dask",
@@ -30,16 +30,22 @@ setup(
     ],
     extras_require={
         "dev": [
-            "pytest>=6.0",
+            "pytest>=7.0",
+            "pytest-cov>=4.0",
+            "pytest-xdist>=3.0",
+            "pytest-timeout>=2.0",
             "black",
             "flake8",
-            "pytest-cov",
             "hypothesis",
         ],
         "docs": [
             "sphinx",
             "sphinx-automodapi",
             "sphinx-rtd-theme",
+        ],
+        "calibration": [
+            "numpyro>=0.15.0",
+            "arviz>=0.15.0",
         ],
     },
     python_requires=">=3.9",
