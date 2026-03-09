@@ -1290,22 +1290,34 @@ class TestLpSupply:
 
         start_index = jnp.array([0, 0])
 
-        # Build dynamic input arrays
-        fees_arr = jnp.full(n_steps, 0.003)
-        arb_thresh_arr = jnp.zeros(n_steps)
-        arb_fees_arr = jnp.zeros(n_steps)
-        trade_arr = jnp.zeros((n_steps, 2))
+        from quantammsim.core_simulator.dynamic_inputs import DynamicInputArrays
 
         lp_supply = jnp.concatenate([jnp.ones(10), 2.0 * jnp.ones(10)])
 
+        di_with_lp = DynamicInputArrays(
+            trades=None,
+            fees=jnp.full(n_steps, 0.003),
+            gas_cost=jnp.zeros(n_steps),
+            arb_fees=jnp.zeros(n_steps),
+            lp_supply=lp_supply,
+            reclamm_price_ratio_updates=jnp.array([[0.0, 0.0, 0.0, jnp.nan]]),
+        )
+        di_without_lp = DynamicInputArrays(
+            trades=None,
+            fees=jnp.full(n_steps, 0.003),
+            gas_cost=jnp.zeros(n_steps),
+            arb_fees=jnp.zeros(n_steps),
+            lp_supply=jnp.ones(n_steps),
+            reclamm_price_ratio_updates=jnp.array([[0.0, 0.0, 0.0, jnp.nan]]),
+        )
+
         res_with_lp, _ = pool.calculate_reserves_and_fee_revenue_with_dynamic_inputs(
             params, run_fingerprint, prices, start_index,
-            fees_arr, arb_thresh_arr, arb_fees_arr, trade_arr,
-            lp_supply_array=lp_supply,
+            dynamic_inputs=di_with_lp,
         )
         res_without_lp, _ = pool.calculate_reserves_and_fee_revenue_with_dynamic_inputs(
             params, run_fingerprint, prices, start_index,
-            fees_arr, arb_thresh_arr, arb_fees_arr, trade_arr,
+            dynamic_inputs=di_without_lp,
         )
 
         # First 10 steps identical, then diverge
@@ -1356,15 +1368,16 @@ class TestLpSupply:
         )
 
     def test_lp_supply_e2e_do_run_on_historic_data(self):
-        """End-to-end: lp_supply_df flows through do_run_on_historic_data."""
+        """End-to-end: lp_supply flows through do_run_on_historic_data via DynamicInputFrames."""
         import pandas as pd
         from quantammsim.runners.jax_runners import do_run_on_historic_data
+        from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
 
         fp = {
             "rule": "reclamm",
             "tokens": ["ETH", "USDC"],
-            "startDateString": "2024-06-01 00:00:00",
-            "endDateString": "2024-06-15 00:00:00",
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-15 00:00:00",
             "initial_pool_value": 1_000_000.0,
             "do_arb": True,
             "fees": 0.003,
@@ -1379,12 +1392,13 @@ class TestLpSupply:
         result_base = do_run_on_historic_data(
             run_fingerprint={**fp},
             params={**params},
+            root=TEST_DATA_DIR,
         )
 
         # LP supply doubles halfway through the period
         # unix column must be in milliseconds (matches windowing_utils convention)
-        start_unix_ms = int(pd.Timestamp("2024-06-01").timestamp() * 1000)
-        mid_unix_ms = int(pd.Timestamp("2024-06-08").timestamp() * 1000)
+        start_unix_ms = int(pd.Timestamp("2023-01-01").timestamp() * 1000)
+        mid_unix_ms = int(pd.Timestamp("2023-01-08").timestamp() * 1000)
         lp_supply_df = pd.DataFrame({
             "unix": [start_unix_ms, mid_unix_ms],
             "lp_supply": [1.0, 2.0],
@@ -1393,7 +1407,8 @@ class TestLpSupply:
         result_lp = do_run_on_historic_data(
             run_fingerprint={**fp},
             params={**params},
-            lp_supply_df=lp_supply_df,
+            dynamic_input_frames=DynamicInputFrames(lp_supply=lp_supply_df),
+            root=TEST_DATA_DIR,
         )
 
         # Final values should differ — doubling LP supply changes pool dynamics
