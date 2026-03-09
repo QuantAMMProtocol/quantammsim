@@ -6,6 +6,8 @@ import jax.numpy as jnp
 import pytest
 
 from quantammsim.pools.reCLAMM.reclamm_reserves import (
+    apply_target_price_ratio_to_virtual_balances,
+    compute_centeredness,
     compute_price_ratio,
     initialise_reclamm_reserves,
     _jax_calc_reclamm_reserves_with_dynamic_inputs,
@@ -289,6 +291,48 @@ class TestReclammPriceRatioUpdates:
             )
         )
         assert ratio_after_replacement == pytest.approx(2.0, rel=1e-4, abs=1e-4)
+
+    @pytest.mark.parametrize(
+        "Ra, Rb, Va, Vb, target_price_ratio",
+        [
+            # Centered pool, widen ratio
+            (500_000.0, 500_000.0, 100_000.0, 100_000.0, 9.0),
+            # Centered pool, narrow ratio
+            (500_000.0, 500_000.0, 100_000.0, 100_000.0, 2.0),
+            # Above center (Ra abundant)
+            (800_000.0, 200_000.0, 100_000.0, 100_000.0, 16.0),
+            # Below center (Rb abundant)
+            (200_000.0, 800_000.0, 100_000.0, 100_000.0, 16.0),
+            # Asymmetric virtuals
+            (300_000.0, 600_000.0, 50_000.0, 200_000.0, 5.0),
+            # Large ratio change
+            (500_000.0, 500_000.0, 100_000.0, 100_000.0, 100.0),
+        ],
+    )
+    def test_price_ratio_update_preserves_centeredness(
+        self, Ra, Rb, Va, Vb, target_price_ratio
+    ):
+        """Mirrors Foundry fuzz test testCalculateVirtualBalancesUpdatingPriceRatio__Fuzz.
+
+        Asserts that apply_target_price_ratio_to_virtual_balances preserves
+        centeredness and achieves the target price ratio.
+        """
+        Ra, Rb = jnp.float64(Ra), jnp.float64(Rb)
+        Va, Vb = jnp.float64(Va), jnp.float64(Vb)
+
+        old_centeredness, _ = compute_centeredness(Ra, Rb, Va, Vb)
+        Va_new, Vb_new = apply_target_price_ratio_to_virtual_balances(
+            Ra, Rb, Va, Vb, target_price_ratio
+        )
+        new_centeredness, _ = compute_centeredness(Ra, Rb, Va_new, Vb_new)
+        new_price_ratio = float(compute_price_ratio(Ra, Rb, Va_new, Vb_new))
+
+        assert float(new_centeredness) == pytest.approx(
+            float(old_centeredness), rel=1e-6, abs=1e-10
+        ), "Centeredness should be preserved"
+        assert new_price_ratio == pytest.approx(
+            target_price_ratio, rel=1e-4
+        ), "Price ratio should match target"
 
     def test_dynamic_fee_revenue_path_with_schedule(self):
         reserves, Va, Vb = _init_pool()
