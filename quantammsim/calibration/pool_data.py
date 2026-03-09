@@ -6,7 +6,7 @@ model-ready arrays for the loss function.
 
 import json
 import os
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -25,6 +25,11 @@ _MCAP_PATH = os.path.join(
     "local_data", "noise_calibration", "token_mcaps.json",
 )
 
+# Default path for Binance minute parquets
+_BINANCE_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "data",
+)
+
 # Asset type classification (fallback if not in mcap JSON)
 _STABLECOINS = {
     "USDC", "USDT", "DAI", "WXDAI", "xDAI", "GHO", "LUSD", "crvUSD",
@@ -40,6 +45,22 @@ _NATIVE_LST = {
     "JitoSOL",
     "waEthLidoWETH", "waEthLidowstETH",
     "waBasWETH", "waGnoGNO", "waGnowstETH",
+}
+
+# Balancer token → Binance parquet symbol mapping.
+# Matches build_pool_grids.py TOKEN_MAP.
+TOKEN_MAP = {
+    "WBTC": "BTC", "WETH": "ETH", "cbBTC": "BTC",
+    "wstETH": "ETH", "stETH": "ETH", "rETH": "ETH", "cbETH": "ETH",
+    "waEthLidoWETH": "ETH", "waEthLidowstETH": "ETH",
+    "waBasWETH": "ETH", "waGnowstETH": "ETH",
+    "waGnoGNO": "GNO", "osGNO": "GNO",
+    "wS": "S", "stS": "S",
+    "JitoSOL": "SOL",
+    "wPOL": "POL", "WMATIC": "POL", "MATIC": "POL",
+    "USDC.e": "USDC", "USDbC": "USDC", "waBasUSDC": "USDC",
+    "DAI": "USDC", "WXDAI": "USDC", "sDAI": "USDC",
+    "USDT": "USDC", "DOLA": "USDC", "scUSD": "USDC",
 }
 
 
@@ -69,6 +90,153 @@ def _parse_tokens(tokens_str: str) -> List[str]:
     if isinstance(tokens_str, (list, tuple)):
         return list(tokens_str)
     return [t.strip() for t in tokens_str.split(",")]
+
+
+def _resolve_binance_symbol(token: str) -> str:
+    """Map Balancer token name to Binance parquet symbol."""
+    return TOKEN_MAP.get(token, token)
+
+
+def _load_binance_minute(symbol: str, data_dir: str = None) -> Optional[pd.DataFrame]:
+    """Load Binance minute close prices. Returns DataFrame with unix index."""
+    if data_dir is None:
+        data_dir = _BINANCE_DATA_DIR
+    path = os.path.join(data_dir, f"{symbol}_USD.parquet")
+    if not os.path.exists(path):
+        return None
+    df = pd.read_parquet(path, columns=["unix", "close"])
+    if df.index.name != "unix":
+        df = df.set_index("unix")
+    return df
+
+
+def compute_binance_pair_volatility(
+    token_a: str, token_b: str, data_dir: str = None,
+) -> Optional[pd.Series]:
+    """Compute daily annualized realized volatility from Binance minute data.
+
+    Resamples minute data to hourly, computes hourly log returns of the pair
+    ratio, then daily std × sqrt(24 × 365). Matches the Balancer hourly
+    pipeline's annualization convention.
+
+    Args:
+        token_a, token_b: Balancer token symbols (e.g. "WETH", "USDC")
+        data_dir: directory containing {SYMBOL}_USD.parquet files
+
+    Returns:
+        pd.Series with datetime.date index → annualized volatility,
+        or None if both tokens are stablecoins / same underlying / missing data.
+    """
+    sym_a = _resolve_binance_symbol(token_a)
+    sym_b = _resolve_binance_symbol(token_b)
+
+    is_stable_a = token_a in _STABLECOINS or sym_a == "USDC"
+    is_stable_b = token_b in _STABLECOINS or sym_b == "USDC"
+
+    if is_stable_a and is_stable_b:
+        return None  # caller should use constant 0.01
+
+    if sym_a == sym_b:
+        return None  # same underlying (e.g. wstETH/WETH)
+
+    # Load minute data and compute pair ratio
+    if is_stable_b:
+        df = _load_binance_minute(sym_a, data_dir)
+        if df is None:
+            return None
+        ratio = df["close"]
+    elif is_stable_a:
+        df = _load_binance_minute(sym_b, data_dir)
+        if df is None:
+            return None
+        ratio = 1.0 / df["close"]
+    else:
+        df_a = _load_binance_minute(sym_a, data_dir)
+        df_b = _load_binance_minute(sym_b, data_dir)
+        if df_a is None or df_b is None:
+            return None
+        merged = df_a.join(df_b, lsuffix="_a", rsuffix="_b", how="inner")
+        ratio = merged["close_a"] / merged["close_b"]
+
+    # Resample to hourly (last close per hour)
+    ratio_df = pd.DataFrame({"ratio": ratio})
+    ratio_df.index = pd.to_datetime(ratio_df.index, unit="ms", utc=True)
+    hourly = ratio_df.resample("1h").last().dropna()
+
+    # Hourly log returns
+    hourly["log_return"] = np.log(hourly["ratio"] / hourly["ratio"].shift(1))
+    hourly = hourly.dropna()
+
+    # Daily std → annualized
+    hourly["date"] = hourly.index.date
+    daily_vol = hourly.groupby("date")["log_return"].std()
+    annualized = daily_vol * np.sqrt(24 * 365)
+
+    # Clean
+    annualized = annualized.replace([np.inf, -np.inf], np.nan).dropna()
+    annualized = annualized[annualized > 0]
+
+    return annualized
+
+
+def replace_panel_volatility_with_binance(
+    panel: pd.DataFrame, data_dir: str = None,
+) -> pd.DataFrame:
+    """Replace panel 'volatility' column with Binance-derived daily values.
+
+    For each pool, computes daily realized volatility from Binance minute data.
+    Pools without Binance data keep their existing (possibly fallback) values.
+    Stablecoin-stablecoin and same-underlying pairs get vol=0.01.
+
+    Returns a copy of the panel with updated volatility.
+    """
+    panel = panel.copy()
+    panel["date"] = pd.to_datetime(panel["date"])
+
+    # Cache: (sym_a, sym_b) → vol_series to avoid reloading
+    _vol_cache: Dict[tuple, Optional[pd.Series]] = {}
+
+    n_replaced = 0
+    n_pools = 0
+
+    for pool_id, grp in panel.groupby("pool_id"):
+        tokens_str = grp.iloc[0]["tokens"]
+        toks = _parse_tokens(tokens_str)
+        if len(toks) < 2:
+            continue
+
+        sym_a = _resolve_binance_symbol(toks[0])
+        sym_b = _resolve_binance_symbol(toks[1])
+        cache_key = (min(sym_a, sym_b), max(sym_a, sym_b))
+
+        if cache_key not in _vol_cache:
+            _vol_cache[cache_key] = compute_binance_pair_volatility(
+                toks[0], toks[1], data_dir)
+
+        vol_series = _vol_cache[cache_key]
+
+        if vol_series is None:
+            # Stablecoins or same underlying → low constant vol
+            is_stable_a = toks[0] in _STABLECOINS or sym_a == "USDC"
+            is_stable_b = toks[1] in _STABLECOINS or sym_b == "USDC"
+            if (is_stable_a and is_stable_b) or sym_a == sym_b:
+                panel.loc[grp.index, "volatility"] = 0.01
+                n_pools += 1
+            continue
+
+        # Vectorized date matching
+        panel_dates = pd.to_datetime(grp["date"]).dt.date
+        vol_dict = vol_series.to_dict()
+        new_vol = panel_dates.map(vol_dict)
+        has_vol = new_vol.notna()
+        if has_vol.any():
+            panel.loc[grp.index[has_vol.values], "volatility"] = (
+                new_vol[has_vol].values.astype(float))
+            n_replaced += has_vol.sum()
+        n_pools += 1
+
+    print(f"  Binance volatility: {n_pools} pools, {n_replaced} obs replaced")
+    return panel
 
 
 def match_grids_to_panel(
