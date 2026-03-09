@@ -987,10 +987,8 @@ def _reclamm_scan_step_with_fees_and_revenue(
         0,
     )
 
-    fees_gate = _ste_greater_than(
-        jnp.abs(gamma - 1.0), jnp.asarray(1e-12, dtype=gamma.dtype), ste_temperature
-    )
-    optimal_arb_trade = _ste_select(fees_gate, fee_trade, zero_fee_trade)
+    fees_are_being_charged = gamma != 1.0
+    optimal_arb_trade = jnp.where(fees_are_being_charged, fee_trade, zero_fee_trade)
 
     # Check profitability for arb
     profit_to_arb = -(optimal_arb_trade * prices).sum() - arb_thresh
