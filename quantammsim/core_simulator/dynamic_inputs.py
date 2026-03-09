@@ -77,14 +77,12 @@ def empty_dynamic_input_arrays() -> DynamicInputArrays:
     """Create a canonical empty bundle."""
     return DynamicInputArrays(
         trades=None,
-        fees=jnp.zeros((1,), dtype=jnp.float64),
-        gas_cost=jnp.zeros((1,), dtype=jnp.float64),
-        arb_fees=jnp.zeros((1,), dtype=jnp.float64),
-        lp_supply=jnp.ones((1,), dtype=jnp.float64),
+        fees=jnp.zeros((1,)),
+        gas_cost=jnp.zeros((1,)),
+        arb_fees=jnp.zeros((1,)),
+        lp_supply=jnp.ones((1,)),
         # Columns: has_event, target_price_ratio, end_step, start_price_ratio_override
-        reclamm_price_ratio_updates=jnp.array(
-            [[0.0, 0.0, 0.0, jnp.nan]], dtype=jnp.float64
-        ),
+        reclamm_price_ratio_updates=jnp.array([[0.0, 0.0, 0.0, jnp.nan]]),
     )
 
 
@@ -100,22 +98,22 @@ def resolve_dynamic_input_components(
         "fees": (
             arrays.fees
             if dynamic_input_flags["has_dynamic_fees"]
-            else jnp.asarray([static_dict["fees"]], dtype=jnp.float64)
+            else jnp.asarray([static_dict["fees"]])
         ),
         "gas_cost": (
             arrays.gas_cost
             if dynamic_input_flags["has_dynamic_gas_cost"]
-            else jnp.asarray([static_dict["gas_cost"]], dtype=jnp.float64)
+            else jnp.asarray([static_dict["gas_cost"]])
         ),
         "arb_fees": (
             arrays.arb_fees
             if dynamic_input_flags["has_dynamic_arb_fees"]
-            else jnp.asarray([static_dict["arb_fees"]], dtype=jnp.float64)
+            else jnp.asarray([static_dict["arb_fees"]])
         ),
         "lp_supply": (
             arrays.lp_supply
             if dynamic_input_flags["has_lp_supply"]
-            else jnp.ones((1,), dtype=jnp.float64)
+            else jnp.ones((1,))
         ),
         "reclamm_price_ratio_updates": (
             arrays.reclamm_price_ratio_updates
@@ -150,7 +148,7 @@ def materialize_dynamic_inputs(
     static_dict: dict,
     scan_len: int,
     do_trades: bool,
-    dtype=jnp.float64,
+    dtype=None,
 ) -> DynamicInputArrays:
     """Resolve and broadcast dynamic inputs for a specific scan length."""
     if dynamic_input_flags is None and dynamic_inputs is not None:
