@@ -217,6 +217,54 @@ class TestHyperSurgeFeeLogic:
         hypersurge_delta = jnp.abs(with_hypersurge[-1] - reserves).sum()
         assert float(hypersurge_delta) < float(baseline_delta)
 
+    def test_hypersurge_multi_scan_executes_additional_arb(self):
+        reserves, Va, Vb = _init_pool()
+        prices = jnp.array([[3500.0, 1.0]])
+        peg_ratio_array = jnp.array([1.0 / 2500.0])
+
+        one_scan = _jax_calc_reclamm_reserves_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.001,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+            hypersurge_enabled=True,
+            hypersurge_arb_max_fee=0.20,
+            hypersurge_arb_threshold=0.0,
+            hypersurge_arb_cap_deviation=0.01,
+            hypersurge_noise_max_fee=0.20,
+            hypersurge_noise_threshold=0.0,
+            hypersurge_noise_cap_deviation=0.01,
+            hypersurge_max_arb_scans=1,
+            hypersurge_peg_ratio_array=peg_ratio_array,
+        )
+        many_scans = _jax_calc_reclamm_reserves_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.001,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+            hypersurge_enabled=True,
+            hypersurge_arb_max_fee=0.20,
+            hypersurge_arb_threshold=0.0,
+            hypersurge_arb_cap_deviation=0.01,
+            hypersurge_noise_max_fee=0.20,
+            hypersurge_noise_threshold=0.0,
+            hypersurge_noise_cap_deviation=0.01,
+            hypersurge_max_arb_scans=8,
+            hypersurge_peg_ratio_array=peg_ratio_array,
+        )
+
+        one_scan_delta = jnp.abs(one_scan[0] - reserves).sum()
+        many_scans_delta = jnp.abs(many_scans[0] - reserves).sum()
+        assert float(many_scans_delta) > float(one_scan_delta)
+
 
 class TestReservesPositiveThroughout:
     """Reserves should never go negative during multi-step scan."""

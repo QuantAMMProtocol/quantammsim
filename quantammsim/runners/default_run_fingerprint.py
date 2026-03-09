@@ -110,6 +110,7 @@ run_fingerprint_defaults = {
     "reclamm_hypersurge_noise_max_fee": 0.02,
     "reclamm_hypersurge_noise_threshold": 0.02,
     "reclamm_hypersurge_noise_cap_deviation": 1.0,
+    "reclamm_hypersurge_max_arb_scans": 64,
     "initial_arc_length_speed": 1e-4,  # default initial value when learning arc_length_speed
     "initial_shift_exponent": 1.0,  # default shift_exponent when using that parametrisation
     "initial_hypersurge_arb_max_fee": 0.02,

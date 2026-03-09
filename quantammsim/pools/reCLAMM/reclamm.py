@@ -276,6 +276,11 @@ class ReClammPool(AbstractPool):
             ),
         }
 
+    @staticmethod
+    def _resolve_hypersurge_max_arb_scans(run_fingerprint):
+        """Resolve the max number of same-step HyperSurge arb scans."""
+        return int(run_fingerprint.get("reclamm_hypersurge_max_arb_scans", 64))
+
     def _resolve_hypersurge_peg(
         self,
         run_fingerprint: Dict[str, Any],
@@ -370,6 +375,9 @@ class ReClammPool(AbstractPool):
             lp_supply_array=lp_supply_array,
         )
         hypersurge_params = self._resolve_hypersurge_params(params, run_fingerprint)
+        hypersurge_max_arb_scans = self._resolve_hypersurge_max_arb_scans(
+            run_fingerprint
+        )
         hypersurge_peg_ratio_array = self._resolve_hypersurge_peg(
             run_fingerprint,
             prices,
@@ -402,6 +410,7 @@ class ReClammPool(AbstractPool):
                 noise_params=noise_params,
                 volatility_array=arb_vol,
                 hypersurge_peg_ratio_array=hypersurge_peg_ratio_array,
+                hypersurge_max_arb_scans=hypersurge_max_arb_scans,
                 **hypersurge_params,
             )
         return jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape)
@@ -434,6 +443,9 @@ class ReClammPool(AbstractPool):
             lp_supply_array=lp_supply_array,
         )
         hypersurge_params = self._resolve_hypersurge_params(params, run_fingerprint)
+        hypersurge_max_arb_scans = self._resolve_hypersurge_max_arb_scans(
+            run_fingerprint
+        )
         hypersurge_peg_ratio_array = self._resolve_hypersurge_peg(
             run_fingerprint,
             prices,
@@ -466,6 +478,7 @@ class ReClammPool(AbstractPool):
                 noise_params=noise_params,
                 volatility_array=arb_vol,
                 hypersurge_peg_ratio_array=hypersurge_peg_ratio_array,
+                hypersurge_max_arb_scans=hypersurge_max_arb_scans,
                 **hypersurge_params,
             )
         return (
@@ -511,6 +524,9 @@ class ReClammPool(AbstractPool):
         )
         dynamic_flags = run_fingerprint.get("dynamic_input_flags") or {}
         hypersurge_params = self._resolve_hypersurge_params(params, run_fingerprint)
+        hypersurge_max_arb_scans = self._resolve_hypersurge_max_arb_scans(
+            run_fingerprint
+        )
         hypersurge_peg_ratio_array = self._resolve_hypersurge_peg(
             run_fingerprint,
             prices,
@@ -547,6 +563,7 @@ class ReClammPool(AbstractPool):
             noise_params=noise_params,
             volatility_array=arb_vol,
             hypersurge_peg_ratio_array=hypersurge_peg_ratio_array,
+            hypersurge_max_arb_scans=hypersurge_max_arb_scans,
             **hypersurge_params,
         )
 
@@ -635,6 +652,9 @@ class ReClammPool(AbstractPool):
         )
         dynamic_flags = run_fingerprint.get("dynamic_input_flags") or {}
         hypersurge_params = self._resolve_hypersurge_params(params, run_fingerprint)
+        hypersurge_max_arb_scans = self._resolve_hypersurge_max_arb_scans(
+            run_fingerprint
+        )
         hypersurge_peg_ratio_array = self._resolve_hypersurge_peg(
             run_fingerprint,
             prices,
@@ -671,6 +691,7 @@ class ReClammPool(AbstractPool):
             noise_params=noise_params,
             volatility_array=arb_vol,
             hypersurge_peg_ratio_array=hypersurge_peg_ratio_array,
+            hypersurge_max_arb_scans=hypersurge_max_arb_scans,
             **hypersurge_params,
         )
 
