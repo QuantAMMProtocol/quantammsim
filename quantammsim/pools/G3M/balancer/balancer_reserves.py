@@ -147,7 +147,7 @@ def _jax_calc_balancer_reserves_with_fees_scan_function_using_precalcs(
         tokens_to_drop,
         gamma,
         n,
-        0,
+        -1e-15,
     )
 
     optimal_arb_trade = jnp.where(
@@ -350,6 +350,7 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
     prev_reserves = carry_list[1]
 
     counter = carry_list[2]
+    prev_lp_supply = carry_list[3]
 
     # input_list contains weights, prices, precalcs and fee/arb amounts
     prices = input_list[0]
@@ -359,7 +360,16 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
     gamma = input_list[4]
     arb_thresh = input_list[5]
     arb_fees = input_list[6]
-    trade = input_list[7] if do_trades else None
+    trade = input_list[7]
+    lp_supply = input_list[8]
+
+    # Scale reserves for LP supply changes (proportional deposits/withdrawals)
+    lp_supply_change = lp_supply != prev_lp_supply
+    prev_reserves = jnp.where(
+        lp_supply_change,
+        prev_reserves * lp_supply / prev_lp_supply,
+        prev_reserves,
+    )
 
     fees_are_being_charged = gamma != 1.0
 
@@ -385,7 +395,7 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
         tokens_to_drop,
         gamma,
         n,
-        0,
+        -1e-15,
     )
 
     optimal_arb_trade = jnp.where(
@@ -421,6 +431,7 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
         prices,
         reserves,
         counter,
+        lp_supply,
     ], reserves
 
 
@@ -436,6 +447,7 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
     trades=None,
     do_trades=False,
     do_arb=True,
+    lp_supply_array=None,
 ):
     """
     Calculate AMM reserves considering fees and arbitrage opportunities using signature variations,
@@ -497,6 +509,14 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
     if do_trades and trades is None:
         raise ValueError("Trades must be provided when do_trades=True.")
 
+    if lp_supply_array is None:
+        lp_supply_array = jnp.array(1.0)
+    lp_supply_array = jnp.where(
+        lp_supply_array.size == 1,
+        jnp.full(prices.shape[0], lp_supply_array),
+        lp_supply_array,
+    )
+
     # pre-calculate some values that are repeatedly used in optimal arb calculations
     _, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
         precalc_shared_values_for_all_signatures(all_sig_variations, n_assets)
@@ -529,18 +549,22 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
         initial_prices,
         initial_reserves,
         0,
+        lp_supply_array[0],
     ]
-    scan_inputs = [
-        prices,
-        active_initial_weights,
-        per_asset_ratios,
-        all_other_assets_ratios,
-        gamma,
-        arb_thresh,
-        arb_fees,
-    ]
-    if do_trades:
-        scan_inputs.append(trades)
-    _, reserves = scan(scan_fn, carry_list_init, scan_inputs)
+    _, reserves = scan(
+        scan_fn,
+        carry_list_init,
+        [
+            prices,
+            active_initial_weights,
+            per_asset_ratios,
+            all_other_assets_ratios,
+            gamma,
+            arb_thresh,
+            arb_fees,
+            trades,
+            lp_supply_array,
+        ],
+    )
 
     return reserves

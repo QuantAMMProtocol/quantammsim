@@ -164,21 +164,18 @@ def construct_optimal_trade_jnp(
     valid_post_trade_reserves = (
         jnp.sum(initial_reserves + active_overall_trade > 0) == n
     )
-    valid_post_trade_constant = (
-        jnp.prod(
-            (
-                initial_reserves
-                + active_overall_trade
-                * (fee_gamma ** (trade_to_direction_jnp(active_overall_trade)))
-            )
-            ** initial_weights
+    post_trade_constant = jnp.prod(
+        (
+            initial_reserves
+            + active_overall_trade
+            * (fee_gamma ** (trade_to_direction_jnp(active_overall_trade)))
         )
-        - initial_constant
-        >= slack
+        ** initial_weights
     )
+    relative_diff = (post_trade_constant - initial_constant) / initial_constant
+    valid_post_trade_constant = relative_diff >= slack
     valid_trade = jnp.logical_and(valid_post_trade_reserves, valid_post_trade_constant)
     return jnp.where(valid_trade, active_overall_trade, 0)
-    # return active_overall_trade, valid_post_trade_reserves * valid_post_trade_constant
 
 
 construct_optimal_trade_jnp_vmapped = vmap(
@@ -336,18 +333,16 @@ def calc_optimal_trade_for_one_signature(
     valid_post_trade_reserves = (
         jnp.sum(initial_reserves + active_overall_trade > 0) == n
     )
-    valid_post_trade_constant = (
-        jnp.prod(
-            (
-                initial_reserves
-                + active_overall_trade
-                * (fee_gamma ** (trade_to_direction_jnp(active_overall_trade)))
-            )
-            ** initial_weights
+    post_trade_constant = jnp.prod(
+        (
+            initial_reserves
+            + active_overall_trade
+            * (fee_gamma ** (trade_to_direction_jnp(active_overall_trade)))
         )
-        - initial_constant
-        >= slack
+        ** initial_weights
     )
+    relative_diff = (post_trade_constant - initial_constant) / initial_constant
+    valid_post_trade_constant = relative_diff >= slack
     valid_trade = jnp.logical_and(valid_post_trade_reserves, valid_post_trade_constant)
     return jnp.where(valid_trade, active_overall_trade, 0)
     # return {
@@ -411,7 +406,7 @@ def parallelised_optimal_trade_sifter(
         tokens_to_drop,
         fee_gamma,
         n,
-        0,
+        slack,
     )
 
     profits = -(overall_trades * local_prices).sum(-1)
@@ -457,7 +452,7 @@ def wrapped_parallelised_optimal_trade_sifter(
         tokens_to_drop,
         fee_gamma,
         n,
-        slack=0,
+        slack=slack,
     )
     return trade
 

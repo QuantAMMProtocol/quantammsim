@@ -331,6 +331,7 @@ class BalancerPool(AbstractPool):
             materialized_inputs.trades,
             run_fingerprint["do_trades"],
             run_fingerprint["do_arb"],
+            materialized_inputs.lp_supply,
         )
         return reserves
 

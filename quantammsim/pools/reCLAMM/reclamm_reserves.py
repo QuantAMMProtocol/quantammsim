@@ -30,6 +30,12 @@ from quantammsim.pools.G3M.optimal_n_pool_arb import (
 from quantammsim.pools.G3M.G3M_trades import (
     _jax_calc_G3M_trade_from_exact_in_given_out,
 )
+from quantammsim.pools.noise_trades import (
+    calculate_reserves_after_noise_trade,
+    reclamm_tsoukalas_sqrt_noise_volume,
+    reclamm_tsoukalas_log_noise_volume,
+    reclamm_loglinear_noise_volume,
+)
 
 # Reference balance for initialisation (matches Solidity _INITIALIZATION_MAX_BALANCE_A)
 _INITIALIZATION_MAX_BALANCE_A = 1e6
@@ -598,7 +604,7 @@ def apply_target_price_ratio_to_virtual_balances(Ra, Rb, Va, Vb, target_price_ra
 
 def _reclamm_scan_step_zero_fees(
     carry_list,
-    prices,
+    input_list,
     centeredness_margin,
     daily_price_shift_base,
     seconds_per_step,
@@ -611,11 +617,23 @@ def _reclamm_scan_step_zero_fees(
     1. Update virtual balances (path-dependent)
     2. Compute analytical constant-product arb (no fee friction)
 
-    Carry: [real_reserves (2,), Va (0-d), Vb (0-d)]
+    Carry: [real_reserves (2,), Va (0-d), Vb (0-d), prev_lp_supply (0-d)]
+    Input: [prices (2,), lp_supply (0-d)]
     """
     prev_reserves = carry_list[0]
     Va = carry_list[1]
     Vb = carry_list[2]
+    prev_lp_supply = carry_list[3]
+
+    prices = input_list[0]
+    lp_supply = input_list[1]
+
+    # Scale both real and virtual reserves by LP supply ratio.
+    scale = lp_supply / prev_lp_supply
+    lp_supply_change = lp_supply != prev_lp_supply
+    prev_reserves = jnp.where(lp_supply_change, prev_reserves * scale, prev_reserves)
+    Va = jnp.where(lp_supply_change, Va * scale, Va)
+    Vb = jnp.where(lp_supply_change, Vb * scale, Vb)
 
     Ra = prev_reserves[0]
     Rb = prev_reserves[1]
@@ -690,7 +708,7 @@ def _reclamm_scan_step_zero_fees(
     Rb_new = jnp.where(clamp_a, Rb + edge_a[1], jnp.where(clamp_b, Rb + edge_b[1], Rb_new))
 
     new_reserves = jnp.array([Ra_new, Rb_new])
-    return [new_reserves, Va, Vb], new_reserves
+    return [new_reserves, Va, Vb, lp_supply], new_reserves
 
 
 # ---------------------------------------------------------------------------
@@ -702,7 +720,7 @@ def _reclamm_scan_step_zero_fees(
 
 def _reclamm_scan_step_zero_fees_full_state(
     carry_list,
-    prices,
+    input_list,
     centeredness_margin,
     daily_price_shift_base,
     seconds_per_step,
@@ -711,7 +729,7 @@ def _reclamm_scan_step_zero_fees_full_state(
 ):
     """TEST-ONLY: scan step that outputs (reserves, Va, Vb)."""
     new_carry, new_reserves = _reclamm_scan_step_zero_fees(
-        carry_list, prices, centeredness_margin, daily_price_shift_base, seconds_per_step,
+        carry_list, input_list, centeredness_margin, daily_price_shift_base, seconds_per_step,
         arc_length_speed=arc_length_speed,
         centeredness_scaling=centeredness_scaling,
     )
@@ -731,15 +749,19 @@ def _reclamm_scan_step_with_fees_and_revenue(
     arc_length_speed=0.0,
     centeredness_scaling=False,
     protocol_fee_split=0.0,
+    noise_trader_ratio=0.0,
+    noise_model="ratio",
+    noise_params=None,
 ):
     """Single scan step for reClAMM pool with fees, returning LP fee revenue.
 
     Primary implementation — ``_reclamm_scan_step_with_fees`` wraps this.
 
-    Carry: [real_reserves (2,), Va, Vb, step_idx, active_start_ratio,
+    Carry: [real_reserves (2,), Va, Vb, prev_lp_supply, step_idx, active_start_ratio,
             active_target_ratio, active_start_step, active_end_step, active_enabled]
     Input: [prices, active_initial_weights, per_asset_ratios,
-            all_other_assets_ratios, gamma, arb_thresh, arb_fees, price_ratio_update]
+            all_other_assets_ratios, gamma, arb_thresh, arb_fees, price_ratio_update,
+            lp_supply, (optional) volatility]
 
     Returns
     -------
@@ -750,15 +772,13 @@ def _reclamm_scan_step_with_fees_and_revenue(
     prev_reserves = carry_list[0]
     Va = carry_list[1]
     Vb = carry_list[2]
-    step_idx = carry_list[3]
-    active_start_ratio = carry_list[4]
-    active_target_ratio = carry_list[5]
-    active_start_step = carry_list[6]
-    active_end_step = carry_list[7]
-    active_enabled = carry_list[8]
-
-    Ra = prev_reserves[0]
-    Rb = prev_reserves[1]
+    prev_lp_supply = carry_list[3]
+    step_idx = carry_list[4]
+    active_start_ratio = carry_list[5]
+    active_target_ratio = carry_list[6]
+    active_start_step = carry_list[7]
+    active_end_step = carry_list[8]
+    active_enabled = carry_list[9]
 
     prices = input_list[0]
     active_initial_weights = input_list[1]
@@ -768,7 +788,21 @@ def _reclamm_scan_step_with_fees_and_revenue(
     arb_thresh = input_list[5]
     arb_fees = input_list[6]
     price_ratio_update = input_list[7]
+    lp_supply = input_list[8]
 
+    # Scale both real and virtual reserves by LP supply ratio.
+    # Matches ReClammPool.sol onBeforeAddLiquidity / onBeforeRemoveLiquidity:
+    # all balances (real + virtual) scale proportionally with BPT supply.
+    scale = lp_supply / prev_lp_supply
+    lp_supply_change = lp_supply != prev_lp_supply
+    prev_reserves = jnp.where(lp_supply_change, prev_reserves * scale, prev_reserves)
+    Va = jnp.where(lp_supply_change, Va * scale, Va)
+    Vb = jnp.where(lp_supply_change, Vb * scale, Vb)
+
+    Ra = prev_reserves[0]
+    Rb = prev_reserves[1]
+
+    # Price-ratio schedule: apply target price ratio changes over time.
     event_has = price_ratio_update[0] > 0.5
     event_target_ratio = jnp.maximum(
         jnp.where(jnp.isfinite(price_ratio_update[1]), price_ratio_update[1], 1.0),
@@ -936,6 +970,45 @@ def _reclamm_scan_step_with_fees_and_revenue(
     Ra_new = Ra + applied_trade[0]
     Rb_new = Rb + applied_trade[1]
 
+    # --- Noise model dispatch ---
+    # noise_model is a concrete Python string (passed via Partial as static
+    # aux_data), so if/elif branches resolve at trace time.
+    if noise_model == "ratio":
+        noisy_reserves = calculate_reserves_after_noise_trade(
+            applied_trade, jnp.array([Ra_new, Rb_new]), prices,
+            noise_trader_ratio, gamma,
+        )
+        Ra_new = jnp.where(noise_trader_ratio > 0, noisy_reserves[0], Ra_new)
+        Rb_new = jnp.where(noise_trader_ratio > 0, noisy_reserves[1], Rb_new)
+    elif noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
+        volatility = input_list[9]
+        arb_volume = 0.5 * jnp.sum(jnp.abs(applied_trade) * prices)
+        real_value = jnp.sum(jnp.array([Ra_new, Rb_new]) * prices)
+        effective_value = (Ra_new + Va) * prices[0] + (Rb_new + Vb) * prices[1]
+
+        _np = noise_params if noise_params is not None else {}
+        if noise_model == "tsoukalas_sqrt":
+            noise_vol = reclamm_tsoukalas_sqrt_noise_volume(
+                effective_value, gamma, volatility,
+                arb_volume, _np,
+            )
+        elif noise_model == "tsoukalas_log":
+            noise_vol = reclamm_tsoukalas_log_noise_volume(
+                effective_value, gamma, volatility,
+                arb_volume, _np,
+            )
+        else:  # loglinear
+            noise_vol = reclamm_loglinear_noise_volume(
+                effective_value, gamma, volatility,
+                arb_volume, _np,
+            )
+
+        noise_fee_income = (1.0 - gamma) * noise_vol
+        scale = 1.0 + noise_fee_income / jnp.maximum(real_value, 1e-8)
+        Ra_new = Ra_new * scale
+        Rb_new = Rb_new * scale
+    # else: "arb_only" — no noise trades
+
     # Clamp-to-edge: if a real reserve would go negative, apply an
     # exact-in-given-out edge trade that drains that token to _DUST_USD
     # worth of reserves (preserving the AMM invariant).
@@ -978,6 +1051,7 @@ def _reclamm_scan_step_with_fees_and_revenue(
         new_reserves,
         Va,
         Vb,
+        lp_supply,
         step_idx + 1.0,
         active_start_ratio,
         active_target_ratio,
@@ -1000,6 +1074,9 @@ def _reclamm_scan_step_with_fees(
     arc_length_speed=0.0,
     centeredness_scaling=False,
     protocol_fee_split=0.0,
+    noise_trader_ratio=0.0,
+    noise_model="ratio",
+    noise_params=None,
 ):
     """Single scan step for reClAMM pool with fees (reserves only).
 
@@ -1018,6 +1095,9 @@ def _reclamm_scan_step_with_fees(
         arc_length_speed=arc_length_speed,
         centeredness_scaling=centeredness_scaling,
         protocol_fee_split=protocol_fee_split,
+        noise_trader_ratio=noise_trader_ratio,
+        noise_model=noise_model,
+        noise_params=noise_params,
     )
     return new_carry, new_reserves
 
@@ -1064,6 +1144,7 @@ def _jax_calc_reclamm_reserves_zero_fees(
     seconds_per_step,
     arc_length_speed=0.0,
     centeredness_scaling=False,
+    lp_supply_array=None,
 ):
     """Calculate reClAMM reserves over time with zero fees.
 
@@ -1085,12 +1166,22 @@ def _jax_calc_reclamm_reserves_zero_fees(
         If > 0, use constant-arc-length thermostat instead of geometric.
     centeredness_scaling : bool
         If True, scale speed by margin/centeredness (proportional controller).
+    lp_supply_array : jnp.ndarray, optional
+        LP token supply over time, shape (T,). Defaults to constant 1.0.
 
     Returns
     -------
     reserves : jnp.ndarray, shape (T, 2)
         Real reserves over time.
     """
+    if lp_supply_array is None:
+        lp_supply_array = jnp.array(1.0)
+    lp_supply_array = jnp.where(
+        lp_supply_array.size == 1,
+        jnp.full(prices.shape[0], lp_supply_array),
+        lp_supply_array,
+    )
+
     scan_fn = Partial(
         _reclamm_scan_step_zero_fees,
         centeredness_margin=centeredness_margin,
@@ -1100,8 +1191,8 @@ def _jax_calc_reclamm_reserves_zero_fees(
         centeredness_scaling=centeredness_scaling,
     )
 
-    carry_init = [initial_reserves, initial_Va, initial_Vb]
-    _, reserves = scan(scan_fn, carry_init, prices)
+    carry_init = [initial_reserves, initial_Va, initial_Vb, lp_supply_array[0]]
+    _, reserves = scan(scan_fn, carry_init, [prices, lp_supply_array])
     return reserves
 
 
@@ -1116,6 +1207,7 @@ def _jax_calc_reclamm_reserves_zero_fees_full_state(
     seconds_per_step,
     arc_length_speed=0.0,
     centeredness_scaling=False,
+    lp_supply_array=None,
 ):
     """TEST-ONLY: Like _jax_calc_reclamm_reserves_zero_fees but returns Va/Vb.
 
@@ -1125,6 +1217,14 @@ def _jax_calc_reclamm_reserves_zero_fees_full_state(
     Va_history : jnp.ndarray, shape (T,)
     Vb_history : jnp.ndarray, shape (T,)
     """
+    if lp_supply_array is None:
+        lp_supply_array = jnp.array(1.0)
+    lp_supply_array = jnp.where(
+        lp_supply_array.size == 1,
+        jnp.full(prices.shape[0], lp_supply_array),
+        lp_supply_array,
+    )
+
     scan_fn = Partial(
         _reclamm_scan_step_zero_fees_full_state,
         centeredness_margin=centeredness_margin,
@@ -1134,12 +1234,12 @@ def _jax_calc_reclamm_reserves_zero_fees_full_state(
         centeredness_scaling=centeredness_scaling,
     )
 
-    carry_init = [initial_reserves, initial_Va, initial_Vb]
-    _, (reserves, Va_history, Vb_history) = scan(scan_fn, carry_init, prices)
+    carry_init = [initial_reserves, initial_Va, initial_Vb, lp_supply_array[0]]
+    _, (reserves, Va_history, Vb_history) = scan(scan_fn, carry_init, [prices, lp_supply_array])
     return reserves, Va_history, Vb_history
 
 
-@jit
+@partial(jit, static_argnames=('noise_model',))
 def _jax_calc_reclamm_reserves_with_fees(
     initial_reserves,
     initial_Va,
@@ -1155,12 +1255,25 @@ def _jax_calc_reclamm_reserves_with_fees(
     arc_length_speed=0.0,
     centeredness_scaling=False,
     protocol_fee_split=0.0,
+    noise_trader_ratio=0.0,
+    lp_supply_array=None,
+    noise_model="ratio",
+    noise_params=None,
+    volatility_array=None,
 ):
     """Calculate reClAMM reserves over time with fees.
 
     Uses the G3M optimal arb machinery with constant weights [0.5, 0.5]
     applied to effective reserves (real + virtual).
     """
+    if lp_supply_array is None:
+        lp_supply_array = jnp.array(1.0)
+    lp_supply_array = jnp.where(
+        lp_supply_array.size == 1,
+        jnp.full(prices.shape[0], lp_supply_array),
+        lp_supply_array,
+    )
+
     n_assets = 2
     weights = jnp.array([0.5, 0.5])
     gamma = 1.0 - fees
@@ -1195,12 +1308,22 @@ def _jax_calc_reclamm_reserves_with_fees(
         arc_length_speed=arc_length_speed,
         centeredness_scaling=centeredness_scaling,
         protocol_fee_split=protocol_fee_split,
+        noise_trader_ratio=noise_trader_ratio,
+        noise_model=noise_model,
+        noise_params=noise_params if noise_params is not None else {},
     )
+
+    scan_inputs = [prices, active_initial_weights, per_asset_ratios,
+                   all_other_assets_ratios, gamma_array, arb_thresh_array, arb_fees_array,
+                   price_ratio_updates, lp_supply_array]
+    if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
+        scan_inputs.append(volatility_array)
 
     carry_init = [
         initial_reserves,
         initial_Va,
         initial_Vb,
+        lp_supply_array[0],
         jnp.float64(0.0),  # step_idx
         jnp.float64(0.0),  # active_start_ratio
         jnp.float64(0.0),  # active_target_ratio
@@ -1208,16 +1331,11 @@ def _jax_calc_reclamm_reserves_with_fees(
         jnp.float64(0.0),  # active_end_step
         jnp.array(False),  # active_enabled
     ]
-    _, reserves = scan(
-        scan_fn,
-        carry_init,
-        [prices, active_initial_weights, per_asset_ratios,
-         all_other_assets_ratios, gamma_array, arb_thresh_array, arb_fees_array, price_ratio_updates],
-    )
+    _, reserves = scan(scan_fn, carry_init, scan_inputs)
     return reserves
 
 
-@partial(jit, static_argnums=(11,))
+@partial(jit, static_argnums=(11,), static_argnames=('noise_model',))
 def _jax_calc_reclamm_reserves_with_dynamic_inputs(
     initial_reserves,
     initial_Va,
@@ -1236,8 +1354,21 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
     arc_length_speed=0.0,
     centeredness_scaling=False,
     protocol_fee_split=0.0,
+    noise_trader_ratio=0.0,
+    lp_supply_array=None,
+    noise_model="ratio",
+    noise_params=None,
+    volatility_array=None,
 ):
     """Calculate reClAMM reserves with time-varying fees/arb arrays."""
+    if lp_supply_array is None:
+        lp_supply_array = jnp.array(1.0)
+    lp_supply_array = jnp.where(
+        lp_supply_array.size == 1,
+        jnp.full(prices.shape[0], lp_supply_array),
+        lp_supply_array,
+    )
+
     n_assets = 2
     weights = jnp.array([0.5, 0.5])
 
@@ -1285,12 +1416,22 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
         arc_length_speed=arc_length_speed,
         centeredness_scaling=centeredness_scaling,
         protocol_fee_split=protocol_fee_split,
+        noise_trader_ratio=noise_trader_ratio,
+        noise_model=noise_model,
+        noise_params=noise_params if noise_params is not None else {},
     )
+
+    scan_inputs = [prices, active_initial_weights, per_asset_ratios,
+                   all_other_assets_ratios, gamma, arb_thresh, arb_fees,
+                   price_ratio_updates, lp_supply_array]
+    if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
+        scan_inputs.append(volatility_array)
 
     carry_init = [
         initial_reserves,
         initial_Va,
         initial_Vb,
+        lp_supply_array[0],
         jnp.float64(0.0),  # step_idx
         jnp.float64(0.0),  # active_start_ratio
         jnp.float64(0.0),  # active_target_ratio
@@ -1298,12 +1439,7 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
         jnp.float64(0.0),  # active_end_step
         jnp.array(False),  # active_enabled
     ]
-    _, reserves = scan(
-        scan_fn,
-        carry_init,
-        [prices, active_initial_weights, per_asset_ratios,
-         all_other_assets_ratios, gamma, arb_thresh, arb_fees, price_ratio_updates],
-    )
+    _, reserves = scan(scan_fn, carry_init, scan_inputs)
     return reserves
 
 
@@ -1351,6 +1487,8 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs_full_state(
                 price_ratio_updates, (prices.shape[0], price_ratio_updates.shape[1])
             )
 
+    lp_supply_array = jnp.ones(prices.shape[0], dtype=prices.dtype)
+
     _, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
         precalc_shared_values_for_all_signatures(all_sig_variations, n_assets)
     )
@@ -1380,6 +1518,7 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs_full_state(
         initial_reserves,
         initial_Va,
         initial_Vb,
+        lp_supply_array[0],
         jnp.float64(0.0),  # step_idx
         jnp.float64(0.0),  # active_start_ratio
         jnp.float64(0.0),  # active_target_ratio
@@ -1391,12 +1530,13 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs_full_state(
         scan_fn,
         carry_init,
         [prices, active_initial_weights, per_asset_ratios,
-         all_other_assets_ratios, gamma, arb_thresh, arb_fees, price_ratio_updates],
+         all_other_assets_ratios, gamma, arb_thresh, arb_fees,
+         price_ratio_updates, lp_supply_array],
     )
     return reserves, Va_history, Vb_history
 
 
-@jit
+@partial(jit, static_argnames=('noise_model',))
 def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
     initial_reserves,
     initial_Va,
@@ -1412,6 +1552,11 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
     arc_length_speed=0.0,
     centeredness_scaling=False,
     protocol_fee_split=0.0,
+    noise_trader_ratio=0.0,
+    lp_supply_array=None,
+    noise_model="ratio",
+    noise_params=None,
+    volatility_array=None,
 ):
     """Calculate reClAMM reserves and LP fee revenue over time with fees.
 
@@ -1421,6 +1566,14 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
     fee_revenue : jnp.ndarray, shape (T,)
         LP fee revenue per timestep in USD.
     """
+    if lp_supply_array is None:
+        lp_supply_array = jnp.array(1.0)
+    lp_supply_array = jnp.where(
+        lp_supply_array.size == 1,
+        jnp.full(prices.shape[0], lp_supply_array),
+        lp_supply_array,
+    )
+
     n_assets = 2
     weights = jnp.array([0.5, 0.5])
     gamma = 1.0 - fees
@@ -1454,12 +1607,22 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
         arc_length_speed=arc_length_speed,
         centeredness_scaling=centeredness_scaling,
         protocol_fee_split=protocol_fee_split,
+        noise_trader_ratio=noise_trader_ratio,
+        noise_model=noise_model,
+        noise_params=noise_params if noise_params is not None else {},
     )
+
+    scan_inputs = [prices, active_initial_weights, per_asset_ratios,
+                   all_other_assets_ratios, gamma_array, arb_thresh_array, arb_fees_array,
+                   price_ratio_updates, lp_supply_array]
+    if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
+        scan_inputs.append(volatility_array)
 
     carry_init = [
         initial_reserves,
         initial_Va,
         initial_Vb,
+        lp_supply_array[0],
         jnp.float64(0.0),  # step_idx
         jnp.float64(0.0),  # active_start_ratio
         jnp.float64(0.0),  # active_target_ratio
@@ -1467,16 +1630,11 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
         jnp.float64(0.0),  # active_end_step
         jnp.array(False),  # active_enabled
     ]
-    _, (reserves, fee_revenue) = scan(
-        scan_fn,
-        carry_init,
-        [prices, active_initial_weights, per_asset_ratios,
-         all_other_assets_ratios, gamma_array, arb_thresh_array, arb_fees_array, price_ratio_updates],
-    )
+    _, (reserves, fee_revenue) = scan(scan_fn, carry_init, scan_inputs)
     return reserves, fee_revenue
 
 
-@partial(jit, static_argnums=(11,))
+@partial(jit, static_argnums=(11,), static_argnames=('noise_model',))
 def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
     initial_reserves,
     initial_Va,
@@ -1495,6 +1653,11 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
     arc_length_speed=0.0,
     centeredness_scaling=False,
     protocol_fee_split=0.0,
+    noise_trader_ratio=0.0,
+    lp_supply_array=None,
+    noise_model="ratio",
+    noise_params=None,
+    volatility_array=None,
 ):
     """Calculate reClAMM reserves and LP fee revenue with time-varying fees/arb arrays.
 
@@ -1504,6 +1667,14 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
     fee_revenue : jnp.ndarray, shape (T,)
         LP fee revenue per timestep in USD.
     """
+    if lp_supply_array is None:
+        lp_supply_array = jnp.array(1.0)
+    lp_supply_array = jnp.where(
+        lp_supply_array.size == 1,
+        jnp.full(prices.shape[0], lp_supply_array),
+        lp_supply_array,
+    )
+
     n_assets = 2
     weights = jnp.array([0.5, 0.5])
 
@@ -1550,12 +1721,22 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
         arc_length_speed=arc_length_speed,
         centeredness_scaling=centeredness_scaling,
         protocol_fee_split=protocol_fee_split,
+        noise_trader_ratio=noise_trader_ratio,
+        noise_model=noise_model,
+        noise_params=noise_params if noise_params is not None else {},
     )
+
+    scan_inputs = [prices, active_initial_weights, per_asset_ratios,
+                   all_other_assets_ratios, gamma, arb_thresh, arb_fees,
+                   price_ratio_updates, lp_supply_array]
+    if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
+        scan_inputs.append(volatility_array)
 
     carry_init = [
         initial_reserves,
         initial_Va,
         initial_Vb,
+        lp_supply_array[0],
         jnp.float64(0.0),  # step_idx
         jnp.float64(0.0),  # active_start_ratio
         jnp.float64(0.0),  # active_target_ratio
@@ -1563,10 +1744,5 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
         jnp.float64(0.0),  # active_end_step
         jnp.array(False),  # active_enabled
     ]
-    _, (reserves, fee_revenue) = scan(
-        scan_fn,
-        carry_init,
-        [prices, active_initial_weights, per_asset_ratios,
-         all_other_assets_ratios, gamma, arb_thresh, arb_fees, price_ratio_updates],
-    )
+    _, (reserves, fee_revenue) = scan(scan_fn, carry_init, scan_inputs)
     return reserves, fee_revenue

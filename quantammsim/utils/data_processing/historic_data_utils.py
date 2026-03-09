@@ -83,9 +83,6 @@ def start_and_end_calcs(
         if oracle_values is not None:
             oracle_values = oracle_values[remainder_idx:]
 
-        print("start_date: ", start_date)
-        print("end_date: ", end_date)
-        print("unix_values: ", unix_values)
         start_idx = np.where(unix_values == start_date)[0][0]
         end_idx = np.where(unix_values == end_date)[0][0] + 1
     else:
