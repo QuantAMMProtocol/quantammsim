@@ -417,6 +417,10 @@ class TFMMBasePool(AbstractPool):
             do_trades=run_fingerprint["do_trades"],
             dtype=arb_acted_upon_local_prices.dtype,
         )
+        lp_supply_array_broadcast = materialized_inputs.lp_supply
+        # if we are doing trades, the trades array must be of the same length as the other arrays
+        if run_fingerprint["do_trades"]:
+            assert materialized_inputs.trades.shape[0] == max_len
         protocol_fee_split = run_fingerprint.get("protocol_fee_split", 0.0)
         reserves = _jax_calc_quantAMM_reserves_with_dynamic_inputs(
             initial_reserves,

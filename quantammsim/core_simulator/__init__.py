@@ -17,6 +17,7 @@ try:
     import jax.numpy as jnp  # noqa: F401
     from jax import config
     config.update("jax_enable_x64", True)
+    config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 except ImportError as e:
     raise ImportError(
         "JAX is required for core simulator. Please install jax and jaxlib."
