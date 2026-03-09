@@ -267,6 +267,7 @@ class TestDynamicInputPreparation:
         assert dynamic_inputs.gas_cost.shape == (1,)
         assert dynamic_inputs.arb_fees.shape == (1,)
         assert dynamic_inputs.lp_supply.shape == (1,)
+        assert dynamic_inputs.hypersurge_peg.shape == (1,)
 
     def test_dynamic_input_flags_reflect_present_frames(self):
         """Frame-presence flags should drive static dynamic-input dispatch."""
@@ -290,6 +291,7 @@ class TestDynamicInputPreparation:
         assert flags["has_dynamic_arb_fees"] is False
         assert flags["has_lp_supply"] is False
         assert flags["has_reclamm_price_ratio_updates"] is False
+        assert flags["has_hypersurge_peg"] is False
 
     def test_prepare_dynamic_inputs_preserves_fixed_hot_path_structure(self):
         """Normalization should return fixed bundles plus static dispatch flags."""
@@ -335,6 +337,7 @@ class TestDynamicInputPreparation:
         assert flags["has_dynamic_arb_fees"] is True
         assert flags["has_lp_supply"] is True
         assert flags["has_reclamm_price_ratio_updates"] is False
+        assert flags["has_hypersurge_peg"] is False
         assert train_inputs.trades.shape == (2, 3)
         assert train_inputs.fees.shape == (2,)
         assert train_inputs.gas_cost.shape == (2,)
@@ -466,6 +469,36 @@ class TestDynamicInputPreparation:
         assert schedule[1, 1] == pytest.approx(6.0)
         assert schedule[1, 2] == pytest.approx(2.0)
         assert schedule[1, 3] == pytest.approx(4.1)
+
+    def test_prepare_dynamic_inputs_normalizes_hypersurge_peg_alias(self):
+        """HyperSurge peg input should accept alias columns and set dynamic flags."""
+        from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
+        from quantammsim.runners.jax_runner_utils import prepare_dynamic_inputs
+
+        run_fingerprint = {
+            "tokens": ["ETH", "USDC"],
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-01 00:03:00",
+            "endTestDateString": "2023-01-01 00:04:00",
+        }
+        start_unix = pd.Timestamp(run_fingerprint["startDateString"]).value // 10**6
+        peg_df = pd.DataFrame(
+            {
+                "unix": [start_unix, start_unix + 120_000],
+                "peg_ratio": [0.0004, 0.0005],
+            }
+        )
+
+        prepared = prepare_dynamic_inputs(
+            run_fingerprint,
+            dynamic_input_frames=DynamicInputFrames(hypersurge_peg=peg_df),
+        )
+
+        flags = prepared["dynamic_input_flags"]
+        peg_array = np.asarray(prepared["train_dynamic_inputs"].hypersurge_peg)
+        assert flags["has_hypersurge_peg"] is True
+        assert flags["use_dynamic_inputs"] is True
+        np.testing.assert_allclose(peg_array, np.array([0.0004, 0.0004, 0.0005]))
 
     def test_prepare_dynamic_inputs_rejects_prewindow_reclamm_events_without_start_ratio(self):
         """In-progress pre-window events must provide start_price_ratio."""
@@ -600,6 +633,7 @@ class TestDynamicInputPreparation:
                 "has_dynamic_arb_fees": False,
                 "has_lp_supply": False,
                 "has_reclamm_price_ratio_updates": False,
+                "has_hypersurge_peg": False,
             },
         )
 
@@ -638,6 +672,7 @@ class TestDynamicInputPreparation:
             arb_fees=jnp.array([0.0003]),
             lp_supply=jnp.array([1500.0]),
             reclamm_price_ratio_updates=jnp.array([[1.0, 4.0, 3.0, jnp.nan]]),
+            hypersurge_peg=jnp.array([0.001]),
         )
         flags = {
             "use_dynamic_inputs": True,
@@ -647,6 +682,7 @@ class TestDynamicInputPreparation:
             "has_dynamic_arb_fees": True,
             "has_lp_supply": True,
             "has_reclamm_price_ratio_updates": True,
+            "has_hypersurge_peg": True,
         }
 
         resolved = resolve_dynamic_input_components(
@@ -665,6 +701,7 @@ class TestDynamicInputPreparation:
             np.array([[1.0, 4.0, 3.0, np.nan]]),
             equal_nan=True,
         )
+        np.testing.assert_allclose(np.asarray(resolved["hypersurge_peg"]), np.array([0.001]))
 
     def test_materialize_dynamic_inputs_leaves_trades_optional(self):
         """No-trade paths should not expand placeholder trades into the scan inputs."""
@@ -683,6 +720,7 @@ class TestDynamicInputPreparation:
                 "has_dynamic_arb_fees": False,
                 "has_lp_supply": False,
                 "has_reclamm_price_ratio_updates": False,
+                "has_hypersurge_peg": False,
             },
             static_dict={"fees": 0.003, "gas_cost": 2.5, "arb_fees": 0.0001},
             scan_len=4,
@@ -725,6 +763,7 @@ class TestDynamicInputPreparation:
                     "has_dynamic_arb_fees": False,
                     "has_lp_supply": False,
                     "has_reclamm_price_ratio_updates": False,
+                    "has_hypersurge_peg": False,
                 },
                 static_dict={"fees": 0.003, "gas_cost": 0.0, "arb_fees": 0.0},
                 scan_len=2,

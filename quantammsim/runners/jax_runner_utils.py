@@ -1229,6 +1229,7 @@ def _to_dynamic_input_arrays(
     arb_fees_array,
     lp_supply_array,
     reclamm_price_ratio_updates_array,
+    hypersurge_peg_array,
 ) -> DynamicInputArrays:
     """Normalize optional numpy arrays into the hot-path container."""
     empty = empty_dynamic_input_arrays()
@@ -1242,6 +1243,11 @@ def _to_dynamic_input_arrays(
             empty.reclamm_price_ratio_updates
             if reclamm_price_ratio_updates_array is None
             else jnp.asarray(reclamm_price_ratio_updates_array, dtype=jnp.float64)
+        ),
+        hypersurge_peg=(
+            empty.hypersurge_peg
+            if hypersurge_peg_array is None
+            else jnp.asarray(hypersurge_peg_array, dtype=jnp.float64)
         ),
     )
 
@@ -1403,6 +1409,7 @@ def prepare_dynamic_inputs(
     arb_fees_df = dynamic_input_frames.arb_fees
     lp_supply_df = dynamic_input_frames.lp_supply
     reclamm_price_ratio_updates = dynamic_input_frames.reclamm_price_ratio_updates
+    hypersurge_peg_df = dynamic_input_frames.hypersurge_peg
     dynamic_input_flags = dynamic_input_flags_from_frames(dynamic_input_frames)
 
     if raw_trades is not None:
@@ -1518,6 +1525,49 @@ def prepare_dynamic_inputs(
             else None
         )
 
+    hypersurge_peg_array = None
+    test_hypersurge_peg_array = None
+    if hypersurge_peg_df is not None:
+        if isinstance(hypersurge_peg_df, pd.DataFrame):
+            peg_source = hypersurge_peg_df.copy()
+        elif isinstance(hypersurge_peg_df, (str, Path)):
+            peg_source = pd.read_csv(hypersurge_peg_df)
+        elif isinstance(hypersurge_peg_df, list):
+            peg_source = pd.DataFrame(hypersurge_peg_df)
+        elif isinstance(hypersurge_peg_df, dict):
+            peg_source = pd.DataFrame(hypersurge_peg_df)
+        else:
+            raise TypeError(
+                "hypersurge_peg must be a DataFrame, CSV path, list of dicts, or dict payload"
+            )
+        if "hypersurge_peg" not in peg_source.columns:
+            for candidate in ("peg_price_ratio", "peg_ratio", "peg"):
+                if candidate in peg_source.columns:
+                    peg_source = peg_source.rename(
+                        columns={candidate: "hypersurge_peg"}
+                    )
+                    break
+        if "hypersurge_peg" not in peg_source.columns:
+            raise ValueError(
+                "hypersurge_peg input must include column 'hypersurge_peg' "
+                "(or alias: peg_price_ratio / peg_ratio / peg)"
+            )
+        hypersurge_peg_array = raw_fee_like_amounts_to_fee_like_array(
+            peg_source,
+            run_fingerprint["startDateString"],
+            run_fingerprint["endDateString"],
+            names=["hypersurge_peg"],
+            fill_method="ffill",
+        )
+        if do_test_period:
+            test_hypersurge_peg_array = raw_fee_like_amounts_to_fee_like_array(
+                peg_source,
+                run_fingerprint["endDateString"],
+                run_fingerprint["endTestDateString"],
+                names=["hypersurge_peg"],
+                fill_method="ffill",
+            )
+
     reclamm_price_ratio_updates_array = (
         _normalize_reclamm_price_ratio_updates_for_window(
             reclamm_price_ratio_updates,
@@ -1583,6 +1633,7 @@ def prepare_dynamic_inputs(
                 arb_fees_array,
                 lp_supply_array,
                 reclamm_price_ratio_updates_array,
+                hypersurge_peg_array,
             ),
             "test_dynamic_inputs": _to_dynamic_input_arrays(
                 test_period_trades,
@@ -1591,6 +1642,7 @@ def prepare_dynamic_inputs(
                 test_arb_fees_array,
                 test_lp_supply_array,
                 test_reclamm_price_ratio_updates_array,
+                test_hypersurge_peg_array,
             ),
             "dynamic_input_flags": dynamic_input_flags,
         }
@@ -1602,6 +1654,7 @@ def prepare_dynamic_inputs(
             arb_fees_array,
             lp_supply_array,
             reclamm_price_ratio_updates_array,
+            hypersurge_peg_array,
         ),
         "dynamic_input_flags": dynamic_input_flags,
     }
@@ -1855,6 +1908,7 @@ def probe_max_n_parameter_sets(
                         "has_dynamic_arb_fees": False,
                         "has_lp_supply": False,
                         "has_reclamm_price_ratio_updates": False,
+                        "has_hypersurge_peg": False,
                     },
                 },
             )

@@ -32,6 +32,14 @@ from quantammsim.pools.reCLAMM.reclamm_reserves import (
 
 # Solidity constant: daily_price_shift_base = 1 - shift_exponent / DIVISOR
 SHIFT_EXPONENT_DIVISOR = 124649.0
+HYPERSURGE_DEFAULTS = {
+    "arb_max_fee": 0.02,
+    "arb_threshold": 0.02,
+    "arb_cap_deviation": 1.0,
+    "noise_max_fee": 0.02,
+    "noise_threshold": 0.02,
+    "noise_cap_deviation": 1.0,
+}
 
 
 def _prepare_dynamic_array(arr, start_index, bout_length, arb_frequency, max_len):
@@ -217,7 +225,90 @@ class ReClammPool(AbstractPool):
     @staticmethod
     def _resolve_ste_temperature(run_fingerprint):
         """Resolve STE gate temperature for differentiable reCLAMM transitions."""
-        return run_fingerprint.get("ste_temperature")
+        return run_fingerprint.get("ste_temperature", 10.0)
+
+    @staticmethod
+    def _resolve_hypersurge_params(params, run_fingerprint):
+        """Resolve HyperSurge config from params (trainable) or fingerprint (static)."""
+        learn_hypersurge = run_fingerprint.get(
+            "reclamm_learn_hypersurge_params", False
+        )
+        hypersurge_enabled = run_fingerprint.get(
+            "reclamm_hypersurge_enabled", False
+        ) or learn_hypersurge
+
+        def _resolve_param(param_key, fingerprint_key, default_value):
+            if param_key in params:
+                return jnp.squeeze(params[param_key])
+            return run_fingerprint.get(fingerprint_key, default_value)
+
+        return {
+            "hypersurge_enabled": hypersurge_enabled,
+            "hypersurge_arb_max_fee": _resolve_param(
+                "hypersurge_arb_max_fee",
+                "reclamm_hypersurge_arb_max_fee",
+                HYPERSURGE_DEFAULTS["arb_max_fee"],
+            ),
+            "hypersurge_arb_threshold": _resolve_param(
+                "hypersurge_arb_threshold",
+                "reclamm_hypersurge_arb_threshold",
+                HYPERSURGE_DEFAULTS["arb_threshold"],
+            ),
+            "hypersurge_arb_cap_deviation": _resolve_param(
+                "hypersurge_arb_cap_deviation",
+                "reclamm_hypersurge_arb_cap_deviation",
+                HYPERSURGE_DEFAULTS["arb_cap_deviation"],
+            ),
+            "hypersurge_noise_max_fee": _resolve_param(
+                "hypersurge_noise_max_fee",
+                "reclamm_hypersurge_noise_max_fee",
+                HYPERSURGE_DEFAULTS["noise_max_fee"],
+            ),
+            "hypersurge_noise_threshold": _resolve_param(
+                "hypersurge_noise_threshold",
+                "reclamm_hypersurge_noise_threshold",
+                HYPERSURGE_DEFAULTS["noise_threshold"],
+            ),
+            "hypersurge_noise_cap_deviation": _resolve_param(
+                "hypersurge_noise_cap_deviation",
+                "reclamm_hypersurge_noise_cap_deviation",
+                HYPERSURGE_DEFAULTS["noise_cap_deviation"],
+            ),
+        }
+
+    def _resolve_hypersurge_peg(
+        self,
+        run_fingerprint: Dict[str, Any],
+        prices: jnp.ndarray,
+        start_index: jnp.ndarray,
+        arb_len: int,
+        dynamic_hypersurge_peg: Optional[jnp.ndarray] = None,
+        additional_oracle_input: Optional[jnp.ndarray] = None,
+    ) -> jnp.ndarray:
+        """Resolve the per-step HyperSurge peg ratio array for the arb window."""
+        if dynamic_hypersurge_peg is not None:
+            peg = jnp.asarray(dynamic_hypersurge_peg)
+        elif additional_oracle_input is not None:
+            peg = _prepare_dynamic_array(
+                additional_oracle_input,
+                start_index=start_index,
+                bout_length=run_fingerprint["bout_length"],
+                arb_frequency=run_fingerprint["arb_frequency"],
+                max_len=arb_len,
+            )
+        else:
+            peg = jnp.ones((arb_len,), dtype=prices.dtype)
+
+        peg = jnp.asarray(peg, dtype=prices.dtype)
+        if peg.ndim == 0:
+            return jnp.full((arb_len,), peg, dtype=prices.dtype)
+        if peg.ndim > 1 and peg.shape[1:] == (1,):
+            peg = peg[:, 0]
+        if peg.shape[0] == 1:
+            return jnp.full((arb_len,), peg[0], dtype=prices.dtype)
+        if peg.shape[0] != arb_len:
+            return jnp.broadcast_to(peg, (arb_len,) + peg.shape[1:])
+        return peg
 
     def _resolve_noise_inputs(
         self,
@@ -278,6 +369,15 @@ class ReClammPool(AbstractPool):
             s.arb_prices.shape[0],
             lp_supply_array=lp_supply_array,
         )
+        hypersurge_params = self._resolve_hypersurge_params(params, run_fingerprint)
+        hypersurge_peg_ratio_array = self._resolve_hypersurge_peg(
+            run_fingerprint,
+            prices,
+            start_index,
+            s.arb_prices.shape[0],
+            dynamic_hypersurge_peg=None,
+            additional_oracle_input=additional_oracle_input,
+        )
 
         if run_fingerprint["do_arb"]:
             return _jax_calc_reclamm_reserves_with_fees(
@@ -301,6 +401,8 @@ class ReClammPool(AbstractPool):
                 noise_model=noise_model,
                 noise_params=noise_params,
                 volatility_array=arb_vol,
+                hypersurge_peg_ratio_array=hypersurge_peg_ratio_array,
+                **hypersurge_params,
             )
         return jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape)
 
@@ -331,6 +433,15 @@ class ReClammPool(AbstractPool):
             s.arb_prices.shape[0],
             lp_supply_array=lp_supply_array,
         )
+        hypersurge_params = self._resolve_hypersurge_params(params, run_fingerprint)
+        hypersurge_peg_ratio_array = self._resolve_hypersurge_peg(
+            run_fingerprint,
+            prices,
+            start_index,
+            s.arb_prices.shape[0],
+            dynamic_hypersurge_peg=None,
+            additional_oracle_input=additional_oracle_input,
+        )
 
         if run_fingerprint["do_arb"]:
             return _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
@@ -354,6 +465,8 @@ class ReClammPool(AbstractPool):
                 noise_model=noise_model,
                 noise_params=noise_params,
                 volatility_array=arb_vol,
+                hypersurge_peg_ratio_array=hypersurge_peg_ratio_array,
+                **hypersurge_params,
             )
         return (
             jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape),
@@ -396,6 +509,20 @@ class ReClammPool(AbstractPool):
             s.arb_prices.shape[0],
             lp_supply_array=None,
         )
+        dynamic_flags = run_fingerprint.get("dynamic_input_flags") or {}
+        hypersurge_params = self._resolve_hypersurge_params(params, run_fingerprint)
+        hypersurge_peg_ratio_array = self._resolve_hypersurge_peg(
+            run_fingerprint,
+            prices,
+            start_index,
+            s.arb_prices.shape[0],
+            dynamic_hypersurge_peg=(
+                materialized_inputs.hypersurge_peg
+                if dynamic_flags.get("has_hypersurge_peg", False)
+                else None
+            ),
+            additional_oracle_input=additional_oracle_input,
+        )
 
         return _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
             s.initial_reserves, s.Va, s.Vb,
@@ -419,6 +546,8 @@ class ReClammPool(AbstractPool):
             noise_model=noise_model,
             noise_params=noise_params,
             volatility_array=arb_vol,
+            hypersurge_peg_ratio_array=hypersurge_peg_ratio_array,
+            **hypersurge_params,
         )
 
     @partial(jit, static_argnums=(2,))
@@ -504,6 +633,20 @@ class ReClammPool(AbstractPool):
             s.arb_prices.shape[0],
             lp_supply_array=None,
         )
+        dynamic_flags = run_fingerprint.get("dynamic_input_flags") or {}
+        hypersurge_params = self._resolve_hypersurge_params(params, run_fingerprint)
+        hypersurge_peg_ratio_array = self._resolve_hypersurge_peg(
+            run_fingerprint,
+            prices,
+            start_index,
+            s.arb_prices.shape[0],
+            dynamic_hypersurge_peg=(
+                materialized_inputs.hypersurge_peg
+                if dynamic_flags.get("has_hypersurge_peg", False)
+                else None
+            ),
+            additional_oracle_input=additional_oracle_input,
+        )
 
         return _jax_calc_reclamm_reserves_with_dynamic_inputs(
             s.initial_reserves, s.Va, s.Vb,
@@ -527,6 +670,8 @@ class ReClammPool(AbstractPool):
             noise_model=noise_model,
             noise_params=noise_params,
             volatility_array=arb_vol,
+            hypersurge_peg_ratio_array=hypersurge_peg_ratio_array,
+            **hypersurge_params,
         )
 
     def init_base_parameters(
@@ -600,6 +745,68 @@ class ReClammPool(AbstractPool):
             )
             params["fees"] = process("fees", init_fees)
 
+        if run_fingerprint.get("reclamm_learn_hypersurge_params", False):
+            params["hypersurge_arb_max_fee"] = process(
+                "hypersurge_arb_max_fee",
+                run_fingerprint.get(
+                    "initial_hypersurge_arb_max_fee",
+                    run_fingerprint.get(
+                        "reclamm_hypersurge_arb_max_fee",
+                        HYPERSURGE_DEFAULTS["arb_max_fee"],
+                    ),
+                ),
+            )
+            params["hypersurge_arb_threshold"] = process(
+                "hypersurge_arb_threshold",
+                run_fingerprint.get(
+                    "initial_hypersurge_arb_threshold",
+                    run_fingerprint.get(
+                        "reclamm_hypersurge_arb_threshold",
+                        HYPERSURGE_DEFAULTS["arb_threshold"],
+                    ),
+                ),
+            )
+            params["hypersurge_arb_cap_deviation"] = process(
+                "hypersurge_arb_cap_deviation",
+                run_fingerprint.get(
+                    "initial_hypersurge_arb_cap_deviation",
+                    run_fingerprint.get(
+                        "reclamm_hypersurge_arb_cap_deviation",
+                        HYPERSURGE_DEFAULTS["arb_cap_deviation"],
+                    ),
+                ),
+            )
+            params["hypersurge_noise_max_fee"] = process(
+                "hypersurge_noise_max_fee",
+                run_fingerprint.get(
+                    "initial_hypersurge_noise_max_fee",
+                    run_fingerprint.get(
+                        "reclamm_hypersurge_noise_max_fee",
+                        HYPERSURGE_DEFAULTS["noise_max_fee"],
+                    ),
+                ),
+            )
+            params["hypersurge_noise_threshold"] = process(
+                "hypersurge_noise_threshold",
+                run_fingerprint.get(
+                    "initial_hypersurge_noise_threshold",
+                    run_fingerprint.get(
+                        "reclamm_hypersurge_noise_threshold",
+                        HYPERSURGE_DEFAULTS["noise_threshold"],
+                    ),
+                ),
+            )
+            params["hypersurge_noise_cap_deviation"] = process(
+                "hypersurge_noise_cap_deviation",
+                run_fingerprint.get(
+                    "initial_hypersurge_noise_cap_deviation",
+                    run_fingerprint.get(
+                        "reclamm_hypersurge_noise_cap_deviation",
+                        HYPERSURGE_DEFAULTS["noise_cap_deviation"],
+                    ),
+                ),
+            )
+
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
 
@@ -636,6 +843,50 @@ class ReClammPool(AbstractPool):
 
         if run_fingerprint.get("reclamm_learn_fees", False):
             vals["fees"] = run_fingerprint.get("fees", 0.0025)
+
+        if run_fingerprint.get("reclamm_learn_hypersurge_params", False):
+            vals["hypersurge_arb_max_fee"] = run_fingerprint.get(
+                "initial_hypersurge_arb_max_fee",
+                run_fingerprint.get(
+                    "reclamm_hypersurge_arb_max_fee",
+                    HYPERSURGE_DEFAULTS["arb_max_fee"],
+                ),
+            )
+            vals["hypersurge_arb_threshold"] = run_fingerprint.get(
+                "initial_hypersurge_arb_threshold",
+                run_fingerprint.get(
+                    "reclamm_hypersurge_arb_threshold",
+                    HYPERSURGE_DEFAULTS["arb_threshold"],
+                ),
+            )
+            vals["hypersurge_arb_cap_deviation"] = run_fingerprint.get(
+                "initial_hypersurge_arb_cap_deviation",
+                run_fingerprint.get(
+                    "reclamm_hypersurge_arb_cap_deviation",
+                    HYPERSURGE_DEFAULTS["arb_cap_deviation"],
+                ),
+            )
+            vals["hypersurge_noise_max_fee"] = run_fingerprint.get(
+                "initial_hypersurge_noise_max_fee",
+                run_fingerprint.get(
+                    "reclamm_hypersurge_noise_max_fee",
+                    HYPERSURGE_DEFAULTS["noise_max_fee"],
+                ),
+            )
+            vals["hypersurge_noise_threshold"] = run_fingerprint.get(
+                "initial_hypersurge_noise_threshold",
+                run_fingerprint.get(
+                    "reclamm_hypersurge_noise_threshold",
+                    HYPERSURGE_DEFAULTS["noise_threshold"],
+                ),
+            )
+            vals["hypersurge_noise_cap_deviation"] = run_fingerprint.get(
+                "initial_hypersurge_noise_cap_deviation",
+                run_fingerprint.get(
+                    "reclamm_hypersurge_noise_cap_deviation",
+                    HYPERSURGE_DEFAULTS["noise_cap_deviation"],
+                ),
+            )
 
         return vals
 

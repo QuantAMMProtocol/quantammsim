@@ -125,6 +125,7 @@ class BaseDynamicFeeHook(ABC):
             arb_fees=jnp.asarray(run_fingerprint["arb_fees"], dtype=jnp.float64),
             lp_supply=empty_inputs.lp_supply,
             reclamm_price_ratio_updates=empty_inputs.reclamm_price_ratio_updates,
+            hypersurge_peg=empty_inputs.hypersurge_peg,
         )
 
         return self.calculate_reserves_with_dynamic_inputs(

@@ -246,6 +246,7 @@ def run_pool_simulation(simulationRunDto):
         reclamm_price_ratio_updates=run_fingerprint.get(
             "reclamm_price_ratio_updates"
         ),
+        hypersurge_peg=run_fingerprint.get("hypersurge_peg"),
     )
 
     print("run fingerprint-------------------", run_fingerprint)

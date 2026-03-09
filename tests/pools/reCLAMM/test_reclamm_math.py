@@ -960,6 +960,29 @@ class TestGetInitialValues:
         vals = pool.get_initial_values(fp)
         assert "arc_length_speed" not in vals
 
+    def test_includes_hypersurge_params_when_learnable(self):
+        """Learning HyperSurge should expose lane parameters in initial values."""
+        from quantammsim.pools.reCLAMM.reclamm import ReClammPool
+
+        pool = ReClammPool()
+        fp = {
+            "reclamm_learn_hypersurge_params": True,
+            "initial_hypersurge_arb_max_fee": 0.03,
+            "initial_hypersurge_arb_threshold": 0.01,
+            "initial_hypersurge_arb_cap_deviation": 0.40,
+            "initial_hypersurge_noise_max_fee": 0.04,
+            "initial_hypersurge_noise_threshold": 0.02,
+            "initial_hypersurge_noise_cap_deviation": 0.50,
+        }
+        vals = pool.get_initial_values(fp)
+
+        assert vals["hypersurge_arb_max_fee"] == 0.03
+        assert vals["hypersurge_arb_threshold"] == 0.01
+        assert vals["hypersurge_arb_cap_deviation"] == 0.40
+        assert vals["hypersurge_noise_max_fee"] == 0.04
+        assert vals["hypersurge_noise_threshold"] == 0.02
+        assert vals["hypersurge_noise_cap_deviation"] == 0.50
+
     def test_shift_exponent_parametrisation(self):
         """With reclamm_use_shift_exponent, get_initial_values returns shift_exponent."""
         from quantammsim.pools.reCLAMM.reclamm import ReClammPool

@@ -24,6 +24,7 @@ from functools import partial
 
 from quantammsim.pools.G3M.optimal_n_pool_arb import (
     precalc_shared_values_for_all_signatures,
+    precalc_components_of_optimal_trade_across_signatures,
     precalc_components_of_optimal_trade_across_prices,
     precalc_components_of_optimal_trade_across_prices_and_dynamic_fees,
     parallelised_optimal_trade_sifter,
@@ -82,6 +83,171 @@ def _ste_greater_equal(x, threshold, temperature=10.0):
 def _ste_select(mask, when_true, when_false):
     """Select between two values using a 0/1 gate that can carry STE gradients."""
     return mask * when_true + (1.0 - mask) * when_false
+
+
+def _pair_spot_for_indices(effective_reserves, token_in, token_out):
+    """Pool-implied token_out/token_in spot on effective reserves."""
+    reserve_in = effective_reserves[token_in]
+    reserve_out = effective_reserves[token_out]
+    return reserve_out / jnp.maximum(reserve_in, 1e-30)
+
+
+def _relative_abs_deviation(pool_price, oracle_price):
+    """|pool_price - oracle_price| / oracle_price with safe denominator."""
+    return jnp.abs(pool_price - oracle_price) / jnp.maximum(oracle_price, 1e-30)
+
+
+def _hypersurge_fee_for_trade(
+    effective_reserves,
+    candidate_trade,
+    peg_ratio,
+    base_fee,
+    arb_max_fee,
+    arb_threshold,
+    arb_cap_deviation,
+    noise_max_fee,
+    noise_threshold,
+    noise_cap_deviation,
+    ste_temperature,
+):
+    """Direction-aware HyperSurge fee for a single 2-token trade candidate.
+
+    Uses the same lane logic as Solidity:
+    - noise lane when deviation worsens (compare after vs before), using AFTER deviation.
+    - arb lane otherwise, using BEFORE deviation.
+    """
+    abs_trade = jnp.abs(candidate_trade)
+    token_in = jnp.argmax(abs_trade)
+    token_out = 1 - token_in
+
+    safe_peg = jnp.maximum(peg_ratio, 1e-30)
+    oracle_price = jnp.where(token_in == 0, safe_peg, 1.0 / safe_peg)
+
+    pool_before = _pair_spot_for_indices(effective_reserves, token_in, token_out)
+    pool_after = _pair_spot_for_indices(
+        effective_reserves + candidate_trade, token_in, token_out
+    )
+    deviation_before = _relative_abs_deviation(pool_before, oracle_price)
+    deviation_after = _relative_abs_deviation(pool_after, oracle_price)
+
+    noise_gate = _ste_greater_than(deviation_after, deviation_before, ste_temperature)
+
+    lane_threshold = _ste_select(noise_gate, noise_threshold, arb_threshold)
+    lane_cap = _ste_select(noise_gate, noise_cap_deviation, arb_cap_deviation)
+    lane_max_fee = _ste_select(noise_gate, noise_max_fee, arb_max_fee)
+    lane_deviation = _ste_select(noise_gate, deviation_after, deviation_before)
+
+    lane_threshold = jnp.clip(lane_threshold, 0.0, 1.0 - 1e-9)
+    lane_cap = jnp.clip(lane_cap, lane_threshold + 1e-9, 1.0)
+    lane_max_fee = jnp.clip(lane_max_fee, base_fee, 1.0)
+
+    ramp_span = jnp.maximum(lane_cap - lane_threshold, 1e-9)
+    ramp_progress = jnp.clip((lane_deviation - lane_threshold) / ramp_span, 0.0, 1.0)
+    surged_fee = base_fee + (lane_max_fee - base_fee) * ramp_progress
+
+    over_threshold_gate = _ste_greater_than(
+        lane_deviation, lane_threshold, ste_temperature
+    )
+    dynamic_fee = _ste_select(over_threshold_gate, surged_fee, base_fee)
+    return jnp.clip(dynamic_fee, base_fee, 1.0)
+
+
+def _resolve_hypersurge_trade(
+    effective_reserves,
+    zero_fee_trade,
+    base_fee_trade,
+    gamma_base,
+    prices,
+    weights,
+    tokens_to_drop,
+    active_trade_directions,
+    leave_one_out_idxs,
+    n_assets,
+    hypersurge_peg_ratio,
+    hypersurge_arb_max_fee,
+    hypersurge_arb_threshold,
+    hypersurge_arb_cap_deviation,
+    hypersurge_noise_max_fee,
+    hypersurge_noise_threshold,
+    hypersurge_noise_cap_deviation,
+    ste_temperature,
+):
+    """Apply HyperSurge fee selection and recompute fee-aware arb trade."""
+    base_fees_gate = _ste_greater_than(
+        jnp.abs(gamma_base - 1.0),
+        jnp.asarray(1e-12, dtype=gamma_base.dtype),
+        ste_temperature,
+    )
+    base_candidate_trade = _ste_select(base_fees_gate, base_fee_trade, zero_fee_trade)
+    base_fee = jnp.clip(1.0 - gamma_base, 0.0, 1.0)
+
+    dynamic_fee = _hypersurge_fee_for_trade(
+        effective_reserves=effective_reserves,
+        candidate_trade=base_candidate_trade,
+        peg_ratio=hypersurge_peg_ratio,
+        base_fee=base_fee,
+        arb_max_fee=hypersurge_arb_max_fee,
+        arb_threshold=hypersurge_arb_threshold,
+        arb_cap_deviation=hypersurge_arb_cap_deviation,
+        noise_max_fee=hypersurge_noise_max_fee,
+        noise_threshold=hypersurge_noise_threshold,
+        noise_cap_deviation=hypersurge_noise_cap_deviation,
+        ste_temperature=ste_temperature,
+    )
+    gamma_dynamic = jnp.clip(1.0 - dynamic_fee, 1e-12, 1.0)
+
+    (
+        dyn_active_initial_weights,
+        dyn_per_asset_ratio,
+        dyn_all_other_assets_ratio,
+    ) = precalc_components_of_optimal_trade_across_signatures(
+        weights,
+        prices,
+        gamma_dynamic,
+        tokens_to_drop,
+        active_trade_directions,
+        leave_one_out_idxs,
+    )
+    dynamic_fee_trade = parallelised_optimal_trade_sifter(
+        effective_reserves,
+        weights,
+        prices,
+        dyn_active_initial_weights,
+        active_trade_directions,
+        dyn_per_asset_ratio,
+        dyn_all_other_assets_ratio,
+        tokens_to_drop,
+        gamma_dynamic,
+        n_assets,
+        0,
+    )
+    dynamic_fees_gate = _ste_greater_than(
+        jnp.abs(gamma_dynamic - 1.0),
+        jnp.asarray(1e-12, dtype=gamma_dynamic.dtype),
+        ste_temperature,
+    )
+    optimal_trade = _ste_select(dynamic_fees_gate, dynamic_fee_trade, zero_fee_trade)
+    return optimal_trade, gamma_dynamic
+
+
+def _normalize_hypersurge_peg_ratio_array(hypersurge_peg_ratio_array, prices):
+    """Broadcast optional peg-ratio input to the scan length."""
+    if hypersurge_peg_ratio_array is None:
+        return jnp.ones((prices.shape[0],), dtype=prices.dtype)
+
+    peg_array = jnp.asarray(hypersurge_peg_ratio_array, dtype=prices.dtype)
+    if peg_array.ndim == 0:
+        peg_array = peg_array.reshape((1,))
+    if peg_array.ndim > 1 and peg_array.shape[1:] == (1,):
+        peg_array = peg_array[:, 0]
+    if peg_array.shape[0] == prices.shape[0]:
+        return peg_array
+    if peg_array.shape[0] == 1:
+        return jnp.full((prices.shape[0],), peg_array[0], dtype=prices.dtype)
+
+    raise ValueError(
+        "hypersurge_peg_ratio_array must have leading axis 1 or prices.shape[0]"
+    )
 
 
 def compute_invariant(Ra, Rb, Va, Vb):
@@ -771,6 +937,7 @@ def _reclamm_scan_step_with_fees_and_revenue(
     weights,
     tokens_to_drop,
     active_trade_directions,
+    leave_one_out_idxs,
     n,
     centeredness_margin,
     daily_price_shift_base,
@@ -782,6 +949,13 @@ def _reclamm_scan_step_with_fees_and_revenue(
     noise_trader_ratio=0.0,
     noise_model="ratio",
     noise_params=None,
+    hypersurge_enabled=False,
+    hypersurge_arb_max_fee=0.02,
+    hypersurge_arb_threshold=0.02,
+    hypersurge_arb_cap_deviation=1.0,
+    hypersurge_noise_max_fee=0.02,
+    hypersurge_noise_threshold=0.02,
+    hypersurge_noise_cap_deviation=1.0,
 ):
     """Single scan step for reClAMM pool with fees, returning LP fee revenue.
 
@@ -820,6 +994,7 @@ def _reclamm_scan_step_with_fees_and_revenue(
     arb_fees = input_list[6]
     price_ratio_update = input_list[7]
     lp_supply = input_list[8]
+    hypersurge_peg_ratio = input_list[9]
 
     # Scale both real and virtual reserves by LP supply ratio so liquidity
     # add/remove events preserve proportional pool state.
@@ -972,7 +1147,7 @@ def _reclamm_scan_step_with_fees_and_revenue(
     Eb_new = jnp.sqrt(L * market_price)
     zero_fee_trade = jnp.array([Ea_new - (Ra + Va), Eb_new - (Rb + Vb)])
 
-    # Fee-based arb using G3M optimal trade sifter on effective reserves
+    # Fee-based arb using G3M optimal trade sifter on effective reserves.
     fee_trade = parallelised_optimal_trade_sifter(
         effective_reserves,
         weights,
@@ -986,11 +1161,35 @@ def _reclamm_scan_step_with_fees_and_revenue(
         n,
         0,
     )
-
-    fees_gate = _ste_greater_than(
-        jnp.abs(gamma - 1.0), jnp.asarray(1e-12, dtype=gamma.dtype), ste_temperature
-    )
-    optimal_arb_trade = _ste_select(fees_gate, fee_trade, zero_fee_trade)
+    if hypersurge_enabled:
+        optimal_arb_trade, gamma_used = _resolve_hypersurge_trade(
+            effective_reserves=effective_reserves,
+            zero_fee_trade=zero_fee_trade,
+            base_fee_trade=fee_trade,
+            gamma_base=gamma,
+            prices=prices,
+            weights=weights,
+            tokens_to_drop=tokens_to_drop,
+            active_trade_directions=active_trade_directions,
+            leave_one_out_idxs=leave_one_out_idxs,
+            n_assets=n,
+            hypersurge_peg_ratio=hypersurge_peg_ratio,
+            hypersurge_arb_max_fee=hypersurge_arb_max_fee,
+            hypersurge_arb_threshold=hypersurge_arb_threshold,
+            hypersurge_arb_cap_deviation=hypersurge_arb_cap_deviation,
+            hypersurge_noise_max_fee=hypersurge_noise_max_fee,
+            hypersurge_noise_threshold=hypersurge_noise_threshold,
+            hypersurge_noise_cap_deviation=hypersurge_noise_cap_deviation,
+            ste_temperature=ste_temperature,
+        )
+    else:
+        fees_gate = _ste_greater_than(
+            jnp.abs(gamma - 1.0),
+            jnp.asarray(1e-12, dtype=gamma.dtype),
+            ste_temperature,
+        )
+        optimal_arb_trade = _ste_select(fees_gate, fee_trade, zero_fee_trade)
+        gamma_used = gamma
 
     # Check profitability for arb
     profit_to_arb = -(optimal_arb_trade * prices).sum() - arb_thresh
@@ -1010,12 +1209,12 @@ def _reclamm_scan_step_with_fees_and_revenue(
     if noise_model == "ratio":
         noisy_reserves = calculate_reserves_after_noise_trade(
             applied_trade, jnp.array([Ra_new, Rb_new]), prices,
-            noise_trader_ratio, gamma,
+            noise_trader_ratio, gamma_used,
         )
         Ra_new = jnp.where(noise_trader_ratio > 0, noisy_reserves[0], Ra_new)
         Rb_new = jnp.where(noise_trader_ratio > 0, noisy_reserves[1], Rb_new)
     elif noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
-        volatility = input_list[9]
+        volatility = input_list[10]
         arb_volume = 0.5 * jnp.sum(jnp.abs(applied_trade) * prices)
         real_value = jnp.sum(jnp.array([Ra_new, Rb_new]) * prices)
         effective_value = (Ra_new + Va) * prices[0] + (Rb_new + Vb) * prices[1]
@@ -1023,18 +1222,18 @@ def _reclamm_scan_step_with_fees_and_revenue(
         _np = noise_params if noise_params is not None else {}
         if noise_model == "tsoukalas_sqrt":
             noise_vol = reclamm_tsoukalas_sqrt_noise_volume(
-                effective_value, gamma, volatility, arb_volume, _np
+                effective_value, gamma_used, volatility, arb_volume, _np
             )
         elif noise_model == "tsoukalas_log":
             noise_vol = reclamm_tsoukalas_log_noise_volume(
-                effective_value, gamma, volatility, arb_volume, _np
+                effective_value, gamma_used, volatility, arb_volume, _np
             )
         else:
             noise_vol = reclamm_loglinear_noise_volume(
-                effective_value, gamma, volatility, arb_volume, _np
+                effective_value, gamma_used, volatility, arb_volume, _np
             )
 
-        noise_fee_income = (1.0 - gamma) * noise_vol
+        noise_fee_income = (1.0 - gamma_used) * noise_vol
         noise_scale = 1.0 + noise_fee_income / jnp.maximum(real_value, 1e-8)
         Ra_new = Ra_new * noise_scale
         Rb_new = Rb_new * noise_scale
@@ -1051,11 +1250,11 @@ def _reclamm_scan_step_with_fees_and_revenue(
 
     edge_a = _jax_calc_G3M_trade_from_exact_in_given_out(
         effective_reserves, _weights, token_in=1, token_out=0,
-        amount_out=drain_a, gamma=gamma,
+        amount_out=drain_a, gamma=gamma_used,
     )
     edge_b = _jax_calc_G3M_trade_from_exact_in_given_out(
         effective_reserves, _weights, token_in=0, token_out=1,
-        amount_out=drain_b, gamma=gamma,
+        amount_out=drain_b, gamma=gamma_used,
     )
 
     clamp_a = Ra_new < 0
@@ -1066,7 +1265,7 @@ def _reclamm_scan_step_with_fees_and_revenue(
     # Protocol fee: divert protocol_fee_split of inbound swap fees from LP reserves.
     # Computed on the final trade (normal arb or edge trade).
     final_trade = jnp.array([Ra_new - Ra, Rb_new - Rb])
-    fee_rate = 1.0 - gamma
+    fee_rate = 1.0 - gamma_used
     inbound = jnp.maximum(final_trade, 0.0)
     protocol_fee = inbound * fee_rate * protocol_fee_split
     Ra_new = Ra_new - protocol_fee[0]
@@ -1097,6 +1296,7 @@ def _reclamm_scan_step_with_fees(
     weights,
     tokens_to_drop,
     active_trade_directions,
+    leave_one_out_idxs,
     n,
     centeredness_margin,
     daily_price_shift_base,
@@ -1108,6 +1308,13 @@ def _reclamm_scan_step_with_fees(
     noise_trader_ratio=0.0,
     noise_model="ratio",
     noise_params=None,
+    hypersurge_enabled=False,
+    hypersurge_arb_max_fee=0.02,
+    hypersurge_arb_threshold=0.02,
+    hypersurge_arb_cap_deviation=1.0,
+    hypersurge_noise_max_fee=0.02,
+    hypersurge_noise_threshold=0.02,
+    hypersurge_noise_cap_deviation=1.0,
 ):
     """Single scan step for reClAMM pool with fees (reserves only).
 
@@ -1119,6 +1326,7 @@ def _reclamm_scan_step_with_fees(
         weights=weights,
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
+        leave_one_out_idxs=leave_one_out_idxs,
         n=n,
         centeredness_margin=centeredness_margin,
         daily_price_shift_base=daily_price_shift_base,
@@ -1130,6 +1338,13 @@ def _reclamm_scan_step_with_fees(
         noise_trader_ratio=noise_trader_ratio,
         noise_model=noise_model,
         noise_params=noise_params,
+        hypersurge_enabled=hypersurge_enabled,
+        hypersurge_arb_max_fee=hypersurge_arb_max_fee,
+        hypersurge_arb_threshold=hypersurge_arb_threshold,
+        hypersurge_arb_cap_deviation=hypersurge_arb_cap_deviation,
+        hypersurge_noise_max_fee=hypersurge_noise_max_fee,
+        hypersurge_noise_threshold=hypersurge_noise_threshold,
+        hypersurge_noise_cap_deviation=hypersurge_noise_cap_deviation,
     )
     return new_carry, new_reserves
 
@@ -1140,6 +1355,7 @@ def _reclamm_scan_step_with_fees_full_state(
     weights,
     tokens_to_drop,
     active_trade_directions,
+    leave_one_out_idxs,
     n,
     centeredness_margin,
     daily_price_shift_base,
@@ -1151,6 +1367,13 @@ def _reclamm_scan_step_with_fees_full_state(
     noise_trader_ratio=0.0,
     noise_model="ratio",
     noise_params=None,
+    hypersurge_enabled=False,
+    hypersurge_arb_max_fee=0.02,
+    hypersurge_arb_threshold=0.02,
+    hypersurge_arb_cap_deviation=1.0,
+    hypersurge_noise_max_fee=0.02,
+    hypersurge_noise_threshold=0.02,
+    hypersurge_noise_cap_deviation=1.0,
 ):
     """TEST-ONLY: fee scan step that also outputs virtual balances."""
     new_carry, (new_reserves, _fee_rev) = _reclamm_scan_step_with_fees_and_revenue(
@@ -1158,6 +1381,7 @@ def _reclamm_scan_step_with_fees_full_state(
         weights=weights,
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
+        leave_one_out_idxs=leave_one_out_idxs,
         n=n,
         centeredness_margin=centeredness_margin,
         daily_price_shift_base=daily_price_shift_base,
@@ -1169,6 +1393,13 @@ def _reclamm_scan_step_with_fees_full_state(
         noise_trader_ratio=noise_trader_ratio,
         noise_model=noise_model,
         noise_params=noise_params,
+        hypersurge_enabled=hypersurge_enabled,
+        hypersurge_arb_max_fee=hypersurge_arb_max_fee,
+        hypersurge_arb_threshold=hypersurge_arb_threshold,
+        hypersurge_arb_cap_deviation=hypersurge_arb_cap_deviation,
+        hypersurge_noise_max_fee=hypersurge_noise_max_fee,
+        hypersurge_noise_threshold=hypersurge_noise_threshold,
+        hypersurge_noise_cap_deviation=hypersurge_noise_cap_deviation,
     )
     return new_carry, (new_reserves, new_carry[1], new_carry[2])
 
@@ -1307,6 +1538,14 @@ def _jax_calc_reclamm_reserves_with_fees(
     noise_model="ratio",
     noise_params=None,
     volatility_array=None,
+    hypersurge_peg_ratio_array=None,
+    hypersurge_enabled=False,
+    hypersurge_arb_max_fee=0.02,
+    hypersurge_arb_threshold=0.02,
+    hypersurge_arb_cap_deviation=1.0,
+    hypersurge_noise_max_fee=0.02,
+    hypersurge_noise_threshold=0.02,
+    hypersurge_noise_cap_deviation=1.0,
 ):
     """Calculate reClAMM reserves over time with fees.
 
@@ -1319,6 +1558,9 @@ def _jax_calc_reclamm_reserves_with_fees(
         lp_supply_array.size == 1,
         jnp.full(prices.shape[0], lp_supply_array),
         lp_supply_array,
+    )
+    hypersurge_peg_ratio_array = _normalize_hypersurge_peg_ratio_array(
+        hypersurge_peg_ratio_array, prices
     )
 
     n_assets = 2
@@ -1348,6 +1590,7 @@ def _jax_calc_reclamm_reserves_with_fees(
         weights=weights,
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
+        leave_one_out_idxs=leave_one_out_idxs,
         n=n_assets,
         centeredness_margin=centeredness_margin,
         daily_price_shift_base=daily_price_shift_base,
@@ -1359,6 +1602,13 @@ def _jax_calc_reclamm_reserves_with_fees(
         noise_trader_ratio=noise_trader_ratio,
         noise_model=noise_model,
         noise_params=noise_params if noise_params is not None else {},
+        hypersurge_enabled=hypersurge_enabled,
+        hypersurge_arb_max_fee=hypersurge_arb_max_fee,
+        hypersurge_arb_threshold=hypersurge_arb_threshold,
+        hypersurge_arb_cap_deviation=hypersurge_arb_cap_deviation,
+        hypersurge_noise_max_fee=hypersurge_noise_max_fee,
+        hypersurge_noise_threshold=hypersurge_noise_threshold,
+        hypersurge_noise_cap_deviation=hypersurge_noise_cap_deviation,
     )
 
     carry_init = [
@@ -1383,6 +1633,7 @@ def _jax_calc_reclamm_reserves_with_fees(
         arb_fees_array,
         price_ratio_updates,
         lp_supply_array,
+        hypersurge_peg_ratio_array,
     ]
     if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
         scan_inputs.append(volatility_array)
@@ -1416,6 +1667,14 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
     noise_model="ratio",
     noise_params=None,
     volatility_array=None,
+    hypersurge_peg_ratio_array=None,
+    hypersurge_enabled=False,
+    hypersurge_arb_max_fee=0.02,
+    hypersurge_arb_threshold=0.02,
+    hypersurge_arb_cap_deviation=1.0,
+    hypersurge_noise_max_fee=0.02,
+    hypersurge_noise_threshold=0.02,
+    hypersurge_noise_cap_deviation=1.0,
 ):
     """Calculate reClAMM reserves with time-varying fees/arb arrays."""
     if lp_supply_array is None:
@@ -1424,6 +1683,9 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
         lp_supply_array.size == 1,
         jnp.full(prices.shape[0], lp_supply_array),
         lp_supply_array,
+    )
+    hypersurge_peg_ratio_array = _normalize_hypersurge_peg_ratio_array(
+        hypersurge_peg_ratio_array, prices
     )
 
     n_assets = 2
@@ -1466,6 +1728,7 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
         weights=weights,
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
+        leave_one_out_idxs=leave_one_out_idxs,
         n=n_assets,
         centeredness_margin=centeredness_margin,
         daily_price_shift_base=daily_price_shift_base,
@@ -1477,6 +1740,13 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
         noise_trader_ratio=noise_trader_ratio,
         noise_model=noise_model,
         noise_params=noise_params if noise_params is not None else {},
+        hypersurge_enabled=hypersurge_enabled,
+        hypersurge_arb_max_fee=hypersurge_arb_max_fee,
+        hypersurge_arb_threshold=hypersurge_arb_threshold,
+        hypersurge_arb_cap_deviation=hypersurge_arb_cap_deviation,
+        hypersurge_noise_max_fee=hypersurge_noise_max_fee,
+        hypersurge_noise_threshold=hypersurge_noise_threshold,
+        hypersurge_noise_cap_deviation=hypersurge_noise_cap_deviation,
     )
 
     carry_init = [
@@ -1501,6 +1771,7 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
         arb_fees,
         price_ratio_updates,
         lp_supply_array,
+        hypersurge_peg_ratio_array,
     ]
     if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
         scan_inputs.append(volatility_array)
@@ -1534,6 +1805,14 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs_full_state(
     noise_model="ratio",
     noise_params=None,
     volatility_array=None,
+    hypersurge_peg_ratio_array=None,
+    hypersurge_enabled=False,
+    hypersurge_arb_max_fee=0.02,
+    hypersurge_arb_threshold=0.02,
+    hypersurge_arb_cap_deviation=1.0,
+    hypersurge_noise_max_fee=0.02,
+    hypersurge_noise_threshold=0.02,
+    hypersurge_noise_cap_deviation=1.0,
 ):
     """TEST-ONLY: dynamic-input reserve path returning virtual-balance history."""
     if lp_supply_array is None:
@@ -1542,6 +1821,9 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs_full_state(
         lp_supply_array.size == 1,
         jnp.full(prices.shape[0], lp_supply_array),
         lp_supply_array,
+    )
+    hypersurge_peg_ratio_array = _normalize_hypersurge_peg_ratio_array(
+        hypersurge_peg_ratio_array, prices
     )
 
     n_assets = 2
@@ -1583,6 +1865,7 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs_full_state(
         weights=weights,
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
+        leave_one_out_idxs=leave_one_out_idxs,
         n=n_assets,
         centeredness_margin=centeredness_margin,
         daily_price_shift_base=daily_price_shift_base,
@@ -1594,6 +1877,13 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs_full_state(
         noise_trader_ratio=noise_trader_ratio,
         noise_model=noise_model,
         noise_params=noise_params if noise_params is not None else {},
+        hypersurge_enabled=hypersurge_enabled,
+        hypersurge_arb_max_fee=hypersurge_arb_max_fee,
+        hypersurge_arb_threshold=hypersurge_arb_threshold,
+        hypersurge_arb_cap_deviation=hypersurge_arb_cap_deviation,
+        hypersurge_noise_max_fee=hypersurge_noise_max_fee,
+        hypersurge_noise_threshold=hypersurge_noise_threshold,
+        hypersurge_noise_cap_deviation=hypersurge_noise_cap_deviation,
     )
 
     carry_init = [
@@ -1618,6 +1908,7 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs_full_state(
         arb_fees,
         price_ratio_updates,
         lp_supply_array,
+        hypersurge_peg_ratio_array,
     ]
     if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
         scan_inputs.append(volatility_array)
@@ -1648,6 +1939,14 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
     noise_model="ratio",
     noise_params=None,
     volatility_array=None,
+    hypersurge_peg_ratio_array=None,
+    hypersurge_enabled=False,
+    hypersurge_arb_max_fee=0.02,
+    hypersurge_arb_threshold=0.02,
+    hypersurge_arb_cap_deviation=1.0,
+    hypersurge_noise_max_fee=0.02,
+    hypersurge_noise_threshold=0.02,
+    hypersurge_noise_cap_deviation=1.0,
 ):
     """Calculate reClAMM reserves and LP fee revenue over time with fees.
 
@@ -1663,6 +1962,9 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
         lp_supply_array.size == 1,
         jnp.full(prices.shape[0], lp_supply_array),
         lp_supply_array,
+    )
+    hypersurge_peg_ratio_array = _normalize_hypersurge_peg_ratio_array(
+        hypersurge_peg_ratio_array, prices
     )
 
     n_assets = 2
@@ -1691,6 +1993,7 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
         weights=weights,
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
+        leave_one_out_idxs=leave_one_out_idxs,
         n=n_assets,
         centeredness_margin=centeredness_margin,
         daily_price_shift_base=daily_price_shift_base,
@@ -1702,6 +2005,13 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
         noise_trader_ratio=noise_trader_ratio,
         noise_model=noise_model,
         noise_params=noise_params if noise_params is not None else {},
+        hypersurge_enabled=hypersurge_enabled,
+        hypersurge_arb_max_fee=hypersurge_arb_max_fee,
+        hypersurge_arb_threshold=hypersurge_arb_threshold,
+        hypersurge_arb_cap_deviation=hypersurge_arb_cap_deviation,
+        hypersurge_noise_max_fee=hypersurge_noise_max_fee,
+        hypersurge_noise_threshold=hypersurge_noise_threshold,
+        hypersurge_noise_cap_deviation=hypersurge_noise_cap_deviation,
     )
 
     carry_init = [
@@ -1726,6 +2036,7 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
         arb_fees_array,
         price_ratio_updates,
         lp_supply_array,
+        hypersurge_peg_ratio_array,
     ]
     if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
         scan_inputs.append(volatility_array)
@@ -1759,6 +2070,14 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
     noise_model="ratio",
     noise_params=None,
     volatility_array=None,
+    hypersurge_peg_ratio_array=None,
+    hypersurge_enabled=False,
+    hypersurge_arb_max_fee=0.02,
+    hypersurge_arb_threshold=0.02,
+    hypersurge_arb_cap_deviation=1.0,
+    hypersurge_noise_max_fee=0.02,
+    hypersurge_noise_threshold=0.02,
+    hypersurge_noise_cap_deviation=1.0,
 ):
     """Calculate reClAMM reserves and LP fee revenue with time-varying fees/arb arrays.
 
@@ -1774,6 +2093,9 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
         lp_supply_array.size == 1,
         jnp.full(prices.shape[0], lp_supply_array),
         lp_supply_array,
+    )
+    hypersurge_peg_ratio_array = _normalize_hypersurge_peg_ratio_array(
+        hypersurge_peg_ratio_array, prices
     )
 
     n_assets = 2
@@ -1815,6 +2137,7 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
         weights=weights,
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
+        leave_one_out_idxs=leave_one_out_idxs,
         n=n_assets,
         centeredness_margin=centeredness_margin,
         daily_price_shift_base=daily_price_shift_base,
@@ -1826,6 +2149,13 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
         noise_trader_ratio=noise_trader_ratio,
         noise_model=noise_model,
         noise_params=noise_params if noise_params is not None else {},
+        hypersurge_enabled=hypersurge_enabled,
+        hypersurge_arb_max_fee=hypersurge_arb_max_fee,
+        hypersurge_arb_threshold=hypersurge_arb_threshold,
+        hypersurge_arb_cap_deviation=hypersurge_arb_cap_deviation,
+        hypersurge_noise_max_fee=hypersurge_noise_max_fee,
+        hypersurge_noise_threshold=hypersurge_noise_threshold,
+        hypersurge_noise_cap_deviation=hypersurge_noise_cap_deviation,
     )
 
     carry_init = [
@@ -1850,6 +2180,7 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
         arb_fees,
         price_ratio_updates,
         lp_supply_array,
+        hypersurge_peg_ratio_array,
     ]
     if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
         scan_inputs.append(volatility_array)

@@ -102,8 +102,22 @@ run_fingerprint_defaults = {
     "reclamm_learn_arc_length_speed": False,  # include arc_length_speed in trainable params
     "reclamm_use_shift_exponent": False,  # parametrise shift rate as shift_exponent (log-friendly)
     "reclamm_learn_fees": False,  # include fees in trainable params (Optuna search over fee level)
+    "reclamm_hypersurge_enabled": False,  # enable HyperSurge dynamic fee logic for reCLAMM
+    "reclamm_learn_hypersurge_params": False,  # include HyperSurge lane params in trainable params
+    "reclamm_hypersurge_arb_max_fee": 0.02,
+    "reclamm_hypersurge_arb_threshold": 0.02,
+    "reclamm_hypersurge_arb_cap_deviation": 1.0,
+    "reclamm_hypersurge_noise_max_fee": 0.02,
+    "reclamm_hypersurge_noise_threshold": 0.02,
+    "reclamm_hypersurge_noise_cap_deviation": 1.0,
     "initial_arc_length_speed": 1e-4,  # default initial value when learning arc_length_speed
     "initial_shift_exponent": 1.0,  # default shift_exponent when using that parametrisation
+    "initial_hypersurge_arb_max_fee": 0.02,
+    "initial_hypersurge_arb_threshold": 0.02,
+    "initial_hypersurge_arb_cap_deviation": 1.0,
+    "initial_hypersurge_noise_max_fee": 0.02,
+    "initial_hypersurge_noise_threshold": 0.02,
+    "initial_hypersurge_noise_cap_deviation": 1.0,
     "initial_price_ratio": 4.0,
     "initial_centeredness_margin": 0.2,
     "initial_daily_price_shift_base": 1.0 - 1.0 / 124000.0,

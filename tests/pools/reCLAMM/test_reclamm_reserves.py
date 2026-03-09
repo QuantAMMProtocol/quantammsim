@@ -15,6 +15,7 @@ from quantammsim.pools.reCLAMM.reclamm_reserves import (
     compute_price_ratio,
     initialise_reclamm_reserves,
     calibrate_arc_length_speed,
+    _hypersurge_fee_for_trade,
     _jax_calc_reclamm_reserves_zero_fees,
     _jax_calc_reclamm_reserves_with_fees,
 )
@@ -133,6 +134,88 @@ class TestSingleStepArb:
         zero_fee_delta = jnp.abs(zero_fee_result[0] - reserves).sum()
         fee_delta = jnp.abs(fee_result[0] - reserves).sum()
         assert float(fee_delta) <= float(zero_fee_delta) + 1e-10
+
+
+class TestHyperSurgeFeeLogic:
+    """Unit tests for HyperSurge lane selection and fee ramping."""
+
+    def test_noise_lane_uses_after_deviation(self):
+        effective_reserves = jnp.array([100.0, 100.0])
+        candidate_trade = jnp.array([20.0, -10.0])
+        fee = _hypersurge_fee_for_trade(
+            effective_reserves=effective_reserves,
+            candidate_trade=candidate_trade,
+            peg_ratio=jnp.array(1.0),
+            base_fee=jnp.array(0.003),
+            arb_max_fee=jnp.array(0.010),
+            arb_threshold=jnp.array(0.40),
+            arb_cap_deviation=jnp.array(0.80),
+            noise_max_fee=jnp.array(0.020),
+            noise_threshold=jnp.array(0.10),
+            noise_cap_deviation=jnp.array(0.30),
+            ste_temperature=10.0,
+        )
+        expected_fee = 0.003 + (0.020 - 0.003) * ((0.25 - 0.10) / (0.30 - 0.10))
+        npt.assert_allclose(float(fee), expected_fee, rtol=1e-10)
+
+    def test_arb_lane_uses_before_deviation(self):
+        effective_reserves = jnp.array([60.0, 140.0])
+        candidate_trade = jnp.array([20.0, -20.0])
+        fee = _hypersurge_fee_for_trade(
+            effective_reserves=effective_reserves,
+            candidate_trade=candidate_trade,
+            peg_ratio=jnp.array(1.0),
+            base_fee=jnp.array(0.003),
+            arb_max_fee=jnp.array(0.020),
+            arb_threshold=jnp.array(0.20),
+            arb_cap_deviation=jnp.array(1.00),
+            noise_max_fee=jnp.array(0.006),
+            noise_threshold=jnp.array(0.10),
+            noise_cap_deviation=jnp.array(0.30),
+            ste_temperature=10.0,
+        )
+        npt.assert_allclose(float(fee), 0.020, rtol=1e-12)
+
+    def test_hypersurge_integration_reduces_arb_movement(self):
+        reserves, Va, Vb = _init_pool()
+        n_steps = 30
+        prices = _make_trending_prices(2500.0, 3500.0, 1.0, n_steps)
+        peg_ratio_array = jnp.full((n_steps,), 1.0 / 2500.0)
+
+        baseline = _jax_calc_reclamm_reserves_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.001,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+            hypersurge_enabled=False,
+            hypersurge_peg_ratio_array=peg_ratio_array,
+        )
+        with_hypersurge = _jax_calc_reclamm_reserves_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.001,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+            hypersurge_enabled=True,
+            hypersurge_arb_max_fee=0.20,
+            hypersurge_arb_threshold=0.0,
+            hypersurge_arb_cap_deviation=0.01,
+            hypersurge_noise_max_fee=0.20,
+            hypersurge_noise_threshold=0.0,
+            hypersurge_noise_cap_deviation=0.01,
+            hypersurge_peg_ratio_array=peg_ratio_array,
+        )
+
+        baseline_delta = jnp.abs(baseline[-1] - reserves).sum()
+        hypersurge_delta = jnp.abs(with_hypersurge[-1] - reserves).sum()
+        assert float(hypersurge_delta) < float(baseline_delta)
 
 
 class TestReservesPositiveThroughout:
@@ -665,6 +748,39 @@ class TestReClammTrainable:
             initial_values, {}, n_assets=2, n_parameter_sets=1
         )
         assert "arc_length_speed" not in params
+
+    def test_init_base_parameters_includes_hypersurge_params_when_learnable(self):
+        """Learning HyperSurge should expose all lane parameters as trainable arrays."""
+        from quantammsim.pools.creator import create_pool
+
+        pool = create_pool("reclamm")
+        params = pool.init_base_parameters(
+            initial_values_dict={
+                "price_ratio": 4.0,
+                "centeredness_margin": 0.2,
+                "daily_price_shift_base": 1.0 - 1.0 / 124000.0,
+                "hypersurge_arb_max_fee": 0.03,
+                "hypersurge_arb_threshold": 0.01,
+                "hypersurge_arb_cap_deviation": 0.30,
+                "hypersurge_noise_max_fee": 0.04,
+                "hypersurge_noise_threshold": 0.02,
+                "hypersurge_noise_cap_deviation": 0.40,
+            },
+            run_fingerprint={"reclamm_learn_hypersurge_params": True},
+            n_assets=2,
+            n_parameter_sets=3,
+        )
+
+        for key in (
+            "hypersurge_arb_max_fee",
+            "hypersurge_arb_threshold",
+            "hypersurge_arb_cap_deviation",
+            "hypersurge_noise_max_fee",
+            "hypersurge_noise_threshold",
+            "hypersurge_noise_cap_deviation",
+        ):
+            assert key in params
+            assert params[key].shape == (3, 1)
 
     def test_learnable_arc_length_speed_forward_pass(self):
         """Forward pass should use arc_length_speed from params when present."""

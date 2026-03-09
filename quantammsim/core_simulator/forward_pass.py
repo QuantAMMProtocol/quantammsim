@@ -1116,6 +1116,7 @@ def forward_pass_nograd(
             reclamm_price_ratio_updates=stop_gradient(
                 dynamic_inputs.reclamm_price_ratio_updates
             ),
+            hypersurge_peg=stop_gradient(dynamic_inputs.hypersurge_peg),
         )
     return forward_pass(
         params,

@@ -14,6 +14,7 @@ class DynamicInputFrames:
     arb_fees: Optional[Any] = None
     lp_supply: Optional[Any] = None
     reclamm_price_ratio_updates: Optional[Any] = None
+    hypersurge_peg: Optional[Any] = None
 
 
 class DynamicInputArrays(NamedTuple):
@@ -25,6 +26,7 @@ class DynamicInputArrays(NamedTuple):
     arb_fees: jnp.ndarray
     lp_supply: jnp.ndarray
     reclamm_price_ratio_updates: jnp.ndarray
+    hypersurge_peg: jnp.ndarray
 
 
 def default_dynamic_input_flags() -> dict:
@@ -37,6 +39,7 @@ def default_dynamic_input_flags() -> dict:
         "has_dynamic_arb_fees": False,
         "has_lp_supply": False,
         "has_reclamm_price_ratio_updates": False,
+        "has_hypersurge_peg": False,
     }
 
 
@@ -55,6 +58,7 @@ def dynamic_input_flags_from_frames(dynamic_input_frames: Optional[DynamicInputF
         "has_reclamm_price_ratio_updates": (
             dynamic_input_frames.reclamm_price_ratio_updates is not None
         ),
+        "has_hypersurge_peg": dynamic_input_frames.hypersurge_peg is not None,
     }
     flags["use_dynamic_inputs"] = any(flags.values())
     return flags
@@ -85,6 +89,8 @@ def empty_dynamic_input_arrays() -> DynamicInputArrays:
         reclamm_price_ratio_updates=jnp.array(
             [[0.0, 0.0, 0.0, jnp.nan]], dtype=jnp.float64
         ),
+        # Peg is token_out/token_in for pair (0->1) in reCLAMM (2-token pools).
+        hypersurge_peg=jnp.ones((1,), dtype=jnp.float64),
     )
 
 
@@ -121,6 +127,11 @@ def resolve_dynamic_input_components(
             arrays.reclamm_price_ratio_updates
             if dynamic_input_flags["has_reclamm_price_ratio_updates"]
             else empty_dynamic_input_arrays().reclamm_price_ratio_updates
+        ),
+        "hypersurge_peg": (
+            arrays.hypersurge_peg
+            if dynamic_input_flags["has_hypersurge_peg"]
+            else jnp.ones((1,), dtype=jnp.float64)
         ),
     }
 
@@ -162,6 +173,7 @@ def materialize_dynamic_inputs(
             "has_dynamic_arb_fees": True,
             "has_lp_supply": True,
             "has_reclamm_price_ratio_updates": True,
+            "has_hypersurge_peg": True,
         }
     else:
         flags = resolve_dynamic_input_flags(dynamic_inputs, dynamic_input_flags)
@@ -191,6 +203,12 @@ def materialize_dynamic_inputs(
         reclamm_price_ratio_updates=_broadcast_dynamic_input_leaf(
             "reclamm_price_ratio_updates",
             resolved["reclamm_price_ratio_updates"],
+            scan_len,
+            dtype,
+        ),
+        hypersurge_peg=_broadcast_dynamic_input_leaf(
+            "hypersurge_peg",
+            resolved["hypersurge_peg"],
             scan_len,
             dtype,
         ),
