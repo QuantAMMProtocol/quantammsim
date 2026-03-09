@@ -243,6 +243,9 @@ def run_pool_simulation(simulationRunDto):
         trades=raw_trades,
         fees=fee_steps_df,
         gas_cost=gas_cost_df,
+        reclamm_price_ratio_updates=run_fingerprint.get(
+            "reclamm_price_ratio_updates"
+        ),
     )
 
     print("run fingerprint-------------------", run_fingerprint)

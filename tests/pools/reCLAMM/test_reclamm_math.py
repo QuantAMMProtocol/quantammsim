@@ -729,9 +729,9 @@ class TestConstantArcLength:
 
     def test_arc_length_constant_through_scan(self):
         """Through the scan, per-step Δs should be approximately constant."""
-        from quantammsim.pools.reCLAMM.reclamm_reserves import (
+        from quantammsim.pools.reCLAMM.reclamm_reserves import calibrate_arc_length_speed
+        from tests.pools.reCLAMM.helpers import (
             _jax_calc_reclamm_reserves_zero_fees_full_state,
-            calibrate_arc_length_speed,
         )
 
         Ra, Rb, Va, Vb, Q = _centered_pool(P=2.0, price_ratio=4.0)

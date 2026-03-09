@@ -1227,6 +1227,7 @@ def _to_dynamic_input_arrays(
     gas_cost_array,
     arb_fees_array,
     lp_supply_array,
+    reclamm_price_ratio_updates_array,
 ) -> DynamicInputArrays:
     """Normalize optional numpy arrays into the hot-path container."""
     empty = empty_dynamic_input_arrays()
@@ -1236,7 +1237,154 @@ def _to_dynamic_input_arrays(
         gas_cost=empty.gas_cost if gas_cost_array is None else jnp.asarray(gas_cost_array, dtype=jnp.float64),
         arb_fees=empty.arb_fees if arb_fees_array is None else jnp.asarray(arb_fees_array, dtype=jnp.float64),
         lp_supply=empty.lp_supply if lp_supply_array is None else jnp.asarray(lp_supply_array, dtype=jnp.float64),
+        reclamm_price_ratio_updates=(
+            empty.reclamm_price_ratio_updates
+            if reclamm_price_ratio_updates_array is None
+            else jnp.asarray(reclamm_price_ratio_updates_array, dtype=jnp.float64)
+        ),
     )
+
+
+def _coerce_reclamm_price_ratio_updates_to_frame(raw_updates) -> pd.DataFrame:
+    """Accept DataFrame / CSV path / list[dict] / dict payload and return a DataFrame."""
+    if raw_updates is None:
+        return pd.DataFrame(
+            columns=["unix", "end_unix", "price_ratio", "start_price_ratio"]
+        )
+    if isinstance(raw_updates, pd.DataFrame):
+        return raw_updates.copy()
+    if isinstance(raw_updates, (str, Path)):
+        return pd.read_csv(raw_updates)
+    if isinstance(raw_updates, list):
+        return pd.DataFrame(raw_updates)
+    if isinstance(raw_updates, dict):
+        for key in (
+            "updates",
+            "rows",
+            "reclamm_price_ratio_updates",
+            "price_ratio_updates",
+        ):
+            value = raw_updates.get(key)
+            if isinstance(value, list):
+                return pd.DataFrame(value)
+            if isinstance(value, (str, Path)):
+                return pd.read_csv(value)
+        return pd.DataFrame(raw_updates)
+    raise TypeError(
+        "reclamm_price_ratio_updates must be a DataFrame, CSV path, list of dicts, or dict payload"
+    )
+
+
+def _ceil_div_nonnegative(delta: int, denom: int) -> int:
+    """Ceiling division for non-negative integers."""
+    if delta <= 0:
+        return 0
+    return (delta + denom - 1) // denom
+
+
+def _normalize_reclamm_price_ratio_updates_for_window(
+    raw_updates,
+    start_date_string: str,
+    end_date_string: str,
+    arb_frequency: int,
+) -> np.ndarray:
+    """Normalize manual reCLAMM price-ratio updates into per-step event rows.
+
+    Output columns per step:
+    0. has_event (0/1)
+    1. target_price_ratio
+    2. end_step
+    3. start_price_ratio_override (NaN when not supplied)
+    """
+    start_unix = pd.to_datetime(start_date_string, format="%Y-%m-%d %H:%M:%S").value // 10**6
+    end_unix = pd.to_datetime(end_date_string, format="%Y-%m-%d %H:%M:%S").value // 10**6
+    step_ms = int(arb_frequency) * 60 * 1000
+    if step_ms <= 0:
+        raise ValueError("arb_frequency must be >= 1 for reCLAMM price-ratio updates")
+    scan_len = int(max((end_unix - start_unix) // step_ms, 0))
+    default_matrix = np.zeros((scan_len, 4), dtype=np.float64)
+    if scan_len > 0:
+        default_matrix[:, 3] = np.nan
+
+    updates_df = _coerce_reclamm_price_ratio_updates_to_frame(raw_updates)
+    if updates_df.empty:
+        return default_matrix
+
+    required = {"unix", "end_unix", "price_ratio"}
+    missing = sorted(required.difference(updates_df.columns))
+    if missing:
+        raise ValueError(
+            "reclamm_price_ratio_updates missing required columns: "
+            + ", ".join(missing)
+        )
+
+    updates = updates_df.copy()
+    updates["unix"] = pd.to_numeric(updates["unix"], errors="coerce")
+    updates["end_unix"] = pd.to_numeric(updates["end_unix"], errors="coerce")
+    updates["price_ratio"] = pd.to_numeric(updates["price_ratio"], errors="coerce")
+    if "start_price_ratio" in updates.columns:
+        updates["start_price_ratio"] = pd.to_numeric(
+            updates["start_price_ratio"], errors="coerce"
+        )
+    else:
+        updates["start_price_ratio"] = np.nan
+
+    invalid_required = updates["unix"].isna() | updates["end_unix"].isna() | updates["price_ratio"].isna()
+    if invalid_required.any():
+        raise ValueError(
+            "reclamm_price_ratio_updates contains non-numeric unix/end_unix/price_ratio values"
+        )
+    if (updates["price_ratio"] <= 1.0).any():
+        raise ValueError("reclamm price_ratio values must be > 1.0")
+    if (updates["end_unix"] < updates["unix"]).any():
+        raise ValueError("reclamm end_unix must be >= unix for every update")
+
+    updates = updates.sort_values("unix", kind="stable")
+
+    for _, row in updates.iterrows():
+        event_start_unix = int(row["unix"])
+        event_end_unix = int(row["end_unix"])
+        target_price_ratio = float(row["price_ratio"])
+        start_price_ratio_override = row["start_price_ratio"]
+
+        # Event completes before window start - no effect.
+        if event_end_unix <= start_unix:
+            continue
+
+        in_progress_pre_window = event_start_unix < start_unix and event_end_unix > start_unix
+        if in_progress_pre_window and pd.isna(start_price_ratio_override):
+            raise ValueError(
+                "reclamm pre-window in-progress event requires start_price_ratio"
+            )
+
+        effective_start_unix = max(event_start_unix, start_unix)
+        start_step = _ceil_div_nonnegative(effective_start_unix - start_unix, step_ms)
+        end_step = _ceil_div_nonnegative(event_end_unix - start_unix, step_ms)
+
+        # Starts after current window.
+        if start_step >= scan_len:
+            continue
+
+        end_step = min(max(end_step, start_step), scan_len - 1)
+        default_matrix[start_step, 0] = 1.0
+        default_matrix[start_step, 1] = target_price_ratio
+        default_matrix[start_step, 2] = float(end_step)
+        default_matrix[start_step, 3] = (
+            float(start_price_ratio_override)
+            if not pd.isna(start_price_ratio_override)
+            else np.nan
+        )
+
+    return default_matrix
+
+
+def _has_reclamm_schedule_events(schedule_array: Optional[np.ndarray]) -> bool:
+    """Return True when a normalized schedule contains at least one event row."""
+    if schedule_array is None:
+        return False
+    if schedule_array.size == 0:
+        return False
+    return bool(np.any(np.asarray(schedule_array)[:, 0] > 0.5))
 
 
 def prepare_dynamic_inputs(
@@ -1253,6 +1401,7 @@ def prepare_dynamic_inputs(
     gas_cost_df = dynamic_input_frames.gas_cost
     arb_fees_df = dynamic_input_frames.arb_fees
     lp_supply_df = dynamic_input_frames.lp_supply
+    reclamm_price_ratio_updates = dynamic_input_frames.reclamm_price_ratio_updates
     dynamic_input_flags = dynamic_input_flags_from_frames(dynamic_input_frames)
 
     if raw_trades is not None:
@@ -1368,6 +1517,51 @@ def prepare_dynamic_inputs(
             else None
         )
 
+    reclamm_price_ratio_updates_array = (
+        _normalize_reclamm_price_ratio_updates_for_window(
+            reclamm_price_ratio_updates,
+            run_fingerprint["startDateString"],
+            run_fingerprint["endDateString"],
+            run_fingerprint["arb_frequency"],
+        )
+        if reclamm_price_ratio_updates is not None
+        else None
+    )
+    if do_test_period:
+        test_reclamm_price_ratio_updates_array = (
+            _normalize_reclamm_price_ratio_updates_for_window(
+                reclamm_price_ratio_updates,
+                run_fingerprint["endDateString"],
+                run_fingerprint["endTestDateString"],
+                run_fingerprint["arb_frequency"],
+            )
+            if reclamm_price_ratio_updates is not None
+            else None
+        )
+
+    train_has_reclamm_schedule = _has_reclamm_schedule_events(
+        reclamm_price_ratio_updates_array
+    )
+    test_has_reclamm_schedule = False
+    if do_test_period:
+        test_has_reclamm_schedule = _has_reclamm_schedule_events(
+            test_reclamm_price_ratio_updates_array
+        )
+
+    if not train_has_reclamm_schedule:
+        reclamm_price_ratio_updates_array = None
+    if do_test_period and not test_has_reclamm_schedule:
+        test_reclamm_price_ratio_updates_array = None
+    if not train_has_reclamm_schedule and (
+        not do_test_period or not test_has_reclamm_schedule
+    ):
+        dynamic_input_flags["has_reclamm_price_ratio_updates"] = False
+        dynamic_input_flags["use_dynamic_inputs"] = any(
+            value
+            for key, value in dynamic_input_flags.items()
+            if key != "use_dynamic_inputs"
+        )
+
     # Unit LP supply is the neutral case; keep it on the static hot path.
     if lp_supply_array is not None and np.allclose(lp_supply_array, 1.0):
         lp_supply_array = None
@@ -1387,6 +1581,7 @@ def prepare_dynamic_inputs(
                 gas_cost_array,
                 arb_fees_array,
                 lp_supply_array,
+                reclamm_price_ratio_updates_array,
             ),
             "test_dynamic_inputs": _to_dynamic_input_arrays(
                 test_period_trades,
@@ -1394,6 +1589,7 @@ def prepare_dynamic_inputs(
                 test_gas_cost_array,
                 test_arb_fees_array,
                 test_lp_supply_array,
+                test_reclamm_price_ratio_updates_array,
             ),
             "dynamic_input_flags": dynamic_input_flags,
         }
@@ -1404,6 +1600,7 @@ def prepare_dynamic_inputs(
             gas_cost_array,
             arb_fees_array,
             lp_supply_array,
+            reclamm_price_ratio_updates_array,
         ),
         "dynamic_input_flags": dynamic_input_flags,
     }
@@ -1656,6 +1853,7 @@ def probe_max_n_parameter_sets(
                         "has_dynamic_gas_cost": False,
                         "has_dynamic_arb_fees": False,
                         "has_lp_supply": False,
+                        "has_reclamm_price_ratio_updates": False,
                     },
                 },
             )
