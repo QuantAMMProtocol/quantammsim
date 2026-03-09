@@ -38,17 +38,20 @@ class JointData(NamedTuple):
 def prepare_joint_data(
     matched: Dict[str, dict],
     drop_chain_dummies: bool = False,
+    fix_gas_to_chain: bool = False,
 ) -> JointData:
     """Build batched JAX arrays from matched pool data.
 
     Args:
         matched: dict from match_grids_to_panel
         drop_chain_dummies: if True, remove chain_* columns from attributes
-            (reduces feature count for small n)
+        fix_gas_to_chain: if True, store fixed_log_gas per pool from CHAIN_GAS_USD
 
     Returns:
         JointData with per-pool JAX arrays and shared attribute matrix.
     """
+    from quantammsim.calibration.loss import CHAIN_GAS_USD
+
     X_attr, attr_names, pool_ids = build_pool_attributes(matched)
 
     if drop_chain_dummies:
@@ -64,12 +67,18 @@ def prepare_joint_data(
         x_obs = build_x_obs(panel)
         y_obs = panel["log_volume"].values.astype(float)
 
-        pool_data.append({
+        d = {
             "coeffs": entry["coeffs"],
             "x_obs": jnp.array(x_obs),
             "y_obs": jnp.array(y_obs),
             "day_indices": jnp.array(entry["day_indices"]),
-        })
+        }
+        if fix_gas_to_chain:
+            chain = entry["chain"]
+            gas_usd = CHAIN_GAS_USD.get(chain, 1.0)
+            d["fixed_log_gas"] = jnp.float64(np.log(max(gas_usd, 1e-6)))
+
+        pool_data.append(d)
 
     return JointData(
         pool_data=pool_data,
@@ -102,38 +111,66 @@ def pack_joint_params(
     ])
 
 
+def pack_joint_params_fixed_gas(
+    bias_cad: float,
+    W_cad: jnp.ndarray,
+    noise_params: jnp.ndarray,
+) -> jnp.ndarray:
+    """Pack joint params with gas excluded.
+
+    Layout: [bias_cad, W_cad(k_attr), noise_params...]
+    """
+    return jnp.concatenate([
+        jnp.array([bias_cad]),
+        W_cad.ravel(),
+        noise_params.ravel(),
+    ])
+
+
 def unpack_joint_params(
     flat: jnp.ndarray, config: dict
 ) -> dict:
     """Unpack flat array to structured params.
 
     config must have: k_attr, n_pools, mode
+    config may have: fix_gas (bool) — if True, no bias_gas/W_gas in flat array
     """
     k_attr = config["k_attr"]
     mode = config["mode"]
+    fix_gas = config.get("fix_gas", False)
 
-    bias_cad = flat[0]
-    bias_gas = flat[1]
-    W_cad = flat[2:2 + k_attr]
-    W_gas = flat[2 + k_attr:2 + 2 * k_attr]
-    rest = flat[2 + 2 * k_attr:]
+    if fix_gas:
+        bias_cad = flat[0]
+        W_cad = flat[1:1 + k_attr]
+        rest = flat[1 + k_attr:]
+    else:
+        bias_cad = flat[0]
+        bias_gas = flat[1]
+        W_cad = flat[2:2 + k_attr]
+        W_gas = flat[2 + k_attr:2 + 2 * k_attr]
+        rest = flat[2 + 2 * k_attr:]
 
     if mode == "per_pool_noise":
         n_pools = config["n_pools"]
         noise_coeffs = rest.reshape(n_pools, K_OBS)
+        if fix_gas:
+            return {"bias_cad": bias_cad, "W_cad": W_cad,
+                    "noise_coeffs": noise_coeffs}
         return {
             "bias_cad": bias_cad, "bias_gas": bias_gas,
             "W_cad": W_cad, "W_gas": W_gas,
             "noise_coeffs": noise_coeffs,
         }
     else:  # shared_noise
-        # noise_params: (1 + k_attr, K_OBS) — row 0 is bias
         W_noise_full = rest.reshape(1 + k_attr, K_OBS)
+        if fix_gas:
+            return {"bias_cad": bias_cad, "W_cad": W_cad,
+                    "bias_noise": W_noise_full[0], "W_noise": W_noise_full[1:]}
         return {
             "bias_cad": bias_cad, "bias_gas": bias_gas,
             "W_cad": W_cad, "W_gas": W_gas,
-            "bias_noise": W_noise_full[0],    # (K_OBS,)
-            "W_noise": W_noise_full[1:],      # (k_attr, K_OBS)
+            "bias_noise": W_noise_full[0],
+            "W_noise": W_noise_full[1:],
         }
 
 
@@ -147,30 +184,53 @@ def _make_pool_loss_fn(
 
     Closes over pool-specific data; takes only params_flat as input.
     Each pool gets its own small JIT'd computation graph.
+
+    If config["fix_gas"] is True, gas comes from pool_data_i["fixed_log_gas"]
+    instead of being predicted from attributes.
     """
     coeffs = pool_data_i["coeffs"]
     x_obs = pool_data_i["x_obs"]
     y_obs = pool_data_i["y_obs"]
     day_indices = pool_data_i["day_indices"]
     mode = config["mode"]
+    fix_gas = config.get("fix_gas", False)
     i = pool_idx
 
-    @jax.jit
-    def pool_loss_fn(params_flat):
-        params = unpack_joint_params(params_flat, config)
-        log_cad = params["bias_cad"] + jnp.dot(x_attr_i, params["W_cad"])
-        log_gas = params["bias_gas"] + jnp.dot(x_attr_i, params["W_gas"])
+    if fix_gas:
+        fixed_log_gas = pool_data_i["fixed_log_gas"]
 
-        if mode == "per_pool_noise":
-            noise_c = params["noise_coeffs"][i]
-        else:
-            noise_c = params["bias_noise"] + jnp.dot(x_attr_i, params["W_noise"])
+        @jax.jit
+        def pool_loss_fn(params_flat):
+            params = unpack_joint_params(params_flat, config)
+            log_cad = params["bias_cad"] + jnp.dot(x_attr_i, params["W_cad"])
 
-        v_arb_all = interpolate_pool_daily(coeffs, log_cad, jnp.exp(log_gas))
-        v_arb = v_arb_all[day_indices]
-        v_noise = jnp.exp(x_obs @ noise_c)
-        log_v_pred = jnp.log(jnp.maximum(v_arb + v_noise, 1e-6))
-        return jnp.mean((log_v_pred - y_obs) ** 2)
+            if mode == "per_pool_noise":
+                noise_c = params["noise_coeffs"][i]
+            else:
+                noise_c = params["bias_noise"] + jnp.dot(x_attr_i, params["W_noise"])
+
+            v_arb_all = interpolate_pool_daily(coeffs, log_cad, jnp.exp(fixed_log_gas))
+            v_arb = v_arb_all[day_indices]
+            v_noise = jnp.exp(x_obs @ noise_c)
+            log_v_pred = jnp.log(jnp.maximum(v_arb + v_noise, 1e-6))
+            return jnp.mean((log_v_pred - y_obs) ** 2)
+    else:
+        @jax.jit
+        def pool_loss_fn(params_flat):
+            params = unpack_joint_params(params_flat, config)
+            log_cad = params["bias_cad"] + jnp.dot(x_attr_i, params["W_cad"])
+            log_gas = params["bias_gas"] + jnp.dot(x_attr_i, params["W_gas"])
+
+            if mode == "per_pool_noise":
+                noise_c = params["noise_coeffs"][i]
+            else:
+                noise_c = params["bias_noise"] + jnp.dot(x_attr_i, params["W_noise"])
+
+            v_arb_all = interpolate_pool_daily(coeffs, log_cad, jnp.exp(log_gas))
+            v_arb = v_arb_all[day_indices]
+            v_noise = jnp.exp(x_obs @ noise_c)
+            log_v_pred = jnp.log(jnp.maximum(v_arb + v_noise, 1e-6))
+            return jnp.mean((log_v_pred - y_obs) ** 2)
 
     return pool_loss_fn
 
@@ -180,6 +240,7 @@ def make_joint_loss_fn(
     mode: str = "per_pool_noise",
     alpha_cad: float = 0.01,
     alpha_gas: float = 0.01,
+    fix_gas: bool = False,
 ):
     """Create per-pool JIT'd loss functions and a Python-level aggregator.
 
@@ -190,20 +251,22 @@ def make_joint_loss_fn(
     Loss averages over pools (not observations), giving equal weight
     to each pool regardless of observation count.
 
-    L2 regularization is applied to W_cad and W_gas only (not biases).
+    L2 regularization is applied to W_cad (and W_gas if not fixed).
 
     Args:
         jdata: JointData from prepare_joint_data
         mode: "per_pool_noise" or "shared_noise"
         alpha_cad: L2 regularization on W_cad
-        alpha_gas: L2 regularization on W_gas
+        alpha_gas: L2 regularization on W_gas (ignored if fix_gas=True)
+        fix_gas: if True, gas is fixed per pool (no W_gas in params)
 
     Returns:
         loss_fn(params_flat) -> scalar loss
     """
     n_pools = len(jdata.pool_data)
     k_attr = jdata.x_attr.shape[1]
-    config = {"k_attr": k_attr, "n_pools": n_pools, "mode": mode}
+    config = {"k_attr": k_attr, "n_pools": n_pools, "mode": mode,
+              "fix_gas": fix_gas}
 
     # Build per-pool JIT'd loss functions
     pool_loss_fns = []
@@ -218,8 +281,9 @@ def make_joint_loss_fn(
         data_loss = total / n_pools
 
         params = unpack_joint_params(params_flat, config)
-        reg = alpha_cad * jnp.sum(params["W_cad"] ** 2) + \
-              alpha_gas * jnp.sum(params["W_gas"] ** 2)
+        reg = alpha_cad * jnp.sum(params["W_cad"] ** 2)
+        if not fix_gas:
+            reg = reg + alpha_gas * jnp.sum(params["W_gas"] ** 2)
         return data_loss + reg
 
     # Attach per-pool functions for the value_and_grad wrapper
@@ -236,15 +300,12 @@ def make_initial_joint_params(
     jdata: JointData,
     mode: str = "per_pool_noise",
     init_from_option_c: Optional[Dict[str, dict]] = None,
+    fix_gas: bool = False,
 ) -> jnp.ndarray:
     """Create initial parameter vector.
 
-    If init_from_option_c is provided, warm-start from Option C per-pool fits:
-    - bias_cad, W_cad from OLS on per-pool fitted log_cadence
-    - bias_gas, W_gas from OLS on per-pool fitted log_gas
-    - noise_coeffs from per-pool fits
-
-    Otherwise, use defaults: cadence=12min, gas=$1 for all pools.
+    If init_from_option_c is provided, warm-start from Option C per-pool fits.
+    If fix_gas is True, excludes bias_gas and W_gas from the parameter vector.
     """
     n_pools = len(jdata.pool_data)
     k_attr = jdata.x_attr.shape[1]
@@ -252,7 +313,6 @@ def make_initial_joint_params(
 
     if init_from_option_c is not None:
         pool_ids = jdata.pool_ids
-        # Filter out pools with NaN losses from warm start
         valid = {p: init_from_option_c[p] for p in pool_ids
                  if p in init_from_option_c
                  and np.isfinite(init_from_option_c[p].get("loss", float("nan")))}
@@ -269,32 +329,31 @@ def make_initial_joint_params(
                     }
 
         log_cads = np.array([valid[p]["log_cadence"] for p in pool_ids])
-        log_gases = np.array([valid[p]["log_gas"] for p in pool_ids])
         noise_all = np.array([valid[p]["noise_coeffs"] for p in pool_ids])
 
-        # OLS with intercept: X_aug = [1, x_attr]; solve for [bias, W]
         X_aug = np.column_stack([np.ones(n_pools), x_attr_np])
         cad_params, _, _, _ = np.linalg.lstsq(X_aug, log_cads, rcond=None)
-        gas_params, _, _, _ = np.linalg.lstsq(X_aug, log_gases, rcond=None)
         bias_cad, W_cad = cad_params[0], cad_params[1:]
-        bias_gas, W_gas = gas_params[0], gas_params[1:]
+
+        if not fix_gas:
+            log_gases = np.array([valid[p]["log_gas"] for p in pool_ids])
+            gas_params, _, _, _ = np.linalg.lstsq(X_aug, log_gases, rcond=None)
+            bias_gas, W_gas = gas_params[0], gas_params[1:]
 
         if mode == "per_pool_noise":
             noise_params = noise_all
         else:
-            # OLS with intercept for noise mapping
             noise_aug, _, _, _ = np.linalg.lstsq(X_aug, noise_all, rcond=None)
-            # noise_aug: (1+k_attr, K_OBS) — row 0 is bias
             noise_params = noise_aug
     else:
-        # Default: all pools get cadence=12min, gas=$1
         bias_cad = np.log(12.0)
-        bias_gas = np.log(1.0)  # = 0.0
         W_cad = np.zeros(k_attr)
-        W_gas = np.zeros(k_attr)
+
+        if not fix_gas:
+            bias_gas = np.log(1.0)
+            W_gas = np.zeros(k_attr)
 
         if mode == "per_pool_noise":
-            # Initialize noise via OLS per pool
             noise_params = np.zeros((n_pools, K_OBS))
             for i, pd in enumerate(jdata.pool_data):
                 x_obs_np = np.array(pd["x_obs"])
@@ -302,29 +361,40 @@ def make_initial_joint_params(
                 c, _, _, _ = np.linalg.lstsq(x_obs_np, y_obs_np, rcond=None)
                 noise_params[i] = c
         else:
-            # Initialize shared noise from pooled OLS
             all_x = np.vstack([np.array(pd["x_obs"]) for pd in jdata.pool_data])
             all_y = np.concatenate([np.array(pd["y_obs"]) for pd in jdata.pool_data])
             c, _, _, _ = np.linalg.lstsq(all_x, all_y, rcond=None)
-            # (1+k_attr, K_OBS): bias row + zero weight rows
             noise_params = np.zeros((1 + k_attr, K_OBS))
             noise_params[0, :] = c
 
-    return pack_joint_params(
-        float(bias_cad),
-        float(bias_gas),
-        jnp.array(W_cad),
-        jnp.array(W_gas),
-        jnp.array(noise_params),
-    )
+    if fix_gas:
+        return pack_joint_params_fixed_gas(
+            float(bias_cad),
+            jnp.array(W_cad),
+            jnp.array(noise_params),
+        )
+    else:
+        return pack_joint_params(
+            float(bias_cad),
+            float(bias_gas),
+            jnp.array(W_cad),
+            jnp.array(W_gas),
+            jnp.array(noise_params),
+        )
 
 
-def _make_bounds(k_attr, n_pools, mode):
+def _make_bounds(k_attr, n_pools, mode, fix_gas=False):
     """Build scipy bounds for joint params."""
-    # bias_cad, bias_gas: unbounded
-    bounds = [(None, None)] * 2
-    # W_cad, W_gas: unbounded
-    bounds += [(None, None)] * (2 * k_attr)
+    if fix_gas:
+        # bias_cad only
+        bounds = [(None, None)] * 1
+        # W_cad only
+        bounds += [(None, None)] * k_attr
+    else:
+        # bias_cad, bias_gas
+        bounds = [(None, None)] * 2
+        # W_cad, W_gas
+        bounds += [(None, None)] * (2 * k_attr)
 
     if mode == "per_pool_noise":
         bounds += [(None, None)] * (n_pools * K_OBS)
@@ -342,6 +412,7 @@ def fit_joint(
     alpha_cad: float = 0.01,
     alpha_gas: float = 0.01,
     drop_chain_dummies: bool = False,
+    fix_gas_to_chain: bool = False,
 ) -> dict:
     """Joint end-to-end optimization across all pools.
 
@@ -349,38 +420,43 @@ def fit_joint(
         matched: dict from match_grids_to_panel
         mode: "per_pool_noise" or "shared_noise"
         init_from_option_c: Optional Option C results for warm start.
-            Pools with NaN losses are silently excluded from warm start.
         maxiter: max L-BFGS-B iterations
         alpha_cad: L2 regularization on W_cad (not bias)
-        alpha_gas: L2 regularization on W_gas (not bias)
+        alpha_gas: L2 regularization on W_gas (not bias, ignored if fix_gas)
         drop_chain_dummies: if True, remove chain_* columns from attributes
+        fix_gas_to_chain: if True, gas is fixed to known chain-level costs
 
     Returns dict with fitted params and diagnostics.
     """
-    jdata = prepare_joint_data(matched, drop_chain_dummies=drop_chain_dummies)
+    jdata = prepare_joint_data(matched, drop_chain_dummies=drop_chain_dummies,
+                               fix_gas_to_chain=fix_gas_to_chain)
     loss_fn = make_joint_loss_fn(jdata, mode=mode,
-                                  alpha_cad=alpha_cad, alpha_gas=alpha_gas)
+                                  alpha_cad=alpha_cad, alpha_gas=alpha_gas,
+                                  fix_gas=fix_gas_to_chain)
     init = make_initial_joint_params(jdata, mode=mode,
-                                     init_from_option_c=init_from_option_c)
+                                     init_from_option_c=init_from_option_c,
+                                     fix_gas=fix_gas_to_chain)
 
     n_pools = len(jdata.pool_data)
     k_attr = jdata.x_attr.shape[1]
-    config = {"k_attr": k_attr, "n_pools": n_pools, "mode": mode}
-    bounds = _make_bounds(k_attr, n_pools, mode)
+    config = {"k_attr": k_attr, "n_pools": n_pools, "mode": mode,
+              "fix_gas": fix_gas_to_chain}
+    bounds = _make_bounds(k_attr, n_pools, mode, fix_gas=fix_gas_to_chain)
 
-    # Per-pool value_and_grad — each pool has its own small JIT graph
     pool_vg_fns = loss_fn._pool_val_and_grad_fns
 
-    # Indices for W_cad and W_gas in the flat param vector (for reg gradient)
-    w_cad_start = 2
-    w_cad_end = 2 + k_attr
-    w_gas_start = 2 + k_attr
-    w_gas_end = 2 + 2 * k_attr
+    if fix_gas_to_chain:
+        w_cad_start = 1
+        w_cad_end = 1 + k_attr
+    else:
+        w_cad_start = 2
+        w_cad_end = 2 + k_attr
+        w_gas_start = 2 + k_attr
+        w_gas_end = 2 + 2 * k_attr
 
     def scipy_wrapper(params_np):
         params_j = jnp.array(params_np)
 
-        # Sum per-pool losses and gradients
         total_val = 0.0
         total_grad = jnp.zeros_like(params_j)
         for vg_fn in pool_vg_fns:
@@ -391,15 +467,15 @@ def fit_joint(
         data_loss = total_val / n_pools
         data_grad = total_grad / n_pools
 
-        # Regularization on W_cad and W_gas (not biases)
-        reg = (alpha_cad * float(jnp.sum(params_j[w_cad_start:w_cad_end] ** 2)) +
-               alpha_gas * float(jnp.sum(params_j[w_gas_start:w_gas_end] ** 2)))
-
+        reg = alpha_cad * float(jnp.sum(params_j[w_cad_start:w_cad_end] ** 2))
         reg_grad = jnp.zeros_like(params_j)
         reg_grad = reg_grad.at[w_cad_start:w_cad_end].set(
             2 * alpha_cad * params_j[w_cad_start:w_cad_end])
-        reg_grad = reg_grad.at[w_gas_start:w_gas_end].set(
-            2 * alpha_gas * params_j[w_gas_start:w_gas_end])
+
+        if not fix_gas_to_chain:
+            reg += alpha_gas * float(jnp.sum(params_j[w_gas_start:w_gas_end] ** 2))
+            reg_grad = reg_grad.at[w_gas_start:w_gas_end].set(
+                2 * alpha_gas * params_j[w_gas_start:w_gas_end])
 
         val = data_loss + reg
         grad = data_grad + reg_grad
@@ -422,16 +498,29 @@ def fit_joint(
     out = {
         "init_loss": init_loss,
         "bias_cad": float(params["bias_cad"]),
-        "bias_gas": float(params["bias_gas"]),
         "W_cad": np.array(params["W_cad"]),
-        "W_gas": np.array(params["W_gas"]),
         "loss": float(result.fun),
         "converged": result.success,
         "mode": mode,
         "k_attr": k_attr,
         "pool_ids": jdata.pool_ids,
         "attr_names": jdata.attr_names,
+        "fix_gas": fix_gas_to_chain,
     }
+
+    if fix_gas_to_chain:
+        # Store per-pool fixed gas values for downstream use
+        from quantammsim.calibration.loss import CHAIN_GAS_USD
+        gas_per_pool = []
+        for pid in jdata.pool_ids:
+            chain = matched[pid]["chain"]
+            gas_per_pool.append(CHAIN_GAS_USD.get(chain, 1.0))
+        out["gas_per_pool"] = np.array(gas_per_pool)
+        out["bias_gas"] = 0.0
+        out["W_gas"] = np.zeros(k_attr)
+    else:
+        out["bias_gas"] = float(params["bias_gas"])
+        out["W_gas"] = np.array(params["W_gas"])
 
     if mode == "per_pool_noise":
         out["noise_coeffs"] = np.array(params["noise_coeffs"])
