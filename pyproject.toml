@@ -45,6 +45,10 @@ docs = [
     "sphinx-automodapi",
     "sphinx-rtd-theme",
 ]
+calibration = [
+    "numpyro>=0.15.0",
+    "arviz>=0.15.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = [
