@@ -272,6 +272,7 @@ class TestPoolIntegration:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -314,6 +315,7 @@ class TestPoolIntegration:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -353,6 +355,7 @@ class TestPoolIntegration:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -485,6 +488,7 @@ class TestConstantArcLengthScan:
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
             "reclamm_interpolation_method": "constant_arc_length",
             "reclamm_arc_length_speed": None,  # auto-calibrate
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -690,6 +694,7 @@ class TestReClammTrainable:
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
             "reclamm_interpolation_method": "constant_arc_length",
             "reclamm_learn_arc_length_speed": True,
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
