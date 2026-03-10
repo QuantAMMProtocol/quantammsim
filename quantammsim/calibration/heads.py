@@ -462,8 +462,8 @@ class MLPHead:
         W1 = rng.randn(k_attr, h).astype(np.float64) * std
         b1 = np.zeros(h, dtype=np.float64)
 
-        # W2 = 0 so initial output = b2 (warm-start friendly)
-        W2 = np.zeros(h, dtype=np.float64)
+        # Small random W2 so L-BFGS gets a non-degenerate initial Hessian
+        W2 = rng.randn(h).astype(np.float64) * 0.01
         b2 = np.array([self._default_bias()], dtype=np.float64)
 
         if warm_start is not None:
@@ -475,7 +475,7 @@ class MLPHead:
                 else:
                     vals.append(self._default_bias())
             y = np.array(vals)
-            # Use mean as b2 (since W2=0, output = b2)
+            # Use mean as b2
             b2 = np.array([np.mean(y)], dtype=np.float64)
 
         return np.concatenate([W1.ravel(), b1, W2, b2])
@@ -586,8 +586,8 @@ class MLPNoiseHead:
         W1 = rng.randn(k_attr, h).astype(np.float64) * std
         b1 = np.zeros(h, dtype=np.float64)
 
-        # W2 = 0 so initial output = b2
-        W2 = np.zeros((h, K_OBS), dtype=np.float64)
+        # Small random W2 so L-BFGS gets a non-degenerate initial Hessian
+        W2 = rng.randn(h, K_OBS).astype(np.float64) * 0.01
 
         if warm_start is not None:
             # Use mean of per-pool noise as b2

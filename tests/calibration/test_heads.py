@@ -491,15 +491,17 @@ class TestMLPHead:
         # b2 should be log(1) = 0
         np.testing.assert_allclose(init[-1], 0.0)
 
-    def test_init_W2_is_zero(self):
-        """W2 should be zero at init so output = b2."""
+    def test_init_W2_is_small(self):
+        """W2 should be small random at init (not zero) for L-BFGS conditioning."""
         h = MLPHead("cad", hidden=4)
         jdata = _make_fake_jdata()
         init = h.init(jdata)
         # W2 is at [k_attr*hidden + hidden : k_attr*hidden + 2*hidden]
         w2_start = K_ATTR * 4 + 4
         w2_end = w2_start + 4
-        np.testing.assert_allclose(init[w2_start:w2_end], 0.0)
+        w2 = init[w2_start:w2_end]
+        assert np.all(np.abs(w2) < 0.1), "W2 should be small"
+        assert np.any(w2 != 0.0), "W2 should not be exactly zero"
 
     def test_init_warm_start(self):
         h = MLPHead("log_cadence", hidden=4)
@@ -657,15 +659,17 @@ class TestMLPNoiseHead:
         assert init.shape == (n_p,)
         assert np.all(np.isfinite(init))
 
-    def test_init_W2_is_zero(self):
-        """W2 should be zero at init so output = b2."""
+    def test_init_W2_is_small(self):
+        """W2 should be small random at init (not zero) for L-BFGS conditioning."""
         h = MLPNoiseHead(hidden=4)
         jdata = _make_fake_jdata()
         init = h.init(jdata)
         # W2 starts at k_attr*hidden + hidden
         w2_start = K_ATTR * 4 + 4
         w2_end = w2_start + 4 * K_OBS
-        np.testing.assert_allclose(init[w2_start:w2_end], 0.0)
+        w2 = init[w2_start:w2_end]
+        assert np.all(np.abs(w2) < 0.1), "W2 should be small"
+        assert np.any(w2 != 0.0), "W2 should not be exactly zero"
 
     def test_init_b2_from_ols(self):
         """b2 should be pooled OLS noise coefficients."""
