@@ -929,6 +929,7 @@ class TestNoiseTraderRatio:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         }
 
         fp_no_noise = Hashabledict({**base_fp, "noise_trader_ratio": 0.0})
@@ -1291,6 +1292,7 @@ class TestLpSupply:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
