@@ -69,6 +69,18 @@ def unpack_params_fixed_gas(
     return flat[0], flat[1:]
 
 
+def _compute_loss_huber(
+    residuals: jnp.ndarray,
+    delta: float = 1.5,
+) -> jnp.ndarray:
+    """Huber loss: 0.5*r^2 for |r|<=delta, delta*(|r|-0.5*delta) otherwise."""
+    abs_r = jnp.abs(residuals)
+    return jnp.mean(
+        jnp.where(abs_r <= delta, 0.5 * residuals ** 2,
+                  delta * (abs_r - 0.5 * delta))
+    )
+
+
 def pool_loss(
     params_flat: jnp.ndarray,
     coeffs: PoolCoeffsDaily,

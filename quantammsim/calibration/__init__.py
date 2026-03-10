@@ -39,3 +39,13 @@ from quantammsim.calibration.pool_data import (
     build_x_obs,
     match_grids_to_panel,
 )
+from quantammsim.calibration.calibration_model import CalibrationModel
+from quantammsim.calibration.heads import (
+    FixedHead,
+    Head,
+    LinearHead,
+    PerPoolHead,
+    PerPoolNoiseHead,
+    SharedLinearNoiseHead,
+)
+from quantammsim.calibration.loss import _compute_loss_huber
