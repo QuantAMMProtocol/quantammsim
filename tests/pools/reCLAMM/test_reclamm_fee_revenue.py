@@ -297,6 +297,7 @@ class TestPoolMethodWithFees:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -342,6 +343,7 @@ class TestPoolMethodWithDynamicInputs:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -408,6 +410,7 @@ class TestForwardPassReturnsFeeRevenue:
             "rule": "reclamm",
             "training_data_kind": "historic",
             "do_trades": False,
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])

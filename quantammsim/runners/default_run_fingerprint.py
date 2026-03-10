@@ -98,6 +98,7 @@ run_fingerprint_defaults = {
     "reclamm_interpolation_method": "geometric",  # "geometric" or "constant_arc_length"
     "reclamm_arc_length_speed": None,  # auto-calibrate from geometric onset if None
     "reclamm_centeredness_scaling": False,  # scale speed by margin/centeredness
+    "ste_temperature": 10.0,  # STE gate sharpness; higher is closer to hard threshold
     "reclamm_learn_arc_length_speed": False,  # include arc_length_speed in trainable params
     "reclamm_use_shift_exponent": False,  # parametrise shift rate as shift_exponent (log-friendly)
     "reclamm_learn_fees": False,  # include fees in trainable params (Optuna search over fee level)

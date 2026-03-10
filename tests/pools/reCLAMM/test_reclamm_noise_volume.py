@@ -547,6 +547,7 @@ class TestNoiseModelFromFingerprint:
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
             "noise_model": "tsoukalas_sqrt",
             "reclamm_noise_params": DEFAULT_NOISE_PARAMS,
+            "ste_temperature": 10.0,
         })
 
         # Fingerprint without noise
@@ -563,6 +564,7 @@ class TestNoiseModelFromFingerprint:
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
             "noise_model": "arb_only",
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -618,6 +620,7 @@ class TestVolatilityComputedForTsoukalas:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         }
 
         fp_tsoukalas = Hashabledict({
@@ -946,6 +949,7 @@ class TestLoglinearPoolClassIntegration:
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
             "noise_model": "loglinear",
             "reclamm_noise_params": loglinear_params,
+            "ste_temperature": 10.0,
         })
 
         fp_arb_only = Hashabledict({
@@ -961,6 +965,7 @@ class TestLoglinearPoolClassIntegration:
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
             "noise_model": "arb_only",
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])

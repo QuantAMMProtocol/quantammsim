@@ -275,6 +275,7 @@ class TestPoolIntegration:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -317,6 +318,7 @@ class TestPoolIntegration:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -356,6 +358,7 @@ class TestPoolIntegration:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -488,6 +491,7 @@ class TestConstantArcLengthScan:
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
             "reclamm_interpolation_method": "constant_arc_length",
             "reclamm_arc_length_speed": None,  # auto-calibrate
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -693,6 +697,7 @@ class TestReClammTrainable:
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
             "reclamm_interpolation_method": "constant_arc_length",
             "reclamm_learn_arc_length_speed": True,
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -924,6 +929,7 @@ class TestNoiseTraderRatio:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         }
 
         fp_no_noise = Hashabledict({**base_fp, "noise_trader_ratio": 0.0})
@@ -1286,6 +1292,7 @@ class TestLpSupply:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -1368,9 +1375,10 @@ class TestLpSupply:
         )
 
     def test_lp_supply_e2e_do_run_on_historic_data(self):
-        """End-to-end: lp_supply_df flows through do_run_on_historic_data."""
+        """End-to-end: lp_supply flows through do_run_on_historic_data via DynamicInputFrames."""
         import pandas as pd
         from quantammsim.runners.jax_runners import do_run_on_historic_data
+        from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
 
         fp = {
             "rule": "reclamm",
@@ -1406,7 +1414,7 @@ class TestLpSupply:
         result_lp = do_run_on_historic_data(
             run_fingerprint={**fp},
             params={**params},
-            lp_supply_df=lp_supply_df,
+            dynamic_input_frames=DynamicInputFrames(lp_supply=lp_supply_df),
             root=TEST_DATA_DIR,
         )
 
@@ -1420,4 +1428,3 @@ class TestLpSupply:
         assert lp_val > base_val, (
             f"Doubled LP supply should increase final value: {lp_val} <= {base_val}"
         )
-
