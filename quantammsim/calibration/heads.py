@@ -462,12 +462,10 @@ class MLPHead:
         W1 = rng.randn(k_attr, h).astype(np.float64) * std
         b1 = np.zeros(h, dtype=np.float64)
 
-        # Small random W2 so L-BFGS gets a non-degenerate initial Hessian
-        W2 = rng.randn(h).astype(np.float64) * 0.01
         b2 = np.array([self._default_bias()], dtype=np.float64)
+        W2 = np.zeros(h, dtype=np.float64)
 
         if warm_start is not None:
-            # Fit linear mapping from per-pool values, use as last-layer init
             vals = []
             for pid in jdata.pool_ids:
                 if pid in warm_start and self.name in warm_start[pid]:
@@ -475,8 +473,14 @@ class MLPHead:
                 else:
                     vals.append(self._default_bias())
             y = np.array(vals)
-            # Use mean as b2
             b2 = np.array([np.mean(y)], dtype=np.float64)
+
+            # Warm-start W2 by least-squares through hidden activations
+            # so the MLP init approximates the per-pool warm-start values
+            x_attr = np.array(jdata.x_attr)
+            H = np.maximum(x_attr @ W1 + b1, 0.0)  # (n_pools, h)
+            residuals = y - float(b2)  # what W2 needs to produce
+            W2, _, _, _ = np.linalg.lstsq(H, residuals, rcond=None)
 
         return np.concatenate([W1.ravel(), b1, W2, b2])
 
@@ -586,16 +590,21 @@ class MLPNoiseHead:
         W1 = rng.randn(k_attr, h).astype(np.float64) * std
         b1 = np.zeros(h, dtype=np.float64)
 
-        # Small random W2 so L-BFGS gets a non-degenerate initial Hessian
-        W2 = rng.randn(h, K_OBS).astype(np.float64) * 0.01
+        W2 = np.zeros((h, K_OBS), dtype=np.float64)
 
         if warm_start is not None:
-            # Use mean of per-pool noise as b2
             noise_all = np.zeros((n_pools, K_OBS), dtype=np.float64)
             for i, pid in enumerate(jdata.pool_ids):
                 if pid in warm_start and "noise_coeffs" in warm_start[pid]:
                     noise_all[i] = warm_start[pid]["noise_coeffs"]
             b2 = np.mean(noise_all, axis=0)
+
+            # Warm-start W2 by least-squares through hidden activations
+            # so the MLP init approximates the per-pool warm-start noise
+            x_attr = np.array(jdata.x_attr)
+            H = np.maximum(x_attr @ W1 + b1, 0.0)  # (n_pools, h)
+            residuals = noise_all - b2  # (n_pools, K_OBS)
+            W2, _, _, _ = np.linalg.lstsq(H, residuals, rcond=None)
         else:
             # Pooled OLS noise as b2
             all_x = np.vstack([np.array(pd["x_obs"]) for pd in jdata.pool_data])

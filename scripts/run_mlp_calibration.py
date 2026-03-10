@@ -35,9 +35,12 @@ OUTPUT_DIR = os.path.join(
 )
 OPTION_C_LOSS_CUTOFF = 5.0
 OPTION_C_MAXITER = 500
-JOINT_MAXITER = 500
+JOINT_MAXITER = 5000
 MLP_HIDDEN = 16
 TOP_N = 50
+# Best alpha settings from sweep (phase 2)
+ALPHA_CAD = 0.001
+ALPHA_NOISE = 0.1
 
 
 # ---- Data loading ----
@@ -123,9 +126,9 @@ def run_linear_joint(matched_clean, option_c_clean):
     gas_values = _build_gas_values(jdata, matched_clean)
 
     model = CalibrationModel(
-        cadence_head=LinearHead("cad", alpha=0.01),
+        cadence_head=LinearHead("cad", alpha=ALPHA_CAD),
         gas_head=FixedHead("gas", gas_values),
-        noise_head=SharedLinearNoiseHead(alpha=0.01),
+        noise_head=SharedLinearNoiseHead(alpha=ALPHA_NOISE),
     )
 
     n_pools = len(jdata.pool_data)
@@ -150,9 +153,9 @@ def run_mlp_noise_joint(matched_clean, option_c_clean, hidden=MLP_HIDDEN):
     gas_values = _build_gas_values(jdata, matched_clean)
 
     model = CalibrationModel(
-        cadence_head=LinearHead("cad", alpha=0.01),
+        cadence_head=LinearHead("cad", alpha=ALPHA_CAD),
         gas_head=FixedHead("gas", gas_values),
-        noise_head=MLPNoiseHead(hidden=hidden, alpha=0.01),
+        noise_head=MLPNoiseHead(hidden=hidden, alpha=ALPHA_NOISE),
     )
 
     n_pools = len(jdata.pool_data)
@@ -177,9 +180,9 @@ def run_mlp_full_joint(matched_clean, option_c_clean, hidden=MLP_HIDDEN):
     gas_values = _build_gas_values(jdata, matched_clean)
 
     model = CalibrationModel(
-        cadence_head=MLPHead("cad", hidden=hidden, alpha=0.01),
+        cadence_head=MLPHead("cad", hidden=hidden, alpha=ALPHA_CAD),
         gas_head=FixedHead("gas", gas_values),
-        noise_head=MLPNoiseHead(hidden=hidden, alpha=0.01),
+        noise_head=MLPNoiseHead(hidden=hidden, alpha=ALPHA_NOISE),
     )
 
     n_pools = len(jdata.pool_data)
