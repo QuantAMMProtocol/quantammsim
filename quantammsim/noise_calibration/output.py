@@ -21,8 +21,8 @@ def generate_output_json(pool_params, samples, data, convergence,
     else:
         sample_dict = samples
 
-    # Structural mixture model path
-    is_structural = "W_gate" in sample_dict
+    # Structural model path: has arb cadence params + hierarchical noise
+    is_structural = "alpha_0" in sample_dict and "B" in sample_dict
     if is_structural:
         _generate_structural_output(
             pool_params, sample_dict, data, convergence,
@@ -210,27 +210,35 @@ def generate_output_json(pool_params, samples, data, convergence,
 
 def _generate_structural_output(pool_params, sample_dict, data, convergence,
                                 output_path, inference_config):
-    """Write structural mixture model JSON output."""
+    """Write structural model JSON output (LVR arb + hierarchical noise)."""
     alpha_0 = float(np.median(np.array(sample_dict["alpha_0"])))
     alpha_chain = np.median(np.array(sample_dict["alpha_chain"]), axis=0).tolist()
     alpha_tier = np.median(np.array(sample_dict["alpha_tier"]), axis=0).tolist()
     alpha_tvl = float(np.median(np.array(sample_dict["alpha_tvl"])))
 
-    W_gate = np.median(np.array(sample_dict["W_gate"]), axis=0).tolist()
-    beta = np.median(np.array(sample_dict["beta"]), axis=0).tolist()
-    K_archetypes = np.array(sample_dict["beta"]).shape[1]
+    B_median = np.median(np.array(sample_dict["B"]), axis=0).tolist()
+    sigma_theta_median = np.median(
+        np.array(sample_dict["sigma_theta"]), axis=0
+    ).tolist()
+
+    # Correlation matrix
+    L_Omega = np.array(sample_dict["L_Omega"])
+    Omega = np.einsum("sij,skj->sik", L_Omega, L_Omega)
+    Omega_median = np.median(Omega, axis=0).tolist()
 
     df_median = float(np.median(np.array(sample_dict["df"])))
-    sigma_eps_median = float(np.median(np.array(sample_dict["sigma_eps"])))
+    sigma_eps_median = np.median(
+        np.array(sample_dict["sigma_eps"]), axis=0
+    ).tolist()
 
     population_effects = {
         "alpha_0": alpha_0,
         "alpha_chain": alpha_chain,
         "alpha_tier": alpha_tier,
         "alpha_tvl": alpha_tvl,
-        "W_gate": W_gate,
-        "beta": beta,
-        "K_archetypes": K_archetypes,
+        "B": B_median,
+        "sigma_theta": sigma_theta_median,
+        "correlation_matrix": Omega_median,
         "df": df_median,
         "sigma_eps": sigma_eps_median,
     }

@@ -6,7 +6,7 @@ import hashlib
 import warnings
 
 # again, this only works on startup!
-from jax import config, jit
+from jax import jit
 from jax.tree_util import tree_map, tree_reduce
 import jax.numpy as jnp
 
@@ -26,8 +26,7 @@ from quantammsim.apis.rest_apis.simulator_dtos.simulation_run_dto import (
     SimulationResultTimestepDto,
 )
 
-config.update("jax_enable_x64", True)
-
+import os
 import optuna
 import logging
 from datetime import datetime
@@ -2100,6 +2099,50 @@ def allocate_memory_budget(
             print(f"  (based on probed max: {probe_result['max_n_parameter_sets']})")
 
     return result
+
+
+def compute_cmaes_population_size(
+    memory_budget: int,
+    n_eval_points: int,
+    n_flat: int,
+    verbose: bool = False,
+) -> int:
+    """Compute GPU-aware CMA-ES population size (λ) from a forward-pass memory budget.
+
+    CMA-ES evaluation vmaps over λ candidates, each evaluated at
+    ``n_eval_points`` start indices, giving **λ × n_eval_points** concurrent
+    forward passes. Unlike BFGS there is no gradient overhead.
+
+    Parameters
+    ----------
+    memory_budget : int
+        Maximum concurrent forward passes that fit in memory (from probe).
+    n_eval_points : int
+        Number of evaluation start indices per candidate.
+    n_flat : int
+        Number of flat parameters (problem dimension).
+    verbose : bool
+        Whether to print sizing info.
+
+    Returns
+    -------
+    int
+        Population size λ, at least Hansen default.
+    """
+    import math
+
+    hansen_default = 4 + int(math.floor(3 * math.log(n_flat)))
+    budget_max = memory_budget // n_eval_points  # no grad overhead
+    lam = max(hansen_default, budget_max)
+
+    if verbose:
+        print(
+            f"[CMA-ES] Auto λ: budget={memory_budget}, n_eval={n_eval_points}, "
+            f"n={n_flat} → budget_max={budget_max}, hansen={hansen_default}, "
+            f"→ λ={lam}"
+        )
+
+    return lam
 
 
 def apply_memory_allocation(run_fingerprint: dict, allocation: dict) -> dict:

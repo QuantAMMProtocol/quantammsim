@@ -5,28 +5,54 @@ scan-based and convolution-based EWMA computation, proportional price gradient
 calculation, return variance estimation, and kernel construction. These are the
 JAX-jittable building blocks consumed by :mod:`.estimators`.
 """
-# again, this only works on startup!
-from jax import config
-
-config.update("jax_enable_x64", True)
-
 from functools import partial
 
 import jax.numpy as jnp
 from jax import jit, vmap
-from jax import lax
+
 from jax.tree_util import Partial
 from jax.lax import scan, dynamic_slice
+
+
+def _fft_convolve_1d(x, k, n_out):
+    """FFT-based 1D convolution, replacing jnp.convolve for O(n log n) complexity.
+
+    Parameters
+    ----------
+    x : jnp.ndarray
+        Signal array (1D).
+    k : jnp.ndarray
+        Kernel array (1D).
+    n_out : int
+        Number of output elements. Use ``len(x) + len(k) - 1`` for 'full' mode.
+        Must be a concrete (non-traced) integer.
+
+    Returns
+    -------
+    jnp.ndarray
+        Convolution result of length ``n_out``.
+    """
+    fft_n = 1 << (n_out - 1).bit_length()  # next power of 2
+    X = jnp.fft.rfft(x, n=fft_n)
+    K = jnp.fft.rfft(k, n=fft_n)
+    return jnp.fft.irfft(X * K, n=fft_n)[:n_out]
+
+
+def _fft_convolve_full(x, k):
+    """FFT-based full convolution (for use in vmap)."""
+    n_out = x.shape[0] + k.shape[0] - 1
+    return _fft_convolve_1d(x, k, n_out)
 
 
 def squareplus(x):
     # algebraic (so non-trancendental) replacement for softplus
     # see https://arxiv.org/abs/2112.11687 for detail
-    return lax.mul(0.5, lax.add(x, lax.sqrt(lax.add(lax.square(x), 4.0))))
+    # Use jnp (not raw lax) so dtype promotion handles float32/float64 mixes.
+    return 0.5 * (x + jnp.sqrt(x * x + 4))
 
 
 def inverse_squareplus(y):
-    return lax.div(lax.sub(lax.square(y), 1.0), y)
+    return (y * y - 1) / y
 
 
 def inverse_squareplus_np(y):
@@ -164,7 +190,8 @@ def make_cov_kernel(lamb, max_memory_days, chunk_period):
     static_argnums=(2,),
 )
 def _jax_ewma_at_infinity_via_conv_1D(arr_in, kernel, return_slice_index=1):
-    return jnp.convolve(arr_in, kernel, mode="full")[return_slice_index : len(arr_in)]
+    n_out = arr_in.shape[0] + kernel.shape[0] - 1
+    return _fft_convolve_1d(arr_in, kernel, n_out)[return_slice_index : arr_in.shape[0]]
 
 
 _jax_ewma_at_infinity_via_conv = vmap(
@@ -177,7 +204,8 @@ _jax_ewma_at_infinity_via_conv = vmap(
     static_argnums=(2,),
 )
 def _jax_ewma_at_infinity_via_conv_1D_padded(arr_in, kernel, return_slice_index=0):
-    return jnp.convolve(arr_in, kernel, mode="full")[return_slice_index : len(arr_in)]
+    n_out = arr_in.shape[0] + kernel.shape[0] - 1
+    return _fft_convolve_1d(arr_in, kernel, n_out)[return_slice_index : arr_in.shape[0]]
 
 
 _jax_ewma_at_infinity_via_conv_padded = vmap(
@@ -191,7 +219,8 @@ def _jax_gradients_at_infinity_via_conv_1D_padded_with_alt_ewma(
     arr_in, ewma, alt_ewma, kernel, saturated_b
 ):
     ewma_diff = arr_in - ewma
-    a = jnp.convolve(ewma_diff, kernel, mode="valid")
+    full_n = ewma_diff.shape[0] + kernel.shape[0] - 1
+    a = _fft_convolve_1d(ewma_diff, kernel, full_n)[kernel.shape[0] - 1 : ewma_diff.shape[0]]
     # grad_conv = a[:98] / (saturated_b * ewma_conv.T[:,0])
     grad = a[1:] / (saturated_b * alt_ewma[-len(a) + 1 :])
     return grad[1:]
@@ -208,9 +237,10 @@ _jax_gradients_at_infinity_via_conv_padded_with_alt_ewma = vmap(
 @jit
 def _jax_gradients_at_infinity_via_conv_1D(arr_in, ewma, kernel, saturated_b):
     ewma_diff = arr_in[1:] - ewma
-    a = jnp.convolve(ewma_diff, kernel, mode="full")
+    full_n = ewma_diff.shape[0] + kernel.shape[0] - 1
+    a = _fft_convolve_1d(ewma_diff, kernel, full_n)
     # grad_conv = a[:98] / (saturated_b * ewma_conv.T[:,0])
-    grad = a[: len(ewma)] / (saturated_b * ewma)
+    grad = a[: ewma.shape[0]] / (saturated_b * ewma)
     return grad
 
 
@@ -223,7 +253,8 @@ _jax_gradients_at_infinity_via_conv = vmap(
 @jit
 def _jax_gradients_at_infinity_via_conv_1D_padded(arr_in, ewma, kernel, saturated_b):
     ewma_diff = arr_in - ewma
-    a = jnp.convolve(ewma_diff, kernel, mode="valid")
+    full_n = ewma_diff.shape[0] + kernel.shape[0] - 1
+    a = _fft_convolve_1d(ewma_diff, kernel, full_n)[kernel.shape[0] - 1 : ewma_diff.shape[0]]
     # grad_conv = a[:98] / (saturated_b * ewma_conv.T[:,0])
     grad = a[1:] / (saturated_b * ewma[-len(a) + 1 :])
     return grad[1:]
@@ -240,9 +271,10 @@ def _jax_gradients_at_infinity_via_conv_1D_with_alt_ewma(
     arr_in, ewma, alt_ewma, kernel, saturated_b
 ):
     ewma_diff = arr_in[1:] - ewma
-    a = jnp.convolve(ewma_diff, kernel, mode="full")
+    full_n = ewma_diff.shape[0] + kernel.shape[0] - 1
+    a = _fft_convolve_1d(ewma_diff, kernel, full_n)
     # grad_conv = a[:98] / (saturated_b * ewma_conv.T[:,0])
-    grad = a[: len(ewma)] / (saturated_b * alt_ewma)
+    grad = a[: ewma.shape[0]] / (saturated_b * alt_ewma)
     return grad
 
 
@@ -259,7 +291,8 @@ def _jax_gradients_at_infinity_via_conv_1D_padded_with_alt_ewma(
     arr_in, ewma, alt_ewma, kernel, saturated_b
 ):
     ewma_diff = arr_in - ewma
-    a = jnp.convolve(ewma_diff, kernel, mode="valid")
+    full_n = ewma_diff.shape[0] + kernel.shape[0] - 1
+    a = _fft_convolve_1d(ewma_diff, kernel, full_n)[kernel.shape[0] - 1 : ewma_diff.shape[0]]
     # grad_conv = a[:98] / (saturated_b * ewma_conv.T[:,0])
     grad = a[1:] / (saturated_b * alt_ewma[-len(a) + 1 :])
     return grad[1:]
@@ -303,13 +336,14 @@ def _jax_variance_at_infinity_via_conv_1D(arr_in, ewma, kernel, lamb):
     diff_new = arr_in[1:] - ewma
 
     outer = diff_old * diff_new
-    a = jnp.convolve(outer, kernel, mode="full")
-    cov = a[: len(outer)] * (1 - lamb)
-    return jnp.concatenate([jnp.zeros(1, dtype=jnp.float64), cov], axis=0)
+    full_n = outer.shape[0] + kernel.shape[0] - 1
+    a = _fft_convolve_1d(outer, kernel, full_n)
+    cov = a[: outer.shape[0]] * (1 - lamb)
+    return jnp.concatenate([jnp.zeros(1, dtype=arr_in.dtype), cov], axis=0)
 
 
 conv_intermediate = vmap(
-    Partial(jnp.convolve, mode="full"), in_axes=[-1, -1], out_axes=-1
+    _fft_convolve_full, in_axes=[-1, -1], out_axes=-1
 )
 
 conv_vmap = vmap(conv_intermediate, in_axes=[1, None], out_axes=1)
@@ -425,13 +459,14 @@ def _jax_gradients_at_infinity_via_scan(arr_in, lamb, carry_list_init=None):
     scan_fn = Partial(
         _jax_gradient_scan_function, G_inf=G_inf, lamb=lamb, saturated_b=saturated_b
     )
+    _dtype = arr_in.dtype
     if carry_list_init is None:
         # Initialize to steady-state for constant input arr_in[0]:
         # - EWMA steady state = arr_in[0] (EWMA of constant is that constant)
         # - running_a steady state = 0 (for constant input, running_a converges to 0)
-        carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=jnp.float64)]
+        carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=_dtype)]
     carry_list_end, gradients = scan(scan_fn, carry_list_init, arr_in[1:])
-    gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=jnp.float64), gradients])
+    gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=_dtype), gradients])
 
     return gradients
 
@@ -468,10 +503,11 @@ def _jax_gradients_at_infinity_via_scan_with_readout(arr_in, lamb):
         saturated_b=saturated_b,
     )
 
-    carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=jnp.float64)]
+    _dtype = arr_in.dtype
+    carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=_dtype)]
     carry_list_end, output_list = scan(scan_fn, carry_list_init, arr_in[1:])
 
-    gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=jnp.float64), output_list[0]])
+    gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=_dtype), output_list[0]])
     ewma = output_list[1]
     running_a = output_list[2]
     return {
@@ -514,10 +550,11 @@ def _jax_gradients_at_infinity_via_scan_with_alt_ewma(arr_in, lamb, alt_lamb):
     )
 
     # Initialize to steady-state: both EWMAs = arr_in[0], running_a = 0
-    carry_list_init = [arr_in[0], arr_in[0], jnp.zeros((n_grads,), dtype=jnp.float64)]
+    _dtype = arr_in.dtype
+    carry_list_init = [arr_in[0], arr_in[0], jnp.zeros((n_grads,), dtype=_dtype)]
     carry_list_end, gradients = scan(scan_fn, carry_list_init, arr_in[1:])
 
-    gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=jnp.float64), gradients])
+    gradients = jnp.vstack([jnp.zeros((n_grads,), dtype=_dtype), gradients])
 
     return gradients
 
@@ -549,11 +586,12 @@ def _jax_gradients_at_infinity_via_scan_alt1(arr_in, lamb):
     )
 
     # Initialize to steady-state: EWMA = arr_in[0], running_a = 0
-    carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=jnp.float64)]
+    _dtype = arr_in.dtype
+    carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=_dtype)]
 
     gradients = jnp.vstack(
         [
-            jnp.zeros((n_grads,), dtype=jnp.float64),
+            jnp.zeros((n_grads,), dtype=_dtype),
             scan(scan_fn, carry_list_init, arr_in[1:])[1],
         ]
     )
@@ -588,9 +626,10 @@ def _jax_gradients_at_infinity_via_scan_alt2(arr_in, lamb):
         _jax_gradient_scan_function, G_inf=G_inf, lamb=lamb, saturated_b=saturated_b
     )
 
-    carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=jnp.float64)]
+    _dtype = arr_in.dtype
+    carry_list_init = [arr_in[0], jnp.zeros((n_grads,), dtype=_dtype)]
 
-    gradients = jnp.zeros((n, n_grads), dtype=jnp.float64)
+    gradients = jnp.zeros((n, n_grads), dtype=_dtype)
     gradients = gradients.at[1:].set(scan(scan_fn, carry_list_init, arr_in[1:])[1])
 
     return gradients
@@ -691,10 +730,11 @@ def _jax_variance_at_infinity_via_scan(arr_in, lamb):
     scan_fn = Partial(_jax_variance_scan_function, G_inf=G_inf, lamb=lamb)
 
     # Initialize with first value
-    carry_list_init = [arr_in[0], jnp.zeros((n_features,), dtype=jnp.float64)]
+    _dtype = arr_in.dtype
+    carry_list_init = [arr_in[0], jnp.zeros((n_features,), dtype=_dtype)]
 
     # Run scan and prepend ones for first timestep
     _, variances = scan(scan_fn, carry_list_init, arr_in[1:])
-    variances = jnp.vstack([jnp.ones((1, n_features), dtype=jnp.float64), variances])
+    variances = jnp.vstack([jnp.ones((1, n_features), dtype=_dtype), variances])
 
     return variances

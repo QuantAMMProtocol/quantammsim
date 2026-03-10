@@ -1,10 +1,8 @@
 # again, this only works on startup!
-from jax import config, jit, devices
+from jax import jit, devices
 
 import jax.numpy as jnp
 from jax import default_backend
-
-config.update("jax_enable_x64", True)
 
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
