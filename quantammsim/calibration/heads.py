@@ -375,3 +375,135 @@ class SharedLinearNoiseHead:
 
     def make_bounds(self, n_pools, k_attr):
         return [(None, None)] * ((1 + k_attr) * K_OBS)
+
+
+# ---------------------------------------------------------------------------
+# MLPHead — x_attr → Dense(hidden, relu) → Dense(1)
+# ---------------------------------------------------------------------------
+
+
+class MLPHead:
+    """Two-layer MLP mapping from pool attributes to a scalar.
+
+    Architecture: x_attr → Dense(hidden, ReLU) → Dense(1) → scalar
+
+    Parameter layout (flat):
+        [W1(k_attr * hidden), b1(hidden), W2(hidden), b2(1)]
+
+    L2 regularization on W1 and W2 (not biases).
+
+    Initialization:
+      - W1: He (scaled normal), b1: zeros
+      - W2: zeros (so initial output ≈ b2 = default bias)
+      - b2: sensible default (log(12) for cadence, log(1) for gas)
+    """
+
+    def __init__(
+        self,
+        name: str,
+        hidden: int = 16,
+        alpha: float = 0.01,
+        seed: int = 0,
+    ):
+        self.name = name
+        self.hidden = hidden
+        self.alpha = alpha
+        self._seed = seed
+
+    def n_params(self, n_pools: int, k_attr: int) -> int:
+        h = self.hidden
+        return k_attr * h + h + h + 1  # W1 + b1 + W2 + b2
+
+    def _unpack_weights(self, params_slice, k_attr):
+        """Unpack flat slice → (W1, b1, W2, b2) as JAX arrays."""
+        h = self.hidden
+        idx = 0
+        W1 = params_slice[idx:idx + k_attr * h].reshape(k_attr, h)
+        idx += k_attr * h
+        b1 = params_slice[idx:idx + h]
+        idx += h
+        W2 = params_slice[idx:idx + h]
+        idx += h
+        b2 = params_slice[idx]
+        return W1, b1, W2, b2
+
+    def predict(self, params_slice, pool_idx, x_attr_i):
+        k_attr = x_attr_i.shape[0]
+        W1, b1, W2, b2 = self._unpack_weights(params_slice, k_attr)
+        hidden = jnp.maximum(x_attr_i @ W1 + b1, 0.0)  # ReLU
+        return hidden @ W2 + b2
+
+    def regularization(self, params_slice):
+        # Regularize W1 and W2, not biases
+        # We can't call _unpack_weights without k_attr, so compute
+        # the total weight norm from the full slice minus biases.
+        # Layout: [W1(k*h), b1(h), W2(h), b2(1)]
+        # But we don't know k_attr here. Use a simpler approach:
+        # regularize the entire slice — biases are small relative to
+        # weights and the approximation error is negligible.
+        # Actually, let's extract properly by computing h from params.
+        h = self.hidden
+        total = params_slice.shape[0]
+        k_attr = (total - 2 * h - 1) // h
+        W1 = params_slice[:k_attr * h]
+        # b1 = params_slice[k_attr*h : k_attr*h + h]  # skip
+        W2 = params_slice[k_attr * h + h:k_attr * h + 2 * h]
+        # b2 = params_slice[-1]  # skip
+        return self.alpha * (jnp.sum(W1 ** 2) + jnp.sum(W2 ** 2))
+
+    def init(self, jdata, warm_start=None):
+        k_attr = jdata.x_attr.shape[1]
+        n_pools = len(jdata.pool_data)
+        h = self.hidden
+        rng = np.random.RandomState(self._seed)
+
+        # He initialization for W1
+        std = np.sqrt(2.0 / k_attr)
+        W1 = rng.randn(k_attr, h).astype(np.float64) * std
+        b1 = np.zeros(h, dtype=np.float64)
+
+        # W2 = 0 so initial output = b2 (warm-start friendly)
+        W2 = np.zeros(h, dtype=np.float64)
+        b2 = np.array([self._default_bias()], dtype=np.float64)
+
+        if warm_start is not None:
+            # Fit linear mapping from per-pool values, use as last-layer init
+            vals = []
+            for pid in jdata.pool_ids:
+                if pid in warm_start and self.name in warm_start[pid]:
+                    vals.append(warm_start[pid][self.name])
+                else:
+                    vals.append(self._default_bias())
+            y = np.array(vals)
+            # Use mean as b2 (since W2=0, output = b2)
+            b2 = np.array([np.mean(y)], dtype=np.float64)
+
+        return np.concatenate([W1.ravel(), b1, W2, b2])
+
+    def _default_bias(self):
+        if "cad" in self.name:
+            return np.log(12.0)
+        elif "gas" in self.name:
+            return np.log(1.0)
+        return 0.0
+
+    def predict_new(self, params_slice, x_attr):
+        k_attr = len(x_attr)
+        W1, b1, W2, b2 = self._unpack_weights(
+            np.asarray(params_slice), k_attr
+        )
+        hidden = np.maximum(x_attr @ W1 + b1, 0.0)
+        return float(hidden @ W2 + b2)
+
+    def unpack_result(self, params_slice, n_pools, k_attr):
+        params_np = np.array(params_slice)
+        W1, b1, W2, b2 = self._unpack_weights(params_np, k_attr)
+        return {
+            f"mlp_{self.name}_W1": np.array(W1),
+            f"mlp_{self.name}_b1": np.array(b1),
+            f"mlp_{self.name}_W2": np.array(W2),
+            f"mlp_{self.name}_b2": float(b2),
+        }
+
+    def make_bounds(self, n_pools, k_attr):
+        return [(None, None)] * self.n_params(n_pools, k_attr)

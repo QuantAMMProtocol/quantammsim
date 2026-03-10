@@ -10,6 +10,7 @@ from quantammsim.calibration.heads import (
     FixedHead,
     Head,
     LinearHead,
+    MLPHead,
     PerPoolHead,
     PerPoolNoiseHead,
     SharedLinearNoiseHead,
@@ -65,6 +66,9 @@ class TestProtocol:
 
     def test_shared_linear_noise_head_is_head(self):
         assert isinstance(SharedLinearNoiseHead(), Head)
+
+    def test_mlp_head_is_head(self):
+        assert isinstance(MLPHead("cad"), Head)
 
 
 # ── PerPoolHead ─────────────────────────────────────────────────────────────
@@ -377,3 +381,188 @@ class TestSharedLinearNoiseHead:
         assert "W_noise" in result
         assert result["bias_noise"].shape == (K_OBS,)
         assert result["W_noise"].shape == (k_attr, K_OBS)
+
+
+# ── MLPHead ─────────────────────────────────────────────────────────────────
+
+
+class TestMLPHead:
+    def test_n_params(self):
+        h = MLPHead("cad", hidden=16)
+        # k_attr=5: 5*16 + 16 + 16 + 1 = 113
+        assert h.n_params(3, 5) == 113
+        # k_attr=7: 7*16 + 16 + 16 + 1 = 145
+        assert h.n_params(3, 7) == 145
+
+    def test_n_params_custom_hidden(self):
+        h = MLPHead("cad", hidden=8)
+        # k_attr=5: 5*8 + 8 + 8 + 1 = 57
+        assert h.n_params(3, 5) == 57
+
+    def test_predict_with_zero_W2_equals_b2(self):
+        """With W2=0, output should be b2 regardless of input."""
+        k_attr = 3
+        h = MLPHead("cad", hidden=4)
+        n_p = h.n_params(1, k_attr)
+        params = np.zeros(n_p)
+        params[-1] = 2.5  # b2
+        x_attr_i = jnp.array([1.0, 2.0, 3.0])
+        result = float(h.predict(jnp.array(params), 0, x_attr_i))
+        np.testing.assert_allclose(result, 2.5)
+
+    def test_predict_nonlinear(self):
+        """MLP should produce different outputs for different inputs."""
+        k_attr = 3
+        h = MLPHead("cad", hidden=4, seed=42)
+        jdata = _make_fake_jdata()
+        # Override x_attr to have k_attr=3
+        from quantammsim.calibration.joint_fit import JointData
+        jdata = JointData(
+            pool_data=jdata.pool_data,
+            x_attr=jnp.array(np.random.randn(N_POOLS, k_attr)),
+            pool_ids=jdata.pool_ids,
+            attr_names=[f"a{i}" for i in range(k_attr)],
+        )
+        init = jnp.array(h.init(jdata))
+        # Set W1 to nonzero so ReLU activations vary
+        np.random.seed(42)
+        W1 = np.random.randn(k_attr * 4) * 0.5
+        init = init.at[:k_attr * 4].set(jnp.array(W1))
+        # Set W2 to nonzero so output varies
+        init = init.at[k_attr * 4 + 4:k_attr * 4 + 8].set(jnp.ones(4) * 0.1)
+
+        x1 = jnp.array([1.0, 0.0, 0.0])
+        x2 = jnp.array([0.0, 1.0, 0.0])
+        v1 = float(h.predict(init, 0, x1))
+        v2 = float(h.predict(init, 0, x2))
+        assert v1 != v2, "MLP should produce different outputs for different inputs"
+
+    def test_predict_ignores_pool_idx(self):
+        """MLP output depends only on x_attr, not pool_idx."""
+        k_attr = 3
+        h = MLPHead("cad", hidden=4)
+        params = jnp.ones(h.n_params(5, k_attr)) * 0.1
+        x = jnp.array([1.0, 2.0, 3.0])
+        v0 = float(h.predict(params, 0, x))
+        v3 = float(h.predict(params, 3, x))
+        assert v0 == v3
+
+    def test_regularization_on_weights_not_biases(self):
+        k_attr = 2
+        h_alpha1 = MLPHead("cad", hidden=2, alpha=1.0)
+        # Layout: W1(2*2=4), b1(2), W2(2), b2(1) = 9 params
+        params = np.zeros(9)
+        params[0] = 3.0  # W1[0,0]
+        params[1] = 4.0  # W1[0,1]
+        # b1 = 0 (indices 4,5)
+        params[6] = 1.0  # W2[0]
+        params[7] = 2.0  # W2[1]
+        params[8] = 999.0  # b2 — should not be regularized
+        # reg = 1.0 * (9 + 16 + 1 + 4) = 30.0
+        result = float(h_alpha1.regularization(jnp.array(params)))
+        np.testing.assert_allclose(result, 30.0)
+
+    def test_regularization_alpha_scaling(self):
+        k_attr = 2
+        h = MLPHead("cad", hidden=2, alpha=0.5)
+        params = np.zeros(9)
+        params[0] = 2.0  # W1 weight
+        # reg = 0.5 * 4.0 = 2.0
+        np.testing.assert_allclose(float(h.regularization(jnp.array(params))), 2.0)
+
+    def test_init_default_cadence(self):
+        h = MLPHead("cad", hidden=4)
+        jdata = _make_fake_jdata()
+        init = h.init(jdata)
+        n_p = h.n_params(N_POOLS, K_ATTR)
+        assert init.shape == (n_p,)
+        assert np.all(np.isfinite(init))
+        # b2 should be log(12)
+        np.testing.assert_allclose(init[-1], np.log(12.0))
+
+    def test_init_default_gas(self):
+        h = MLPHead("gas", hidden=4)
+        jdata = _make_fake_jdata()
+        init = h.init(jdata)
+        # b2 should be log(1) = 0
+        np.testing.assert_allclose(init[-1], 0.0)
+
+    def test_init_W2_is_zero(self):
+        """W2 should be zero at init so output = b2."""
+        h = MLPHead("cad", hidden=4)
+        jdata = _make_fake_jdata()
+        init = h.init(jdata)
+        # W2 is at [k_attr*hidden + hidden : k_attr*hidden + 2*hidden]
+        w2_start = K_ATTR * 4 + 4
+        w2_end = w2_start + 4
+        np.testing.assert_allclose(init[w2_start:w2_end], 0.0)
+
+    def test_init_warm_start(self):
+        h = MLPHead("log_cadence", hidden=4)
+        jdata = _make_fake_jdata()
+        warm = {
+            POOL_PREFIXES[0]: {"log_cadence": 2.0},
+            POOL_PREFIXES[1]: {"log_cadence": 3.0},
+        }
+        init = h.init(jdata, warm_start=warm)
+        # b2 should be mean of warm-start values
+        np.testing.assert_allclose(init[-1], 2.5)
+
+    def test_predict_new(self):
+        k_attr = 3
+        h = MLPHead("cad", hidden=4)
+        n_p = h.n_params(1, k_attr)
+        params = np.zeros(n_p)
+        params[-1] = 2.5  # b2
+        x_attr = np.array([1.0, 2.0, 3.0])
+        result = h.predict_new(params, x_attr)
+        np.testing.assert_allclose(result, 2.5)
+
+    def test_predict_new_matches_predict(self):
+        """predict_new should give same result as predict for same input."""
+        k_attr = 3
+        h = MLPHead("cad", hidden=4, seed=42)
+        n_p = h.n_params(1, k_attr)
+        np.random.seed(99)
+        params = np.random.randn(n_p) * 0.1
+        x_attr = np.array([0.5, -1.0, 2.0])
+
+        jax_result = float(h.predict(jnp.array(params), 0, jnp.array(x_attr)))
+        np_result = h.predict_new(params, x_attr)
+        np.testing.assert_allclose(jax_result, np_result, rtol=1e-6)
+
+    def test_unpack_result(self):
+        k_attr = 3
+        h = MLPHead("cad", hidden=4)
+        n_p = h.n_params(1, k_attr)
+        params = np.arange(n_p, dtype=float)
+        result = h.unpack_result(params, 2, k_attr)
+        assert f"mlp_cad_W1" in result
+        assert f"mlp_cad_b1" in result
+        assert f"mlp_cad_W2" in result
+        assert f"mlp_cad_b2" in result
+        assert result["mlp_cad_W1"].shape == (k_attr, 4)
+        assert result["mlp_cad_b1"].shape == (4,)
+        assert result["mlp_cad_W2"].shape == (4,)
+
+    def test_make_bounds(self):
+        h = MLPHead("cad", hidden=4)
+        bounds = h.make_bounds(3, 5)
+        assert len(bounds) == h.n_params(3, 5)
+
+    def test_jax_differentiable(self):
+        """MLP predict should be JAX-differentiable."""
+        import jax
+        k_attr = 3
+        h = MLPHead("cad", hidden=4)
+        n_p = h.n_params(1, k_attr)
+        np.random.seed(42)
+        params = jnp.array(np.random.randn(n_p) * 0.1)
+        x_attr_i = jnp.array([1.0, 2.0, 3.0])
+
+        def loss(p):
+            return h.predict(p, 0, x_attr_i) ** 2
+
+        grad = jax.grad(loss)(params)
+        assert grad.shape == params.shape
+        assert jnp.all(jnp.isfinite(grad))
