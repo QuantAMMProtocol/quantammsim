@@ -507,3 +507,118 @@ class MLPHead:
 
     def make_bounds(self, n_pools, k_attr):
         return [(None, None)] * self.n_params(n_pools, k_attr)
+
+
+# ---------------------------------------------------------------------------
+# MLPNoiseHead — x_attr → Dense(hidden, relu) → Dense(K_OBS)
+# ---------------------------------------------------------------------------
+
+
+class MLPNoiseHead:
+    """Two-layer MLP mapping from pool attributes to noise coefficients.
+
+    Architecture: x_attr → Dense(hidden, ReLU) → Dense(K_OBS)
+
+    Parameter layout (flat):
+        [W1(k_attr * hidden), b1(hidden), W2(hidden * K_OBS), b2(K_OBS)]
+
+    L2 regularization on W1 and W2 (not biases).
+
+    Initialization:
+      - W1: He (scaled normal), b1: zeros
+      - W2: zeros (so initial output = b2 = pooled OLS noise coefficients)
+      - b2: pooled OLS noise from training data
+    """
+
+    def __init__(
+        self,
+        hidden: int = 16,
+        alpha: float = 0.01,
+        seed: int = 0,
+    ):
+        self.name = "noise"
+        self.hidden = hidden
+        self.alpha = alpha
+        self._seed = seed
+
+    def n_params(self, n_pools: int, k_attr: int) -> int:
+        h = self.hidden
+        # W1(k_attr*h) + b1(h) + W2(h*K_OBS) + b2(K_OBS)
+        return k_attr * h + h + h * K_OBS + K_OBS
+
+    def _unpack_weights(self, params_slice, k_attr):
+        """Unpack flat slice → (W1, b1, W2, b2)."""
+        h = self.hidden
+        idx = 0
+        W1 = params_slice[idx:idx + k_attr * h].reshape(k_attr, h)
+        idx += k_attr * h
+        b1 = params_slice[idx:idx + h]
+        idx += h
+        W2 = params_slice[idx:idx + h * K_OBS].reshape(h, K_OBS)
+        idx += h * K_OBS
+        b2 = params_slice[idx:idx + K_OBS]
+        return W1, b1, W2, b2
+
+    def predict(self, params_slice, pool_idx, x_attr_i):
+        k_attr = x_attr_i.shape[0]
+        W1, b1, W2, b2 = self._unpack_weights(params_slice, k_attr)
+        hidden = jnp.maximum(x_attr_i @ W1 + b1, 0.0)  # ReLU
+        return hidden @ W2 + b2  # (K_OBS,)
+
+    def regularization(self, params_slice):
+        h = self.hidden
+        total = params_slice.shape[0]
+        # Solve for k_attr: total = k*h + h + h*K_OBS + K_OBS
+        # k*h = total - h - h*K_OBS - K_OBS
+        k_attr = (total - h - h * K_OBS - K_OBS) // h
+        W1 = params_slice[:k_attr * h]
+        W2 = params_slice[k_attr * h + h:k_attr * h + h + h * K_OBS]
+        return self.alpha * (jnp.sum(W1 ** 2) + jnp.sum(W2 ** 2))
+
+    def init(self, jdata, warm_start=None):
+        k_attr = jdata.x_attr.shape[1]
+        n_pools = len(jdata.pool_data)
+        h = self.hidden
+        rng = np.random.RandomState(self._seed)
+
+        # He initialization for W1
+        std = np.sqrt(2.0 / k_attr)
+        W1 = rng.randn(k_attr, h).astype(np.float64) * std
+        b1 = np.zeros(h, dtype=np.float64)
+
+        # W2 = 0 so initial output = b2
+        W2 = np.zeros((h, K_OBS), dtype=np.float64)
+
+        if warm_start is not None:
+            # Use mean of per-pool noise as b2
+            noise_all = np.zeros((n_pools, K_OBS), dtype=np.float64)
+            for i, pid in enumerate(jdata.pool_ids):
+                if pid in warm_start and "noise_coeffs" in warm_start[pid]:
+                    noise_all[i] = warm_start[pid]["noise_coeffs"]
+            b2 = np.mean(noise_all, axis=0)
+        else:
+            # Pooled OLS noise as b2
+            all_x = np.vstack([np.array(pd["x_obs"]) for pd in jdata.pool_data])
+            all_y = np.concatenate([np.array(pd["y_obs"]) for pd in jdata.pool_data])
+            b2, _, _, _ = np.linalg.lstsq(all_x, all_y, rcond=None)
+
+        return np.concatenate([W1.ravel(), b1, W2.ravel(), b2])
+
+    def predict_new(self, params_slice, x_attr):
+        k_attr = len(x_attr)
+        W1, b1, W2, b2 = self._unpack_weights(np.asarray(params_slice), k_attr)
+        hidden = np.maximum(x_attr @ W1 + b1, 0.0)
+        return hidden @ W2 + b2  # (K_OBS,)
+
+    def unpack_result(self, params_slice, n_pools, k_attr):
+        params_np = np.array(params_slice)
+        W1, b1, W2, b2 = self._unpack_weights(params_np, k_attr)
+        return {
+            "mlp_noise_W1": np.array(W1),
+            "mlp_noise_b1": np.array(b1),
+            "mlp_noise_W2": np.array(W2),
+            "mlp_noise_b2": np.array(b2),
+        }
+
+    def make_bounds(self, n_pools, k_attr):
+        return [(None, None)] * self.n_params(n_pools, k_attr)

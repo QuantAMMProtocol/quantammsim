@@ -15,6 +15,7 @@ from quantammsim.calibration.heads import (
     FixedHead,
     LinearHead,
     MLPHead,
+    MLPNoiseHead,
     PerPoolHead,
     PerPoolNoiseHead,
     SharedLinearNoiseHead,
@@ -498,3 +499,86 @@ class TestMLPIntegration:
         result = model.fit(jdata_ppn, maxiter=50)
         assert result["loss"] >= 0
         assert np.isfinite(result["loss"])
+
+
+# ── MLP noise integration tests ───────────────────────────────────────────
+
+
+class TestMLPNoiseIntegration:
+    """Test CalibrationModel with MLPNoiseHead — the key use case."""
+
+    def test_mlp_noise_fit_converges(self, jdata_ppn):
+        model = CalibrationModel(
+            LinearHead("cad", alpha=0.01),
+            LinearHead("gas", alpha=0.01),
+            MLPNoiseHead(hidden=8, alpha=0.01),
+        )
+        result = model.fit(jdata_ppn, maxiter=100)
+        assert result["loss"] <= result["init_loss"]
+        assert np.isfinite(result["loss"])
+
+    def test_mlp_noise_predict_new_pool(self, jdata_ppn):
+        model = CalibrationModel(
+            LinearHead("cad", alpha=0.01),
+            LinearHead("gas", alpha=0.01),
+            MLPNoiseHead(hidden=8, alpha=0.01),
+        )
+        result = model.fit(jdata_ppn, maxiter=50)
+        x_attr = np.zeros(result["k_attr"])
+        pred = model.predict_new_pool(result, x_attr)
+        assert pred["cadence_minutes"] > 0
+        assert pred["gas_usd"] > 0
+        assert "noise_coeffs" in pred
+        assert len(pred["noise_coeffs"]) == K_OBS
+
+    def test_mlp_noise_loss_differentiable(self, jdata_ppn):
+        import jax
+        model = CalibrationModel(
+            LinearHead("cad", alpha=0.01),
+            LinearHead("gas", alpha=0.01),
+            MLPNoiseHead(hidden=8, alpha=0.01),
+        )
+        loss_fn = model.make_joint_loss_fn(jdata_ppn)
+        init = jnp.array(model.pack_init(jdata_ppn))
+        grad = jax.grad(loss_fn)(init)
+        assert jnp.all(jnp.isfinite(grad))
+        assert float(jnp.sum(jnp.abs(grad))) > 0
+
+    def test_full_mlp_model(self, jdata_ppn):
+        """MLP for all three heads — most expressive config."""
+        model = CalibrationModel(
+            MLPHead("cad", hidden=8, alpha=0.01),
+            MLPHead("gas", hidden=8, alpha=0.01),
+            MLPNoiseHead(hidden=8, alpha=0.01),
+        )
+        result = model.fit(jdata_ppn, maxiter=100)
+        assert result["loss"] <= result["init_loss"]
+        x_attr = np.zeros(result["k_attr"])
+        pred = model.predict_new_pool(result, x_attr)
+        assert pred["cadence_minutes"] > 0
+        assert "noise_coeffs" in pred
+
+    def test_mlp_noise_with_fixed_gas(self, jdata_ppn):
+        n_pools = len(jdata_ppn.pool_data)
+        gas_values = np.array([np.log(1.0)] * n_pools)
+        model = CalibrationModel(
+            LinearHead("cad", alpha=0.01),
+            FixedHead("gas", gas_values),
+            MLPNoiseHead(hidden=8, alpha=0.01),
+        )
+        result = model.fit(jdata_ppn, maxiter=100)
+        assert result["loss"] <= result["init_loss"]
+
+    def test_mlp_noise_param_count(self, jdata_ppn):
+        n_pools = len(jdata_ppn.pool_data)
+        k_attr = jdata_ppn.x_attr.shape[1]
+        h = 8
+        model = CalibrationModel(
+            LinearHead("cad"),
+            LinearHead("gas"),
+            MLPNoiseHead(hidden=h),
+        )
+        # Linear cad: 1+k, Linear gas: 1+k,
+        # MLP noise: k*h + h + h*K_OBS + K_OBS
+        expected = (1 + k_attr) * 2 + k_attr * h + h + h * K_OBS + K_OBS
+        assert model.n_params(n_pools, k_attr) == expected

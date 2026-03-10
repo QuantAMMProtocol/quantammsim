@@ -11,6 +11,7 @@ from quantammsim.calibration.heads import (
     Head,
     LinearHead,
     MLPHead,
+    MLPNoiseHead,
     PerPoolHead,
     PerPoolNoiseHead,
     SharedLinearNoiseHead,
@@ -69,6 +70,9 @@ class TestProtocol:
 
     def test_mlp_head_is_head(self):
         assert isinstance(MLPHead("cad"), Head)
+
+    def test_mlp_noise_head_is_head(self):
+        assert isinstance(MLPNoiseHead(), Head)
 
 
 # ── PerPoolHead ─────────────────────────────────────────────────────────────
@@ -562,6 +566,184 @@ class TestMLPHead:
 
         def loss(p):
             return h.predict(p, 0, x_attr_i) ** 2
+
+        grad = jax.grad(loss)(params)
+        assert grad.shape == params.shape
+        assert jnp.all(jnp.isfinite(grad))
+
+
+# ── MLPNoiseHead ────────────────────────────────────────────────────────────
+
+
+class TestMLPNoiseHead:
+    def test_n_params(self):
+        h = MLPNoiseHead(hidden=16)
+        # k_attr=5: 5*16 + 16 + 16*8 + 8 = 80+16+128+8 = 232
+        assert h.n_params(3, 5) == 232
+        # k_attr=7: 7*16 + 16 + 16*8 + 8 = 112+16+128+8 = 264
+        assert h.n_params(3, 7) == 264
+
+    def test_n_params_custom_hidden(self):
+        h = MLPNoiseHead(hidden=8)
+        # k_attr=5: 5*8 + 8 + 8*8 + 8 = 40+8+64+8 = 120
+        assert h.n_params(3, 5) == 120
+
+    def test_predict_output_shape(self):
+        k_attr = 3
+        h = MLPNoiseHead(hidden=4)
+        n_p = h.n_params(1, k_attr)
+        params = jnp.zeros(n_p)
+        x_attr_i = jnp.array([1.0, 2.0, 3.0])
+        result = h.predict(params, 0, x_attr_i)
+        assert result.shape == (K_OBS,)
+
+    def test_predict_with_zero_W2_equals_b2(self):
+        """With W2=0, output should be b2 regardless of input."""
+        k_attr = 3
+        h = MLPNoiseHead(hidden=4)
+        n_p = h.n_params(1, k_attr)
+        params = np.zeros(n_p)
+        # b2 is the last K_OBS elements
+        params[-K_OBS:] = np.arange(K_OBS) + 1.0
+        x_attr_i = jnp.array([1.0, 2.0, 3.0])
+        result = h.predict(jnp.array(params), 0, x_attr_i)
+        np.testing.assert_allclose(result, np.arange(K_OBS) + 1.0)
+
+    def test_predict_nonlinear(self):
+        """MLP should produce different outputs for different inputs."""
+        k_attr = 3
+        h = MLPNoiseHead(hidden=4, seed=42)
+        n_p = h.n_params(1, k_attr)
+        np.random.seed(42)
+        params = jnp.array(np.random.randn(n_p) * 0.1)
+        x1 = jnp.array([1.0, 0.0, 0.0])
+        x2 = jnp.array([0.0, 1.0, 0.0])
+        v1 = h.predict(params, 0, x1)
+        v2 = h.predict(params, 0, x2)
+        assert not jnp.allclose(v1, v2), "Should produce different outputs"
+
+    def test_predict_ignores_pool_idx(self):
+        k_attr = 3
+        h = MLPNoiseHead(hidden=4)
+        params = jnp.ones(h.n_params(5, k_attr)) * 0.1
+        x = jnp.array([1.0, 2.0, 3.0])
+        v0 = h.predict(params, 0, x)
+        v3 = h.predict(params, 3, x)
+        np.testing.assert_allclose(v0, v3)
+
+    def test_regularization_on_weights_not_biases(self):
+        k_attr = 2
+        h = MLPNoiseHead(hidden=2, alpha=1.0)
+        # Layout: W1(2*2=4), b1(2), W2(2*8=16), b2(8) = 30 params
+        n_p = h.n_params(1, k_attr)
+        assert n_p == 30
+        params = np.zeros(n_p)
+        params[0] = 3.0  # W1[0,0]
+        params[1] = 4.0  # W1[0,1]
+        # b1 at indices 4,5 — not regularized
+        params[6] = 1.0  # W2[0,0]
+        params[7] = 2.0  # W2[0,1]
+        params[-1] = 999.0  # b2[-1] — not regularized
+        # reg = 1.0 * (9 + 16 + 1 + 4) = 30.0
+        result = float(h.regularization(jnp.array(params)))
+        np.testing.assert_allclose(result, 30.0)
+
+    def test_init_default(self):
+        np.random.seed(42)
+        h = MLPNoiseHead(hidden=4)
+        jdata = _make_fake_jdata()
+        init = h.init(jdata)
+        n_p = h.n_params(N_POOLS, K_ATTR)
+        assert init.shape == (n_p,)
+        assert np.all(np.isfinite(init))
+
+    def test_init_W2_is_zero(self):
+        """W2 should be zero at init so output = b2."""
+        h = MLPNoiseHead(hidden=4)
+        jdata = _make_fake_jdata()
+        init = h.init(jdata)
+        # W2 starts at k_attr*hidden + hidden
+        w2_start = K_ATTR * 4 + 4
+        w2_end = w2_start + 4 * K_OBS
+        np.testing.assert_allclose(init[w2_start:w2_end], 0.0)
+
+    def test_init_b2_from_ols(self):
+        """b2 should be pooled OLS noise coefficients."""
+        np.random.seed(42)
+        h = MLPNoiseHead(hidden=4)
+        jdata = _make_fake_jdata()
+        init = h.init(jdata)
+        b2 = init[-K_OBS:]
+        assert np.all(np.isfinite(b2))
+        # Should be nonzero (OLS on random data)
+        assert np.any(b2 != 0.0)
+
+    def test_init_warm_start(self):
+        h = MLPNoiseHead(hidden=4)
+        jdata = _make_fake_jdata()
+        warm = {
+            POOL_PREFIXES[0]: {"noise_coeffs": np.ones(K_OBS) * 5.0},
+            POOL_PREFIXES[1]: {"noise_coeffs": np.ones(K_OBS) * 7.0},
+        }
+        init = h.init(jdata, warm_start=warm)
+        b2 = init[-K_OBS:]
+        # b2 should be mean of warm-start noise: (5+7)/2 = 6
+        np.testing.assert_allclose(b2, 6.0)
+
+    def test_predict_new(self):
+        k_attr = 3
+        h = MLPNoiseHead(hidden=4)
+        n_p = h.n_params(1, k_attr)
+        params = np.zeros(n_p)
+        params[-K_OBS:] = np.arange(K_OBS) + 1.0  # b2
+        x_attr = np.array([1.0, 2.0, 3.0])
+        result = h.predict_new(params, x_attr)
+        assert result.shape == (K_OBS,)
+        np.testing.assert_allclose(result, np.arange(K_OBS) + 1.0)
+
+    def test_predict_new_matches_predict(self):
+        k_attr = 3
+        h = MLPNoiseHead(hidden=4, seed=42)
+        n_p = h.n_params(1, k_attr)
+        np.random.seed(99)
+        params = np.random.randn(n_p) * 0.1
+        x_attr = np.array([0.5, -1.0, 2.0])
+
+        jax_result = np.array(h.predict(jnp.array(params), 0, jnp.array(x_attr)))
+        np_result = h.predict_new(params, x_attr)
+        np.testing.assert_allclose(jax_result, np_result, rtol=1e-6)
+
+    def test_unpack_result(self):
+        k_attr = 3
+        h = MLPNoiseHead(hidden=4)
+        n_p = h.n_params(1, k_attr)
+        params = np.arange(n_p, dtype=float)
+        result = h.unpack_result(params, 2, k_attr)
+        assert "mlp_noise_W1" in result
+        assert "mlp_noise_b1" in result
+        assert "mlp_noise_W2" in result
+        assert "mlp_noise_b2" in result
+        assert result["mlp_noise_W1"].shape == (k_attr, 4)
+        assert result["mlp_noise_b1"].shape == (4,)
+        assert result["mlp_noise_W2"].shape == (4, K_OBS)
+        assert result["mlp_noise_b2"].shape == (K_OBS,)
+
+    def test_make_bounds(self):
+        h = MLPNoiseHead(hidden=4)
+        bounds = h.make_bounds(3, 5)
+        assert len(bounds) == h.n_params(3, 5)
+
+    def test_jax_differentiable(self):
+        import jax
+        k_attr = 3
+        h = MLPNoiseHead(hidden=4)
+        n_p = h.n_params(1, k_attr)
+        np.random.seed(42)
+        params = jnp.array(np.random.randn(n_p) * 0.1)
+        x_attr_i = jnp.array([1.0, 2.0, 3.0])
+
+        def loss(p):
+            return jnp.sum(h.predict(p, 0, x_attr_i) ** 2)
 
         grad = jax.grad(loss)(params)
         assert grad.shape == params.shape

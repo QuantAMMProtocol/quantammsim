@@ -45,6 +45,7 @@ from quantammsim.calibration.heads import (
     Head,
     LinearHead,
     MLPHead,
+    MLPNoiseHead,
     PerPoolHead,
     PerPoolNoiseHead,
     SharedLinearNoiseHead,
