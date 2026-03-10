@@ -107,7 +107,8 @@ class TestPoolLossFixedGas:
         y_obs = jnp.ones(n_obs) * 9.0
         return jnp.array(synthetic_x_obs), y_obs, day_indices
 
-    def test_scalar_output(self, synthetic_pool_coeffs, synthetic_x_obs):
+    def test_pinned_loss_value(self, synthetic_pool_coeffs, synthetic_x_obs):
+        """Loss at known params must match precomputed value."""
         from quantammsim.calibration.loss import pool_loss_fixed_gas
 
         params = self._make_params()
@@ -118,20 +119,28 @@ class TestPoolLossFixedGas:
         loss = pool_loss_fixed_gas(
             params, fixed_log_gas, synthetic_pool_coeffs, x_obs, y_obs, day_indices
         )
-        assert loss.shape == ()
+        # cadence=12, gas=1.0, noise=[8,0..0], y=9.0 → pinned
+        np.testing.assert_allclose(float(loss), 0.001727, atol=1e-4)
 
-    def test_positive(self, synthetic_pool_coeffs, synthetic_x_obs):
+    def test_pinned_loss_at_multiple_gas_values(
+        self, synthetic_pool_coeffs, synthetic_x_obs
+    ):
+        """Pinned loss values at gas=0.01, 1.0, 5.0."""
         from quantammsim.calibration.loss import pool_loss_fixed_gas
 
         params = self._make_params()
         x_obs, y_obs, day_indices = self._make_inputs(
             synthetic_pool_coeffs, synthetic_x_obs
         )
-        fixed_log_gas = jnp.log(jnp.array(1.0))
-        loss = pool_loss_fixed_gas(
-            params, fixed_log_gas, synthetic_pool_coeffs, x_obs, y_obs, day_indices
-        )
-        assert float(loss) >= 0
+        # Precomputed with _make_params defaults: log_cad=log(12), noise=[8,0..0]
+        expected = {0.01: 0.0763, 1.0: 0.00173, 5.0: 0.0313}
+        for gas_val, exp_loss in expected.items():
+            lg = jnp.log(jnp.array(gas_val))
+            loss = float(pool_loss_fixed_gas(
+                params, lg, synthetic_pool_coeffs, x_obs, y_obs, day_indices
+            ))
+            np.testing.assert_allclose(loss, exp_loss, atol=1e-3,
+                                       err_msg=f"gas={gas_val}")
 
     def test_zero_when_perfect(self, synthetic_pool_coeffs, synthetic_x_obs):
         """Construct y_obs = log(V_arb + V_noise) exactly, verify loss ≈ 0."""
@@ -161,7 +170,7 @@ class TestPoolLossFixedGas:
             params, fixed_log_gas, synthetic_pool_coeffs,
             jnp.array(synthetic_x_obs), y_obs, day_indices,
         )
-        assert float(loss) < 1e-6
+        assert float(loss) < 1e-10
 
     def test_matches_free_gas_at_same_value(
         self, synthetic_pool_coeffs, synthetic_x_obs
@@ -194,29 +203,49 @@ class TestPoolLossFixedGas:
         )
         np.testing.assert_allclose(float(loss_free), float(loss_fixed), rtol=1e-6)
 
-    def test_different_fixed_gas_different_loss(
-        self, synthetic_pool_coeffs, synthetic_x_obs
-    ):
-        """Different gas values should give different losses."""
+    def test_loss_varies_with_gas_within_grid(self, synthetic_pool_coeffs, synthetic_x_obs):
+        """Gas values within grid range [0, 5] should produce distinct losses."""
         from quantammsim.calibration.loss import pool_loss_fixed_gas
 
         params = self._make_params()
         x_obs, y_obs, day_indices = self._make_inputs(
             synthetic_pool_coeffs, synthetic_x_obs
         )
+        # Stay within grid range (gas_costs=[0, 1, 5]) to avoid extrapolation plateau
+        losses = []
+        for gas in [0.01, 0.1, 1.0, 3.0]:
+            lg = jnp.log(jnp.array(gas))
+            loss = float(pool_loss_fixed_gas(
+                params, lg, synthetic_pool_coeffs, x_obs, y_obs, day_indices
+            ))
+            losses.append(loss)
+        # All 4 within-grid gas values should give distinct losses
+        assert len(set(f"{l:.8f}" for l in losses)) == 4
 
-        loss_low = pool_loss_fixed_gas(
-            params, jnp.log(jnp.array(0.01)),
-            synthetic_pool_coeffs, x_obs, y_obs, day_indices,
-        )
-        loss_high = pool_loss_fixed_gas(
-            params, jnp.log(jnp.array(10.0)),
-            synthetic_pool_coeffs, x_obs, y_obs, day_indices,
-        )
-        assert float(loss_low) != float(loss_high)
+    def test_day_indices_affect_loss(self, synthetic_pool_coeffs, synthetic_x_obs):
+        """Different day_indices must produce different loss — verifies per-day V_arb is used."""
+        from quantammsim.calibration.loss import pool_loss_fixed_gas
 
-    def test_grad_wrt_params_only(self, synthetic_pool_coeffs, synthetic_x_obs):
-        """Gradient is only w.r.t. params_flat (argnums=0), not fixed_log_gas."""
+        params = self._make_params()
+        n_obs = synthetic_x_obs.shape[0]
+        n_days = int(synthetic_pool_coeffs.values.shape[2])
+        x_obs = jnp.array(synthetic_x_obs)
+        y_obs = jnp.ones(n_obs) * 9.0
+        fixed_log_gas = jnp.log(jnp.array(1.0))
+
+        day_idx_all_zero = jnp.zeros(n_obs, dtype=jnp.int32)
+        day_idx_varying = jnp.array(np.arange(n_obs) % n_days)
+
+        loss_same = pool_loss_fixed_gas(
+            params, fixed_log_gas, synthetic_pool_coeffs, x_obs, y_obs, day_idx_all_zero
+        )
+        loss_vary = pool_loss_fixed_gas(
+            params, fixed_log_gas, synthetic_pool_coeffs, x_obs, y_obs, day_idx_varying
+        )
+        assert float(loss_same) != float(loss_vary)
+
+    def test_grad_wrt_params(self, synthetic_pool_coeffs, synthetic_x_obs):
+        """Gradient w.r.t. params_flat has correct shape and is finite."""
         from quantammsim.calibration.loss import pool_loss_fixed_gas
 
         params = self._make_params()
@@ -230,52 +259,106 @@ class TestPoolLossFixedGas:
         )
         assert grad.shape == (1 + K_OBS,)
         assert jnp.all(jnp.isfinite(grad))
+        # Gradient should be nonzero (we're not at the optimum)
+        assert float(jnp.sum(jnp.abs(grad))) > 1e-10
 
-    def test_no_grad_wrt_fixed_gas(self, synthetic_pool_coeffs, synthetic_x_obs):
-        """fixed_log_gas should not be in the gradient (it's a constant)."""
-        from quantammsim.calibration.loss import pool_loss_fixed_gas
-
-        params = self._make_params()
-        x_obs, y_obs, day_indices = self._make_inputs(
-            synthetic_pool_coeffs, synthetic_x_obs
-        )
-        fixed_log_gas = jnp.log(jnp.array(1.0))
-
-        # Gradient w.r.t. argnums=0 has shape (1+K_OBS,) — no gas element
-        grad = jax.grad(pool_loss_fixed_gas, argnums=0)(
-            params, fixed_log_gas, synthetic_pool_coeffs, x_obs, y_obs, day_indices,
-        )
-        # If there were a gas gradient, shape would be (2+K_OBS,)
-        assert grad.shape[0] == 1 + K_OBS
-
-    def test_grad_wrt_log_cadence_finite(
+    def test_grad_changes_with_gas(
         self, synthetic_pool_coeffs, synthetic_x_obs
     ):
+        """Gradient w.r.t. params should differ at different fixed gas values.
+
+        fixed_log_gas affects V_arb through grid interpolation, which shifts
+        the loss landscape and thus the gradient.
+        """
         from quantammsim.calibration.loss import pool_loss_fixed_gas
 
         params = self._make_params()
         x_obs, y_obs, day_indices = self._make_inputs(
             synthetic_pool_coeffs, synthetic_x_obs
         )
+
+        grad_fn = jax.grad(pool_loss_fixed_gas, argnums=0)
+        grad_low = grad_fn(
+            params, jnp.log(jnp.array(0.01)),
+            synthetic_pool_coeffs, x_obs, y_obs, day_indices
+        )
+        grad_high = grad_fn(
+            params, jnp.log(jnp.array(10.0)),
+            synthetic_pool_coeffs, x_obs, y_obs, day_indices
+        )
+        # Gradients should differ because V_arb differs
+        assert not jnp.allclose(grad_low, grad_high, atol=1e-6)
+
+    def test_extreme_negative_noise_finite(self, synthetic_pool_coeffs, synthetic_x_obs):
+        """Loss should remain finite with very negative noise intercept."""
+        from quantammsim.calibration.loss import pool_loss_fixed_gas, pack_params_fixed_gas
+
+        # Very negative noise intercept → V_noise ≈ 0, but V_arb still positive
+        nc = jnp.zeros(K_OBS).at[0].set(-100.0)
+        params = pack_params_fixed_gas(float(jnp.log(jnp.array(12.0))), nc)
+
+        n_obs = synthetic_x_obs.shape[0]
+        n_days = int(synthetic_pool_coeffs.values.shape[2])
+        day_indices = jnp.array(np.arange(n_obs) % n_days)
+        x_obs = jnp.array(synthetic_x_obs)
+        y_obs = jnp.ones(n_obs) * 9.0
         fixed_log_gas = jnp.log(jnp.array(1.0))
 
-        grad = jax.grad(pool_loss_fixed_gas, argnums=0)(
-            params, fixed_log_gas, synthetic_pool_coeffs, x_obs, y_obs, day_indices,
+        loss = pool_loss_fixed_gas(
+            params, fixed_log_gas, synthetic_pool_coeffs, x_obs, y_obs, day_indices
         )
-        assert jnp.isfinite(grad[0])  # log_cadence gradient
+        assert jnp.isfinite(loss)
+        # V_noise ≈ 0, so log(V_arb) ≈ 8.5 vs y=9.0 → nonzero loss
+        assert float(loss) > 0.01
+        # Gradient should also be finite
+        grad = jax.grad(pool_loss_fixed_gas, argnums=0)(
+            params, fixed_log_gas, synthetic_pool_coeffs, x_obs, y_obs, day_indices
+        )
+        assert jnp.all(jnp.isfinite(grad))
 
-    def test_grad_wrt_noise_coeffs_finite(
-        self, synthetic_pool_coeffs, synthetic_x_obs
-    ):
+    def test_boundary_clamp_cadence(self, synthetic_pool_coeffs, synthetic_x_obs):
+        """Cadence below grid min should clamp — loss at cad=0.5 equals cad=1.0."""
+        from quantammsim.calibration.loss import pack_params_fixed_gas, pool_loss_fixed_gas
+
+        x_obs, y_obs, day_indices = self._make_inputs(
+            synthetic_pool_coeffs, synthetic_x_obs
+        )
+        nc = jnp.zeros(K_OBS).at[0].set(8.0)
+        fixed_log_gas = jnp.log(jnp.array(1.0))
+
+        params_below = pack_params_fixed_gas(float(jnp.log(jnp.array(0.5))), nc)
+        params_at_min = pack_params_fixed_gas(float(jnp.log(jnp.array(1.0))), nc)
+
+        loss_below = pool_loss_fixed_gas(
+            params_below, fixed_log_gas, synthetic_pool_coeffs,
+            x_obs, y_obs, day_indices,
+        )
+        loss_at_min = pool_loss_fixed_gas(
+            params_at_min, fixed_log_gas, synthetic_pool_coeffs,
+            x_obs, y_obs, day_indices,
+        )
+        np.testing.assert_allclose(float(loss_below), float(loss_at_min), rtol=1e-6)
+
+    def test_boundary_clamp_gas(self, synthetic_pool_coeffs, synthetic_x_obs):
+        """Gas above grid max should clamp — loss at gas=10 equals gas=5."""
         from quantammsim.calibration.loss import pool_loss_fixed_gas
 
         params = self._make_params()
         x_obs, y_obs, day_indices = self._make_inputs(
             synthetic_pool_coeffs, synthetic_x_obs
         )
-        fixed_log_gas = jnp.log(jnp.array(1.0))
 
-        grad = jax.grad(pool_loss_fixed_gas, argnums=0)(
-            params, fixed_log_gas, synthetic_pool_coeffs, x_obs, y_obs, day_indices,
+        loss_above = pool_loss_fixed_gas(
+            params, jnp.log(jnp.array(10.0)), synthetic_pool_coeffs,
+            x_obs, y_obs, day_indices,
         )
-        assert jnp.all(jnp.isfinite(grad[1:]))  # noise_coeffs gradients
+        loss_at_max = pool_loss_fixed_gas(
+            params, jnp.log(jnp.array(5.0)), synthetic_pool_coeffs,
+            x_obs, y_obs, day_indices,
+        )
+        np.testing.assert_allclose(float(loss_above), float(loss_at_max), rtol=1e-6)
+
+    def test_k_obs_matches_loss_module(self):
+        """K_OBS in conftest must match K_OBS in loss.py."""
+        from quantammsim.calibration.loss import K_OBS as K_OBS_IMPL
+        assert K_OBS == K_OBS_IMPL
