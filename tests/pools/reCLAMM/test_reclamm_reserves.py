@@ -13,10 +13,13 @@ from tests.conftest import TEST_DATA_DIR
 from quantammsim.pools.reCLAMM.reclamm_reserves import (
     compute_invariant,
     compute_price_ratio,
+    compute_centeredness,
     initialise_reclamm_reserves,
     calibrate_arc_length_speed,
     _jax_calc_reclamm_reserves_zero_fees,
+    _jax_calc_reclamm_reserves_zero_fees_full_state,
     _jax_calc_reclamm_reserves_with_fees,
+    _jax_calc_reclamm_reserves_and_fee_revenue_with_fees,
 )
 
 # For n=2: sig variations with exactly one +1 and one -1
@@ -754,7 +757,7 @@ class TestReClammTrainable:
                 "centeredness_margin": jnp.array(0.2),
                 "daily_price_shift_base": jnp.array(base),
             },
-            root=str(TEST_DATA_DIR),
+            root=TEST_DATA_DIR,
         )
         result_exp = do_run_on_historic_data(
             run_fingerprint={**fp_common, "reclamm_use_shift_exponent": True},
@@ -763,7 +766,7 @@ class TestReClammTrainable:
                 "centeredness_margin": jnp.array(0.2),
                 "shift_exponent": jnp.array(shift_exp),
             },
-            root=str(TEST_DATA_DIR),
+            root=TEST_DATA_DIR,
         )
 
         np.testing.assert_allclose(
@@ -783,6 +786,7 @@ class TestReClammTrainable:
             "startDateString": "2023-01-01 00:00:00",
             "endDateString": "2023-01-15 00:00:00",
             "endTestDateString": "2023-02-01 00:00:00",
+            "endTestDateString": "2023-03-01 00:00:00",
             "initial_pool_value": 1_000_000.0,
             "do_arb": True,
             "fees": 0.0025,
@@ -817,5 +821,609 @@ class TestReClammTrainable:
                 },
             },
         }
-        result = train_on_historic_data(fp, root=str(TEST_DATA_DIR), verbose=False)
+        result = train_on_historic_data(fp, verbose=False, root=TEST_DATA_DIR)
         assert result is not None
+
+
+class TestNoiseTraderRatio:
+    """Noise trader fee income wiring for reClAMM pools."""
+
+    def _run_with_noise(self, noise_trader_ratio, n_steps=50, fees=0.003):
+        """Run reClAMM with fees and return reserves + fee revenue."""
+        reserves, Va, Vb = _init_pool()
+        # Trending prices so arb trades happen and noise trade has non-zero effect
+        prices = _make_trending_prices(2500.0, 3000.0, 1.0, n_steps)
+
+        return _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=fees,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+            noise_trader_ratio=noise_trader_ratio,
+        )
+
+    def test_noise_trader_ratio_zero_is_default(self):
+        """noise_trader_ratio=0.0 should produce identical results to omitting it."""
+        reserves, Va, Vb = _init_pool()
+        prices = _make_trending_prices(2500.0, 3000.0, 1.0, 50)
+
+        # Explicit zero
+        res_zero, rev_zero = _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.003,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+            noise_trader_ratio=0.0,
+        )
+
+        # Default (omitted)
+        res_default, rev_default = _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.003,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+        )
+
+        npt.assert_array_equal(res_zero, res_default)
+        npt.assert_array_equal(rev_zero, rev_default)
+
+    def test_noise_trader_ratio_increases_reserves(self):
+        """Noise traders add fee income, so pool value should be higher."""
+        res_no_noise, _ = self._run_with_noise(0.0)
+        res_noise, _ = self._run_with_noise(0.1)
+
+        # Final pool value in USD (sum of reserves * price at last step)
+        final_prices = jnp.array([3000.0, 1.0])
+        value_no_noise = (res_no_noise[-1] * final_prices).sum()
+        value_noise = (res_noise[-1] * final_prices).sum()
+
+        assert value_noise > value_no_noise, (
+            f"Noise traders should increase pool value: {value_noise} <= {value_no_noise}"
+        )
+
+        # Reserves should differ
+        assert not jnp.allclose(res_no_noise, res_noise), (
+            "Reserves should differ with noise traders"
+        )
+
+    def test_noise_trader_ratio_through_pool_class(self):
+        """noise_trader_ratio flows through the pool class methods."""
+        from quantammsim.pools.creator import create_pool
+        from quantammsim.runners.jax_runner_utils import Hashabledict
+
+        pool = create_pool("reclamm")
+
+        params = {
+            "price_ratio": DEFAULT_PRICE_RATIO,
+            "centeredness_margin": DEFAULT_CENTEREDNESS_MARGIN,
+            "daily_price_shift_base": DEFAULT_DAILY_PRICE_SHIFT_BASE,
+        }
+
+        n_steps = 50
+        np.random.seed(42)
+        price_a = 2500.0 * np.exp(np.cumsum(np.random.normal(0, 0.01, n_steps)))
+        prices = jnp.stack([jnp.array(price_a), jnp.ones(n_steps)], axis=1)
+        start_index = jnp.array([0, 0])
+
+        base_fp = {
+            "n_assets": 2,
+            "bout_length": n_steps + 1,
+            "initial_pool_value": 1_000_000.0,
+            "arb_frequency": 1,
+            "do_arb": True,
+            "fees": 0.003,
+            "gas_cost": 0.0,
+            "arb_fees": 0.0,
+            "tokens": ("ETH", "USDC"),
+            "numeraire": "USDC",
+            "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+        }
+
+        fp_no_noise = Hashabledict({**base_fp, "noise_trader_ratio": 0.0})
+        fp_noise = Hashabledict({**base_fp, "noise_trader_ratio": 0.1})
+
+        res_no = pool.calculate_reserves_with_fees(
+            params, fp_no_noise, prices, start_index
+        )
+        res_yes = pool.calculate_reserves_with_fees(
+            params, fp_noise, prices, start_index
+        )
+
+        # Should run and produce different results
+        assert res_no.shape == (n_steps, 2)
+        assert res_yes.shape == (n_steps, 2)
+        assert not jnp.allclose(res_no, res_yes), (
+            "Pool class should produce different reserves with noise traders"
+        )
+
+    def test_noise_trade_does_not_affect_virtual_balances(self):
+        """Noise trade fee income only grows real reserves, not Va/Vb."""
+        from quantammsim.pools.reCLAMM.reclamm_reserves import (
+            _reclamm_scan_step_with_fees_and_revenue,
+            precalc_shared_values_for_all_signatures,
+            precalc_components_of_optimal_trade_across_prices,
+        )
+
+        reserves, Va, Vb = _init_pool()
+        # Price must differ from init (2500) to trigger an arb trade
+        prices_arr = jnp.array([[3000.0, 1.0]])
+        prices = prices_arr[0]
+
+        weights = jnp.array([0.5, 0.5])
+        gamma = 1.0 - 0.003
+        n_assets = 2
+
+        _, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
+            precalc_shared_values_for_all_signatures(ALL_SIG_VARIATIONS_2, n_assets)
+        )
+
+        active_initial_weights, per_asset_ratios, all_other_assets_ratios = (
+            precalc_components_of_optimal_trade_across_prices(
+                weights, prices_arr, gamma, tokens_to_drop,
+                active_trade_directions, leave_one_out_idxs,
+            )
+        )
+
+        carry = [
+            reserves, Va, Vb,
+            jnp.float64(1.0),   # prev_lp_supply
+            jnp.float64(0.0),   # step_idx
+            jnp.float64(0.0),   # active_start_ratio
+            jnp.float64(0.0),   # active_target_ratio
+            jnp.float64(0.0),   # active_start_step
+            jnp.float64(0.0),   # active_end_step
+            jnp.array(False),   # active_enabled
+        ]
+        inputs = [
+            prices,
+            active_initial_weights[0],
+            per_asset_ratios[0],
+            all_other_assets_ratios[0],
+            gamma,
+            0.0,  # arb_thresh
+            0.0,  # arb_fees
+            jnp.array([0.0, 0.0, 0.0]),  # price_ratio_update (no-op)
+            jnp.float64(1.0),  # lp_supply
+        ]
+
+        # Without noise
+        carry_no, _ = _reclamm_scan_step_with_fees_and_revenue(
+            carry, inputs,
+            weights=weights,
+            tokens_to_drop=tokens_to_drop,
+            active_trade_directions=active_trade_directions,
+            n=n_assets,
+            centeredness_margin=DEFAULT_CENTEREDNESS_MARGIN,
+            daily_price_shift_base=DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            seconds_per_step=DEFAULT_SECONDS_PER_STEP,
+            noise_trader_ratio=0.0,
+        )
+
+        # With noise
+        carry_yes, _ = _reclamm_scan_step_with_fees_and_revenue(
+            carry, inputs,
+            weights=weights,
+            tokens_to_drop=tokens_to_drop,
+            active_trade_directions=active_trade_directions,
+            n=n_assets,
+            centeredness_margin=DEFAULT_CENTEREDNESS_MARGIN,
+            daily_price_shift_base=DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            seconds_per_step=DEFAULT_SECONDS_PER_STEP,
+            noise_trader_ratio=0.5,
+        )
+
+        # Virtual balances should be identical
+        npt.assert_array_equal(carry_no[1], carry_yes[1], err_msg="Va changed")
+        npt.assert_array_equal(carry_no[2], carry_yes[2], err_msg="Vb changed")
+
+        # But real reserves should differ (noise adds fee income)
+        assert not jnp.allclose(carry_no[0], carry_yes[0]), (
+            "Real reserves should differ with noise traders"
+        )
+
+
+class TestLpSupply:
+    """LP supply (BPT) scaling for reClAMM pools.
+
+    Ported from Foundry fuzz test invariants in ReClammLiquidity.t.sol:
+    both real AND virtual reserves scale proportionally with BPT supply,
+    preserving price and centeredness.
+    """
+
+    def test_lp_supply_none_matches_default(self):
+        """lp_supply_array=None vs omitting param → identical results."""
+        reserves, Va, Vb = _init_pool()
+        prices = _make_trending_prices(2500.0, 3000.0, 1.0, 20)
+
+        result_none = _jax_calc_reclamm_reserves_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.003,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+            lp_supply_array=None,
+        )
+        result_omit = _jax_calc_reclamm_reserves_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.003,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+        )
+        npt.assert_array_equal(result_none, result_omit)
+
+    def test_lp_supply_constant_one_matches_default(self):
+        """lp_supply_array=jnp.ones(T) vs None → identical results."""
+        reserves, Va, Vb = _init_pool()
+        n_steps = 20
+        prices = _make_trending_prices(2500.0, 3000.0, 1.0, n_steps)
+
+        result_ones = _jax_calc_reclamm_reserves_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.003,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+            lp_supply_array=jnp.ones(n_steps),
+        )
+        result_none = _jax_calc_reclamm_reserves_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.003,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+        )
+        npt.assert_array_equal(result_ones, result_none)
+
+    def test_lp_supply_doubling_scales_reserves(self):
+        """BPT supply doubling halfway → reserves ~2x at that step.
+
+        Ported from Foundry testAddLiquidity__Fuzz: reserves scale with BPT.
+        """
+        reserves, Va, Vb = _init_pool()
+        n_steps = 40
+        half = n_steps // 2
+        prices = _make_constant_prices(2500.0, 1.0, n_steps)
+
+        # No LP supply change (baseline)
+        result_base = _jax_calc_reclamm_reserves_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.003,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+        )
+
+        # LP supply doubles at step `half`
+        lp_supply = jnp.concatenate([jnp.ones(half), 2.0 * jnp.ones(n_steps - half)])
+        result_lp = _jax_calc_reclamm_reserves_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.003,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+            lp_supply_array=lp_supply,
+        )
+
+        # Before doubling: identical
+        npt.assert_allclose(result_lp[:half], result_base[:half], rtol=1e-10)
+        # After doubling: reserves ~2x the baseline
+        npt.assert_allclose(result_lp[half], result_base[half] * 2.0, rtol=1e-6)
+
+    def test_lp_supply_halving_scales_reserves(self):
+        """BPT supply halving halfway → reserves ~0.5x at that step."""
+        reserves, Va, Vb = _init_pool()
+        n_steps = 40
+        half = n_steps // 2
+        prices = _make_constant_prices(2500.0, 1.0, n_steps)
+
+        result_base = _jax_calc_reclamm_reserves_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.003,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+        )
+
+        lp_supply = jnp.concatenate([jnp.ones(half), 0.5 * jnp.ones(n_steps - half)])
+        result_lp = _jax_calc_reclamm_reserves_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.003,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+            lp_supply_array=lp_supply,
+        )
+
+        # Before halving: identical
+        npt.assert_allclose(result_lp[:half], result_base[:half], rtol=1e-10)
+        # After halving: reserves ~0.5x the baseline
+        npt.assert_allclose(result_lp[half], result_base[half] * 0.5, rtol=1e-6)
+
+    def test_lp_supply_preserves_price(self):
+        """Price ratio (Ra+Va)/(Rb+Vb) unchanged through LP supply scaling.
+
+        Ported from Foundry: assertEq(price_before, price_after) in
+        testAddLiquidity__Fuzz.
+        """
+        reserves, Va, Vb = _init_pool()
+        n_steps = 40
+        half = n_steps // 2
+        # Trending so virtual balances shift — makes price preservation non-trivial
+        prices = _make_trending_prices(2500.0, 3500.0, 1.0, n_steps)
+
+        lp_supply = jnp.concatenate([jnp.ones(half), 2.0 * jnp.ones(n_steps - half)])
+
+        # Use full_state variant to get Va/Vb history
+        result_reserves, Va_hist, Vb_hist = _jax_calc_reclamm_reserves_zero_fees_full_state(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            lp_supply_array=lp_supply,
+        )
+
+        # Price = (Rb + Vb) / (Ra + Va) — should be identical at step half-1 and half
+        # (the supply change happens at start of step `half`, before arb)
+        Ra_before = result_reserves[half - 1, 0]
+        Rb_before = result_reserves[half - 1, 1]
+        Va_before = Va_hist[half - 1]
+        Vb_before = Vb_hist[half - 1]
+        price_before = (Rb_before + Vb_before) / (Ra_before + Va_before)
+
+        # At step `half`, the carry from step half-1 gets scaled, then arb runs.
+        # We need to check price right after scaling, before arb.
+        # The closest check: price at step `half` output should reflect
+        # scaled reserves with arb on top. Instead, verify that a constant-price
+        # run preserves exact ratio.
+        prices_const = _make_constant_prices(2500.0, 1.0, n_steps)
+        res_c, Va_c, Vb_c = _jax_calc_reclamm_reserves_zero_fees_full_state(
+            reserves, Va, Vb, prices_const,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            lp_supply_array=lp_supply,
+        )
+        # With constant prices and no arb, price is just initial ratio throughout
+        price_at_half_minus_1 = (res_c[half - 1, 1] + Vb_c[half - 1]) / (
+            res_c[half - 1, 0] + Va_c[half - 1]
+        )
+        price_at_half = (res_c[half, 1] + Vb_c[half]) / (
+            res_c[half, 0] + Va_c[half]
+        )
+        npt.assert_allclose(
+            float(price_at_half_minus_1), float(price_at_half), rtol=1e-10,
+            err_msg="Price ratio should be preserved through LP supply change",
+        )
+
+    def test_lp_supply_preserves_centeredness(self):
+        """Centeredness unchanged through LP supply scaling.
+
+        Ported from Foundry: centeredness invariance in testAddLiquidity__Fuzz.
+        """
+        reserves, Va, Vb = _init_pool()
+        n_steps = 40
+        half = n_steps // 2
+        prices = _make_constant_prices(2500.0, 1.0, n_steps)
+
+        lp_supply = jnp.concatenate([jnp.ones(half), 2.0 * jnp.ones(n_steps - half)])
+
+        res, Va_hist, Vb_hist = _jax_calc_reclamm_reserves_zero_fees_full_state(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            lp_supply_array=lp_supply,
+        )
+
+        c_before, _ = compute_centeredness(
+            res[half - 1, 0], res[half - 1, 1], Va_hist[half - 1], Vb_hist[half - 1]
+        )
+        c_after, _ = compute_centeredness(
+            res[half, 0], res[half, 1], Va_hist[half], Vb_hist[half]
+        )
+        npt.assert_allclose(
+            float(c_before), float(c_after), rtol=1e-10,
+            err_msg="Centeredness should be preserved through LP supply change",
+        )
+
+    def test_lp_supply_through_pool_class(self):
+        """Pool class passes lp_supply_array to underlying computation."""
+        from quantammsim.pools.creator import create_pool
+        from quantammsim.runners.jax_runner_utils import Hashabledict
+
+        pool = create_pool("reclamm")
+
+        params = {
+            "price_ratio": DEFAULT_PRICE_RATIO,
+            "centeredness_margin": DEFAULT_CENTEREDNESS_MARGIN,
+            "daily_price_shift_base": DEFAULT_DAILY_PRICE_SHIFT_BASE,
+        }
+
+        n_steps = 20
+        prices = _make_trending_prices(2500.0, 3000.0, 1.0, n_steps)
+
+        run_fingerprint = Hashabledict({
+            "n_assets": 2,
+            "bout_length": n_steps + 1,
+            "initial_pool_value": 1_000_000.0,
+            "arb_frequency": 1,
+            "do_arb": True,
+            "fees": 0.003,
+            "gas_cost": 0.0,
+            "arb_fees": 0.0,
+            "tokens": ("ETH", "USDC"),
+            "numeraire": "USDC",
+            "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+        })
+
+        start_index = jnp.array([0, 0])
+
+        from quantammsim.core_simulator.dynamic_inputs import DynamicInputArrays
+
+        lp_supply = jnp.concatenate([jnp.ones(10), 2.0 * jnp.ones(10)])
+
+        di_with_lp = DynamicInputArrays(
+            trades=None,
+            fees=jnp.full(n_steps, 0.003),
+            gas_cost=jnp.zeros(n_steps),
+            arb_fees=jnp.zeros(n_steps),
+            lp_supply=lp_supply,
+            reclamm_price_ratio_updates=jnp.array([[0.0, 0.0, 0.0, jnp.nan]]),
+        )
+        di_without_lp = DynamicInputArrays(
+            trades=None,
+            fees=jnp.full(n_steps, 0.003),
+            gas_cost=jnp.zeros(n_steps),
+            arb_fees=jnp.zeros(n_steps),
+            lp_supply=jnp.ones(n_steps),
+            reclamm_price_ratio_updates=jnp.array([[0.0, 0.0, 0.0, jnp.nan]]),
+        )
+
+        res_with_lp, _ = pool.calculate_reserves_and_fee_revenue_with_dynamic_inputs(
+            params, run_fingerprint, prices, start_index,
+            dynamic_inputs=di_with_lp,
+        )
+        res_without_lp, _ = pool.calculate_reserves_and_fee_revenue_with_dynamic_inputs(
+            params, run_fingerprint, prices, start_index,
+            dynamic_inputs=di_without_lp,
+        )
+
+        # First 10 steps identical, then diverge
+        npt.assert_allclose(res_with_lp[:10], res_without_lp[:10], rtol=1e-10)
+        assert not jnp.allclose(res_with_lp[10:], res_without_lp[10:]), (
+            "LP supply change should produce different reserves"
+        )
+
+    def test_lp_supply_with_fee_revenue(self):
+        """Doubling LP supply → fee revenue increases (bigger pool → bigger arb trades)."""
+        reserves, Va, Vb = _init_pool()
+        n_steps = 40
+        half = n_steps // 2
+        prices = _make_trending_prices(2500.0, 3500.0, 1.0, n_steps)
+
+        # Baseline: no supply change
+        _, rev_base = _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.003,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+        )
+
+        # Supply doubles halfway
+        lp_supply = jnp.concatenate([jnp.ones(half), 2.0 * jnp.ones(n_steps - half)])
+        _, rev_lp = _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
+            reserves, Va, Vb, prices,
+            DEFAULT_CENTEREDNESS_MARGIN,
+            DEFAULT_DAILY_PRICE_SHIFT_BASE,
+            DEFAULT_SECONDS_PER_STEP,
+            fees=0.003,
+            arb_thresh=0.0,
+            arb_fees=0.0,
+            all_sig_variations=ALL_SIG_VARIATIONS_2,
+            lp_supply_array=lp_supply,
+        )
+
+        # After doubling, fee revenue per step should be larger
+        # (pool is 2x bigger → arb trades are 2x bigger → fees are 2x)
+        post_double_base = rev_base[half:].sum()
+        post_double_lp = rev_lp[half:].sum()
+        assert float(post_double_lp) > float(post_double_base), (
+            f"Fee revenue should increase after doubling: {post_double_lp} <= {post_double_base}"
+        )
+
+    def test_lp_supply_e2e_do_run_on_historic_data(self):
+        """End-to-end: lp_supply flows through do_run_on_historic_data via DynamicInputFrames."""
+        import pandas as pd
+        from quantammsim.runners.jax_runners import do_run_on_historic_data
+        from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
+
+        fp = {
+            "rule": "reclamm",
+            "tokens": ["ETH", "USDC"],
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-15 00:00:00",
+            "initial_pool_value": 1_000_000.0,
+            "do_arb": True,
+            "fees": 0.003,
+        }
+        params = {
+            "price_ratio": jnp.array(4.0),
+            "centeredness_margin": jnp.array(0.2),
+            "daily_price_shift_base": jnp.array(DEFAULT_DAILY_PRICE_SHIFT_BASE),
+        }
+
+        # Baseline: no LP supply change
+        result_base = do_run_on_historic_data(
+            run_fingerprint={**fp},
+            params={**params},
+            root=TEST_DATA_DIR,
+        )
+
+        # LP supply doubles halfway through the period
+        # unix column must be in milliseconds (matches windowing_utils convention)
+        start_unix_ms = int(pd.Timestamp("2023-01-01").timestamp() * 1000)
+        mid_unix_ms = int(pd.Timestamp("2023-01-08").timestamp() * 1000)
+        lp_supply_df = pd.DataFrame({
+            "unix": [start_unix_ms, mid_unix_ms],
+            "lp_supply": [1.0, 2.0],
+        })
+
+        result_lp = do_run_on_historic_data(
+            run_fingerprint={**fp},
+            params={**params},
+            dynamic_input_frames=DynamicInputFrames(lp_supply=lp_supply_df),
+            root=TEST_DATA_DIR,
+        )
+
+        # Final values should differ — doubling LP supply changes pool dynamics
+        base_val = float(result_base["final_value"])
+        lp_val = float(result_lp["final_value"])
+        assert base_val != lp_val, (
+            f"LP supply change should affect final value: base={base_val}, lp={lp_val}"
+        )
+        # Doubled pool should have higher final value (more reserves)
+        assert lp_val > base_val, (
+            f"Doubled LP supply should increase final value: {lp_val} <= {base_val}"
+        )
+

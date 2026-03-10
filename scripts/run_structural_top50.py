@@ -22,7 +22,7 @@ PANEL_CACHE = os.path.join(
 )
 OUTPUT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)),
-    "results", "structural_top50_nogas",
+    "results", "structural_hierarchical",
 )
 OUTPUT_JSON = os.path.join(OUTPUT_DIR, "structural_fit.json")
 TRAIN_DAYS = 90
@@ -110,12 +110,6 @@ def fit_structural(panel):
     else:
         print("Gas costs: using defaults (no mainnet CSV)")
 
-    # No-gas variant: rely on cadence alone to modulate V_arb
-    # Gas threshold kills V_arb=0 for TVL<$300k (most pools), making cadence
-    # unlearnable. Without gas, V_arb>0 for all pools and cadence has gradient.
-    gas_arr = np.zeros(len(panel), dtype=np.float64)
-    print("Gas costs: DISABLED (cadence-only mode)")
-
     data = encode_covariates_structural(panel, gas=gas_arr)
 
     print(f"\nFitting structural model: {SVI_STEPS} SVI steps, lr={SVI_LR}")
@@ -150,8 +144,6 @@ def compute_predictions(samples, data, panel):
     from quantammsim.noise_calibration.formula_arb import (
         formula_arb_volume_daily_jax,
     )
-    from quantammsim.noise_calibration.model import _pad_with_ref
-    from quantammsim.noise_calibration.constants import OBS_COEFF_NAMES
     import jax.numpy as jnp
 
     sample_dict = samples
@@ -163,9 +155,11 @@ def compute_predictions(samples, data, panel):
     alpha_tier = agg_fn(np.array(sample_dict["alpha_tier"]), axis=0)
     alpha_tvl = agg_fn(np.array(sample_dict["alpha_tvl"]))
 
-    # MoE parameters
-    W_gate = agg_fn(np.array(sample_dict["W_gate"]), axis=0)
-    beta = agg_fn(np.array(sample_dict["beta"]), axis=0)
+    # Hierarchical noise: reconstruct theta
+    B = agg_fn(np.array(sample_dict["B"]), axis=0)
+    eta = agg_fn(np.array(sample_dict["eta"]), axis=0)
+    sigma_theta = agg_fn(np.array(sample_dict["sigma_theta"]), axis=0)
+    L_Omega = agg_fn(np.array(sample_dict["L_Omega"]), axis=0)
 
     pool_idx = np.array(data["pool_idx"])
     X_pool = np.array(data["X_pool"])
@@ -201,14 +195,12 @@ def compute_predictions(samples, data, panel):
         jnp.array(fee), jnp.array(gas), jnp.array(cadence_obs),
     ))
 
-    # Per-pool noise coefficients via MoE
-    logits = X_pool @ W_gate
-    w = np.exp(logits - logits.max(axis=1, keepdims=True))
-    w = w / w.sum(axis=1, keepdims=True)
-    beta_pool = w @ beta  # (N_pools, K_obs_coeff)
+    # Per-pool theta from hierarchical model
+    L_Sigma = np.diag(sigma_theta) @ L_Omega
+    theta = X_pool @ B.T + eta @ L_Sigma.T  # (N_pools, K_obs_coeff)
 
     # Per-obs V_noise
-    log_V_noise = np.sum(beta_pool[pool_idx] * x_obs, axis=1)
+    log_V_noise = np.sum(theta[pool_idx] * x_obs, axis=1)
     V_noise = np.exp(log_V_noise)
 
     # Predicted total
@@ -279,7 +271,7 @@ def plot_top50(panel, data, pool_params, V_arb, V_noise, log_V_pred):
             ax.fill_between(dates, 0, pred_arb, alpha=0.3, color="orangered",
                             label="V_arb (LVR)")
             ax.fill_between(dates, pred_arb, pred_total, alpha=0.3,
-                            color="steelblue", label="V_noise (MoE)")
+                            color="steelblue", label="V_noise (hier.)")
             ax.plot(dates, actual_vol, "k-", linewidth=0.8, alpha=0.7,
                     label="Actual")
             ax.plot(dates, pred_total, "--", color="purple", linewidth=0.8,

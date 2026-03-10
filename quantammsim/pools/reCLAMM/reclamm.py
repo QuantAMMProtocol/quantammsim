@@ -407,7 +407,6 @@ class ReClammPool(AbstractPool):
             arb_thresh=materialized_inputs.gas_cost,
             arb_fees=materialized_inputs.arb_fees,
             price_ratio_updates=materialized_inputs.reclamm_price_ratio_updates,
-            lp_supply_array=materialized_inputs.lp_supply,
             all_sig_variations=jnp.array(
                 run_fingerprint["all_sig_variations"]
             ),
@@ -416,6 +415,7 @@ class ReClammPool(AbstractPool):
             protocol_fee_split=run_fingerprint.get("protocol_fee_split", 0.0),
             ste_temperature=ste_temperature,
             noise_trader_ratio=run_fingerprint.get("noise_trader_ratio", 0.0),
+            lp_supply_array=materialized_inputs.lp_supply,
             noise_model=noise_model,
             noise_params=noise_params,
             volatility_array=arb_vol,
@@ -515,7 +515,6 @@ class ReClammPool(AbstractPool):
             arb_thresh=materialized_inputs.gas_cost,
             arb_fees=materialized_inputs.arb_fees,
             price_ratio_updates=materialized_inputs.reclamm_price_ratio_updates,
-            lp_supply_array=materialized_inputs.lp_supply,
             all_sig_variations=jnp.array(
                 run_fingerprint["all_sig_variations"]
             ),
@@ -524,6 +523,7 @@ class ReClammPool(AbstractPool):
             protocol_fee_split=run_fingerprint.get("protocol_fee_split", 0.0),
             ste_temperature=ste_temperature,
             noise_trader_ratio=run_fingerprint.get("noise_trader_ratio", 0.0),
+            lp_supply_array=materialized_inputs.lp_supply,
             noise_model=noise_model,
             noise_params=noise_params,
             volatility_array=arb_vol,

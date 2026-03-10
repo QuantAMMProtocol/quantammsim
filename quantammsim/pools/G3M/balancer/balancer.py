@@ -16,8 +16,6 @@ from quantammsim.pools.G3M.balancer.balancer_reserves import (
     _jax_calc_balancer_reserves_with_dynamic_inputs,
 )
 
-config.update("jax_enable_x64", True)
-
 DEFAULT_BACKEND = default_backend()
 CPU_DEVICE = devices("cpu")[0]
 if DEFAULT_BACKEND != "cpu":
@@ -333,6 +331,7 @@ class BalancerPool(AbstractPool):
             materialized_inputs.trades,
             run_fingerprint["do_trades"],
             run_fingerprint["do_arb"],
+            materialized_inputs.lp_supply,
         )
         return reserves
 

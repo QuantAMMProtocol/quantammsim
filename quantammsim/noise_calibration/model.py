@@ -374,29 +374,35 @@ def structural_noise_model(pool_idx, X_pool, x_obs, y_obs=None,
                            sigma_daily=None, lag_log_tvl=None,
                            fee=None, gas=None,
                            chain_idx=None, tier_idx=None,
-                           N_pools=None, K_archetypes=3,
+                           N_pools=None, K_obs_coeff=None,
+                           K_cov=None, tier_A_per_pool=None,
                            n_chains=8, n_tiers=6,
                            **kwargs):
-    """Structural mixture model: LVR arb + mixture-of-experts noise.
+    """Structural model: LVR arb + hierarchical per-pool noise.
 
-    Decomposes observed total volume into arb (structurally restricted to
-    LVR formula) and noise (flexible MoE). All continuous — no discrete
-    latent variables, so AutoNormal guide works directly.
+    Decomposes observed total volume into arb (LVR formula with learnable
+    cadence) and noise (per-pool theta with hierarchical prior, same as
+    noise_model). All continuous — AutoNormal guide works directly.
     """
     import numpyro
     import numpyro.distributions as dist
 
+    K_obs_coeff = K_obs_coeff or x_obs.shape[1]
+    K_cov = K_cov or X_pool.shape[1]
+
     # --- Arb cadence parameters ---
-    alpha_0 = numpyro.sample("alpha_0", dist.Normal(1.0, 2.0))
+    # Informative prior: exp(2.5) ≈ 12 min cadence (empirical median from
+    # formula-vs-real analysis on major pairs). sigma=0.5 allows range ~4-35 min.
+    alpha_0 = numpyro.sample("alpha_0", dist.Normal(2.5, 0.5))
     alpha_chain = numpyro.sample(
         "alpha_chain",
-        dist.Normal(0, 1).expand([n_chains - 1]).to_event(1),
+        dist.Normal(0, 0.5).expand([n_chains - 1]).to_event(1),
     )
     alpha_tier = numpyro.sample(
         "alpha_tier",
-        dist.Normal(0, 1).expand([n_tiers - 1]).to_event(1),
+        dist.Normal(0, 0.5).expand([n_tiers - 1]).to_event(1),
     )
-    alpha_tvl = numpyro.sample("alpha_tvl", dist.Normal(0, 0.5))
+    alpha_tvl = numpyro.sample("alpha_tvl", dist.Normal(0, 0.3))
 
     # Per-observation cadence (broadcast pool-level indices to obs)
     log_cadence = (
@@ -412,33 +418,48 @@ def structural_noise_model(pool_idx, X_pool, x_obs, y_obs=None,
         sigma_daily, jnp.exp(lag_log_tvl), fee, gas, cadence,
     )
 
-    # --- Noise MoE parameters ---
-    n_obs_coeff = x_obs.shape[1]
-    K_pool_cov = X_pool.shape[1]
-
-    W_gate = numpyro.sample(
-        "W_gate",
-        dist.Normal(0, 1).expand([K_pool_cov, K_archetypes]).to_event(2),
+    # --- Hierarchical per-pool noise (same structure as noise_model) ---
+    B = numpyro.sample(
+        "B", dist.Normal(0.0, 5.0).expand([K_obs_coeff, K_cov]).to_event(2)
     )
-    beta = numpyro.sample(
-        "beta",
-        dist.Normal(0, 2).expand([K_archetypes, n_obs_coeff]).to_event(2),
+    sigma_theta = numpyro.sample(
+        "sigma_theta", dist.HalfNormal(2.0).expand([K_obs_coeff]).to_event(1)
+    )
+    L_Omega = numpyro.sample(
+        "L_Omega", dist.LKJCholesky(K_obs_coeff, concentration=2.0)
     )
 
-    # Per-pool soft assignment and coefficient blend
-    logits = X_pool @ W_gate                            # (N_pools, K)
-    w = jax.nn.softmax(logits, axis=-1)                 # (N_pools, K)
-    beta_pool = jnp.einsum("pk,kc->pc", w, beta)       # (N_pools, n_obs_coeff)
-    log_V_noise = jnp.sum(beta_pool[pool_idx] * x_obs, axis=1)
+    # Non-centered pool effects
+    L_Sigma = jnp.diag(sigma_theta) @ L_Omega
+
+    with numpyro.plate("pools", N_pools):
+        eta = numpyro.sample(
+            "eta", dist.Normal(0.0, 1.0).expand([K_obs_coeff]).to_event(1)
+        )
+
+    mu_pop = X_pool @ B.T  # (N_pools, K_obs_coeff)
+    theta = mu_pop + eta @ L_Sigma.T  # (N_pools, K_obs_coeff)
+    numpyro.deterministic("theta", theta)
+
+    # Per-obs noise volume
+    theta_obs = theta[pool_idx]
+    log_V_noise = jnp.sum(theta_obs * x_obs, axis=1)
     V_noise = jnp.exp(log_V_noise)
 
     # --- Observation model ---
     df = numpyro.sample("df", dist.Gamma(2.0, 0.1))
-    sigma_eps = numpyro.sample("sigma_eps", dist.HalfNormal(1.0))
+
+    # Per-tier sigma_eps (same as noise_model)
+    sigma_eps = numpyro.sample(
+        "sigma_eps", dist.HalfNormal(3.0).expand([3]).to_event(1)
+    )
+    sigma_obs = sigma_eps[tier_A_per_pool[pool_idx]]
 
     mu = jnp.log(jnp.maximum(V_arb + V_noise, 1e-6))
 
     if y_obs is not None:
-        numpyro.sample("y", dist.StudentT(df, mu, sigma_eps), obs=y_obs)
+        with numpyro.plate("obs", pool_idx.shape[0]):
+            numpyro.sample("y", dist.StudentT(df, mu, sigma_obs), obs=y_obs)
     else:
-        numpyro.sample("y", dist.StudentT(df, mu, sigma_eps))
+        with numpyro.plate("obs", pool_idx.shape[0]):
+            numpyro.sample("y", dist.StudentT(df, mu, sigma_obs))

@@ -462,10 +462,6 @@ def extract_structural_params(samples, data, use_median=True) -> list:
     else:
         sample_dict = samples
 
-    import jax
-    import jax.numpy as jnp
-    from .model import _pad_with_ref
-
     agg_fn = np.median if use_median else np.mean
 
     # Cadence parameters
@@ -474,13 +470,19 @@ def extract_structural_params(samples, data, use_median=True) -> list:
     alpha_tier = agg_fn(np.array(sample_dict["alpha_tier"]), axis=0)
     alpha_tvl = agg_fn(np.array(sample_dict["alpha_tvl"]))
 
-    # MoE parameters
-    W_gate = agg_fn(np.array(sample_dict["W_gate"]), axis=0)
-    beta = agg_fn(np.array(sample_dict["beta"]), axis=0)
+    # Per-pool theta from hierarchical model
+    # theta = X_pool @ B.T + eta @ L_Sigma.T
+    B = agg_fn(np.array(sample_dict["B"]), axis=0)
+    eta = agg_fn(np.array(sample_dict["eta"]), axis=0)
+    sigma_theta = agg_fn(np.array(sample_dict["sigma_theta"]), axis=0)
+    L_Omega = agg_fn(np.array(sample_dict["L_Omega"]), axis=0)
+
+    X_pool = np.array(data["X_pool"])
+    L_Sigma = np.diag(sigma_theta) @ L_Omega
+    theta = X_pool @ B.T + eta @ L_Sigma.T  # (N_pools, K_obs_coeff)
 
     chain_idx = np.array(data["chain_idx"])
     tier_idx = np.array(data["tier_idx"])
-    X_pool = np.array(data["X_pool"])
     pool_meta = data["pool_meta"]
     pool_ids = data["pool_ids"]
 
@@ -499,12 +501,6 @@ def extract_structural_params(samples, data, use_median=True) -> list:
         if mask.any():
             pool_tvl_median[p] = np.median(lag_log_tvl[mask])
 
-    # Per-pool noise coefficients via MoE gating
-    logits = X_pool @ W_gate                       # (N_pools, K_archetypes)
-    w = np.exp(logits - logits.max(axis=1, keepdims=True))
-    w = w / w.sum(axis=1, keepdims=True)           # softmax
-    beta_pool = w @ beta                           # (N_pools, K_obs_coeff)
-
     results = []
     for i, pool_id in enumerate(pool_ids):
         meta = pool_meta.iloc[i]
@@ -518,7 +514,7 @@ def extract_structural_params(samples, data, use_median=True) -> list:
         arb_freq = int(np.clip(np.round(cadence), 1, 60))
 
         noise_coeffs = {
-            name: float(beta_pool[i, k])
+            name: float(theta[i, k])
             for k, name in enumerate(OBS_COEFF_NAMES)
         }
 
@@ -542,7 +538,8 @@ def predict_new_pool_structural(
 ) -> dict:
     """Predict cadence and noise coefficients for a hypothetical pool.
 
-    Uses the structural model's arb cadence parameters and MoE gating.
+    Uses the structural model's arb cadence parameters and hierarchical B
+    regression for noise (population mean, no pool-specific random effect).
 
     Parameters
     ----------
@@ -572,9 +569,8 @@ def predict_new_pool_structural(
     alpha_tier = agg_fn(np.array(sample_dict["alpha_tier"]), axis=0)
     alpha_tvl = agg_fn(np.array(sample_dict["alpha_tvl"]))
 
-    # MoE parameters
-    W_gate = agg_fn(np.array(sample_dict["W_gate"]), axis=0)
-    beta = agg_fn(np.array(sample_dict["beta"]), axis=0)
+    # Hierarchical B for noise population mean
+    B = agg_fn(np.array(sample_dict["B"]), axis=0)
 
     # Construct chain and tier indices for the new pool
     chains = data["chains"]
@@ -599,7 +595,7 @@ def predict_new_pool_structural(
     cadence = np.exp(np.clip(log_cadence, -2.0, 6.0))
     arb_freq = int(np.clip(np.round(cadence), 1, 60))
 
-    # Construct X_pool_new for gating
+    # Construct X_pool_new for hierarchical regression
     col_names = data["covariate_names"]
     z_new = np.zeros(len(col_names), dtype=np.float64)
     tier_a_str = str(tier_a)
@@ -617,14 +613,11 @@ def predict_new_pool_structural(
         elif name == f"tier_B_{tier_b_str}":
             z_new[i] = 1.0
 
-    # MoE gating for new pool
-    logits = z_new @ W_gate  # (K_archetypes,)
-    w = np.exp(logits - logits.max())
-    w = w / w.sum()
-    beta_new = w @ beta  # (K_obs_coeff,)
+    # Population mean theta for new pool (no random effect)
+    theta_new = z_new @ B.T  # (K_obs_coeff,)
 
     noise_coeffs = {
-        name: float(beta_new[k])
+        name: float(theta_new[k])
         for k, name in enumerate(OBS_COEFF_NAMES)
     }
 
@@ -635,7 +628,6 @@ def predict_new_pool_structural(
         "tvl_est": tvl_est,
         "arb_frequency": arb_freq,
         "noise_params": noise_coeffs,
-        "archetype_weights": w.tolist(),
     }
 
 

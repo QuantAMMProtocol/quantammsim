@@ -593,32 +593,38 @@ def initialise_reclamm_reserves(initial_pool_value, initial_prices, price_ratio)
 # ---------------------------------------------------------------------------
 
 def apply_target_price_ratio_to_virtual_balances(Ra, Rb, Va, Vb, target_price_ratio):
-    """Retarget virtual balances to a desired price ratio while preserving orientation.
+    """Retarget virtual balances to a desired price ratio while preserving centeredness.
 
-    The overvalued-side virtual balance is preserved (subject to floor), and the
-    undervalued-side virtual balance is solved from the reCLAMM ratio constraint.
+    Uses the closed-form quadratic solution from ReClammMath.sol
+    ``computeVirtualBalancesUpdatingPriceRatio``:
+
+        Vu = Ru * (1 + C + sqrt(1 + C*(C + 4*Q0 - 2))) / (2*(Q0 - 1))
+        Vo = Vu * lastVo / lastVu
+
+    where Q0 = sqrt(price_ratio), C = centeredness, Ru is the real balance of
+    the undervalued token.  The overvalued virtual balance is then scaled
+    proportionally so that Va/Vb is preserved, which keeps centeredness constant.
     """
     safe_ratio = jnp.maximum(target_price_ratio, 1.0 + 1e-12)
-    sqrt_ratio = jnp.sqrt(safe_ratio)
-    fourth_root_ratio = jnp.sqrt(sqrt_ratio)
+    Q0 = jnp.sqrt(safe_ratio)  # sqrt(price_ratio)
     centeredness, is_above = compute_centeredness(Ra, Rb, Va, Vb)
+    C = centeredness
 
-    # Above center => B overvalued, so keep Vb and solve Va.
-    v_over_b_floor = Rb / jnp.maximum(fourth_root_ratio - 1.0, 1e-30)
-    Vb_kept = jnp.maximum(Vb, v_over_b_floor)
-    Va_from_b = Ra * (Vb_kept + Rb) / jnp.maximum(
-        (sqrt_ratio - 1.0) * Vb_kept - Rb, 1e-30
-    )
+    # Closed-form quadratic solution for the undervalued virtual balance.
+    discriminant = jnp.maximum(1.0 + C * (C + 4.0 * Q0 - 2.0), 0.0)
+    numerator_factor = 1.0 + C + jnp.sqrt(discriminant)
+    denominator = 2.0 * jnp.maximum(Q0 - 1.0, 1e-30)
 
-    # Below center => A overvalued, so keep Va and solve Vb.
-    v_over_a_floor = Ra / jnp.maximum(fourth_root_ratio - 1.0, 1e-30)
-    Va_kept = jnp.maximum(Va, v_over_a_floor)
-    Vb_from_a = Rb * (Va_kept + Ra) / jnp.maximum(
-        (sqrt_ratio - 1.0) * Va_kept - Ra, 1e-30
-    )
+    # Above center: A is undervalued (Ra abundant), B is overvalued.
+    Vu_above = Ra * numerator_factor / denominator  # new Va
+    Vo_above = Vu_above * Vb / jnp.maximum(Va, 1e-30)  # new Vb, scaled
 
-    Va_new = jnp.where(is_above, Va_from_b, Va_kept)
-    Vb_new = jnp.where(is_above, Vb_kept, Vb_from_a)
+    # Below center: B is undervalued (Rb abundant), A is overvalued.
+    Vu_below = Rb * numerator_factor / denominator  # new Vb
+    Vo_below = Vu_below * Va / jnp.maximum(Vb, 1e-30)  # new Va, scaled
+
+    Va_new = jnp.where(is_above, Vu_above, Vo_below)
+    Vb_new = jnp.where(is_above, Vo_above, Vu_below)
 
     # When centeredness is degenerate (e.g. both sides zero), preserve current virtuals.
     invalid_centeredness = ~jnp.isfinite(centeredness)

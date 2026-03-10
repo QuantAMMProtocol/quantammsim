@@ -245,7 +245,7 @@ class TestGenerateOutputJSONStructural:
 
         data = synthetic_structural_data
         K_cov = data["K_cov"]
-        K_archetypes = 3
+        N_pools = data["N_pools"]
         n_chains = data["n_chains"]
         n_tiers = data["n_tiers"]
         S = 10
@@ -256,10 +256,12 @@ class TestGenerateOutputJSONStructural:
             "alpha_chain": np.random.randn(S, n_chains - 1) * 0.1,
             "alpha_tier": np.random.randn(S, n_tiers - 1) * 0.1,
             "alpha_tvl": np.random.randn(S) * 0.01,
-            "W_gate": np.random.randn(S, K_cov, K_archetypes) * 0.3,
-            "beta": np.random.randn(S, K_archetypes, K_OBS_COEFF) * 0.5,
+            "B": np.random.randn(S, K_OBS_COEFF, K_cov) * 0.5,
+            "sigma_theta": np.ones((S, K_OBS_COEFF)),
+            "L_Omega": np.tile(np.eye(K_OBS_COEFF), (S, 1, 1)),
+            "eta": np.zeros((S, N_pools, K_OBS_COEFF)),
             "df": np.full((S,), 5.0),
-            "sigma_eps": np.full((S,), 0.5),
+            "sigma_eps": np.tile([0.5, 0.8, 0.6], (S, 1)),
         }
 
         pool_params = extract_structural_params(structural_samples, data)
@@ -287,12 +289,12 @@ class TestGenerateOutputJSONStructural:
         assert "alpha_tier" in pe
         assert "alpha_tvl" in pe
 
-    def test_output_has_archetype_info(self, _structural_output_setup):
+    def test_output_has_hierarchical_noise_params(self, _structural_output_setup):
         _, data = _structural_output_setup
         pe = data["population_effects"]
-        assert "W_gate" in pe
-        assert "beta" in pe
-        assert "K_archetypes" in pe
+        assert "B" in pe
+        assert "sigma_theta" in pe
+        assert "correlation_matrix" in pe
 
     def test_output_pools_have_arb_frequency(self, _structural_output_setup):
         _, data = _structural_output_setup

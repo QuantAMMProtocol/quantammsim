@@ -488,8 +488,8 @@ class TestPredictStructural:
         assert "noise_params" in result
         assert len(result["noise_params"]) == K_OBS_COEFF
 
-    def test_predict_uses_W_gate(self, structural_samples_and_data):
-        """Different (chain, tier) → different predictions."""
+    def test_predict_uses_B_regression(self, structural_samples_and_data):
+        """Different (chain, tier) → different predictions via B regression."""
         from quantammsim.noise_calibration.postprocessing import (
             predict_new_pool_structural,
         )
