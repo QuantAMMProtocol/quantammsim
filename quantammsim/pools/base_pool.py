@@ -34,7 +34,7 @@ class AbstractPool(ABC):
         Should be overridden with fees=0 version of calculate_reserves_with_fees if no
         faster implementation exists.
 
-    calculate_reserves_with_dynamic_inputs(params, run_fingerprint, prices, start_index, additional_oracle_input)
+    calculate_reserves_with_dynamic_inputs(params, run_fingerprint, prices, start_index, dynamic_inputs, additional_oracle_input)
         Calculate reserve changes with time-varying parameters.
         
         Handles cases where pool properties like fees, arbitrage thresholds, or weights
@@ -99,11 +99,7 @@ class AbstractPool(ABC):
         run_fingerprint: Dict[str, Any],
         prices: jnp.ndarray,
         start_index: jnp.ndarray,
-        fees_array: jnp.ndarray,
-        arb_thresh_array: jnp.ndarray,
-        arb_fees_array: jnp.ndarray,
-        trade_array: jnp.ndarray,
-        lp_supply_array: jnp.ndarray = None,
+        dynamic_inputs: Any,
         additional_oracle_input: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
         pass
