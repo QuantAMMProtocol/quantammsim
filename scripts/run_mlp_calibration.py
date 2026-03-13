@@ -196,6 +196,134 @@ def run_mlp_full_joint(matched_clean, option_c_clean, hidden=MLP_HIDDEN):
     return result, model, jdata
 
 
+def run_two_stage_joint(matched_clean, option_c_clean, hidden=MLP_HIDDEN):
+    """Two-stage joint fit to identify cadence separately from noise.
+
+    Stage 1: LinearHead(cad) + FixedHead(gas) + PerPoolNoiseHead
+        Per-pool noise (8 coeffs/pool) can't fully absorb arb's daily
+        volatility pattern, so cadence is identified.
+
+    Stage 2: FixedHead(cad, stage1_values) + FixedHead(gas) + MLPNoiseHead
+        Cadence frozen from stage 1, MLP learns shared noise mapping.
+
+    For new-pool prediction: stage 1 linear coefficients give cadence,
+    stage 2 MLP gives noise.
+    """
+    import jax.numpy as jnp
+    from quantammsim.calibration.calibration_model import CalibrationModel
+    from quantammsim.calibration.heads import (
+        FixedHead, LinearHead, MLPNoiseHead, PerPoolNoiseHead,
+    )
+    from quantammsim.calibration.joint_fit import prepare_joint_data
+
+    jdata = prepare_joint_data(
+        matched_clean, drop_chain_dummies=True, fix_gas_to_chain=True)
+    gas_values = _build_gas_values(jdata, matched_clean)
+    n_pools = len(jdata.pool_data)
+    k_attr = jdata.x_attr.shape[1]
+
+    # ---- Stage 1: fit cadence with per-pool noise ----
+    stage1_model = CalibrationModel(
+        cadence_head=LinearHead("cad", alpha=ALPHA_CAD),
+        gas_head=FixedHead("gas", gas_values),
+        noise_head=PerPoolNoiseHead(),
+    )
+    n_p1 = stage1_model.n_params(n_pools, k_attr)
+    print(f"\n--- Two-stage S1: LinearHead(cad) + PerPoolNoiseHead "
+          f"({n_pools} pools, {n_p1} params) ---")
+
+    stage1_result = stage1_model.fit(
+        jdata, maxiter=JOINT_MAXITER, warm_start=option_c_clean)
+    print(f"  Loss: {stage1_result['init_loss']:.4f} -> {stage1_result['loss']:.4f}")
+    print(f"  Converged: {stage1_result['converged']}")
+
+    # Extract per-pool cadences from stage 1
+    params1 = jnp.array(stage1_result["params_flat"])
+    (cs, ce), _, _ = stage1_model._head_slices(n_pools, k_attr)
+    cad_slice = params1[cs:ce]
+    stage1_cadences = np.array([
+        float(stage1_model.cadence_head.predict(cad_slice, i, jdata.x_attr[i]))
+        for i in range(n_pools)
+    ])
+    print(f"  Cadence range: {np.exp(stage1_cadences.min()):.1f} - "
+          f"{np.exp(stage1_cadences.max()):.1f} min")
+
+    # ---- Stage 2: fit MLP noise with frozen cadence ----
+    stage2_model = CalibrationModel(
+        cadence_head=FixedHead("cad", stage1_cadences),
+        gas_head=FixedHead("gas", gas_values),
+        noise_head=MLPNoiseHead(hidden=hidden, alpha=ALPHA_NOISE),
+    )
+    n_p2 = stage2_model.n_params(n_pools, k_attr)
+    print(f"\n--- Two-stage S2: FixedHead(cad) + MLPNoiseHead(hidden={hidden}) "
+          f"({n_pools} pools, {n_p2} params) ---")
+
+    # Build warm-start for stage 2 noise from stage 1 per-pool noise
+    (_, _), (_, _), (ns, ne) = stage1_model._head_slices(n_pools, k_attr)
+    noise_params1 = np.array(params1[ns:ne])
+    stage2_warm = {}
+    for i, pid in enumerate(jdata.pool_ids):
+        noise_c = np.array(stage1_model.noise_head.predict(
+            jnp.array(noise_params1), i, jdata.x_attr[i]))
+        stage2_warm[pid] = {"noise_coeffs": noise_c}
+
+    stage2_result = stage2_model.fit(
+        jdata, maxiter=JOINT_MAXITER, warm_start=stage2_warm)
+    print(f"  Loss: {stage2_result['init_loss']:.4f} -> {stage2_result['loss']:.4f}")
+    print(f"  Converged: {stage2_result['converged']}")
+
+    # Build a composite result dict for downstream use
+    # Cadence comes from stage 1 linear head, noise from stage 2 MLP
+    result = {
+        "stage1_result": stage1_result,
+        "stage2_result": stage2_result,
+        "loss": stage2_result["loss"],
+        "init_loss": stage1_result["init_loss"],
+        "converged": stage1_result["converged"] and stage2_result["converged"],
+        "n_pools": n_pools,
+        "k_attr": k_attr,
+        "pool_ids": jdata.pool_ids,
+        "attr_names": jdata.attr_names,
+    }
+
+    return result, stage1_model, stage2_model, jdata
+
+
+def _extract_two_stage_per_pool(stage1_model, stage2_model, result, jdata):
+    """Extract per-pool params from two-stage result."""
+    import jax.numpy as jnp
+
+    stage1_result = result["stage1_result"]
+    stage2_result = result["stage2_result"]
+    n_pools = result["n_pools"]
+    k_attr = result["k_attr"]
+
+    params1 = jnp.array(stage1_result["params_flat"])
+    params2 = jnp.array(stage2_result["params_flat"])
+
+    (cs1, ce1), _, (ns1, ne1) = stage1_model._head_slices(n_pools, k_attr)
+    _, _, (ns2, ne2) = stage2_model._head_slices(n_pools, k_attr)
+
+    cad_slice = params1[cs1:ce1]
+    noise_slice = params2[ns2:ne2]
+
+    per_pool = []
+    for i in range(n_pools):
+        x_attr_i = jdata.x_attr[i]
+        log_cad = float(stage1_model.cadence_head.predict(cad_slice, i, x_attr_i))
+        log_gas = float(stage2_model.gas_head.predict(
+            jnp.array([]), i, x_attr_i))  # FixedHead ignores params
+        noise_c = np.array(stage2_model.noise_head.predict(noise_slice, i, x_attr_i))
+        per_pool.append({
+            "log_cadence": log_cad,
+            "log_gas": log_gas,
+            "noise_coeffs": noise_c,
+            "cadence_minutes": float(np.exp(log_cad)),
+            "gas_usd": float(np.exp(log_gas)),
+        })
+    return per_pool
+
+
 # ---- Per-pool predictions ----
 
 
@@ -702,16 +830,23 @@ def main():
     mlp_full_result, mlp_full_model, _ = run_mlp_full_joint(
         matched_clean, option_c_clean)
 
+    # Two-stage: cadence identified with per-pool noise, then MLP noise
+    two_stage_result, ts_s1_model, ts_s2_model, _ = run_two_stage_joint(
+        matched_clean, option_c_clean)
+
     # Step 4: Extract per-pool params from each model
     linear_pp = _extract_per_pool_params(linear_model, linear_result, jdata)
     mlp_noise_pp = _extract_per_pool_params(mlp_noise_model, mlp_noise_result, jdata)
     mlp_full_pp = _extract_per_pool_params(mlp_full_model, mlp_full_result, jdata)
+    two_stage_pp = _extract_two_stage_per_pool(
+        ts_s1_model, ts_s2_model, two_stage_result, jdata)
 
-    method_labels = ["linear", "mlp_noise", "mlp_full"]
+    method_labels = ["linear", "mlp_noise", "mlp_full", "two_stage"]
     model_results_for_pred = [
         ("linear", linear_pp, jdata.pool_ids),
         ("mlp_noise", mlp_noise_pp, jdata.pool_ids),
         ("mlp_full", mlp_full_pp, jdata.pool_ids),
+        ("two_stage", two_stage_pp, jdata.pool_ids),
     ]
 
     # Step 5: Per-pool predictions
@@ -726,6 +861,7 @@ def main():
         ("linear", linear_result),
         ("mlp_noise", mlp_noise_result),
         ("mlp_full", mlp_full_result),
+        ("two_stage", two_stage_result),
     ])
 
     # Step 7: Plots
@@ -736,6 +872,7 @@ def main():
     plot_decomposition_pages(predictions, "linear", "Linear shared noise", OUTPUT_DIR)
     plot_decomposition_pages(predictions, "mlp_noise", "MLP noise (linear cad)", OUTPUT_DIR)
     plot_decomposition_pages(predictions, "mlp_full", "Full MLP (MLP cad + MLP noise)", OUTPUT_DIR)
+    plot_decomposition_pages(predictions, "two_stage", "Two-stage (linear cad -> MLP noise)", OUTPUT_DIR)
 
     plot_summary_distributions(predictions, method_labels, OUTPUT_DIR)
     plot_r2_scatter(predictions, method_labels, OUTPUT_DIR)
@@ -746,6 +883,7 @@ def main():
         ("linear", linear_result),
         ("mlp_noise", mlp_noise_result),
         ("mlp_full", mlp_full_result),
+        ("two_stage", two_stage_result),
     ], OUTPUT_DIR)
 
     print(f"\n{'='*70}")

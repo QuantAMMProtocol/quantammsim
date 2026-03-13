@@ -186,9 +186,12 @@ class LinearHead:
     L2 regularization on W (not bias) with strength ``alpha``.
     """
 
-    def __init__(self, name: str, alpha: float = 0.01):
+    def __init__(self, name: str, alpha: float = 0.01,
+                 output_lo: float = None, output_hi: float = None):
         self.name = name
         self.alpha = alpha
+        self.output_lo = output_lo
+        self.output_hi = output_hi
 
     def n_params(self, n_pools: int, k_attr: int) -> int:
         return 1 + k_attr  # bias + W
@@ -196,7 +199,10 @@ class LinearHead:
     def predict(self, params_slice, pool_idx, x_attr_i):
         bias = params_slice[0]
         W = params_slice[1:]
-        return bias + jnp.dot(x_attr_i, W)
+        out = bias + jnp.dot(x_attr_i, W)
+        if self.output_lo is not None or self.output_hi is not None:
+            out = jnp.clip(out, self.output_lo, self.output_hi)
+        return out
 
     def regularization(self, params_slice):
         W = params_slice[1:]
@@ -404,11 +410,15 @@ class MLPHead:
         hidden: int = 16,
         alpha: float = 0.01,
         seed: int = 0,
+        output_lo: float = None,
+        output_hi: float = None,
     ):
         self.name = name
         self.hidden = hidden
         self.alpha = alpha
         self._seed = seed
+        self.output_lo = output_lo
+        self.output_hi = output_hi
 
     def n_params(self, n_pools: int, k_attr: int) -> int:
         h = self.hidden
@@ -431,7 +441,10 @@ class MLPHead:
         k_attr = x_attr_i.shape[0]
         W1, b1, W2, b2 = self._unpack_weights(params_slice, k_attr)
         hidden = jnp.maximum(x_attr_i @ W1 + b1, 0.0)  # ReLU
-        return hidden @ W2 + b2
+        out = hidden @ W2 + b2
+        if self.output_lo is not None or self.output_hi is not None:
+            out = jnp.clip(out, self.output_lo, self.output_hi)
+        return out
 
     def regularization(self, params_slice):
         # Regularize W1 and W2, not biases
