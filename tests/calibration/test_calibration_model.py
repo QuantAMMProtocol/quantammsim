@@ -582,3 +582,74 @@ class TestMLPNoiseIntegration:
         # MLP noise: k*h + h + h*K_OBS + K_OBS
         expected = (1 + k_attr) * 2 + k_attr * h + h + h * K_OBS + K_OBS
         assert model.n_params(n_pools, k_attr) == expected
+
+
+# ── Reduced k_obs=4 integration tests ────────────────────────────────────
+
+K_OBS_REDUCED = 4
+
+
+@pytest.fixture
+def jdata_reduced(matched_data):
+    """JointData with reduced x_obs (4 columns)."""
+    from quantammsim.calibration.joint_fit import prepare_joint_data
+    return prepare_joint_data(
+        matched_data, drop_chain_dummies=True,
+        fix_gas_to_chain=True, reduced_x_obs=True,
+    )
+
+
+class TestReducedKObsIntegration:
+    """CalibrationModel with k_obs=4 noise heads on reduced x_obs data."""
+
+    def test_reduced_n_params(self, jdata_reduced):
+        n_pools = len(jdata_reduced.pool_data)
+        k_attr = jdata_reduced.x_attr.shape[1]
+        h = 8
+        model = CalibrationModel(
+            LinearHead("cad", alpha=0.01),
+            FixedHead("gas", np.zeros(n_pools)),
+            MLPNoiseHead(hidden=h, alpha=0.01, k_obs=K_OBS_REDUCED),
+        )
+        # Linear cad: 1+k, Fixed gas: 0,
+        # MLP noise: k*h + h + h*4 + 4
+        expected = (1 + k_attr) + 0 + k_attr * h + h + h * 4 + 4
+        assert model.n_params(n_pools, k_attr) == expected
+
+    def test_reduced_loss_runs(self, jdata_reduced):
+        n_pools = len(jdata_reduced.pool_data)
+        gas_values = np.zeros(n_pools)
+        model = CalibrationModel(
+            LinearHead("cad", alpha=0.01),
+            FixedHead("gas", gas_values),
+            MLPNoiseHead(hidden=8, alpha=0.01, k_obs=K_OBS_REDUCED),
+        )
+        loss_fn = model.make_joint_loss_fn(jdata_reduced)
+        init = jnp.array(model.pack_init(jdata_reduced))
+        loss = float(loss_fn(init))
+        assert np.isfinite(loss) and loss >= 0
+
+    def test_reduced_grad_finite(self, jdata_reduced):
+        n_pools = len(jdata_reduced.pool_data)
+        gas_values = np.zeros(n_pools)
+        model = CalibrationModel(
+            LinearHead("cad", alpha=0.01),
+            FixedHead("gas", gas_values),
+            MLPNoiseHead(hidden=8, alpha=0.01, k_obs=K_OBS_REDUCED),
+        )
+        loss_fn = model.make_joint_loss_fn(jdata_reduced)
+        init = jnp.array(model.pack_init(jdata_reduced))
+        grad = jax.grad(loss_fn)(init)
+        assert jnp.all(jnp.isfinite(grad))
+
+    def test_reduced_fit_converges(self, jdata_reduced):
+        n_pools = len(jdata_reduced.pool_data)
+        gas_values = np.zeros(n_pools)
+        model = CalibrationModel(
+            LinearHead("cad", alpha=0.01),
+            FixedHead("gas", gas_values),
+            MLPNoiseHead(hidden=8, alpha=0.01, k_obs=K_OBS_REDUCED),
+        )
+        result = model.fit(jdata_reduced, maxiter=100)
+        assert result["loss"] <= result["init_loss"]
+        assert np.isfinite(result["loss"])

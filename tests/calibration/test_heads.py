@@ -744,3 +744,153 @@ class TestMLPNoiseHead:
         grad = jax.grad(loss)(params)
         assert grad.shape == params.shape
         assert jnp.all(jnp.isfinite(grad))
+
+
+# ── Reduced k_obs=4 tests ─────────────────────────────────────────────────
+
+K_OBS_REDUCED = 4
+
+
+def _make_fake_jdata_reduced():
+    """JointData-like object with k_obs=4 x_obs for reduced noise testing."""
+    from quantammsim.calibration.joint_fit import JointData
+
+    pool_data = []
+    for _ in range(N_POOLS):
+        n_obs = 14
+        x_obs = np.random.randn(n_obs, K_OBS_REDUCED)
+        x_obs[:, 0] = 1.0  # intercept column
+        y_obs = np.random.randn(n_obs) * 0.5 + 9.0
+        pool_data.append({
+            "x_obs": jnp.array(x_obs),
+            "y_obs": jnp.array(y_obs),
+            "day_indices": jnp.arange(n_obs) % 10,
+        })
+
+    x_attr = jnp.array(np.random.randn(N_POOLS, K_ATTR))
+    return JointData(
+        pool_data=pool_data,
+        x_attr=x_attr,
+        pool_ids=POOL_PREFIXES[:N_POOLS],
+        attr_names=[f"attr_{i}" for i in range(K_ATTR)],
+    )
+
+
+class TestPerPoolNoiseHeadReduced:
+    """PerPoolNoiseHead with k_obs=4."""
+
+    def test_n_params(self):
+        h = PerPoolNoiseHead(k_obs=4)
+        assert h.n_params(3, 5) == 3 * 4
+
+    def test_predict_correct_slice(self):
+        h = PerPoolNoiseHead(k_obs=4)
+        params = jnp.arange(3 * 4, dtype=float)
+        x_attr_i = jnp.zeros(5)
+        for i in range(3):
+            result = h.predict(params, i, x_attr_i)
+            expected = params[i * 4:(i + 1) * 4]
+            np.testing.assert_allclose(result, expected)
+
+    def test_init_ols(self):
+        np.random.seed(42)
+        h = PerPoolNoiseHead(k_obs=4)
+        jdata = _make_fake_jdata_reduced()
+        init = h.init(jdata)
+        assert init.shape == (N_POOLS * 4,)
+        assert np.all(np.isfinite(init))
+
+    def test_roundtrip(self):
+        np.random.seed(42)
+        h = PerPoolNoiseHead(k_obs=4)
+        jdata = _make_fake_jdata_reduced()
+        init = h.init(jdata)
+        result = h.unpack_result(init, N_POOLS, K_ATTR)
+        assert result["noise_coeffs"].shape == (N_POOLS, 4)
+
+    def test_default_unchanged(self):
+        h = PerPoolNoiseHead()
+        assert h.k_obs == K_OBS
+        assert h.n_params(3, 5) == 3 * K_OBS
+
+
+class TestSharedLinearNoiseHeadReduced:
+    """SharedLinearNoiseHead with k_obs=4."""
+
+    def test_n_params(self):
+        h = SharedLinearNoiseHead(k_obs=4)
+        assert h.n_params(3, 5) == (1 + 5) * 4
+
+    def test_predict(self):
+        k_attr = 3
+        h = SharedLinearNoiseHead(k_obs=4)
+        W_full = np.zeros((1 + k_attr, 4))
+        W_full[0, :] = 1.0
+        W_full[1, 0] = 2.0
+        params = jnp.array(W_full.ravel())
+        x_attr_i = jnp.array([1.0, 0.0, 0.0])
+        result = h.predict(params, 0, x_attr_i)
+        assert result.shape == (4,)
+        np.testing.assert_allclose(float(result[0]), 3.0)
+        np.testing.assert_allclose(float(result[1]), 1.0)
+
+    def test_init(self):
+        np.random.seed(42)
+        h = SharedLinearNoiseHead(k_obs=4)
+        jdata = _make_fake_jdata_reduced()
+        init = h.init(jdata)
+        assert init.shape == ((1 + K_ATTR) * 4,)
+        assert np.all(np.isfinite(init))
+
+    def test_default_unchanged(self):
+        h = SharedLinearNoiseHead()
+        assert h.k_obs == K_OBS
+        assert h.n_params(3, 5) == (1 + 5) * K_OBS
+
+
+class TestMLPNoiseHeadReduced:
+    """MLPNoiseHead with k_obs=4."""
+
+    def test_n_params(self):
+        h = MLPNoiseHead(hidden=16, k_obs=4)
+        # k_attr=5: 5*16 + 16 + 16*4 + 4 = 80+16+64+4 = 164
+        assert h.n_params(3, 5) == 164
+
+    def test_predict(self):
+        k_attr = 3
+        h = MLPNoiseHead(hidden=4, k_obs=4)
+        n_p = h.n_params(1, k_attr)
+        params = jnp.zeros(n_p)
+        x_attr_i = jnp.array([1.0, 2.0, 3.0])
+        result = h.predict(params, 0, x_attr_i)
+        assert result.shape == (4,)
+
+    def test_init(self):
+        np.random.seed(42)
+        h = MLPNoiseHead(hidden=4, k_obs=4)
+        jdata = _make_fake_jdata_reduced()
+        init = h.init(jdata)
+        n_p = h.n_params(N_POOLS, K_ATTR)
+        assert init.shape == (n_p,)
+        assert np.all(np.isfinite(init))
+
+    def test_regularization(self):
+        k_attr = 2
+        h = MLPNoiseHead(hidden=2, alpha=1.0, k_obs=4)
+        # Layout: W1(2*2=4), b1(2), W2(2*4=8), b2(4) = 18 params
+        n_p = h.n_params(1, k_attr)
+        assert n_p == 18
+        params = np.zeros(n_p)
+        params[0] = 3.0  # W1[0,0]
+        params[1] = 4.0  # W1[0,1]
+        params[6] = 1.0  # W2[0,0]
+        params[7] = 2.0  # W2[0,1]
+        params[-1] = 999.0  # b2[-1] — not regularized
+        # reg = 1.0 * (9 + 16 + 1 + 4) = 30.0
+        result = float(h.regularization(jnp.array(params)))
+        np.testing.assert_allclose(result, 30.0)
+
+    def test_default_unchanged(self):
+        h = MLPNoiseHead()
+        assert h.k_obs == K_OBS
+        assert h.n_params(3, 5) == 232
