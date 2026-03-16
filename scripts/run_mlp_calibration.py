@@ -104,6 +104,21 @@ def run_option_c(matched):
     return results
 
 
+def run_option_c_reduced(matched):
+    """Per-pool fits with reduced x_obs (4 covariates) and gas fixed."""
+    from quantammsim.calibration.per_pool_fit import fit_all_pools
+
+    print(f"\n--- Option C Reduced: per-pool fits ({len(matched)} pools, "
+          f"4-covariate x_obs, gas fixed) ---")
+    results = fit_all_pools(matched, fix_gas_to_chain=True, reduced=True)
+
+    losses = [r["loss"] for r in results.values()]
+    n_conv = sum(1 for r in results.values() if r["converged"])
+    print(f"  Converged: {n_conv}/{len(results)}")
+    print(f"  Loss: median={np.median(losses):.4f}, mean={np.mean(losses):.4f}")
+    return results
+
+
 def _build_gas_values(jdata, matched_clean):
     """Build fixed gas values (log-space) from chain data."""
     from quantammsim.calibration.loss import CHAIN_GAS_USD
@@ -289,6 +304,53 @@ def run_two_stage_joint(matched_clean, option_c_clean, hidden=MLP_HIDDEN):
     return result, stage1_model, stage2_model, jdata
 
 
+def run_reduced_joint(matched_clean, option_c_clean, hidden=MLP_HIDDEN):
+    """Joint fit with reduced x_obs (4 cols) to avoid noise-cadence confounding.
+
+    Removes sigma- and fee-dependent features from the noise model's x_obs
+    so the arb channel (grid + cadence) is the only path for volatility-driven
+    volume variation. See docs/noise_covariate_design.md for theory.
+
+    Uses LinearHead(cad) + FixedHead(gas) + MLPNoiseHead(k_obs=4).
+    Cadence warm-started from Option C; noise cold-started (OLS on 4-col x_obs).
+    """
+    import jax.numpy as jnp
+    from quantammsim.calibration.calibration_model import CalibrationModel
+    from quantammsim.calibration.heads import FixedHead, LinearHead, MLPNoiseHead
+    from quantammsim.calibration.joint_fit import prepare_joint_data
+    from quantammsim.calibration.pool_data import K_OBS_REDUCED
+
+    jdata = prepare_joint_data(
+        matched_clean, drop_chain_dummies=True,
+        fix_gas_to_chain=True, reduced_x_obs=True)
+    gas_values = _build_gas_values(jdata, matched_clean)
+    n_pools = len(jdata.pool_data)
+    k_attr = jdata.x_attr.shape[1]
+
+    model = CalibrationModel(
+        cadence_head=LinearHead("cad", alpha=ALPHA_CAD),
+        gas_head=FixedHead("gas", gas_values),
+        noise_head=MLPNoiseHead(hidden=hidden, alpha=ALPHA_NOISE,
+                                k_obs=K_OBS_REDUCED),
+    )
+
+    n_p = model.n_params(n_pools, k_attr)
+    print(f"\n--- Reduced x_obs: LinearHead(cad) + MLPNoiseHead(k_obs={K_OBS_REDUCED}, "
+          f"hidden={hidden}) ({n_pools} pools, {n_p} params) ---")
+
+    # Only warm-start cadence (noise dimension changed 8→4, skip noise warm-start)
+    warm_cad = {}
+    for pid in jdata.pool_ids:
+        if pid in option_c_clean:
+            warm_cad[pid] = {"cad": option_c_clean[pid]["log_cadence"]}
+
+    result = model.fit(jdata, maxiter=JOINT_MAXITER, warm_start=warm_cad)
+    print(f"  Loss: {result['init_loss']:.4f} -> {result['loss']:.4f}")
+    print(f"  Converged: {result['converged']}")
+
+    return result, model, jdata
+
+
 def _extract_two_stage_per_pool(stage1_model, stage2_model, result, jdata):
     """Extract per-pool params from two-stage result."""
     import jax.numpy as jnp
@@ -357,15 +419,21 @@ def _extract_per_pool_params(model, result, jdata):
 
 
 def compute_per_pool_predictions(matched, option_c_results,
-                                  model_results):
+                                  model_results, reduced_models=None):
     """Compute V_arb, V_noise, R² per pool for Option C and each joint model.
 
     model_results: list of (label, per_pool_params, pool_ids) tuples,
     where per_pool_params[i] is a dict with log_cadence, log_gas, noise_coeffs.
+
+    reduced_models: list of label strings whose noise_coeffs correspond to
+    reduced x_obs (4 columns). For those, build_x_obs(reduced=True) is used.
     """
     from quantammsim.calibration.grid_interpolation import interpolate_pool_daily
     from quantammsim.calibration.pool_data import build_x_obs
     import jax.numpy as jnp
+
+    if reduced_models is None:
+        reduced_models = []
 
     pool_ids = sorted(matched.keys())
 
@@ -388,7 +456,8 @@ def compute_per_pool_predictions(matched, option_c_results,
         coeffs = entry["coeffs"]
         day_indices = entry["day_indices"]
 
-        x_obs = build_x_obs(panel)
+        x_obs_full = build_x_obs(panel)
+        x_obs_red = None  # lazy-build only if needed
         y_obs = panel["log_volume"].values.astype(float)
 
         p = {
@@ -408,7 +477,7 @@ def compute_per_pool_predictions(matched, option_c_results,
             coeffs, jnp.float64(rc["log_cadence"]),
             jnp.float64(np.exp(rc["log_gas"]))))
         v_arb_c = v_arb_all[day_indices]
-        v_noise_c = np.exp(x_obs @ rc["noise_coeffs"])
+        v_noise_c = np.exp(x_obs_full @ rc["noise_coeffs"])
         p["v_arb_c"] = v_arb_c
         p["v_noise_c"] = v_noise_c
         p["r2_c"] = r2(v_arb_c, v_noise_c, y_obs)
@@ -423,7 +492,15 @@ def compute_per_pool_predictions(matched, option_c_results,
                     coeffs, jnp.float64(mp["log_cadence"]),
                     jnp.float64(np.exp(mp["log_gas"]))))
                 v_arb = v_arb_all[day_indices]
-                v_noise = np.exp(x_obs @ mp["noise_coeffs"])
+
+                # Use reduced x_obs for models that were trained with it
+                if label in reduced_models:
+                    if x_obs_red is None:
+                        x_obs_red = build_x_obs(panel, reduced=True)
+                    v_noise = np.exp(x_obs_red @ mp["noise_coeffs"])
+                else:
+                    v_noise = np.exp(x_obs_full @ mp["noise_coeffs"])
+
                 p[f"v_arb_{label}"] = v_arb
                 p[f"v_noise_{label}"] = v_noise
                 p[f"r2_{label}"] = r2(v_arb, v_noise, y_obs)
@@ -807,6 +884,28 @@ def save_results_json(predictions, option_c_results, joint_results, output_dir):
 # ---- Main ----
 
 
+def _save_per_pool_results(results, output_path, label="option_c_reduced"):
+    """Save per-pool fit results to JSON immediately."""
+    out = {}
+    for pid, r in results.items():
+        out[pid] = {
+            "log_cadence": r["log_cadence"],
+            "log_gas": r["log_gas"],
+            "noise_coeffs": r["noise_coeffs"].tolist(),
+            "loss": r["loss"],
+            "converged": bool(r["converged"]),
+            "cadence_minutes": r["cadence_minutes"],
+            "gas_usd": r["gas_usd"],
+            "chain": r.get("chain", ""),
+            "fee": r.get("fee", 0),
+            "tokens": r.get("tokens", ""),
+        }
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump({label: out}, f, indent=2)
+    print(f"  Saved {len(out)} pool results to {output_path}")
+
+
 def main():
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
@@ -816,7 +915,15 @@ def main():
 
     panel, matched = load_and_match()
 
-    # Step 1: Option C baseline
+    # Step 0: 4-covariate per-pool fits (fast, save immediately)
+    option_c_reduced = run_option_c_reduced(matched)
+    _save_per_pool_results(
+        option_c_reduced,
+        os.path.join(OUTPUT_DIR, "option_c_reduced.json"),
+        label="option_c_reduced",
+    )
+
+    # Step 1: Option C baseline (8-covariate)
     option_c = run_option_c(matched)
 
     # Step 2: Filter pathological pools
@@ -834,25 +941,33 @@ def main():
     two_stage_result, ts_s1_model, ts_s2_model, _ = run_two_stage_joint(
         matched_clean, option_c_clean)
 
+    # Reduced x_obs: prune sigma/fee features from noise covariates
+    reduced_result, reduced_model, jdata_reduced = run_reduced_joint(
+        matched_clean, option_c_clean)
+
     # Step 4: Extract per-pool params from each model
     linear_pp = _extract_per_pool_params(linear_model, linear_result, jdata)
     mlp_noise_pp = _extract_per_pool_params(mlp_noise_model, mlp_noise_result, jdata)
     mlp_full_pp = _extract_per_pool_params(mlp_full_model, mlp_full_result, jdata)
     two_stage_pp = _extract_two_stage_per_pool(
         ts_s1_model, ts_s2_model, two_stage_result, jdata)
+    reduced_pp = _extract_per_pool_params(
+        reduced_model, reduced_result, jdata_reduced)
 
-    method_labels = ["linear", "mlp_noise", "mlp_full", "two_stage"]
+    method_labels = ["linear", "mlp_noise", "mlp_full", "two_stage", "reduced"]
     model_results_for_pred = [
         ("linear", linear_pp, jdata.pool_ids),
         ("mlp_noise", mlp_noise_pp, jdata.pool_ids),
         ("mlp_full", mlp_full_pp, jdata.pool_ids),
         ("two_stage", two_stage_pp, jdata.pool_ids),
+        ("reduced", reduced_pp, jdata_reduced.pool_ids),
     ]
 
     # Step 5: Per-pool predictions
     print("\nComputing per-pool predictions...")
     predictions = compute_per_pool_predictions(
-        matched_clean, option_c_clean, model_results_for_pred)
+        matched_clean, option_c_clean, model_results_for_pred,
+        reduced_models=["reduced"])
 
     # Step 6: Tables
     print_pool_table(predictions, method_labels)
@@ -862,6 +977,7 @@ def main():
         ("mlp_noise", mlp_noise_result),
         ("mlp_full", mlp_full_result),
         ("two_stage", two_stage_result),
+        ("reduced", reduced_result),
     ])
 
     # Step 7: Plots
@@ -873,6 +989,7 @@ def main():
     plot_decomposition_pages(predictions, "mlp_noise", "MLP noise (linear cad)", OUTPUT_DIR)
     plot_decomposition_pages(predictions, "mlp_full", "Full MLP (MLP cad + MLP noise)", OUTPUT_DIR)
     plot_decomposition_pages(predictions, "two_stage", "Two-stage (linear cad -> MLP noise)", OUTPUT_DIR)
+    plot_decomposition_pages(predictions, "reduced", "Reduced x_obs (k_obs=4)", OUTPUT_DIR)
 
     plot_summary_distributions(predictions, method_labels, OUTPUT_DIR)
     plot_r2_scatter(predictions, method_labels, OUTPUT_DIR)
@@ -884,6 +1001,7 @@ def main():
         ("mlp_noise", mlp_noise_result),
         ("mlp_full", mlp_full_result),
         ("two_stage", two_stage_result),
+        ("reduced", reduced_result),
     ], OUTPUT_DIR)
 
     print(f"\n{'='*70}")
