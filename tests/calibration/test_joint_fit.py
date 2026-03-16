@@ -188,3 +188,22 @@ class TestModes:
         pred = predict_new_pool_joint(result, x_attr_new)
         assert "noise_coeffs" in pred
         assert len(pred["noise_coeffs"]) == K_OBS
+
+
+class TestPrepareJointDataReduced:
+    """Test prepare_joint_data with reduced_x_obs=True."""
+
+    def test_reduced_x_obs_shape(self, matched_data):
+        from quantammsim.calibration.joint_fit import prepare_joint_data
+        from quantammsim.calibration.pool_data import K_OBS_REDUCED
+
+        jdata = prepare_joint_data(matched_data, reduced_x_obs=True)
+        for pd in jdata.pool_data:
+            assert pd["x_obs"].shape[1] == K_OBS_REDUCED
+
+    def test_default_unchanged(self, matched_data):
+        from quantammsim.calibration.joint_fit import prepare_joint_data
+
+        jdata = prepare_joint_data(matched_data)
+        for pd in jdata.pool_data:
+            assert pd["x_obs"].shape[1] == K_OBS

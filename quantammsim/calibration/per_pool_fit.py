@@ -31,8 +31,9 @@ def make_initial_guess(x_obs: np.ndarray, y_obs: np.ndarray) -> np.ndarray:
     OLS: noise_coeffs = lstsq(x_obs, y_obs) — assumes all volume is noise.
     This overestimates noise but gives a reasonable starting point.
     """
+    k_obs = x_obs.shape[1]
     noise_coeffs, _, _, _ = np.linalg.lstsq(x_obs, y_obs, rcond=None)
-    init = np.zeros(2 + K_OBS)
+    init = np.zeros(2 + k_obs)
     init[0] = np.log(12.0)   # log_cadence
     init[1] = np.log(1.0)    # log_gas (= 0.0)
     init[2:] = noise_coeffs
@@ -41,8 +42,9 @@ def make_initial_guess(x_obs: np.ndarray, y_obs: np.ndarray) -> np.ndarray:
 
 def make_initial_guess_fixed_gas(x_obs: np.ndarray, y_obs: np.ndarray) -> np.ndarray:
     """Initial params for fixed-gas mode: cadence=12min, noise_coeffs from OLS."""
+    k_obs = x_obs.shape[1]
     noise_coeffs, _, _, _ = np.linalg.lstsq(x_obs, y_obs, rcond=None)
-    init = np.zeros(1 + K_OBS)
+    init = np.zeros(1 + k_obs)
     init[0] = np.log(12.0)   # log_cadence
     init[1:] = noise_coeffs
     return init
@@ -81,7 +83,8 @@ def fit_single_pool(
         if init is None:
             init = make_initial_guess_fixed_gas(x_obs, y_obs)
 
-        scipy_bounds = [log_cad_bounds] + [(noise_bounds[0], noise_bounds[1])] * K_OBS
+        k_obs = x_obs.shape[1]
+        scipy_bounds = [log_cad_bounds] + [(noise_bounds[0], noise_bounds[1])] * k_obs
 
         @jax.jit
         def loss_and_grad(params_flat):
@@ -122,10 +125,11 @@ def fit_single_pool(
         if init is None:
             init = make_initial_guess(x_obs, y_obs)
 
+        k_obs = x_obs.shape[1]
         log_gas_bounds = bounds.get("log_gas", (np.log(0.001), np.log(50.0)))
         scipy_bounds = [
             log_cad_bounds, log_gas_bounds,
-        ] + [(noise_bounds[0], noise_bounds[1])] * K_OBS
+        ] + [(noise_bounds[0], noise_bounds[1])] * k_obs
 
         @jax.jit
         def loss_and_grad(params_flat):
@@ -165,11 +169,15 @@ def fit_all_pools(
     matched: Dict[str, dict],
     n_workers: int = 1,
     fix_gas_to_chain: bool = False,
+    reduced: bool = False,
 ) -> Dict[str, dict]:
     """Fit all matched pools. Returns prefix -> fit_result with metadata.
 
     If fix_gas_to_chain is True, gas is fixed to the known chain-level cost
     from CHAIN_GAS_USD, and only (log_cadence, noise_coeffs) are optimized.
+
+    If reduced is True, uses the 4-covariate x_obs (intercept, log_tvl_lag1,
+    dow_sin, dow_cos) instead of the full 8-covariate set.
     """
     results = {}
 
@@ -178,7 +186,7 @@ def fit_all_pools(
         coeffs = entry["coeffs"]
         day_indices = entry["day_indices"]
 
-        x_obs = build_x_obs(panel)
+        x_obs = build_x_obs(panel, reduced=reduced)
         y_obs = panel["log_volume"].values.astype(float)
 
         fixed_gas = None

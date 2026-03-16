@@ -18,6 +18,7 @@ from quantammsim.calibration.grid_interpolation import (
 )
 
 K_OBS = 8  # observation-level covariates
+K_OBS_REDUCED = 4  # [intercept, log_tvl_lag1, dow_sin, dow_cos]
 
 # Default path for cached token market caps
 _MCAP_PATH = os.path.join(
@@ -347,11 +348,16 @@ def match_grids_to_panel(
     return matched
 
 
-def build_x_obs(panel_rows: pd.DataFrame) -> np.ndarray:
-    """Build (n_obs, 8) observation covariate matrix from panel rows.
+def build_x_obs(panel_rows: pd.DataFrame, reduced: bool = False) -> np.ndarray:
+    """Build observation covariate matrix from panel rows.
 
-    Columns: [1, log_tvl_lag1, log_sigma, tvl*sigma, tvl*fee,
-              sigma*fee, dow_sin, dow_cos]
+    Full (reduced=False): (n_obs, 8)
+        [1, log_tvl_lag1, log_sigma, tvl*sigma, tvl*fee, sigma*fee, dow_sin, dow_cos]
+
+    Reduced (reduced=True): (n_obs, 4)
+        [1, log_tvl_lag1, dow_sin, dow_cos]
+        Removes sigma- and fee-dependent terms so the arb channel is the only
+        path for volatility-driven volume variation.
 
     Where:
         log_sigma = log(max(volatility, 1e-6))
@@ -361,12 +367,21 @@ def build_x_obs(panel_rows: pd.DataFrame) -> np.ndarray:
         weekday: Monday=0, ..., Sunday=6
     """
     n = len(panel_rows)
+    weekdays = pd.to_datetime(panel_rows["date"]).dt.weekday.values.astype(float)
+
+    if reduced:
+        x = np.zeros((n, K_OBS_REDUCED))
+        x[:, 0] = 1.0
+        x[:, 1] = panel_rows["log_tvl_lag1"].values.astype(float)
+        x[:, 2] = np.sin(2 * np.pi * weekdays / 7)
+        x[:, 3] = np.cos(2 * np.pi * weekdays / 7)
+        return x
+
     x = np.zeros((n, K_OBS))
 
     tvl = panel_rows["log_tvl_lag1"].values.astype(float)
     sigma = np.log(np.maximum(panel_rows["volatility"].values.astype(float), 1e-6))
     fee = panel_rows["log_fee"].values.astype(float)
-    weekdays = pd.to_datetime(panel_rows["date"]).dt.weekday.values.astype(float)
 
     x[:, 0] = 1.0                              # intercept
     x[:, 1] = tvl                               # log_tvl_lag1

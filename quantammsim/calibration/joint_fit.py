@@ -39,6 +39,7 @@ def prepare_joint_data(
     matched: Dict[str, dict],
     drop_chain_dummies: bool = False,
     fix_gas_to_chain: bool = False,
+    reduced_x_obs: bool = False,
 ) -> JointData:
     """Build batched JAX arrays from matched pool data.
 
@@ -46,6 +47,8 @@ def prepare_joint_data(
         matched: dict from match_grids_to_panel
         drop_chain_dummies: if True, remove chain_* columns from attributes
         fix_gas_to_chain: if True, store fixed_log_gas per pool from CHAIN_GAS_USD
+        reduced_x_obs: if True, use 4-column reduced x_obs
+            (removes sigma/fee terms to avoid identification problems)
 
     Returns:
         JointData with per-pool JAX arrays and shared attribute matrix.
@@ -64,7 +67,7 @@ def prepare_joint_data(
     for pid in pool_ids:
         entry = matched[pid]
         panel = entry["panel"]
-        x_obs = build_x_obs(panel)
+        x_obs = build_x_obs(panel, reduced=reduced_x_obs)
         y_obs = panel["log_volume"].values.astype(float)
 
         d = {

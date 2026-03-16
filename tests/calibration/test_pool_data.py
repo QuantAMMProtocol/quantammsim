@@ -200,6 +200,62 @@ class TestBuildXObs:
         assert not np.any(np.isnan(x))
 
 
+class TestBuildXObsReduced:
+    """Test build_x_obs with reduced=True: 4-column pruned covariates."""
+
+    def test_reduced_shape(self, synthetic_panel):
+        from quantammsim.calibration.pool_data import K_OBS_REDUCED, build_x_obs
+
+        pool0 = synthetic_panel[synthetic_panel["pool_id"] == POOL_IDS_FULL[0]]
+        x = build_x_obs(pool0, reduced=True)
+        assert x.shape == (len(pool0), K_OBS_REDUCED)
+        assert K_OBS_REDUCED == 4
+
+    def test_reduced_columns(self, synthetic_panel):
+        from quantammsim.calibration.pool_data import build_x_obs
+
+        pool0 = synthetic_panel[synthetic_panel["pool_id"] == POOL_IDS_FULL[0]]
+        x_full = build_x_obs(pool0)
+        x_red = build_x_obs(pool0, reduced=True)
+
+        # col 0: intercept
+        np.testing.assert_array_equal(x_red[:, 0], 1.0)
+        # col 1: log_tvl_lag1 (same as full col 1)
+        np.testing.assert_allclose(x_red[:, 1], x_full[:, 1])
+        # col 2: dow_sin (same as full col 6)
+        np.testing.assert_allclose(x_red[:, 2], x_full[:, 6])
+        # col 3: dow_cos (same as full col 7)
+        np.testing.assert_allclose(x_red[:, 3], x_full[:, 7])
+
+    def test_reduced_no_sigma(self, synthetic_panel):
+        from quantammsim.calibration.pool_data import build_x_obs
+
+        pool0 = synthetic_panel[synthetic_panel["pool_id"] == POOL_IDS_FULL[0]]
+        x_full = build_x_obs(pool0)
+        x_red = build_x_obs(pool0, reduced=True)
+
+        # Sigma-dependent columns from full (2,3,5) should not appear
+        sigma_cols = x_full[:, [2, 3, 5]]
+        for col in range(x_red.shape[1]):
+            for scol in range(sigma_cols.shape[1]):
+                if not np.allclose(sigma_cols[:, scol], 0.0):
+                    assert not np.allclose(x_red[:, col], sigma_cols[:, scol])
+
+    def test_default_unchanged(self, synthetic_panel):
+        from quantammsim.calibration.pool_data import build_x_obs
+
+        pool0 = synthetic_panel[synthetic_panel["pool_id"] == POOL_IDS_FULL[0]]
+        x = build_x_obs(pool0)
+        assert x.shape == (len(pool0), K_OBS)
+
+    def test_reduced_no_nans(self, synthetic_panel):
+        from quantammsim.calibration.pool_data import build_x_obs
+
+        pool0 = synthetic_panel[synthetic_panel["pool_id"] == POOL_IDS_FULL[0]]
+        x = build_x_obs(pool0, reduced=True)
+        assert not np.any(np.isnan(x))
+
+
 class TestBuildPoolAttributes:
     """Test build_pool_attributes: pool-level feature matrix."""
 
