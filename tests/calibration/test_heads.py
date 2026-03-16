@@ -16,6 +16,7 @@ from quantammsim.calibration.heads import (
     PerPoolNoiseHead,
     SharedLinearNoiseHead,
 )
+from quantammsim.calibration.pool_data import K_OBS_REDUCED
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -894,3 +895,237 @@ class TestMLPNoiseHeadReduced:
         h = MLPNoiseHead()
         assert h.k_obs == K_OBS
         assert h.n_params(3, 5) == 232
+
+
+# ── TokenFactoredNoiseHead ─────────────────────────────────────────────────
+
+
+def _make_token_factored_head(k_obs=K_OBS_REDUCED):
+    """Build a TokenFactoredNoiseHead from synthetic 2-pool, 3-token data."""
+    from quantammsim.calibration.heads import TokenFactoredNoiseHead
+
+    # Pool 0: (BTC=1, ETH=2) on MAINNET=1, fee=0.003
+    # Pool 1: (AAVE=0, ETH=2) on ARBITRUM=0, fee=0.01
+    token_a_idx = np.array([1, 0], dtype=np.int32)   # BTC, AAVE
+    token_b_idx = np.array([2, 2], dtype=np.int32)    # ETH, ETH
+    chain_idx = np.array([1, 0], dtype=np.int32)      # MAINNET, ARBITRUM
+    log_fees = np.array([np.log(0.003), np.log(0.01)])
+    x_token = np.array([
+        [1.0, 20.0, 0.0, 0.0, 0.0],  # AAVE: volatile
+        [1.0, 25.0, 0.0, 0.0, 0.0],  # BTC: volatile
+        [1.0, 26.0, 0.0, 1.0, 1.0],  # ETH: eth_derivative + L1_native
+    ])
+    token_index = {"AAVE": 0, "BTC": 1, "ETH": 2}
+    chain_index = {"ARBITRUM": 0, "MAINNET": 1}
+
+    head = TokenFactoredNoiseHead(
+        token_a_idx=token_a_idx,
+        token_b_idx=token_b_idx,
+        chain_idx=chain_idx,
+        log_fees=log_fees,
+        x_token=x_token,
+        n_tokens=3,
+        n_chains=2,
+        token_index=token_index,
+        chain_index=chain_index,
+        k_obs=k_obs,
+        lambda_delta=1.0,
+        lambda_token=0.1,
+        lambda_chain=0.1,
+        lambda_fee=0.01,
+    )
+    return head
+
+
+class TestTokenFactoredNoiseHead:
+
+    def test_is_head(self):
+        head = _make_token_factored_head()
+        assert isinstance(head, Head)
+
+    def test_n_params(self):
+        head = _make_token_factored_head(k_obs=4)
+        # 3 tokens * 4 + 5 d_token * 4 + 2 chains * 4 + 4 beta_fee + 2 pools * 4
+        # = 12 + 20 + 8 + 4 + 8 = 52
+        assert head.n_params(2, K_ATTR) == 52
+
+    def test_predict_returns_k_obs_vector(self):
+        head = _make_token_factored_head(k_obs=4)
+        n_p = head.n_params(2, K_ATTR)
+        params = jnp.zeros(n_p)
+        x_attr_i = jnp.zeros(K_ATTR)
+        result = head.predict(params, 0, x_attr_i)
+        assert result.shape == (4,)
+
+    def test_predict_additivity(self):
+        """predict(pool_0) = u[BTC] + u[ETH] + alpha[MAINNET]
+                            + beta_fee * log(0.003) + delta[0]"""
+        head = _make_token_factored_head(k_obs=4)
+        n_p = head.n_params(2, K_ATTR)
+
+        # Build params with known values
+        params = np.zeros(n_p)
+        k = 4  # k_obs
+        # u: (3 tokens, 4) at offset 0
+        u_flat = np.array([
+            1.0, 0.0, 0.0, 0.0,   # AAVE
+            2.0, 0.5, 0.0, 0.0,   # BTC
+            3.0, 1.0, 0.0, 0.0,   # ETH
+        ])
+        params[:12] = u_flat
+        # Gamma: (5, 4) at offset 12 — skip (doesn't affect predict)
+        # alpha: (2, 4) at offset 32
+        alpha_flat = np.array([
+            0.1, 0.0, 0.0, 0.0,   # ARBITRUM
+            0.2, 0.0, 0.0, 0.0,   # MAINNET
+        ])
+        params[32:40] = alpha_flat
+        # beta_fee: (4,) at offset 40
+        params[40:44] = np.array([0.5, 0.0, 0.0, 0.0])
+        # delta: (2, 4) at offset 44
+        params[44:48] = np.array([0.05, 0.0, 0.0, 0.0])  # pool 0 delta
+
+        result = head.predict(jnp.array(params), 0, jnp.zeros(K_ATTR))
+
+        # Expected for pool 0: u[BTC] + u[ETH] + alpha[MAINNET]
+        #   + beta_fee * log(0.003) + delta[0]
+        expected_0 = 2.0 + 3.0 + 0.2 + 0.5 * np.log(0.003) + 0.05
+        np.testing.assert_allclose(float(result[0]), expected_0, rtol=1e-5)
+
+    def test_regularization_nonneg_and_finite(self):
+        head = _make_token_factored_head()
+        n_p = head.n_params(2, K_ATTR)
+        np.random.seed(42)
+        params = jnp.array(np.random.randn(n_p) * 0.1)
+        reg = float(head.regularization(params))
+        assert np.isfinite(reg)
+        assert reg >= 0.0
+
+    def test_regularization_zero_when_perfect(self):
+        """If u = x_token @ Gamma exactly, delta=0, alpha=0, beta_fee=0,
+        then only the Gamma-predicted part has zero token reg."""
+        head = _make_token_factored_head(k_obs=4)
+        n_p = head.n_params(2, K_ATTR)
+        params = np.zeros(n_p)
+        # Set Gamma to something, then set u = x_token @ Gamma
+        np.random.seed(7)
+        Gamma = np.random.randn(5, 4) * 0.1
+        u = head.x_token @ Gamma  # (3, 4)
+        params[:12] = u.ravel()
+        params[12:32] = Gamma.ravel()
+        # alpha, beta_fee, delta all zero
+        reg = float(head.regularization(jnp.array(params)))
+        # Only lambda_token * 0 + lambda_chain * 0 + lambda_fee * 0 + lambda_delta * 0
+        np.testing.assert_allclose(reg, 0.0, atol=1e-10)
+
+    def test_init_cold(self):
+        head = _make_token_factored_head(k_obs=4)
+        jdata = _make_fake_jdata_reduced()
+        init = head.init(jdata)
+        n_p = head.n_params(N_POOLS, K_ATTR)
+        assert init.shape == (n_p,)
+        assert np.all(np.isfinite(init))
+
+    def test_init_warm_start_roundtrip(self):
+        """init from warm_start → predict ≈ warm_start noise_coeffs."""
+        head = _make_token_factored_head(k_obs=4)
+        jdata = _make_fake_jdata_reduced()
+
+        # Warm start with known noise coefficients per pool
+        warm = {
+            POOL_PREFIXES[0]: {"noise_coeffs": np.array([9.0, 0.5, 0.1, -0.2])},
+            POOL_PREFIXES[1]: {"noise_coeffs": np.array([8.5, 0.3, 0.2, -0.1])},
+        }
+        init = head.init(jdata, warm_start=warm)
+        params = jnp.array(init)
+        x_attr_dummy = jnp.zeros(K_ATTR)
+
+        for i, pid in enumerate(jdata.pool_ids):
+            predicted = np.array(head.predict(params, i, x_attr_dummy))
+            target = warm[pid]["noise_coeffs"]
+            # Should approximately recover the warm-start values
+            # (not exact because the lstsq decomposition is underdetermined
+            # with 2 pools and 3 tokens)
+            np.testing.assert_allclose(predicted, target, atol=0.5)
+
+    def test_gradient_finite(self):
+        """jax.grad of a simple loss at init produces finite gradients."""
+        import jax
+        head = _make_token_factored_head(k_obs=4)
+        jdata = _make_fake_jdata_reduced()
+        init = jnp.array(head.init(jdata))
+        x_attr_i = jnp.zeros(K_ATTR)
+
+        def loss(p):
+            c = head.predict(p, 0, x_attr_i)
+            return jnp.sum(c ** 2) + head.regularization(p)
+
+        grad = jax.grad(loss)(init)
+        assert grad.shape == init.shape
+        assert jnp.all(jnp.isfinite(grad))
+
+    def test_unpack_result_keys(self):
+        head = _make_token_factored_head(k_obs=4)
+        n_p = head.n_params(2, K_ATTR)
+        np.random.seed(42)
+        params = np.random.randn(n_p)
+        result = head.unpack_result(params, 2, K_ATTR)
+        for key in ["token_effects", "Gamma", "chain_effects",
+                     "beta_fee", "noise_deltas", "noise_coeffs"]:
+            assert key in result, f"Missing key: {key}"
+        assert result["token_effects"].shape == (3, 4)
+        assert result["Gamma"].shape == (5, 4)
+        assert result["chain_effects"].shape == (2, 4)
+        assert result["beta_fee"].shape == (4,)
+        assert result["noise_deltas"].shape == (2, 4)
+        assert result["noise_coeffs"].shape == (2, 4)
+
+    def test_make_bounds(self):
+        head = _make_token_factored_head(k_obs=4)
+        bounds = head.make_bounds(2, K_ATTR)
+        assert len(bounds) == head.n_params(2, K_ATTR)
+        assert all(b == (None, None) for b in bounds)
+
+    def test_predict_new_pool_seen_tokens(self):
+        head = _make_token_factored_head(k_obs=4)
+        n_p = head.n_params(2, K_ATTR)
+        np.random.seed(42)
+        params = np.random.randn(n_p) * 0.1
+        result = head.predict_new_pool(
+            params, "BTC", "AAVE", "MAINNET", 0.003, n_pools=2
+        )
+        assert "noise_coeffs" in result
+        assert "components" in result
+        nc = result["noise_coeffs"]
+        assert nc.shape == (4,) or len(nc) == 4
+        # Should equal u[BTC] + u[AAVE] + alpha[MAINNET] + beta_fee*log(0.003)
+        # (no delta for new pool)
+        comps = result["components"]
+        reconstructed = (comps["token_a"] + comps["token_b"]
+                        + comps["chain"] + comps["fee"])
+        np.testing.assert_allclose(nc, reconstructed, rtol=1e-6)
+
+    def test_predict_new_pool_unseen_token(self):
+        head = _make_token_factored_head(k_obs=4)
+        n_p = head.n_params(2, K_ATTR)
+        np.random.seed(42)
+        params = np.random.randn(n_p) * 0.1
+        # "LINK" is not in token_index → should fall back to Gamma
+        result = head.predict_new_pool(
+            params, "LINK", "ETH", "MAINNET", 0.003, n_pools=2
+        )
+        assert "noise_coeffs" in result
+        assert result["noise_coeffs"].shape == (4,) or len(result["noise_coeffs"]) == 4
+
+    def test_predict_new_pool_unseen_chain(self):
+        head = _make_token_factored_head(k_obs=4)
+        n_p = head.n_params(2, K_ATTR)
+        np.random.seed(42)
+        params = np.random.randn(n_p) * 0.1
+        # "BASE" is not in chain_index → alpha = zeros
+        result = head.predict_new_pool(
+            params, "BTC", "ETH", "BASE", 0.003, n_pools=2
+        )
+        np.testing.assert_allclose(
+            result["components"]["chain"], np.zeros(4)
+        )

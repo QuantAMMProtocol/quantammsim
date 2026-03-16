@@ -16,6 +16,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from quantammsim.calibration.loss import K_OBS
+from quantammsim.calibration.pool_data import (
+    D_TOKEN, K_OBS_REDUCED, _classify_token, _load_token_mcaps,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +521,267 @@ class MLPHead:
             f"mlp_{self.name}_b1": np.array(b1),
             f"mlp_{self.name}_W2": np.array(W2),
             f"mlp_{self.name}_b2": float(b2),
+        }
+
+    def make_bounds(self, n_pools, k_attr):
+        return [(None, None)] * self.n_params(n_pools, k_attr)
+
+
+# ---------------------------------------------------------------------------
+# TokenFactoredNoiseHead — additive token + chain + fee composition
+# ---------------------------------------------------------------------------
+
+
+class TokenFactoredNoiseHead:
+    """Noise coefficients from additive token + chain + fee composition.
+
+    noise_coeffs_i = u[token_a_i] + u[token_b_i] + alpha[chain_i]
+                     + beta_fee * log(fee_i) + delta_i
+
+    Token effects u_t are regularized toward x_token_t @ Gamma (population
+    prediction from token covariates). Per-pool deltas are L2-regularized,
+    controlling the shrinkage between per-pool and population estimates.
+
+    Parameter layout (flat):
+        [u (n_tokens * k_obs),
+         Gamma (d_token * k_obs),
+         alpha (n_chains * k_obs),
+         beta_fee (k_obs),
+         delta (n_pools * k_obs)]
+    """
+
+    def __init__(
+        self,
+        token_a_idx: np.ndarray,
+        token_b_idx: np.ndarray,
+        chain_idx: np.ndarray,
+        log_fees: np.ndarray,
+        x_token: np.ndarray,
+        n_tokens: int,
+        n_chains: int,
+        token_index: dict,
+        chain_index: dict,
+        k_obs: int = K_OBS_REDUCED,
+        lambda_delta: float = 1.0,
+        lambda_token: float = 0.1,
+        lambda_chain: float = 0.1,
+        lambda_fee: float = 0.01,
+        mcap_path: str = None,
+    ):
+        self.name = "noise"
+        self.token_a_idx = np.asarray(token_a_idx, dtype=np.int32)
+        self.token_b_idx = np.asarray(token_b_idx, dtype=np.int32)
+        self.chain_idx = np.asarray(chain_idx, dtype=np.int32)
+        self.log_fees = np.asarray(log_fees, dtype=np.float64)
+        self.x_token = np.asarray(x_token, dtype=np.float64)
+        self.n_tokens = n_tokens
+        self.n_chains = n_chains
+        self.d_token = x_token.shape[1]
+        self.k_obs = k_obs
+        self.token_index = dict(token_index)
+        self.chain_index = dict(chain_index)
+        self.lambda_delta = lambda_delta
+        self.lambda_token = lambda_token
+        self.lambda_chain = lambda_chain
+        self.lambda_fee = lambda_fee
+        self._mcap_path = mcap_path
+        # Pre-convert to JAX for predict()
+        self._token_a_jax = jnp.array(self.token_a_idx)
+        self._token_b_jax = jnp.array(self.token_b_idx)
+        self._chain_jax = jnp.array(self.chain_idx)
+        self._log_fees_jax = jnp.array(self.log_fees)
+        self._x_token_jax = jnp.array(self.x_token)
+
+    def n_params(self, n_pools: int, k_attr: int) -> int:
+        k = self.k_obs
+        return (self.n_tokens * k       # u
+                + self.d_token * k       # Gamma
+                + self.n_chains * k      # alpha
+                + k                      # beta_fee
+                + n_pools * k)           # delta
+
+    def _unpack(self, params_slice, n_pools):
+        k = self.k_obs
+        idx = 0
+        u = params_slice[idx:idx + self.n_tokens * k].reshape(self.n_tokens, k)
+        idx += self.n_tokens * k
+        Gamma = params_slice[idx:idx + self.d_token * k].reshape(self.d_token, k)
+        idx += self.d_token * k
+        alpha = params_slice[idx:idx + self.n_chains * k].reshape(self.n_chains, k)
+        idx += self.n_chains * k
+        beta_fee = params_slice[idx:idx + k]
+        idx += k
+        delta = params_slice[idx:idx + n_pools * k].reshape(n_pools, k)
+        return u, Gamma, alpha, beta_fee, delta
+
+    def _infer_n_pools(self, params_slice):
+        k = self.k_obs
+        n_shared = self.n_tokens * k + self.d_token * k + self.n_chains * k + k
+        return (params_slice.shape[0] - n_shared) // k
+
+    def predict(self, params_slice, pool_idx, x_attr_i):
+        n_pools = self._infer_n_pools(params_slice)
+        u, Gamma, alpha, beta_fee, delta = self._unpack(params_slice, n_pools)
+        ta = self._token_a_jax[pool_idx]
+        tb = self._token_b_jax[pool_idx]
+        ch = self._chain_jax[pool_idx]
+        lf = self._log_fees_jax[pool_idx]
+        return u[ta] + u[tb] + alpha[ch] + beta_fee * lf + delta[pool_idx]
+
+    def regularization(self, params_slice):
+        n_pools = self._infer_n_pools(params_slice)
+        u, Gamma, alpha, beta_fee, delta = self._unpack(params_slice, n_pools)
+        u_pred = self._x_token_jax @ Gamma
+        reg_token = self.lambda_token * jnp.sum((u - u_pred) ** 2)
+        reg_chain = self.lambda_chain * jnp.sum(alpha ** 2)
+        reg_fee = self.lambda_fee * jnp.sum(beta_fee ** 2)
+        reg_delta = self.lambda_delta * jnp.sum(delta ** 2)
+        return reg_token + reg_chain + reg_fee + reg_delta
+
+    def init(self, jdata, warm_start=None):
+        n_pools = len(jdata.pool_data)
+        k = self.k_obs
+
+        if warm_start is not None:
+            # Collect per-pool noise_coeffs from warm_start
+            noise_all = np.zeros((n_pools, k), dtype=np.float64)
+            for i, pid in enumerate(jdata.pool_ids):
+                if pid in warm_start and "noise_coeffs" in warm_start[pid]:
+                    nc = warm_start[pid]["noise_coeffs"]
+                    noise_all[i] = nc[:k]
+
+            # Solve: u[ta_i] + u[tb_i] + alpha[ch_i] + beta_fee * lf_i ≈ noise_all[i]
+            n_cols = self.n_tokens + self.n_chains + 1
+            A = np.zeros((n_pools, n_cols), dtype=np.float64)
+            for i in range(n_pools):
+                A[i, self.token_a_idx[i]] = 1.0
+                A[i, self.token_b_idx[i]] += 1.0
+                A[i, self.n_tokens + self.chain_idx[i]] = 1.0
+                A[i, -1] = self.log_fees[i]
+
+            lam_reg = 0.1
+            AtA = A.T @ A + lam_reg * np.eye(n_cols)
+            u_init = np.zeros((self.n_tokens, k))
+            alpha_init = np.zeros((self.n_chains, k))
+            beta_fee_init = np.zeros(k)
+
+            for j in range(k):
+                sol = np.linalg.solve(AtA, A.T @ noise_all[:, j])
+                u_init[:, j] = sol[:self.n_tokens]
+                alpha_init[:, j] = sol[self.n_tokens:self.n_tokens + self.n_chains]
+                beta_fee_init[j] = sol[-1]
+
+            # Delta = residuals
+            predicted = np.zeros_like(noise_all)
+            for i in range(n_pools):
+                predicted[i] = (u_init[self.token_a_idx[i]]
+                               + u_init[self.token_b_idx[i]]
+                               + alpha_init[self.chain_idx[i]]
+                               + beta_fee_init * self.log_fees[i])
+            delta_init = noise_all - predicted
+
+            # Gamma from post-hoc regression of u on x_token
+            Gamma_init, _, _, _ = np.linalg.lstsq(
+                self.x_token, u_init, rcond=None
+            )
+        else:
+            # Cold start: pooled OLS for baseline, then decompose
+            all_x = np.vstack([np.array(pd["x_obs"]) for pd in jdata.pool_data])
+            all_y = np.concatenate([np.array(pd["y_obs"]) for pd in jdata.pool_data])
+            pooled_coeffs, _, _, _ = np.linalg.lstsq(all_x, all_y, rcond=None)
+            pooled_coeffs = pooled_coeffs[:k]
+
+            u_init = np.tile(pooled_coeffs / 2.0, (self.n_tokens, 1))
+            Gamma_init, _, _, _ = np.linalg.lstsq(
+                self.x_token, u_init, rcond=None
+            )
+            alpha_init = np.zeros((self.n_chains, k))
+            beta_fee_init = np.zeros(k)
+            delta_init = np.zeros((n_pools, k))
+
+        return np.concatenate([
+            u_init.ravel(),
+            Gamma_init.ravel(),
+            alpha_init.ravel(),
+            beta_fee_init,
+            delta_init.ravel(),
+        ]).astype(np.float64)
+
+    def predict_new(self, params_slice, x_attr):
+        raise ValueError(
+            "TokenFactoredNoiseHead.predict_new() requires token identifiers. "
+            "Use predict_new_pool(params, token_a, token_b, chain, fee) instead."
+        )
+
+    def predict_new_pool(
+        self, params_slice, token_a, token_b, chain, fee, n_pools,
+    ) -> dict:
+        """Predict noise coefficients for a new pool from token composition.
+
+        Seen tokens use learned u_t. Unseen tokens fall back to x_t @ Gamma.
+        Unseen chains use alpha = zeros. No delta for new pools.
+        """
+        params_np = np.asarray(params_slice)
+        u, Gamma, alpha, beta_fee, delta = self._unpack(params_np, n_pools)
+        u, Gamma, alpha, beta_fee = (
+            np.array(u), np.array(Gamma), np.array(alpha), np.array(beta_fee)
+        )
+        mcaps = _load_token_mcaps(self._mcap_path)
+
+        def _get_token_effect(token):
+            if token in self.token_index:
+                return u[self.token_index[token]]
+            x_t = np.zeros(self.d_token)
+            x_t[0] = 1.0
+            cls = _classify_token(token, mcaps)
+            x_t[1] = cls["log_mcap"]
+            x_t[2] = cls["is_stable"]
+            x_t[3] = cls["is_eth_derivative"]
+            x_t[4] = cls["is_L1_native"]
+            return x_t @ Gamma
+
+        u_a = _get_token_effect(token_a)
+        u_b = _get_token_effect(token_b)
+
+        if chain in self.chain_index:
+            alpha_c = alpha[self.chain_index[chain]]
+        else:
+            alpha_c = np.zeros(self.k_obs)
+
+        fee_effect = beta_fee * np.log(fee)
+        noise_coeffs = u_a + u_b + alpha_c + fee_effect
+
+        return {
+            "noise_coeffs": noise_coeffs,
+            "components": {
+                "token_a": u_a,
+                "token_b": u_b,
+                "chain": alpha_c,
+                "fee": fee_effect,
+            },
+        }
+
+    def unpack_result(self, params_slice, n_pools, k_attr):
+        params_np = np.asarray(params_slice)
+        u, Gamma, alpha, beta_fee, delta = self._unpack(params_np, n_pools)
+        u, Gamma, alpha, beta_fee, delta = (
+            np.array(u), np.array(Gamma), np.array(alpha),
+            np.array(beta_fee), np.array(delta),
+        )
+        # Reconstruct per-pool noise_coeffs
+        noise_coeffs = np.zeros((n_pools, self.k_obs))
+        for i in range(n_pools):
+            noise_coeffs[i] = (u[self.token_a_idx[i]] + u[self.token_b_idx[i]]
+                              + alpha[self.chain_idx[i]]
+                              + beta_fee * self.log_fees[i]
+                              + delta[i])
+        return {
+            "token_effects": u,
+            "Gamma": Gamma,
+            "chain_effects": alpha,
+            "beta_fee": beta_fee,
+            "noise_deltas": delta,
+            "noise_coeffs": noise_coeffs,
         }
 
     def make_bounds(self, n_pools, k_attr):
