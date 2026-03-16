@@ -1298,7 +1298,9 @@ def _train_on_historic_data_impl(
         return selected_params
     elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
 
-        n_evaluation_points = 20
+        n_evaluation_points = run_fingerprint["optimisation_settings"].get(
+            "optuna_settings", {}
+        ).get("n_evaluation_points", 20)
         min_spacing = data_dict["bout_length"] // 2  # E
 
         run_fingerprint["optimisation_settings"]["n_parameter_sets"] = 1
