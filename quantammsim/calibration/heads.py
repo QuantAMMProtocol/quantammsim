@@ -648,8 +648,9 @@ class TokenFactoredNoiseHead:
             noise_all = np.zeros((n_pools, k), dtype=np.float64)
             for i, pid in enumerate(jdata.pool_ids):
                 if pid in warm_start and "noise_coeffs" in warm_start[pid]:
-                    nc = warm_start[pid]["noise_coeffs"]
-                    noise_all[i] = nc[:k]
+                    nc = np.asarray(warm_start[pid]["noise_coeffs"])
+                    n_copy = min(len(nc), k)
+                    noise_all[i, :n_copy] = nc[:n_copy]
 
             # Solve: u[ta_i] + u[tb_i] + alpha[ch_i] + beta_fee * lf_i ≈ noise_all[i]
             n_cols = self.n_tokens + self.n_chains + 1

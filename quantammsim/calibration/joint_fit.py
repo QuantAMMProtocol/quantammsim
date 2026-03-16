@@ -132,8 +132,12 @@ def prepare_token_factored_data(
             x_obs_cross = build_cross_pool_x_obs(
                 entry["panel"], matched, pid, canonicalize=canonicalize,
             )
+            # x_obs_cross has n_obs-1 rows (first day dropped);
+            # trim y_obs and day_indices to match
             d = dict(jdata.pool_data[i])
             d["x_obs"] = jnp.array(x_obs_cross)
+            d["y_obs"] = d["y_obs"][1:]
+            d["day_indices"] = d["day_indices"][1:]
             new_pool_data.append(d)
         jdata = JointData(
             pool_data=new_pool_data,

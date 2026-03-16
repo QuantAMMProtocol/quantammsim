@@ -6,8 +6,10 @@ Phase 2: LOO cross-validation (baseline vs cross-pool ablation)
 Phase 3: Comparison plots and JSON export
 """
 
+import argparse
 import json
 import os
+import pickle
 
 import matplotlib
 matplotlib.use("Agg")
@@ -600,10 +602,97 @@ def plot_loo_scatter(loo_results, output_dir, suffix=""):
     print(f"  Saved: {out}")
 
 
+# ---- Intermediate state caching ----
+
+_CACHE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "results", "token_factored_calibration", "_cache",
+)
+
+
+def _save_stage1(matched_clean, option_c_clean, diag):
+    """Cache Option C fits, filtering, and Phase 0 diagnostic."""
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    path = os.path.join(_CACHE_DIR, "stage1.pkl")
+    with open(path, "wb") as f:
+        pickle.dump({
+            "matched_clean": matched_clean,
+            "option_c_clean": option_c_clean,
+            "diag": diag,
+        }, f)
+    print(f"  Cached stage 1 to {path}")
+
+
+def _load_stage1():
+    """Load cached stage 1 results. Returns None if missing."""
+    path = os.path.join(_CACHE_DIR, "stage1.pkl")
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        data = pickle.load(f)
+    print(f"  Loaded stage 1 cache from {path}")
+    return data
+
+
+def _save_baseline(result_base, enc_base, sweep_baseline, loo_baseline):
+    """Cache ablation 1 results."""
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    path = os.path.join(_CACHE_DIR, "baseline.pkl")
+    with open(path, "wb") as f:
+        pickle.dump({
+            "result_base": result_base,
+            "enc_base": enc_base,
+            "sweep_baseline": sweep_baseline,
+            "loo_baseline": loo_baseline,
+        }, f)
+    print(f"  Cached baseline results to {path}")
+
+
+def _load_baseline():
+    """Load cached baseline results. Returns None if missing."""
+    path = os.path.join(_CACHE_DIR, "baseline.pkl")
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        data = pickle.load(f)
+    print(f"  Loaded baseline cache from {path}")
+    return data
+
+
+def _export_ablation_result(result, enc):
+    """Build JSON-serializable dict from ablation result + encoding."""
+    return {
+        "loss": result["loss"],
+        "data_loss": result["data_loss"],
+        "reg_loss": result["reg_loss"],
+        "init_loss": result["init_loss"],
+        "converged": result["converged"],
+        "n_pools": result["n_pools"],
+        "n_tokens": enc["n_tokens"],
+        "n_chains": enc["n_chains"],
+        "token_index": enc["token_index"],
+        "chain_index": enc["chain_index"],
+        "token_effects": result["token_effects"].tolist(),
+        "Gamma": result["Gamma"].tolist(),
+        "chain_effects": result["chain_effects"].tolist(),
+        "beta_fee": result["beta_fee"].tolist(),
+        "noise_deltas": result["noise_deltas"].tolist(),
+        "noise_coeffs": result["noise_coeffs"].tolist(),
+    }
+
+
 # ---- Main ----
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Token-factored noise calibration v2")
+    parser.add_argument(
+        "--cross-pool-only", action="store_true",
+        help="Skip baseline ablation, load from cache, run only cross-pool",
+    )
+    args = parser.parse_args()
+
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
     print("=" * 70)
@@ -611,55 +700,71 @@ def main():
     print("  Canonicalization + Cross-Pool Lag Features")
     print("=" * 70)
 
-    panel, matched = load_and_match()
+    # ---- Stage 1: Option C + filtering + Phase 0 ----
+    cached_s1 = _load_stage1() if args.cross_pool_only else None
 
-    # Step 1: Option C baseline (reduced x_obs)
-    from quantammsim.calibration.per_pool_fit import fit_all_pools
-    print(f"\n--- Option C Reduced: per-pool fits ({len(matched)} pools) ---")
-    option_c = fit_all_pools(matched, fix_gas_to_chain=True, reduced=True)
-    losses = [r["loss"] for r in option_c.values()]
-    print(f"  Loss: median={np.median(losses):.4f}, mean={np.mean(losses):.4f}")
+    if cached_s1 is not None:
+        matched_clean = cached_s1["matched_clean"]
+        option_c_clean = cached_s1["option_c_clean"]
+        diag = cached_s1["diag"]
+        print(f"  Using cached stage 1: {len(matched_clean)} pools")
+    else:
+        panel, matched = load_and_match()
 
-    # Step 2: Filter pathological pools
-    matched_clean, option_c_clean = filter_pathological(matched, option_c)
+        from quantammsim.calibration.per_pool_fit import fit_all_pools
+        print(f"\n--- Option C Reduced: per-pool fits ({len(matched)} pools) ---")
+        option_c = fit_all_pools(matched, fix_gas_to_chain=True, reduced=True)
+        losses = [r["loss"] for r in option_c.values()]
+        print(f"  Loss: median={np.median(losses):.4f}, mean={np.mean(losses):.4f}")
 
-    # Phase 0: Diagnostic
-    diag = run_phase0_diagnostic(matched_clean, option_c_clean)
+        matched_clean, option_c_clean = filter_pathological(matched, option_c)
+        diag = run_phase0_diagnostic(matched_clean, option_c_clean)
+        _save_stage1(matched_clean, option_c_clean, diag)
 
-    # ---- Ablation: Baseline (K_OBS_REDUCED=4, no cross-pool) ----
-    print("\n" + "=" * 70)
-    print("ABLATION 1: Baseline (K_OBS_REDUCED=4, no cross-pool features)")
-    print("=" * 70)
+    # ---- Ablation 1: Baseline ----
+    if args.cross_pool_only:
+        cached_bl = _load_baseline()
+        if cached_bl is not None:
+            result_base = cached_bl["result_base"]
+            enc_base = cached_bl["enc_base"]
+            sweep_baseline = cached_bl["sweep_baseline"]
+            loo_baseline = cached_bl["loo_baseline"]
+        else:
+            print("  No baseline cache found — skipping baseline ablation.")
+            result_base = enc_base = sweep_baseline = loo_baseline = None
+    else:
+        print("\n" + "=" * 70)
+        print("ABLATION 1: Baseline (K_OBS_REDUCED=4, no cross-pool features)")
+        print("=" * 70)
 
-    result_base, model_base, jdata_base, enc_base = run_token_factored(
-        matched_clean, option_c_clean, lambda_delta=1.0, cross_pool=False)
+        result_base, _, jdata_base, enc_base = run_token_factored(
+            matched_clean, option_c_clean, lambda_delta=1.0, cross_pool=False)
 
-    # Analysis
-    print_token_effects(result_base, enc_base)
-    print_chain_effects(result_base, enc_base)
-    print_delta_analysis(result_base, enc_base, jdata_base, matched_clean)
+        print_token_effects(result_base, enc_base)
+        print_chain_effects(result_base, enc_base)
+        print_delta_analysis(result_base, enc_base, jdata_base, matched_clean)
 
-    # Lambda sweep with annealing
-    sweep_baseline = run_lambda_sweep(matched_clean, option_c_clean, cross_pool=False)
+        sweep_baseline = run_lambda_sweep(
+            matched_clean, option_c_clean, cross_pool=False)
+        loo_baseline = run_loo_validation(
+            matched_clean, option_c_clean, lambda_delta=1.0, cross_pool=False)
 
-    # LOO
-    loo_baseline = run_loo_validation(
-        matched_clean, option_c_clean, lambda_delta=1.0, cross_pool=False)
+        _save_baseline(result_base, enc_base, sweep_baseline, loo_baseline)
 
-    # ---- Ablation: Cross-pool (K_OBS_CROSS=7) ----
+    # ---- Ablation 2: Cross-pool ----
     print("\n" + "=" * 70)
     print("ABLATION 2: Cross-pool lag features (K_OBS_CROSS=7)")
     print("=" * 70)
 
-    result_cross, model_cross, jdata_cross, enc_cross = run_token_factored(
+    result_cross, _, jdata_cross, enc_cross = run_token_factored(
         matched_clean, option_c_clean, lambda_delta=1.0, cross_pool=True)
 
     print_token_effects(result_cross, enc_cross)
     print_chain_effects(result_cross, enc_cross)
     print_delta_analysis(result_cross, enc_cross, jdata_cross, matched_clean)
 
-    sweep_cross = run_lambda_sweep(matched_clean, option_c_clean, cross_pool=True)
-
+    sweep_cross = run_lambda_sweep(
+        matched_clean, option_c_clean, cross_pool=True)
     loo_cross = run_loo_validation(
         matched_clean, option_c_clean, lambda_delta=1.0, cross_pool=True)
 
@@ -667,7 +772,10 @@ def main():
     print("\n" + "=" * 70)
     print("ABLATION COMPARISON")
     print("=" * 70)
-    for label, loo in [("Baseline (k=4)", loo_baseline), ("Cross-pool (k=7)", loo_cross)]:
+    ablations = [("Cross-pool (k=7)", loo_cross)]
+    if loo_baseline is not None:
+        ablations.insert(0, ("Baseline (k=4)", loo_baseline))
+    for label, loo in ablations:
         if loo:
             r2s = [r["r2_loo"] for r in loo]
             r2s_c = [r["r2_option_c"] for r in loo]
@@ -680,56 +788,26 @@ def main():
     print("\nGenerating plots...")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    plot_lambda_sweep(sweep_baseline, OUTPUT_DIR, suffix="_baseline")
+    if sweep_baseline is not None:
+        plot_lambda_sweep(sweep_baseline, OUTPUT_DIR, suffix="_baseline")
     plot_lambda_sweep(sweep_cross, OUTPUT_DIR, suffix="_crosspool")
-    plot_token_effects(result_base, enc_base, OUTPUT_DIR)
-    plot_loo_scatter(loo_baseline, OUTPUT_DIR, suffix="_baseline")
+    if result_base is not None:
+        plot_token_effects(result_base, enc_base, OUTPUT_DIR)
+    if loo_baseline is not None:
+        plot_loo_scatter(loo_baseline, OUTPUT_DIR, suffix="_baseline")
     plot_loo_scatter(loo_cross, OUTPUT_DIR, suffix="_crosspool")
 
     # JSON export
     export = {
         "phase0_diagnostic": diag,
-        "baseline": {
-            "loss": result_base["loss"],
-            "data_loss": result_base["data_loss"],
-            "reg_loss": result_base["reg_loss"],
-            "init_loss": result_base["init_loss"],
-            "converged": result_base["converged"],
-            "n_pools": result_base["n_pools"],
-            "n_tokens": enc_base["n_tokens"],
-            "n_chains": enc_base["n_chains"],
-            "token_index": enc_base["token_index"],
-            "chain_index": enc_base["chain_index"],
-            "token_effects": result_base["token_effects"].tolist(),
-            "Gamma": result_base["Gamma"].tolist(),
-            "chain_effects": result_base["chain_effects"].tolist(),
-            "beta_fee": result_base["beta_fee"].tolist(),
-            "noise_deltas": result_base["noise_deltas"].tolist(),
-            "noise_coeffs": result_base["noise_coeffs"].tolist(),
-        },
-        "cross_pool": {
-            "loss": result_cross["loss"],
-            "data_loss": result_cross["data_loss"],
-            "reg_loss": result_cross["reg_loss"],
-            "init_loss": result_cross["init_loss"],
-            "converged": result_cross["converged"],
-            "n_pools": result_cross["n_pools"],
-            "n_tokens": enc_cross["n_tokens"],
-            "n_chains": enc_cross["n_chains"],
-            "token_index": enc_cross["token_index"],
-            "chain_index": enc_cross["chain_index"],
-            "token_effects": result_cross["token_effects"].tolist(),
-            "Gamma": result_cross["Gamma"].tolist(),
-            "chain_effects": result_cross["chain_effects"].tolist(),
-            "beta_fee": result_cross["beta_fee"].tolist(),
-            "noise_deltas": result_cross["noise_deltas"].tolist(),
-            "noise_coeffs": result_cross["noise_coeffs"].tolist(),
-        },
-        "lambda_sweep_baseline": sweep_baseline,
+        "cross_pool": _export_ablation_result(result_cross, enc_cross),
         "lambda_sweep_crosspool": sweep_cross,
-        "loo_baseline": loo_baseline,
         "loo_crosspool": loo_cross,
     }
+    if result_base is not None:
+        export["baseline"] = _export_ablation_result(result_base, enc_base)
+        export["lambda_sweep_baseline"] = sweep_baseline
+        export["loo_baseline"] = loo_baseline
     json_path = os.path.join(OUTPUT_DIR, "token_factored_v2_results.json")
     with open(json_path, "w") as f:
         json.dump(export, f, indent=2, default=str)

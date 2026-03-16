@@ -375,6 +375,34 @@ class TestDataRegLossSeparation:
         assert result["reg_loss"] >= -1e-10
 
 
+class TestPrepareTokenFactoredCrossPool:
+    """Test prepare_token_factored_data with cross_pool=True."""
+
+    def test_cross_pool_jdata_shapes_consistent(self, matched_data):
+        from quantammsim.calibration.joint_fit import prepare_token_factored_data
+
+        jdata, enc = prepare_token_factored_data(matched_data, cross_pool=True)
+        for pd in jdata.pool_data:
+            assert pd["x_obs"].shape[0] == pd["y_obs"].shape[0]
+            assert pd["x_obs"].shape[0] == pd["day_indices"].shape[0]
+
+    def test_cross_pool_x_obs_has_7_cols(self, matched_data):
+        from quantammsim.calibration.joint_fit import prepare_token_factored_data
+        from quantammsim.calibration.pool_data import K_OBS_CROSS
+
+        jdata, _ = prepare_token_factored_data(matched_data, cross_pool=True)
+        for pd in jdata.pool_data:
+            assert pd["x_obs"].shape[1] == K_OBS_CROSS
+
+    def test_cross_pool_drops_first_obs(self, matched_data):
+        from quantammsim.calibration.joint_fit import prepare_token_factored_data
+
+        jdata_base, _ = prepare_token_factored_data(matched_data, cross_pool=False)
+        jdata_cross, _ = prepare_token_factored_data(matched_data, cross_pool=True)
+        for pd_base, pd_cross in zip(jdata_base.pool_data, jdata_cross.pool_data):
+            assert pd_cross["y_obs"].shape[0] == pd_base["y_obs"].shape[0] - 1
+
+
 class TestPrepareJointDataReduced:
     """Test prepare_joint_data with reduced_x_obs=True."""
 
