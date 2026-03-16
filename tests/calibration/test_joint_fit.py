@@ -190,6 +190,104 @@ class TestModes:
         assert len(pred["noise_coeffs"]) == K_OBS
 
 
+class TestPrepareTokenFactoredData:
+    def test_returns_jdata_and_encoding(self, matched_data):
+        from quantammsim.calibration.joint_fit import prepare_token_factored_data
+
+        jdata, token_enc = prepare_token_factored_data(matched_data)
+        assert hasattr(jdata, "pool_data")
+        assert hasattr(jdata, "x_attr")
+        assert "token_index" in token_enc
+        assert "token_a_idx" in token_enc
+
+    def test_reduced_x_obs_by_default(self, matched_data):
+        from quantammsim.calibration.joint_fit import prepare_token_factored_data
+        from quantammsim.calibration.pool_data import K_OBS_REDUCED
+
+        jdata, _ = prepare_token_factored_data(matched_data)
+        for pd in jdata.pool_data:
+            assert pd["x_obs"].shape[1] == K_OBS_REDUCED
+
+    def test_encoding_matches_pools(self, matched_data):
+        from quantammsim.calibration.joint_fit import prepare_token_factored_data
+
+        jdata, enc = prepare_token_factored_data(matched_data)
+        n_pools = len(jdata.pool_data)
+        assert len(enc["token_a_idx"]) == n_pools
+        assert len(enc["token_b_idx"]) == n_pools
+        assert len(enc["chain_idx"]) == n_pools
+        assert len(enc["log_fees"]) == n_pools
+
+
+class TestTokenFactoredEndToEnd:
+    """Full pipeline: TokenFactoredNoiseHead + CalibrationModel + fit."""
+
+    def test_model_fits_and_converges(self, matched_data):
+        from quantammsim.calibration.calibration_model import CalibrationModel
+        from quantammsim.calibration.heads import (
+            FixedHead, PerPoolHead, TokenFactoredNoiseHead,
+        )
+        from quantammsim.calibration.joint_fit import prepare_token_factored_data
+        from quantammsim.calibration.loss import CHAIN_GAS_USD
+        from quantammsim.calibration.pool_data import K_OBS_REDUCED
+
+        jdata, enc = prepare_token_factored_data(matched_data)
+        n_pools = len(jdata.pool_data)
+
+        # Gas: fixed to chain defaults
+        gas_values = []
+        for pid in jdata.pool_ids:
+            chain = matched_data[pid]["chain"]
+            gas_values.append(np.log(max(CHAIN_GAS_USD.get(chain, 1.0), 1e-6)))
+        gas_head = FixedHead("log_gas", np.array(gas_values))
+
+        # Cadence: per-pool
+        cad_head = PerPoolHead("log_cadence", default=np.log(12.0))
+
+        # Noise: token-factored
+        noise_head = TokenFactoredNoiseHead(k_obs=K_OBS_REDUCED, **enc)
+
+        model = CalibrationModel(cad_head, gas_head, noise_head)
+        result = model.fit(jdata, maxiter=50)
+
+        assert result["loss"] <= result["init_loss"]
+        assert "token_effects" in result
+        assert "noise_coeffs" in result
+        assert result["noise_coeffs"].shape == (n_pools, K_OBS_REDUCED)
+
+    def test_model_with_warm_start(self, matched_data):
+        from quantammsim.calibration.calibration_model import CalibrationModel
+        from quantammsim.calibration.heads import (
+            FixedHead, PerPoolHead, TokenFactoredNoiseHead,
+        )
+        from quantammsim.calibration.joint_fit import prepare_token_factored_data
+        from quantammsim.calibration.loss import CHAIN_GAS_USD
+        from quantammsim.calibration.per_pool_fit import fit_all_pools
+        from quantammsim.calibration.pool_data import K_OBS_REDUCED
+
+        # Run Option C first
+        option_c = fit_all_pools(
+            matched_data, fix_gas_to_chain=True, reduced=True
+        )
+
+        jdata, enc = prepare_token_factored_data(matched_data)
+        n_pools = len(jdata.pool_data)
+
+        gas_values = []
+        for pid in jdata.pool_ids:
+            chain = matched_data[pid]["chain"]
+            gas_values.append(np.log(max(CHAIN_GAS_USD.get(chain, 1.0), 1e-6)))
+
+        noise_head = TokenFactoredNoiseHead(k_obs=K_OBS_REDUCED, **enc)
+        model = CalibrationModel(
+            PerPoolHead("log_cadence", default=np.log(12.0)),
+            FixedHead("log_gas", np.array(gas_values)),
+            noise_head,
+        )
+        result = model.fit(jdata, maxiter=100, warm_start=option_c)
+        assert result["loss"] <= result["init_loss"]
+
+
 class TestPrepareJointDataReduced:
     """Test prepare_joint_data with reduced_x_obs=True."""
 

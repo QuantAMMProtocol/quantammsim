@@ -91,6 +91,29 @@ def prepare_joint_data(
     )
 
 
+def prepare_token_factored_data(
+    matched: Dict[str, dict],
+    reduced_x_obs: bool = True,
+    fix_gas_to_chain: bool = True,
+) -> tuple:
+    """Prepare JointData + token encoding for TokenFactoredNoiseHead.
+
+    Returns (jdata, token_encoding) where token_encoding is the dict from
+    encode_tokens() containing token/chain structure for constructing the head.
+    """
+    from quantammsim.calibration.pool_data import encode_tokens
+
+    jdata = prepare_joint_data(
+        matched,
+        fix_gas_to_chain=fix_gas_to_chain,
+        reduced_x_obs=reduced_x_obs,
+    )
+
+    token_encoding = encode_tokens(matched)
+
+    return jdata, token_encoding
+
+
 def pack_joint_params(
     bias_cad: float,
     bias_gas: float,
