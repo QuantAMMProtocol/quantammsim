@@ -1,14 +1,13 @@
-"""Token-factored noise calibration: pooled diagnostic + full pipeline.
+"""Token-factored noise calibration v2: canonicalization + cross-pool lag features.
 
 Phase 0: Pooled Ridge diagnostic — does cross-pool signal exist?
-Phase 1: Token-factored model with lambda_delta sweep
-Phase 2: LOO cross-validation
+Phase 1: Token-factored model with lambda_delta annealing sweep
+Phase 2: LOO cross-validation (baseline vs cross-pool ablation)
 Phase 3: Comparison plots and JSON export
 """
 
 import json
 import os
-import sys
 
 import matplotlib
 matplotlib.use("Agg")
@@ -31,7 +30,8 @@ OUTPUT_DIR = os.path.join(
 )
 OPTION_C_LOSS_CUTOFF = 5.0
 JOINT_MAXITER = 5000
-LAMBDA_DELTAS = [0.01, 0.1, 0.5, 1.0, 5.0, 10.0]
+# Sorted descending for warm-start annealing (highest regularization first)
+LAMBDA_DELTAS = [10.0, 5.0, 1.0, 0.5, 0.1, 0.01]
 
 
 # ---- Data loading (shared with run_mlp_calibration.py) ----
@@ -96,7 +96,7 @@ def run_phase0_diagnostic(matched, option_c):
     print("=" * 70)
 
     pool_ids = sorted(matched.keys())
-    X_attr, attr_names, _ = build_pool_attributes(matched)
+    X_attr, _, _ = build_pool_attributes(matched)
     pool_idx_map = {pid: i for i, pid in enumerate(pool_ids)}
     enc = encode_tokens(matched)
 
@@ -137,14 +137,14 @@ def run_phase0_diagnostic(matched, option_c):
     X_pool_attrs = np.vstack(all_pool_attrs)
     X_token_dummies = np.vstack(all_token_dummies)
 
-    # Model 1: x_obs + pool_attrs → pooled Ridge
+    # Model 1: x_obs + pool_attrs
     X_combined = np.column_stack([X_obs, X_pool_attrs])
     model1 = RidgeCV(alphas=np.logspace(-2, 4, 50))
     model1.fit(X_combined, y_combined)
     r2_pooled = model1.score(X_combined, y_combined)
     print(f"  Pooled Ridge (x_obs + pool attrs): R² = {r2_pooled:.4f}")
 
-    # Model 2: x_obs + token_dummies → token-dummy Ridge
+    # Model 2: x_obs + token_dummies
     X_token = np.column_stack([X_obs, X_token_dummies])
     model2 = RidgeCV(alphas=np.logspace(-2, 4, 50))
     model2.fit(X_token, y_combined)
@@ -209,35 +209,65 @@ def _build_gas_values(jdata, matched_clean):
     return np.array(gas_values)
 
 
-def run_token_factored(matched_clean, option_c_clean, lambda_delta=1.0):
+def _result_to_warm_start(result):
+    """Extract per-pool warm_start dict from a CalibrationModel fit result.
+
+    Returns dict: pool_id -> {log_cadence, noise_coeffs} suitable for
+    passing as warm_start to CalibrationModel.fit().
+    """
+    pool_ids = result["pool_ids"]
+    warm = {}
+    for i, pid in enumerate(pool_ids):
+        entry = {}
+        # Cadence: from PerPoolHead
+        if "log_cadence_per_pool" in result:
+            entry["log_cadence"] = float(result["log_cadence_per_pool"][i])
+        # Noise: per-pool coefficients
+        if "noise_coeffs" in result:
+            entry["noise_coeffs"] = result["noise_coeffs"][i]
+        warm[pid] = entry
+    return warm
+
+
+def run_token_factored(
+    matched_clean, option_c_clean, lambda_delta=1.0,
+    cross_pool=False, warm_start=None,
+):
     """Fit TokenFactoredNoiseHead with PerPoolHead(cadence) + FixedHead(gas)."""
     from quantammsim.calibration.calibration_model import CalibrationModel
     from quantammsim.calibration.heads import (
         FixedHead, PerPoolHead, TokenFactoredNoiseHead,
     )
     from quantammsim.calibration.joint_fit import prepare_token_factored_data
-    from quantammsim.calibration.pool_data import K_OBS_REDUCED
+    from quantammsim.calibration.pool_data import K_OBS_CROSS, K_OBS_REDUCED
 
-    jdata, enc = prepare_token_factored_data(matched_clean)
+    k_obs = K_OBS_CROSS if cross_pool else K_OBS_REDUCED
+
+    jdata, enc = prepare_token_factored_data(
+        matched_clean, cross_pool=cross_pool,
+    )
     n_pools = len(jdata.pool_data)
 
     gas_values = _build_gas_values(jdata, matched_clean)
     gas_head = FixedHead("log_gas", gas_values)
     cad_head = PerPoolHead("log_cadence", default=np.log(12.0))
     noise_head = TokenFactoredNoiseHead(
-        k_obs=K_OBS_REDUCED,
+        k_obs=k_obs,
         lambda_delta=lambda_delta,
         **enc,
     )
 
     model = CalibrationModel(cad_head, gas_head, noise_head)
     n_p = model.n_params(n_pools, jdata.x_attr.shape[1])
-    print(f"\n--- Token-factored (lambda_delta={lambda_delta}) ---")
+    cp_tag = " [cross-pool]" if cross_pool else ""
+    print(f"\n--- Token-factored (lambda_delta={lambda_delta}){cp_tag} ---")
     print(f"  {n_pools} pools, {enc['n_tokens']} tokens, "
-          f"{enc['n_chains']} chains, {n_p} params")
+          f"{enc['n_chains']} chains, {n_p} params, k_obs={k_obs}")
 
-    result = model.fit(jdata, maxiter=JOINT_MAXITER, warm_start=option_c_clean)
-    print(f"  Loss: {result['init_loss']:.4f} -> {result['loss']:.4f}")
+    ws = warm_start if warm_start is not None else option_c_clean
+    result = model.fit(jdata, maxiter=JOINT_MAXITER, warm_start=ws)
+    print(f"  Loss: {result['init_loss']:.4f} -> {result['loss']:.4f}"
+          f"  (data={result['data_loss']:.4f}, reg={result['reg_loss']:.4f})")
     print(f"  Converged: {result['converged']}")
 
     return result, model, jdata, enc
@@ -292,8 +322,6 @@ def print_delta_analysis(result, enc, jdata, matched_clean):
     """Print per-pool delta analysis."""
     delta = result["noise_deltas"]
     pool_ids = jdata.pool_ids
-    token_index = enc["token_index"]
-    inv_token = {v: k for k, v in token_index.items()}
 
     print(f"\n{'='*70}")
     print("Per-pool deltas (unexplained residual)")
@@ -311,30 +339,44 @@ def print_delta_analysis(result, enc, jdata, matched_clean):
               f"{delta_norms[i]:>8.3f} {delta[i, 0]:>8.3f}")
 
 
-def run_lambda_sweep(matched_clean, option_c_clean):
-    """Sweep lambda_delta values and report loss + delta shrinkage."""
+def run_lambda_sweep(matched_clean, option_c_clean, cross_pool=False):
+    """Sweep lambda_delta with warm-start annealing (descending lambda).
+
+    Each fit warm-starts from the previous result, so the sweep is
+    effectively a continuation path from high to low regularization.
+    """
     print(f"\n{'='*70}")
-    print("Lambda_delta sweep")
+    cp_tag = " [cross-pool]" if cross_pool else ""
+    print(f"Lambda_delta sweep{cp_tag}")
     print(f"{'='*70}")
-    print(f"{'lambda':>10} {'loss':>10} {'delta_norm':>12} {'mean_|d|':>10}")
-    print("-" * 45)
+    print(f"{'lambda':>10} {'loss':>10} {'data_loss':>10} {'reg_loss':>10} "
+          f"{'delta_norm':>12} {'mean_|d|':>10}")
+    print("-" * 65)
 
     results = []
+    warm_start = option_c_clean
     for lam in LAMBDA_DELTAS:
         result, model, jdata, enc = run_token_factored(
-            matched_clean, option_c_clean, lambda_delta=lam)
+            matched_clean, option_c_clean, lambda_delta=lam,
+            cross_pool=cross_pool, warm_start=warm_start,
+        )
         delta = result["noise_deltas"]
         delta_norm = float(np.linalg.norm(delta))
         mean_abs_d = float(np.mean(np.abs(delta)))
         print(f"{lam:>10.2f} {result['loss']:>10.4f} "
+              f"{result['data_loss']:>10.4f} {result['reg_loss']:>10.4f} "
               f"{delta_norm:>12.4f} {mean_abs_d:>10.4f}")
         results.append({
             "lambda_delta": lam,
             "loss": result["loss"],
+            "data_loss": result["data_loss"],
+            "reg_loss": result["reg_loss"],
             "delta_norm": delta_norm,
             "mean_abs_delta": mean_abs_d,
             "converged": result["converged"],
         })
+        # Warm-start next iteration from this result
+        warm_start = _result_to_warm_start(result)
 
     return results
 
@@ -342,7 +384,9 @@ def run_lambda_sweep(matched_clean, option_c_clean):
 # ---- Phase 3: LOO Cross-Validation ----
 
 
-def run_loo_validation(matched_clean, option_c_clean, lambda_delta=1.0):
+def run_loo_validation(
+    matched_clean, option_c_clean, lambda_delta=1.0, cross_pool=False,
+):
     """Leave-one-pool-out cross-validation via predict_new_pool."""
     from quantammsim.calibration.calibration_model import CalibrationModel
     from quantammsim.calibration.heads import (
@@ -350,14 +394,18 @@ def run_loo_validation(matched_clean, option_c_clean, lambda_delta=1.0):
     )
     from quantammsim.calibration.grid_interpolation import interpolate_pool_daily
     from quantammsim.calibration.joint_fit import prepare_token_factored_data
-    from quantammsim.calibration.pool_data import K_OBS_REDUCED, build_x_obs, _parse_tokens
+    from quantammsim.calibration.pool_data import (
+        K_OBS_CROSS, K_OBS_REDUCED, build_cross_pool_x_obs,
+        build_x_obs, _parse_tokens,
+    )
     import jax.numpy as jnp
 
+    k_obs = K_OBS_CROSS if cross_pool else K_OBS_REDUCED
     pool_ids = sorted(matched_clean.keys())
-    n_pools = len(pool_ids)
 
+    cp_tag = " [cross-pool]" if cross_pool else ""
     print(f"\n{'='*70}")
-    print(f"LOO Cross-Validation (lambda_delta={lambda_delta})")
+    print(f"LOO Cross-Validation (lambda_delta={lambda_delta}){cp_tag}")
     print(f"{'='*70}")
 
     loo_results = []
@@ -370,11 +418,13 @@ def run_loo_validation(matched_clean, option_c_clean, lambda_delta=1.0):
             continue
 
         # Fit on training set
-        jdata, enc = prepare_token_factored_data(train_matched)
+        jdata, enc = prepare_token_factored_data(
+            train_matched, cross_pool=cross_pool,
+        )
         gas_values = _build_gas_values(jdata, train_matched)
 
         noise_head = TokenFactoredNoiseHead(
-            k_obs=K_OBS_REDUCED,
+            k_obs=k_obs,
             lambda_delta=lambda_delta,
             **enc,
         )
@@ -401,8 +451,21 @@ def run_loo_validation(matched_clean, option_c_clean, lambda_delta=1.0):
 
         # Evaluate hold-out R²
         ho_panel = ho_entry["panel"]
-        x_obs_ho = build_x_obs(ho_panel, reduced=True)
         y_obs_ho = ho_panel["log_volume"].values.astype(float)
+
+        if cross_pool:
+            # Build cross-pool x_obs for held-out pool.
+            # Use matched_clean so pool's own entry is accessible;
+            # build_cross_pool_x_obs auto-excludes pool_id from its own peers.
+            x_obs_ho = build_cross_pool_x_obs(
+                ho_panel, matched_clean, hold_out_pid,
+            )
+            # Trim y_obs to match (first day dropped)
+            y_obs_ho = y_obs_ho[1:]
+            day_indices_ho = ho_entry["day_indices"][1:]
+        else:
+            x_obs_ho = build_x_obs(ho_panel, reduced=True)
+            day_indices_ho = ho_entry["day_indices"]
 
         # Use Option C cadence for the hold-out pool (not predicting cadence)
         oc_ho = option_c_clean[hold_out_pid]
@@ -411,18 +474,25 @@ def run_loo_validation(matched_clean, option_c_clean, lambda_delta=1.0):
             jnp.float64(oc_ho["log_cadence"]),
             jnp.float64(np.exp(oc_ho["log_gas"])),
         ))
-        v_arb = v_arb_all[ho_entry["day_indices"]]
-        v_noise = np.exp(x_obs_ho @ ho_pred["noise_coeffs"])
+        v_arb = v_arb_all[day_indices_ho]
+
+        # Noise coefficients are k_obs-dimensional; x_obs_ho has k_obs columns
+        noise_coeffs = ho_pred["noise_coeffs"][:k_obs]
+        v_noise = np.exp(x_obs_ho @ noise_coeffs)
         log_pred = np.log(np.maximum(v_arb + v_noise, 1e-6))
         ss_res = np.sum((log_pred - y_obs_ho) ** 2)
         ss_tot = np.sum((y_obs_ho - y_obs_ho.mean()) ** 2)
         r2_loo = 1 - ss_res / max(ss_tot, 1e-10)
 
         # Compare with Option C in-sample R²
-        v_noise_c = np.exp(build_x_obs(ho_panel, reduced=True) @ oc_ho["noise_coeffs"][:K_OBS_REDUCED])
-        log_pred_c = np.log(np.maximum(v_arb + v_noise_c, 1e-6))
-        ss_res_c = np.sum((log_pred_c - y_obs_ho) ** 2)
-        r2_c = 1 - ss_res_c / max(ss_tot, 1e-10)
+        x_obs_c = build_x_obs(ho_panel, reduced=True)
+        v_noise_c = np.exp(x_obs_c @ oc_ho["noise_coeffs"][:K_OBS_REDUCED])
+        v_arb_c = v_arb_all[ho_entry["day_indices"]]
+        log_pred_c = np.log(np.maximum(v_arb_c + v_noise_c, 1e-6))
+        y_obs_full = ho_panel["log_volume"].values.astype(float)
+        ss_res_c = np.sum((log_pred_c - y_obs_full) ** 2)
+        ss_tot_c = np.sum((y_obs_full - y_obs_full.mean()) ** 2)
+        r2_c = 1 - ss_res_c / max(ss_tot_c, 1e-10)
 
         loo_results.append({
             "pool_id": hold_out_pid,
@@ -450,18 +520,21 @@ def run_loo_validation(matched_clean, option_c_clean, lambda_delta=1.0):
 # ---- Plots ----
 
 
-def plot_lambda_sweep(sweep_results, output_dir):
-    """Plot loss and delta norm vs lambda_delta."""
+def plot_lambda_sweep(sweep_results, output_dir, suffix=""):
+    """Plot loss (data/reg separated) and delta norm vs lambda_delta."""
     lambdas = [r["lambda_delta"] for r in sweep_results]
-    losses = [r["loss"] for r in sweep_results]
+    data_losses = [r["data_loss"] for r in sweep_results]
+    reg_losses = [r["reg_loss"] for r in sweep_results]
     delta_norms = [r["delta_norm"] for r in sweep_results]
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
-    ax1.semilogx(lambdas, losses, "o-", color="steelblue")
+    ax1.semilogx(lambdas, data_losses, "o-", color="steelblue", label="data_loss")
+    ax1.semilogx(lambdas, reg_losses, "s--", color="orangered", label="reg_loss")
     ax1.set_xlabel("lambda_delta")
     ax1.set_ylabel("Loss")
-    ax1.set_title("Loss vs lambda_delta")
+    ax1.set_title("Data + Reg Loss vs lambda_delta")
+    ax1.legend()
 
     ax2.semilogx(lambdas, delta_norms, "o-", color="orangered")
     ax2.set_xlabel("lambda_delta")
@@ -469,7 +542,7 @@ def plot_lambda_sweep(sweep_results, output_dir):
     ax2.set_title("Delta norm vs lambda_delta")
 
     fig.tight_layout()
-    out = os.path.join(output_dir, "lambda_sweep.png")
+    out = os.path.join(output_dir, f"lambda_sweep{suffix}.png")
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {out}")
@@ -497,7 +570,7 @@ def plot_token_effects(result, enc, output_dir):
     print(f"  Saved: {out}")
 
 
-def plot_loo_scatter(loo_results, output_dir):
+def plot_loo_scatter(loo_results, output_dir, suffix=""):
     """Scatter: Option C R² vs LOO R²."""
     if not loo_results:
         return
@@ -514,14 +587,14 @@ def plot_loo_scatter(loo_results, output_dir):
             "k--", alpha=0.3, linewidth=1)
     ax.set_xlabel("Option C R² (in-sample)")
     ax.set_ylabel("Token-factored R² (LOO)")
-    ax.set_title("LOO Cross-Validation: Token-Factored vs Option C")
+    ax.set_title(f"LOO: Token-Factored vs Option C{suffix}")
 
     n_better = sum(1 for c, l in zip(r2_c, r2_loo) if l > c)
     ax.text(0.05, 0.95, f"LOO wins: {n_better}/{len(r2_c)}",
             transform=ax.transAxes, fontsize=10, va="top")
 
     fig.tight_layout()
-    out = os.path.join(output_dir, "loo_scatter.png")
+    out = os.path.join(output_dir, f"loo_scatter{suffix}.png")
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {out}")
@@ -534,7 +607,8 @@ def main():
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
     print("=" * 70)
-    print("Token-Factored Noise Calibration")
+    print("Token-Factored Noise Calibration v2")
+    print("  Canonicalization + Cross-Pool Lag Features")
     print("=" * 70)
 
     panel, matched = load_and_match()
@@ -552,53 +626,111 @@ def main():
     # Phase 0: Diagnostic
     diag = run_phase0_diagnostic(matched_clean, option_c_clean)
 
-    # Phase 1: Token-factored model (default lambda)
-    result, model, jdata, enc = run_token_factored(
-        matched_clean, option_c_clean, lambda_delta=1.0)
+    # ---- Ablation: Baseline (K_OBS_REDUCED=4, no cross-pool) ----
+    print("\n" + "=" * 70)
+    print("ABLATION 1: Baseline (K_OBS_REDUCED=4, no cross-pool features)")
+    print("=" * 70)
+
+    result_base, model_base, jdata_base, enc_base = run_token_factored(
+        matched_clean, option_c_clean, lambda_delta=1.0, cross_pool=False)
 
     # Analysis
-    print_token_effects(result, enc)
-    print_chain_effects(result, enc)
-    print_delta_analysis(result, enc, jdata, matched_clean)
+    print_token_effects(result_base, enc_base)
+    print_chain_effects(result_base, enc_base)
+    print_delta_analysis(result_base, enc_base, jdata_base, matched_clean)
 
-    # Lambda sweep
-    sweep_results = run_lambda_sweep(matched_clean, option_c_clean)
+    # Lambda sweep with annealing
+    sweep_baseline = run_lambda_sweep(matched_clean, option_c_clean, cross_pool=False)
 
-    # Phase 2: LOO cross-validation
-    loo_results = run_loo_validation(
-        matched_clean, option_c_clean, lambda_delta=1.0)
+    # LOO
+    loo_baseline = run_loo_validation(
+        matched_clean, option_c_clean, lambda_delta=1.0, cross_pool=False)
 
-    # Phase 3: Plots & export
+    # ---- Ablation: Cross-pool (K_OBS_CROSS=7) ----
+    print("\n" + "=" * 70)
+    print("ABLATION 2: Cross-pool lag features (K_OBS_CROSS=7)")
+    print("=" * 70)
+
+    result_cross, model_cross, jdata_cross, enc_cross = run_token_factored(
+        matched_clean, option_c_clean, lambda_delta=1.0, cross_pool=True)
+
+    print_token_effects(result_cross, enc_cross)
+    print_chain_effects(result_cross, enc_cross)
+    print_delta_analysis(result_cross, enc_cross, jdata_cross, matched_clean)
+
+    sweep_cross = run_lambda_sweep(matched_clean, option_c_clean, cross_pool=True)
+
+    loo_cross = run_loo_validation(
+        matched_clean, option_c_clean, lambda_delta=1.0, cross_pool=True)
+
+    # ---- Ablation summary ----
+    print("\n" + "=" * 70)
+    print("ABLATION COMPARISON")
+    print("=" * 70)
+    for label, loo in [("Baseline (k=4)", loo_baseline), ("Cross-pool (k=7)", loo_cross)]:
+        if loo:
+            r2s = [r["r2_loo"] for r in loo]
+            r2s_c = [r["r2_option_c"] for r in loo]
+            wins = sum(1 for r in loo if r["r2_loo"] > r["r2_option_c"])
+            print(f"  {label}: median R²_LOO={np.median(r2s):.4f}, "
+                  f"median R²_C={np.median(r2s_c):.4f}, "
+                  f"wins={wins}/{len(loo)}")
+
+    # Plots
     print("\nGenerating plots...")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    plot_lambda_sweep(sweep_results, OUTPUT_DIR)
-    plot_token_effects(result, enc, OUTPUT_DIR)
-    plot_loo_scatter(loo_results, OUTPUT_DIR)
+    plot_lambda_sweep(sweep_baseline, OUTPUT_DIR, suffix="_baseline")
+    plot_lambda_sweep(sweep_cross, OUTPUT_DIR, suffix="_crosspool")
+    plot_token_effects(result_base, enc_base, OUTPUT_DIR)
+    plot_loo_scatter(loo_baseline, OUTPUT_DIR, suffix="_baseline")
+    plot_loo_scatter(loo_cross, OUTPUT_DIR, suffix="_crosspool")
 
     # JSON export
     export = {
         "phase0_diagnostic": diag,
-        "token_factored": {
-            "loss": result["loss"],
-            "init_loss": result["init_loss"],
-            "converged": result["converged"],
-            "n_pools": result["n_pools"],
-            "n_tokens": enc["n_tokens"],
-            "n_chains": enc["n_chains"],
-            "token_index": enc["token_index"],
-            "chain_index": enc["chain_index"],
-            "token_effects": result["token_effects"].tolist(),
-            "Gamma": result["Gamma"].tolist(),
-            "chain_effects": result["chain_effects"].tolist(),
-            "beta_fee": result["beta_fee"].tolist(),
-            "noise_deltas": result["noise_deltas"].tolist(),
-            "noise_coeffs": result["noise_coeffs"].tolist(),
+        "baseline": {
+            "loss": result_base["loss"],
+            "data_loss": result_base["data_loss"],
+            "reg_loss": result_base["reg_loss"],
+            "init_loss": result_base["init_loss"],
+            "converged": result_base["converged"],
+            "n_pools": result_base["n_pools"],
+            "n_tokens": enc_base["n_tokens"],
+            "n_chains": enc_base["n_chains"],
+            "token_index": enc_base["token_index"],
+            "chain_index": enc_base["chain_index"],
+            "token_effects": result_base["token_effects"].tolist(),
+            "Gamma": result_base["Gamma"].tolist(),
+            "chain_effects": result_base["chain_effects"].tolist(),
+            "beta_fee": result_base["beta_fee"].tolist(),
+            "noise_deltas": result_base["noise_deltas"].tolist(),
+            "noise_coeffs": result_base["noise_coeffs"].tolist(),
         },
-        "lambda_sweep": sweep_results,
-        "loo_results": loo_results,
+        "cross_pool": {
+            "loss": result_cross["loss"],
+            "data_loss": result_cross["data_loss"],
+            "reg_loss": result_cross["reg_loss"],
+            "init_loss": result_cross["init_loss"],
+            "converged": result_cross["converged"],
+            "n_pools": result_cross["n_pools"],
+            "n_tokens": enc_cross["n_tokens"],
+            "n_chains": enc_cross["n_chains"],
+            "token_index": enc_cross["token_index"],
+            "chain_index": enc_cross["chain_index"],
+            "token_effects": result_cross["token_effects"].tolist(),
+            "Gamma": result_cross["Gamma"].tolist(),
+            "chain_effects": result_cross["chain_effects"].tolist(),
+            "beta_fee": result_cross["beta_fee"].tolist(),
+            "noise_deltas": result_cross["noise_deltas"].tolist(),
+            "noise_coeffs": result_cross["noise_coeffs"].tolist(),
+        },
+        "lambda_sweep_baseline": sweep_baseline,
+        "lambda_sweep_crosspool": sweep_cross,
+        "loo_baseline": loo_baseline,
+        "loo_crosspool": loo_cross,
     }
-    json_path = os.path.join(OUTPUT_DIR, "token_factored_results.json")
+    json_path = os.path.join(OUTPUT_DIR, "token_factored_v2_results.json")
     with open(json_path, "w") as f:
         json.dump(export, f, indent=2, default=str)
     print(f"  Saved: {json_path}")

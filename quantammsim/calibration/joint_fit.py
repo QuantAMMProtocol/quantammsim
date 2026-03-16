@@ -95,13 +95,27 @@ def prepare_token_factored_data(
     matched: Dict[str, dict],
     reduced_x_obs: bool = True,
     fix_gas_to_chain: bool = True,
+    canonicalize: bool = True,
+    cross_pool: bool = False,
 ) -> tuple:
     """Prepare JointData + token encoding for TokenFactoredNoiseHead.
+
+    Args:
+        matched: dict from match_grids_to_panel
+        reduced_x_obs: if True, use 4-column reduced x_obs
+        fix_gas_to_chain: if True, fix gas to chain-level costs
+        canonicalize: if True, canonicalize token names before building index
+        cross_pool: if True, use cross-pool lag features (K_OBS_CROSS=7)
 
     Returns (jdata, token_encoding) where token_encoding is the dict from
     encode_tokens() containing token/chain structure for constructing the head.
     """
     from quantammsim.calibration.pool_data import encode_tokens
+
+    if cross_pool:
+        from quantammsim.calibration.pool_data import (
+            K_OBS_CROSS, build_cross_pool_x_obs,
+        )
 
     jdata = prepare_joint_data(
         matched,
@@ -109,7 +123,26 @@ def prepare_token_factored_data(
         reduced_x_obs=reduced_x_obs,
     )
 
-    token_encoding = encode_tokens(matched)
+    if cross_pool:
+        # Replace x_obs with cross-pool version for each pool
+        pool_ids = jdata.pool_ids
+        new_pool_data = []
+        for i, pid in enumerate(pool_ids):
+            entry = matched[pid]
+            x_obs_cross = build_cross_pool_x_obs(
+                entry["panel"], matched, pid, canonicalize=canonicalize,
+            )
+            d = dict(jdata.pool_data[i])
+            d["x_obs"] = jnp.array(x_obs_cross)
+            new_pool_data.append(d)
+        jdata = JointData(
+            pool_data=new_pool_data,
+            x_attr=jdata.x_attr,
+            pool_ids=jdata.pool_ids,
+            attr_names=jdata.attr_names,
+        )
+
+    token_encoding = encode_tokens(matched, canonicalize=canonicalize)
 
     return jdata, token_encoding
 
