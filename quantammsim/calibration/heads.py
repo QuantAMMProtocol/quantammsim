@@ -17,7 +17,8 @@ import numpy as np
 
 from quantammsim.calibration.loss import K_OBS
 from quantammsim.calibration.pool_data import (
-    D_TOKEN, K_OBS_REDUCED, _classify_token, _load_token_mcaps,
+    D_TOKEN, K_OBS_REDUCED, _canonicalize_token, _classify_token,
+    _load_token_mcaps,
 )
 
 
@@ -720,6 +721,7 @@ class TokenFactoredNoiseHead:
 
         Seen tokens use learned u_t. Unseen tokens fall back to x_t @ Gamma.
         Unseen chains use alpha = zeros. No delta for new pools.
+        Input token names are canonicalized before lookup.
         """
         params_np = np.asarray(params_slice)
         u, Gamma, alpha, beta_fee, delta = self._unpack(params_np, n_pools)
@@ -727,6 +729,10 @@ class TokenFactoredNoiseHead:
             np.array(u), np.array(Gamma), np.array(alpha), np.array(beta_fee)
         )
         mcaps = _load_token_mcaps(self._mcap_path)
+
+        # Canonicalize input tokens
+        token_a = _canonicalize_token(token_a)
+        token_b = _canonicalize_token(token_b)
 
         def _get_token_effect(token):
             if token in self.token_index:

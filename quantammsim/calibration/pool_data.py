@@ -19,6 +19,9 @@ from quantammsim.calibration.grid_interpolation import (
 
 K_OBS = 8  # observation-level covariates
 K_OBS_REDUCED = 4  # [intercept, log_tvl_lag1, dow_sin, dow_cos]
+K_OBS_CROSS = 7    # [intercept, log_tvl_lag1, dow_sin, dow_cos,
+                    #  cross_vol_token_a_{t-1}, cross_vol_token_b_{t-1},
+                    #  cross_vol_chain_{t-1}]
 
 # Default path for cached token market caps
 _MCAP_PATH = os.path.join(
@@ -348,6 +351,24 @@ def match_grids_to_panel(
     return matched
 
 
+# Token canonicalization — map wrapped/LST variants to base tokens
+_CANON_MAP = {
+    "WETH": "ETH", "waBasWETH": "ETH", "waEthLidoWETH": "ETH",
+    "waEthLidowstETH": "wstETH", "waGnowstETH": "wstETH",
+    "waBasUSDC": "USDC", "scUSD": "USDC", "USDC.e": "USDC",
+    "USDbC": "USDC", "waEthUSDC": "USDC",
+    "sDAI": "DAI", "WXDAI": "DAI",
+    "WBTC": "BTC", "cbBTC": "BTC",
+    "stS": "S", "wS": "S",
+    "waGnoGNO": "GNO", "osGNO": "GNO",
+}
+
+
+def _canonicalize_token(symbol: str) -> str:
+    """Map wrapped/derivative token to its canonical base symbol."""
+    return _CANON_MAP.get(symbol, symbol)
+
+
 # Token classification for token-factored model
 _ETH_DERIVATIVES = {
     "WETH", "ETH", "wstETH", "stETH", "rETH", "cbETH",
@@ -374,10 +395,15 @@ def _classify_token(symbol: str, mcaps: dict) -> dict:
 def encode_tokens(
     matched: Dict[str, dict],
     mcap_path: str = None,
+    canonicalize: bool = True,
 ) -> dict:
     """Build token index, per-pool token assignments, and token covariate matrix.
 
     Iterates over pools in sorted key order (same ordering as build_pool_attributes).
+
+    When canonicalize=True (default), wrappd/derivative tokens are mapped to
+    their canonical base symbol via _CANON_MAP before building the index.
+    Raw symbols are still used for market cap lookup.
 
     Returns dict with:
         token_index: dict[str, int] — symbol -> integer index (sorted alphabetically)
@@ -394,14 +420,19 @@ def encode_tokens(
     pool_ids = sorted(matched.keys())
     n_pools = len(pool_ids)
 
-    # Collect all tokens and chains
+    # Collect all tokens and chains; store per-pool canonical pairs
     all_tokens = set()
     all_chains = set()
+    pool_canon_toks = []  # (canon_a, canon_b) per pool in sorted order
     for pid in pool_ids:
         entry = matched[pid]
         toks = _parse_tokens(entry["tokens"])
-        all_tokens.update(toks[:2])
+        raw_a, raw_b = toks[0], toks[1]
+        canon_a = _canonicalize_token(raw_a) if canonicalize else raw_a
+        canon_b = _canonicalize_token(raw_b) if canonicalize else raw_b
+        all_tokens.update([canon_a, canon_b])
         all_chains.add(entry["chain"])
+        pool_canon_toks.append((canon_a, canon_b))
 
     # Build sorted indices
     token_list = sorted(all_tokens)
@@ -420,9 +451,9 @@ def encode_tokens(
 
     for i, pid in enumerate(pool_ids):
         entry = matched[pid]
-        toks = _parse_tokens(entry["tokens"])
-        token_a_idx[i] = token_index[toks[0]]
-        token_b_idx[i] = token_index[toks[1]]
+        canon_a, canon_b = pool_canon_toks[i]
+        token_a_idx[i] = token_index[canon_a]
+        token_b_idx[i] = token_index[canon_b]
         chain_idx[i] = chain_index[entry["chain"]]
         log_fees[i] = np.log(entry["fee"])
 
@@ -493,6 +524,141 @@ def build_x_obs(panel_rows: pd.DataFrame, reduced: bool = False) -> np.ndarray:
     x[:, 5] = sigma * fee                       # sigma × fee
     x[:, 6] = np.sin(2 * np.pi * weekdays / 7)  # dow_sin
     x[:, 7] = np.cos(2 * np.pi * weekdays / 7)  # dow_cos
+
+    return x
+
+
+def build_cross_pool_x_obs(
+    panel_rows: pd.DataFrame,
+    matched: Dict[str, dict],
+    pool_id: str,
+    exclude_pool: Optional[str] = None,
+    canonicalize: bool = True,
+) -> np.ndarray:
+    """Build x_obs with cross-pool lagged volume features.
+
+    Columns 0-3: same as build_x_obs(reduced=True)
+    Column 4: mean log_volume at t-1 across pools sharing token A (excl self)
+    Column 5: mean log_volume at t-1 across pools sharing token B (excl self)
+    Column 6: mean log_volume at t-1 across pools on same chain (excl self)
+
+    The first observation (day 0) is dropped because there is no lag available.
+
+    Args:
+        panel_rows: DataFrame for this pool
+        matched: full matched dict (all pools)
+        pool_id: this pool's key in matched (prefix)
+        exclude_pool: optional pool to exclude from peer averages (for LOO)
+        canonicalize: if True, canonicalize tokens before peer matching
+
+    Returns:
+        (n_obs - 1, K_OBS_CROSS) array
+    """
+    # Get this pool's tokens and chain
+    entry = matched[pool_id]
+    toks = _parse_tokens(entry["tokens"])
+    tok_a_raw, tok_b_raw = toks[0], toks[1]
+    tok_a = _canonicalize_token(tok_a_raw) if canonicalize else tok_a_raw
+    tok_b = _canonicalize_token(tok_b_raw) if canonicalize else tok_b_raw
+    this_chain = entry["chain"]
+
+    # Build peer sets: token→set of pool_ids, chain→set of pool_ids
+    token_peers = {}  # canonical_token → set of (prefix, panel_df)
+    chain_peers = {}  # chain → set of (prefix, panel_df)
+    all_pool_ids = sorted(matched.keys())
+
+    for pid in all_pool_ids:
+        if pid == pool_id:
+            continue  # always exclude self
+        if pid == exclude_pool:
+            continue
+        peer_entry = matched[pid]
+        peer_toks = _parse_tokens(peer_entry["tokens"])
+        peer_canonical = set()
+        for t in peer_toks[:2]:
+            ct = _canonicalize_token(t) if canonicalize else t
+            peer_canonical.add(ct)
+
+        for ct in peer_canonical:
+            if ct not in token_peers:
+                token_peers[ct] = []
+            token_peers[ct].append(pid)
+
+        peer_chain = peer_entry["chain"]
+        if peer_chain not in chain_peers:
+            chain_peers[peer_chain] = []
+        chain_peers[peer_chain].append(pid)
+
+    # Build (pool_id, date_ordinal) → log_volume lookup from all pools
+    vol_lookup = {}  # (pid, date_ordinal) → log_volume
+    for pid in all_pool_ids:
+        if pid == pool_id or pid == exclude_pool:
+            continue
+        peer_panel = matched[pid]["panel"]
+        peer_dates = pd.to_datetime(peer_panel["date"])
+        peer_ords = np.array([d.toordinal() for d in peer_dates])
+        peer_vols = peer_panel["log_volume"].values.astype(float)
+        for ord_val, vol_val in zip(peer_ords, peer_vols):
+            vol_lookup[(pid, int(ord_val))] = vol_val
+
+    # Compute global lagged mean for fallback
+    all_vols = list(vol_lookup.values())
+    global_mean_vol = float(np.mean(all_vols)) if all_vols else 0.0
+
+    # Get this pool's dates
+    dates = pd.to_datetime(panel_rows["date"])
+    date_ords = np.array([d.toordinal() for d in dates])
+    n_obs = len(panel_rows)
+
+    def _peer_mean_at_lag(peer_pids, date_ord_prev):
+        """Mean log_volume of peer pools at date_ord_prev."""
+        vals = []
+        for pid in peer_pids:
+            key = (pid, date_ord_prev)
+            if key in vol_lookup:
+                vals.append(vol_lookup[key])
+        if vals:
+            return float(np.mean(vals))
+        return np.nan
+
+    # Build cross-pool features for each obs (starting from day 1)
+    cross_vol_a = np.full(n_obs, np.nan)
+    cross_vol_b = np.full(n_obs, np.nan)
+    cross_vol_chain = np.full(n_obs, np.nan)
+
+    tok_a_peers = token_peers.get(tok_a, [])
+    tok_b_peers = token_peers.get(tok_b, [])
+    chain_peer_list = chain_peers.get(this_chain, [])
+
+    for i in range(1, n_obs):
+        prev_ord = int(date_ords[i - 1])
+
+        if tok_a_peers:
+            cross_vol_a[i] = _peer_mean_at_lag(tok_a_peers, prev_ord)
+        if tok_b_peers:
+            cross_vol_b[i] = _peer_mean_at_lag(tok_b_peers, prev_ord)
+        if chain_peer_list:
+            cross_vol_chain[i] = _peer_mean_at_lag(chain_peer_list, prev_ord)
+
+    # Drop first day, fill NaN with global mean
+    cross_vol_a = cross_vol_a[1:]
+    cross_vol_b = cross_vol_b[1:]
+    cross_vol_chain = cross_vol_chain[1:]
+
+    cross_vol_a = np.where(np.isnan(cross_vol_a), global_mean_vol, cross_vol_a)
+    cross_vol_b = np.where(np.isnan(cross_vol_b), global_mean_vol, cross_vol_b)
+    cross_vol_chain = np.where(np.isnan(cross_vol_chain), global_mean_vol, cross_vol_chain)
+
+    # Build base x_obs (reduced) and drop first row
+    x_base = build_x_obs(panel_rows, reduced=True)
+    x_base = x_base[1:]  # drop first day
+
+    # Assemble
+    x = np.zeros((n_obs - 1, K_OBS_CROSS))
+    x[:, :4] = x_base
+    x[:, 4] = cross_vol_a
+    x[:, 5] = cross_vol_b
+    x[:, 6] = cross_vol_chain
 
     return x
 
