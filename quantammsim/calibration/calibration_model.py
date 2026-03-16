@@ -179,6 +179,7 @@ class CalibrationModel:
             return data_loss + reg
 
         # Attach for the scipy wrapper
+        loss_fn._pool_loss_fns = pool_loss_fns
         loss_fn._pool_val_and_grad_fns = pool_val_and_grad_fns
         loss_fn._n_pools = n_pools
         loss_fn._head_slices = (cad_s, cad_e), (gas_s, gas_e), (noise_s, noise_e)
@@ -282,9 +283,18 @@ class CalibrationModel:
         (cad_s, cad_e), (gas_s, gas_e), (noise_s, noise_e) = \
             self._head_slices(n_pools, k_attr)
 
+        # Compute data_loss and reg_loss at optimum
+        fitted_j = jnp.array(result.x)
+        data_loss_val = sum(
+            float(fn(fitted_j)) for fn in loss_fn._pool_loss_fns
+        ) / n_pools
+        reg_loss_val = float(result.fun) - data_loss_val
+
         out = {
             "init_loss": init_loss,
             "loss": float(result.fun),
+            "data_loss": data_loss_val,
+            "reg_loss": reg_loss_val,
             "converged": result.success,
             "params_flat": np.array(result.x),
         }

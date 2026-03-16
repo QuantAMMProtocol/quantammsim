@@ -288,6 +288,93 @@ class TestTokenFactoredEndToEnd:
         assert result["loss"] <= result["init_loss"]
 
 
+class TestDataRegLossSeparation:
+    """Test that fit() reports data_loss and reg_loss separately."""
+
+    def test_fit_reports_data_and_reg_loss(self, matched_data):
+        from quantammsim.calibration.calibration_model import CalibrationModel
+        from quantammsim.calibration.heads import (
+            FixedHead, PerPoolHead, TokenFactoredNoiseHead,
+        )
+        from quantammsim.calibration.joint_fit import prepare_token_factored_data
+        from quantammsim.calibration.loss import CHAIN_GAS_USD
+        from quantammsim.calibration.pool_data import K_OBS_REDUCED
+
+        jdata, enc = prepare_token_factored_data(matched_data)
+        n_pools = len(jdata.pool_data)
+
+        gas_values = []
+        for pid in jdata.pool_ids:
+            chain = matched_data[pid]["chain"]
+            gas_values.append(np.log(max(CHAIN_GAS_USD.get(chain, 1.0), 1e-6)))
+
+        noise_head = TokenFactoredNoiseHead(k_obs=K_OBS_REDUCED, **enc)
+        model = CalibrationModel(
+            PerPoolHead("log_cadence", default=np.log(12.0)),
+            FixedHead("log_gas", np.array(gas_values)),
+            noise_head,
+        )
+        result = model.fit(jdata, maxiter=50)
+
+        assert "data_loss" in result
+        assert "reg_loss" in result
+
+    def test_data_plus_reg_equals_total(self, matched_data):
+        from quantammsim.calibration.calibration_model import CalibrationModel
+        from quantammsim.calibration.heads import (
+            FixedHead, PerPoolHead, TokenFactoredNoiseHead,
+        )
+        from quantammsim.calibration.joint_fit import prepare_token_factored_data
+        from quantammsim.calibration.loss import CHAIN_GAS_USD
+        from quantammsim.calibration.pool_data import K_OBS_REDUCED
+
+        jdata, enc = prepare_token_factored_data(matched_data)
+        gas_values = []
+        for pid in jdata.pool_ids:
+            chain = matched_data[pid]["chain"]
+            gas_values.append(np.log(max(CHAIN_GAS_USD.get(chain, 1.0), 1e-6)))
+
+        noise_head = TokenFactoredNoiseHead(k_obs=K_OBS_REDUCED, **enc)
+        model = CalibrationModel(
+            PerPoolHead("log_cadence", default=np.log(12.0)),
+            FixedHead("log_gas", np.array(gas_values)),
+            noise_head,
+        )
+        result = model.fit(jdata, maxiter=50)
+
+        np.testing.assert_allclose(
+            result["data_loss"] + result["reg_loss"],
+            result["loss"],
+            rtol=1e-6,
+        )
+
+    def test_data_loss_leq_total(self, matched_data):
+        from quantammsim.calibration.calibration_model import CalibrationModel
+        from quantammsim.calibration.heads import (
+            FixedHead, PerPoolHead, TokenFactoredNoiseHead,
+        )
+        from quantammsim.calibration.joint_fit import prepare_token_factored_data
+        from quantammsim.calibration.loss import CHAIN_GAS_USD
+        from quantammsim.calibration.pool_data import K_OBS_REDUCED
+
+        jdata, enc = prepare_token_factored_data(matched_data)
+        gas_values = []
+        for pid in jdata.pool_ids:
+            chain = matched_data[pid]["chain"]
+            gas_values.append(np.log(max(CHAIN_GAS_USD.get(chain, 1.0), 1e-6)))
+
+        noise_head = TokenFactoredNoiseHead(k_obs=K_OBS_REDUCED, **enc)
+        model = CalibrationModel(
+            PerPoolHead("log_cadence", default=np.log(12.0)),
+            FixedHead("log_gas", np.array(gas_values)),
+            noise_head,
+        )
+        result = model.fit(jdata, maxiter=50)
+
+        assert result["data_loss"] <= result["loss"] + 1e-10
+        assert result["reg_loss"] >= -1e-10
+
+
 class TestPrepareJointDataReduced:
     """Test prepare_joint_data with reduced_x_obs=True."""
 
