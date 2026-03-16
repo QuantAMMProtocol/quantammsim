@@ -214,6 +214,49 @@ class ReClammPool(AbstractPool):
             return jnp.squeeze(params["fees"])
         return run_fingerprint["fees"]
 
+    def _prepare_noise_arrays(self, prices, run_fingerprint, start_index,
+                              bout_length, arb_freq, max_len):
+        """Prepare volatility and dow arrays for noise models that need them.
+
+        Returns (volatility_array, dow_sin_array, dow_cos_array) — all sliced
+        and decimated to match arb_prices shape. Arrays are None when the
+        noise model does not require them.
+        """
+        noise_model = run_fingerprint.get("noise_model", "ratio")
+        needs_vol = noise_model in (
+            "tsoukalas_sqrt", "tsoukalas_log", "loglinear", "calibrated",
+        )
+        if not needs_vol:
+            return None, None, None
+
+        volatility_array = self.calculate_volatility_array(
+            prices, run_fingerprint,
+        )
+        vol_prepared = _prepare_dynamic_array(
+            volatility_array, start_index, bout_length, arb_freq, max_len,
+        )
+
+        if noise_model != "calibrated":
+            return vol_prepared, None, None
+
+        # Day-of-week sin/cos arrays for the calibrated noise model.
+        # Compute from startDateString + minute offsets (vectorized).
+        import pandas as pd
+        start_dt = pd.Timestamp(run_fingerprint["startDateString"])
+        n_minutes = prices.shape[0]
+        day_indices = np.arange(n_minutes) // 1440
+        start_weekday = start_dt.weekday()  # Monday=0 .. Sunday=6
+        weekdays = ((start_weekday + day_indices) % 7).astype(np.float64)
+        dow_sin_full = jnp.array(np.sin(2.0 * np.pi * weekdays / 7.0))
+        dow_cos_full = jnp.array(np.cos(2.0 * np.pi * weekdays / 7.0))
+        dow_sin_prepared = _prepare_dynamic_array(
+            dow_sin_full, start_index, bout_length, arb_freq, max_len,
+        )
+        dow_cos_prepared = _prepare_dynamic_array(
+            dow_cos_full, start_index, bout_length, arb_freq, max_len,
+        )
+        return vol_prepared, dow_sin_prepared, dow_cos_prepared
+
     @partial(jit, static_argnums=(2,))
     def calculate_reserves_with_fees(
         self,
@@ -241,16 +284,10 @@ class ReClammPool(AbstractPool):
         if noise_params is not None and type(noise_params) is not dict:
             noise_params = dict(noise_params)
 
-        if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
-            volatility_array = self.calculate_volatility_array(
-                prices, run_fingerprint,
-            )
-            arb_vol = _prepare_dynamic_array(
-                volatility_array, start_index, bout_length,
-                arb_freq, s.arb_prices.shape[0],
-            )
-        else:
-            arb_vol = None
+        arb_vol, dow_sin, dow_cos = self._prepare_noise_arrays(
+            prices, run_fingerprint, start_index,
+            bout_length, arb_freq, s.arb_prices.shape[0],
+        )
 
         if run_fingerprint["do_arb"]:
             return _jax_calc_reclamm_reserves_with_fees(
@@ -273,6 +310,8 @@ class ReClammPool(AbstractPool):
                 noise_model=noise_model,
                 noise_params=noise_params,
                 volatility_array=arb_vol,
+                dow_sin_array=dow_sin,
+                dow_cos_array=dow_cos,
             )
         return jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape)
 
@@ -311,16 +350,10 @@ class ReClammPool(AbstractPool):
         if noise_params is not None and type(noise_params) is not dict:
             noise_params = dict(noise_params)
 
-        if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
-            volatility_array = self.calculate_volatility_array(
-                prices, run_fingerprint,
-            )
-            arb_vol = _prepare_dynamic_array(
-                volatility_array, start_index, bout_length,
-                arb_freq, s.arb_prices.shape[0],
-            )
-        else:
-            arb_vol = None
+        arb_vol, dow_sin, dow_cos = self._prepare_noise_arrays(
+            prices, run_fingerprint, start_index,
+            bout_length, arb_freq, s.arb_prices.shape[0],
+        )
 
         if run_fingerprint["do_arb"]:
             return _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
@@ -343,6 +376,8 @@ class ReClammPool(AbstractPool):
                 noise_model=noise_model,
                 noise_params=noise_params,
                 volatility_array=arb_vol,
+                dow_sin_array=dow_sin,
+                dow_cos_array=dow_cos,
             )
         return (
             jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape),
@@ -386,16 +421,10 @@ class ReClammPool(AbstractPool):
         if noise_params is not None and type(noise_params) is not dict:
             noise_params = dict(noise_params)
 
-        if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
-            volatility_array = self.calculate_volatility_array(
-                prices, run_fingerprint,
-            )
-            arb_vol = _prepare_dynamic_array(
-                volatility_array, start_index, bout_length,
-                run_fingerprint["arb_frequency"], max_len,
-            )
-        else:
-            arb_vol = None
+        arb_vol, dow_sin, dow_cos = self._prepare_noise_arrays(
+            prices, run_fingerprint, start_index,
+            bout_length, run_fingerprint["arb_frequency"], max_len,
+        )
 
         return _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
             s.initial_reserves, s.Va, s.Vb,
@@ -418,6 +447,8 @@ class ReClammPool(AbstractPool):
             noise_model=noise_model,
             noise_params=noise_params,
             volatility_array=arb_vol,
+            dow_sin_array=dow_sin,
+            dow_cos_array=dow_cos,
         )
 
     @partial(jit, static_argnums=(2,))
@@ -485,16 +516,10 @@ class ReClammPool(AbstractPool):
         if noise_params is not None and type(noise_params) is not dict:
             noise_params = dict(noise_params)
 
-        if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
-            volatility_array = self.calculate_volatility_array(
-                prices, run_fingerprint,
-            )
-            arb_vol = _prepare_dynamic_array(
-                volatility_array, start_index, bout_length,
-                run_fingerprint["arb_frequency"], max_len,
-            )
-        else:
-            arb_vol = None
+        arb_vol, dow_sin, dow_cos = self._prepare_noise_arrays(
+            prices, run_fingerprint, start_index,
+            bout_length, run_fingerprint["arb_frequency"], max_len,
+        )
 
         return _jax_calc_reclamm_reserves_with_dynamic_inputs(
             s.initial_reserves, s.Va, s.Vb,
@@ -517,6 +542,8 @@ class ReClammPool(AbstractPool):
             noise_model=noise_model,
             noise_params=noise_params,
             volatility_array=arb_vol,
+            dow_sin_array=dow_sin,
+            dow_cos_array=dow_cos,
         )
 
     def init_base_parameters(

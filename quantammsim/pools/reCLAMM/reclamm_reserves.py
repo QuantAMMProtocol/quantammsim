@@ -35,6 +35,7 @@ from quantammsim.pools.noise_trades import (
     reclamm_tsoukalas_sqrt_noise_volume,
     reclamm_tsoukalas_log_noise_volume,
     reclamm_loglinear_noise_volume,
+    reclamm_calibrated_noise_volume,
 )
 
 # Reference balance for initialisation (matches Solidity _INITIALIZATION_MAX_BALANCE_A)
@@ -1007,6 +1008,24 @@ def _reclamm_scan_step_with_fees_and_revenue(
         scale = 1.0 + noise_fee_income / jnp.maximum(real_value, 1e-8)
         Ra_new = Ra_new * scale
         Rb_new = Rb_new * scale
+    elif noise_model == "calibrated":
+        volatility = input_list[9]
+        dow_sin = input_list[10]
+        dow_cos = input_list[11]
+        arb_volume = 0.5 * jnp.sum(jnp.abs(applied_trade) * prices)
+        real_value = jnp.sum(jnp.array([Ra_new, Rb_new]) * prices)
+        effective_value = (Ra_new + Va) * prices[0] + (Rb_new + Vb) * prices[1]
+
+        _np = noise_params if noise_params is not None else {}
+        noise_vol = reclamm_calibrated_noise_volume(
+            effective_value, gamma, volatility,
+            arb_volume, dow_sin, dow_cos, _np,
+        )
+
+        noise_fee_income = (1.0 - gamma) * noise_vol
+        scale = 1.0 + noise_fee_income / jnp.maximum(real_value, 1e-8)
+        Ra_new = Ra_new * scale
+        Rb_new = Rb_new * scale
     # else: "arb_only" — no noise trades
 
     # Clamp-to-edge: if a real reserve would go negative, apply an
@@ -1260,6 +1279,8 @@ def _jax_calc_reclamm_reserves_with_fees(
     noise_model="ratio",
     noise_params=None,
     volatility_array=None,
+    dow_sin_array=None,
+    dow_cos_array=None,
 ):
     """Calculate reClAMM reserves over time with fees.
 
@@ -1318,6 +1339,10 @@ def _jax_calc_reclamm_reserves_with_fees(
                    price_ratio_updates, lp_supply_array]
     if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
         scan_inputs.append(volatility_array)
+    elif noise_model == "calibrated":
+        scan_inputs.append(volatility_array)
+        scan_inputs.append(dow_sin_array)
+        scan_inputs.append(dow_cos_array)
 
     carry_init = [
         initial_reserves,
@@ -1359,6 +1384,8 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
     noise_model="ratio",
     noise_params=None,
     volatility_array=None,
+    dow_sin_array=None,
+    dow_cos_array=None,
 ):
     """Calculate reClAMM reserves with time-varying fees/arb arrays."""
     if lp_supply_array is None:
@@ -1426,6 +1453,10 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
                    price_ratio_updates, lp_supply_array]
     if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
         scan_inputs.append(volatility_array)
+    elif noise_model == "calibrated":
+        scan_inputs.append(volatility_array)
+        scan_inputs.append(dow_sin_array)
+        scan_inputs.append(dow_cos_array)
 
     carry_init = [
         initial_reserves,
@@ -1557,6 +1588,8 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
     noise_model="ratio",
     noise_params=None,
     volatility_array=None,
+    dow_sin_array=None,
+    dow_cos_array=None,
 ):
     """Calculate reClAMM reserves and LP fee revenue over time with fees.
 
@@ -1617,6 +1650,10 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
                    price_ratio_updates, lp_supply_array]
     if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
         scan_inputs.append(volatility_array)
+    elif noise_model == "calibrated":
+        scan_inputs.append(volatility_array)
+        scan_inputs.append(dow_sin_array)
+        scan_inputs.append(dow_cos_array)
 
     carry_init = [
         initial_reserves,
@@ -1658,6 +1695,8 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
     noise_model="ratio",
     noise_params=None,
     volatility_array=None,
+    dow_sin_array=None,
+    dow_cos_array=None,
 ):
     """Calculate reClAMM reserves and LP fee revenue with time-varying fees/arb arrays.
 
@@ -1731,6 +1770,10 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
                    price_ratio_updates, lp_supply_array]
     if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
         scan_inputs.append(volatility_array)
+    elif noise_model == "calibrated":
+        scan_inputs.append(volatility_array)
+        scan_inputs.append(dow_sin_array)
+        scan_inputs.append(dow_cos_array)
 
     carry_init = [
         initial_reserves,

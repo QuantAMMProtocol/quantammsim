@@ -272,3 +272,78 @@ def reclamm_loglinear_noise_volume(
     return jnp.maximum(0.0, daily_vol / 1440.0 - arb_volume_this_period)
 
 
+@jit
+def reclamm_calibrated_noise_volume(
+    effective_value_usd,
+    gamma,
+    volatility,
+    arb_volume_this_period,
+    dow_sin,
+    dow_cos,
+    noise_params=None,
+):
+    """8-covariate calibrated noise volume from cross-pool log-linear model.
+
+    Predicts per-minute noise volume using::
+
+        log(V_daily) = c_0 + c_1*log(TVL) + c_2*log(sigma)
+                        + c_3*log(TVL)*log(sigma) + c_4*log(TVL)*fee
+                        + c_5*log(sigma)*fee + c_6*dow_sin + c_7*dow_cos
+        V_noise = max(0, exp(log_daily_vol) / 1440 - arb_volume)
+
+    where sigma is annualised daily realised volatility, fee = 1 - gamma,
+    and dow_sin/dow_cos encode day-of-week seasonality.
+
+    Parameters
+    ----------
+    effective_value_usd : float
+        Effective TVL in USD: (Ra+Va)*pA + (Rb+Vb)*pB.
+    gamma : float
+        Fee parameter (1 - fee_rate).
+    volatility : float
+        Annualised daily realised volatility of the price ratio.
+    arb_volume_this_period : float
+        Arb volume already accounted for this time step (USD).
+    dow_sin : float
+        sin(2*pi*weekday/7) for the current day.
+    dow_cos : float
+        cos(2*pi*weekday/7) for the current day.
+    noise_params : dict, optional
+        Calibrated coefficients: c_0 .. c_7.
+
+    Returns
+    -------
+    float
+        Per-minute noise volume (USD), floored at zero.
+    """
+    if noise_params is None:
+        noise_params = {}
+    c_0 = noise_params.get("c_0", 0.0)
+    c_1 = noise_params.get("c_1", 1.0)
+    c_2 = noise_params.get("c_2", 0.0)
+    c_3 = noise_params.get("c_3", 0.0)
+    c_4 = noise_params.get("c_4", 0.0)
+    c_5 = noise_params.get("c_5", 0.0)
+    c_6 = noise_params.get("c_6", 0.0)
+    c_7 = noise_params.get("c_7", 0.0)
+
+    fee = 1.0 - gamma
+    log_tvl = jnp.log(jnp.maximum(effective_value_usd, 1.0))
+    log_sigma = jnp.log(jnp.maximum(volatility, 1e-10))
+
+    log_daily_vol = (
+        c_0
+        + c_1 * log_tvl
+        + c_2 * log_sigma
+        + c_3 * log_tvl * log_sigma
+        + c_4 * log_tvl * fee
+        + c_5 * log_sigma * fee
+        + c_6 * dow_sin
+        + c_7 * dow_cos
+    )
+    daily_vol = jnp.exp(log_daily_vol)
+    # noise_coeffs predict V_noise directly (not V_total), so no need to
+    # subtract arb volume — that would double-count the arb subtraction.
+    return jnp.maximum(0.0, daily_vol / 1440.0)
+
+
