@@ -12,6 +12,151 @@ from tests.calibration.conftest import (
 )
 
 
+class TestEncodeTokens:
+    """Test encode_tokens: token index, assignments, and covariate matrix."""
+
+    def _get_matched(self, synthetic_daily_grid, synthetic_panel, tmp_path):
+        from quantammsim.calibration.pool_data import match_grids_to_panel
+
+        grid_dir = tmp_path / "grids"
+        grid_dir.mkdir()
+        for prefix in POOL_PREFIXES:
+            synthetic_daily_grid.to_parquet(
+                grid_dir / f"{prefix}_daily.parquet", index=False
+            )
+        return match_grids_to_panel(str(grid_dir), synthetic_panel)
+
+    def test_returns_expected_keys(
+        self, synthetic_daily_grid, synthetic_panel, tmp_path
+    ):
+        from quantammsim.calibration.pool_data import encode_tokens
+
+        matched = self._get_matched(
+            synthetic_daily_grid, synthetic_panel, tmp_path
+        )
+        result = encode_tokens(matched)
+        expected_keys = {
+            "token_index", "token_a_idx", "token_b_idx",
+            "x_token", "chain_idx", "chain_index",
+            "log_fees", "n_tokens", "n_chains",
+        }
+        assert expected_keys.issubset(result.keys())
+
+    def test_unique_tokens_discovered(
+        self, synthetic_daily_grid, synthetic_panel, tmp_path
+    ):
+        from quantammsim.calibration.pool_data import encode_tokens
+
+        matched = self._get_matched(
+            synthetic_daily_grid, synthetic_panel, tmp_path
+        )
+        result = encode_tokens(matched)
+        # Synthetic panel has tokens: BTC, ETH (pool 0) and AAVE, ETH (pool 1)
+        # Unique tokens: AAVE, BTC, ETH (sorted)
+        assert result["n_tokens"] == 3
+        assert set(result["token_index"].keys()) == {"AAVE", "BTC", "ETH"}
+        # Indices should be contiguous 0..2
+        assert set(result["token_index"].values()) == {0, 1, 2}
+
+    def test_x_token_shape_and_intercept(
+        self, synthetic_daily_grid, synthetic_panel, tmp_path
+    ):
+        from quantammsim.calibration.pool_data import encode_tokens
+
+        matched = self._get_matched(
+            synthetic_daily_grid, synthetic_panel, tmp_path
+        )
+        result = encode_tokens(matched)
+        x_token = result["x_token"]
+        assert x_token.shape[0] == result["n_tokens"]  # 3 tokens
+        assert x_token.shape[1] >= 4  # at least intercept + 3 binary flags
+        # Intercept column is all 1s
+        np.testing.assert_array_equal(x_token[:, 0], 1.0)
+
+    def test_token_classifications(
+        self, synthetic_daily_grid, synthetic_panel, tmp_path
+    ):
+        from quantammsim.calibration.pool_data import encode_tokens
+
+        matched = self._get_matched(
+            synthetic_daily_grid, synthetic_panel, tmp_path
+        )
+        result = encode_tokens(matched)
+        ti = result["token_index"]
+        x_tok = result["x_token"]
+        # Column layout: [intercept, log_mcap, is_stable, is_eth_deriv, is_L1_native]
+        # ETH: is_eth_derivative=1, is_L1_native=1
+        assert x_tok[ti["ETH"], 3] == 1.0  # is_eth_derivative
+        assert x_tok[ti["ETH"], 4] == 1.0  # is_L1_native
+        # AAVE: none of the binary flags
+        assert x_tok[ti["AAVE"], 2] == 0.0  # not stable
+        assert x_tok[ti["AAVE"], 3] == 0.0  # not eth_deriv
+        assert x_tok[ti["AAVE"], 4] == 0.0  # not L1_native
+
+    def test_pool_token_mapping(
+        self, synthetic_daily_grid, synthetic_panel, tmp_path
+    ):
+        from quantammsim.calibration.pool_data import encode_tokens
+
+        matched = self._get_matched(
+            synthetic_daily_grid, synthetic_panel, tmp_path
+        )
+        result = encode_tokens(matched)
+        ti = result["token_index"]
+
+        # Pool 0 (first sorted prefix): tokens = "BTC,ETH"
+        assert result["token_a_idx"][0] == ti["BTC"]
+        assert result["token_b_idx"][0] == ti["ETH"]
+
+        # Pool 1 (second sorted prefix): tokens = "AAVE,ETH"
+        assert result["token_a_idx"][1] == ti["AAVE"]
+        assert result["token_b_idx"][1] == ti["ETH"]
+
+    def test_chain_index(
+        self, synthetic_daily_grid, synthetic_panel, tmp_path
+    ):
+        from quantammsim.calibration.pool_data import encode_tokens
+
+        matched = self._get_matched(
+            synthetic_daily_grid, synthetic_panel, tmp_path
+        )
+        result = encode_tokens(matched)
+        assert result["n_chains"] == 2
+        assert set(result["chain_index"].keys()) == {"ARBITRUM", "MAINNET"}
+        assert set(result["chain_index"].values()) == {0, 1}
+
+    def test_chain_idx_mapping(
+        self, synthetic_daily_grid, synthetic_panel, tmp_path
+    ):
+        from quantammsim.calibration.pool_data import encode_tokens
+
+        matched = self._get_matched(
+            synthetic_daily_grid, synthetic_panel, tmp_path
+        )
+        result = encode_tokens(matched)
+        pool_ids = sorted(matched.keys())
+        ci = result["chain_index"]
+        # Pool 0 is MAINNET, pool 1 is ARBITRUM
+        assert result["chain_idx"][0] == ci[matched[pool_ids[0]]["chain"]]
+        assert result["chain_idx"][1] == ci[matched[pool_ids[1]]["chain"]]
+
+    def test_log_fees(
+        self, synthetic_daily_grid, synthetic_panel, tmp_path
+    ):
+        from quantammsim.calibration.pool_data import encode_tokens
+
+        matched = self._get_matched(
+            synthetic_daily_grid, synthetic_panel, tmp_path
+        )
+        result = encode_tokens(matched)
+        pool_ids = sorted(matched.keys())
+        for i, pid in enumerate(pool_ids):
+            expected_fee = matched[pid]["fee"]
+            np.testing.assert_allclose(
+                result["log_fees"][i], np.log(expected_fee), rtol=1e-6
+            )
+
+
 class TestMatchGridsToPanel:
     """Test match_grids_to_panel: match grid parquets to panel rows."""
 

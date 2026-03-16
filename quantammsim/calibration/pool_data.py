@@ -348,6 +348,108 @@ def match_grids_to_panel(
     return matched
 
 
+# Token classification for token-factored model
+_ETH_DERIVATIVES = {
+    "WETH", "ETH", "wstETH", "stETH", "rETH", "cbETH",
+    "waEthLidoWETH", "waEthLidowstETH", "waBasWETH", "waGnowstETH",
+}
+_L1_NATIVE = {
+    "WETH", "ETH", "WMATIC", "MATIC", "POL", "wPOL",
+    "WAVAX", "AVAX", "GNO", "S", "wS", "stS",
+}
+
+D_TOKEN = 5  # [intercept, log_mcap, is_stable, is_eth_derivative, is_L1_native]
+
+
+def _classify_token(symbol: str, mcaps: dict) -> dict:
+    """Classify a token into binary feature flags."""
+    return {
+        "is_stable": 1.0 if symbol in _STABLECOINS else 0.0,
+        "is_eth_derivative": 1.0 if symbol in _ETH_DERIVATIVES else 0.0,
+        "is_L1_native": 1.0 if symbol in _L1_NATIVE else 0.0,
+        "log_mcap": np.log(max(mcaps.get(symbol, {}).get("mcap_usd", 1e6), 1.0)),
+    }
+
+
+def encode_tokens(
+    matched: Dict[str, dict],
+    mcap_path: str = None,
+) -> dict:
+    """Build token index, per-pool token assignments, and token covariate matrix.
+
+    Iterates over pools in sorted key order (same ordering as build_pool_attributes).
+
+    Returns dict with:
+        token_index: dict[str, int] — symbol -> integer index (sorted alphabetically)
+        token_a_idx: np.ndarray (n_pools,) — index of token A for each pool
+        token_b_idx: np.ndarray (n_pools,) — index of token B for each pool
+        x_token: np.ndarray (n_tokens, D_TOKEN) — token covariate matrix
+        chain_idx: np.ndarray (n_pools,) — chain integer index per pool
+        chain_index: dict[str, int] — chain name -> integer index (sorted)
+        log_fees: np.ndarray (n_pools,) — log(fee) per pool
+        n_tokens: int
+        n_chains: int
+    """
+    mcaps = _load_token_mcaps(mcap_path)
+    pool_ids = sorted(matched.keys())
+    n_pools = len(pool_ids)
+
+    # Collect all tokens and chains
+    all_tokens = set()
+    all_chains = set()
+    for pid in pool_ids:
+        entry = matched[pid]
+        toks = _parse_tokens(entry["tokens"])
+        all_tokens.update(toks[:2])
+        all_chains.add(entry["chain"])
+
+    # Build sorted indices
+    token_list = sorted(all_tokens)
+    token_index = {t: i for i, t in enumerate(token_list)}
+    n_tokens = len(token_list)
+
+    chain_list = sorted(all_chains)
+    chain_index = {c: i for i, c in enumerate(chain_list)}
+    n_chains = len(chain_list)
+
+    # Build per-pool arrays
+    token_a_idx = np.zeros(n_pools, dtype=np.int32)
+    token_b_idx = np.zeros(n_pools, dtype=np.int32)
+    chain_idx = np.zeros(n_pools, dtype=np.int32)
+    log_fees = np.zeros(n_pools, dtype=np.float64)
+
+    for i, pid in enumerate(pool_ids):
+        entry = matched[pid]
+        toks = _parse_tokens(entry["tokens"])
+        token_a_idx[i] = token_index[toks[0]]
+        token_b_idx[i] = token_index[toks[1]]
+        chain_idx[i] = chain_index[entry["chain"]]
+        log_fees[i] = np.log(entry["fee"])
+
+    # Build token covariate matrix: (n_tokens, D_TOKEN)
+    # Columns: [intercept, log_mcap, is_stable, is_eth_derivative, is_L1_native]
+    x_token = np.zeros((n_tokens, D_TOKEN), dtype=np.float64)
+    for t, idx in token_index.items():
+        cls = _classify_token(t, mcaps)
+        x_token[idx, 0] = 1.0  # intercept
+        x_token[idx, 1] = cls["log_mcap"]
+        x_token[idx, 2] = cls["is_stable"]
+        x_token[idx, 3] = cls["is_eth_derivative"]
+        x_token[idx, 4] = cls["is_L1_native"]
+
+    return {
+        "token_index": token_index,
+        "token_a_idx": token_a_idx,
+        "token_b_idx": token_b_idx,
+        "x_token": x_token,
+        "chain_idx": chain_idx,
+        "chain_index": chain_index,
+        "log_fees": log_fees,
+        "n_tokens": n_tokens,
+        "n_chains": n_chains,
+    }
+
+
 def build_x_obs(panel_rows: pd.DataFrame, reduced: bool = False) -> np.ndarray:
     """Build observation covariate matrix from panel rows.
 
