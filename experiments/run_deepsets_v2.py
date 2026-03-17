@@ -286,9 +286,6 @@ def assemble_inputs(data, feat_cfg):
 
     Returns dict with JAX arrays ready for training.
     """
-    n_samples = len(data["pool_idx"])
-    n_peers = data["n_peers"]
-
     # ---- Peer encoder input: (n_samples, n_peers, n_feat) ----
     # Always: peer_attr, target_attr, vol_lag1, overlap
     pool_idx = data["pool_idx"]
@@ -574,7 +571,7 @@ def run_temporal(data, feat_cfg, hparams, split_frac=0.7):
         encoder_type=encoder_type,
     )
     t0 = time.time()
-    params, final_loss = train(
+    params, _ = train(
         params, train_inputs, hparams["n_epochs"], hparams["lr"], hparams["l2_alpha"],
         huber_delta=huber_delta, no_peers=no_peers,
     )
