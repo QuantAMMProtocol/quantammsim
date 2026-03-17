@@ -6,12 +6,21 @@ residual (log_vol - log_V_arb). V_arb precomputed from Option C fits.
 Feature menu:
   Peer (encoder) — always: peer_attr, target_attr, vol_lag1, overlap
                    optional: vol_lag2, vol_change, tvl, volatility
+                   relational: same_chain, log_tvl_ratio, log_fee_ratio
   Local (decoder) — always: target_attr, own_vol_lag1, dow_sin, dow_cos
                     optional: own_vol_lag2, own_vol_change, own_tvl, own_volatility
+
+Model variants:
+  encoder_type: "mlp" (2-layer ReLU) or "linear" (single affine)
+  no_peers: decoder-only ablation (zero peer summary)
+  huber_delta: Huber loss transition point (default 1.0)
+  Per-pool loss weighting (equal weight per pool regardless of sample count)
 
 Usage:
   python experiments/run_deepsets_v2.py                    # defaults
   python experiments/run_deepsets_v2.py --tune 50          # Optuna
+  python experiments/run_deepsets_v2.py --no-peers         # decoder-only
+  python experiments/run_deepsets_v2.py --encoder-type linear
   python experiments/run_deepsets_v2.py --loo              # LOO eval
 """
 
@@ -101,6 +110,13 @@ def build_all_features(matched_clean, option_c_clean):
     X_attr_norm = ((X_attr - attr_mean) / attr_std).astype(np.float32)
     k_attr = X_attr_norm.shape[1]
 
+    # Raw per-pool values for relational features
+    fee_idx = attr_names.index("log_fee")
+    tvl_idx = attr_names.index("mean_log_tvl")
+    raw_log_fee = X_attr[:, fee_idx]
+    raw_mean_log_tvl = X_attr[:, tvl_idx]
+    pool_chains = [matched_clean[pid]["chain"] for pid in pool_ids]
+
     # Token overlap
     pool_tokens = {}
     for i, pid in enumerate(pool_ids):
@@ -111,6 +127,9 @@ def build_all_features(matched_clean, option_c_clean):
     peer_attrs = np.zeros((n_pools, n_peers, k_attr), dtype=np.float32)
     peer_overlap = np.zeros((n_pools, n_peers), dtype=np.float32)
     peer_col_idx = np.zeros((n_pools, n_peers), dtype=np.int32)
+    rel_same_chain = np.zeros((n_pools, n_peers), dtype=np.float32)
+    rel_log_tvl_ratio = np.zeros((n_pools, n_peers), dtype=np.float32)
+    rel_log_fee_ratio = np.zeros((n_pools, n_peers), dtype=np.float32)
 
     for i in range(n_pools):
         peers = [j for j in range(n_pools) if j != i]
@@ -118,6 +137,15 @@ def build_all_features(matched_clean, option_c_clean):
             peer_attrs[i, p] = X_attr_norm[j]
             peer_overlap[i, p] = len(pool_tokens[i] & pool_tokens[j])
             peer_col_idx[i, p] = j
+            rel_same_chain[i, p] = float(pool_chains[i] == pool_chains[j])
+            rel_log_tvl_ratio[i, p] = abs(raw_mean_log_tvl[i] - raw_mean_log_tvl[j])
+            rel_log_fee_ratio[i, p] = abs(raw_log_fee[i] - raw_log_fee[j])
+
+    # Standardize ratio features
+    for arr in [rel_log_tvl_ratio, rel_log_fee_ratio]:
+        mu = np.mean(arr)
+        sigma = max(np.std(arr), 1e-6)
+        arr[:] = ((arr - mu) / sigma).astype(np.float32)
 
     # Standardization stats for volumes
     vol_mean = float(np.nanmean(vol_matrix))
@@ -219,6 +247,9 @@ def build_all_features(matched_clean, option_c_clean):
         "peer_attrs": peer_attrs,       # (n_pools, n_peers, k_attr)
         "target_attrs": X_attr_norm,    # (n_pools, k_attr)
         "peer_overlap": peer_overlap,   # (n_pools, n_peers)
+        "rel_same_chain": rel_same_chain,       # (n_pools, n_peers)
+        "rel_log_tvl_ratio": rel_log_tvl_ratio, # (n_pools, n_peers)
+        "rel_log_fee_ratio": rel_log_fee_ratio, # (n_pools, n_peers)
         # Per-sample peer features
         "pf_vol_lag1": pf_vol_lag1,
         "pf_vol_lag2": pf_vol_lag2,
@@ -253,8 +284,7 @@ def build_all_features(matched_clean, option_c_clean):
 def assemble_inputs(data, feat_cfg):
     """Assemble encoder/decoder inputs based on feature config.
 
-    Returns (peer_input, local_input, peer_mask, pool_idx, y, v_arb)
-    all as JAX arrays ready for training.
+    Returns dict with JAX arrays ready for training.
     """
     n_samples = len(data["pool_idx"])
     n_peers = data["n_peers"]
@@ -280,6 +310,14 @@ def assemble_inputs(data, feat_cfg):
         peer_parts.append(data["pf_tvl"][:, :, None])
     if feat_cfg.get("peer_volatility"):
         peer_parts.append(data["pf_volatility"][:, :, None])
+
+    # Relational features (optional via feat_cfg)
+    if feat_cfg.get("rel_same_chain", True):
+        peer_parts.append(data["rel_same_chain"][pool_idx][:, :, None])
+    if feat_cfg.get("rel_tvl_ratio", True):
+        peer_parts.append(data["rel_log_tvl_ratio"][pool_idx][:, :, None])
+    if feat_cfg.get("rel_fee_ratio", True):
+        peer_parts.append(data["rel_log_fee_ratio"][pool_idx][:, :, None])
 
     peer_input = np.concatenate(peer_parts, axis=-1).astype(np.float32)
 
@@ -310,6 +348,7 @@ def assemble_inputs(data, feat_cfg):
         "y": jnp.array(data["y_total"]),
         "v_arb": jnp.array(data["v_arb"]),
         "pool_idx": jnp.array(pool_idx),
+        "n_pools": data["n_pools"],
         "n_peer_feat": peer_input.shape[-1],
         "n_local_feat": local_input.shape[-1],
     }
@@ -318,62 +357,102 @@ def assemble_inputs(data, feat_cfg):
 # ---- Model ----
 
 
-def init_params(key, n_peer_feat, n_local_feat, hidden, d_embed):
+def init_params(key, n_peer_feat, n_local_feat, hidden, d_embed,
+                encoder_type="mlp"):
+    """Initialize model parameters.
+
+    encoder_type: "mlp" (2-layer ReLU) or "linear" (single affine).
+    Presence of "enc_W2" in params dict distinguishes the two at forward time.
+    """
     k1, k2, k3, k4 = jax.random.split(key, 4)
     dec_in = d_embed + n_local_feat
-    return {
-        "enc_W1": jax.random.normal(k1, (n_peer_feat, hidden)) * np.sqrt(2.0 / n_peer_feat),
-        "enc_b1": jnp.zeros(hidden),
-        "enc_W2": jax.random.normal(k2, (hidden, d_embed)) * np.sqrt(2.0 / hidden),
-        "enc_b2": jnp.zeros(d_embed),
-        "dec_W1": jax.random.normal(k3, (dec_in, hidden)) * np.sqrt(2.0 / dec_in),
-        "dec_b1": jnp.zeros(hidden),
-        "dec_W2": jax.random.normal(k4, (hidden, 1)) * 0.01,
-        "dec_b2": jnp.zeros(1),
-    }
+    params = {}
+
+    if encoder_type == "mlp":
+        params["enc_W1"] = jax.random.normal(k1, (n_peer_feat, hidden)) * np.sqrt(2.0 / n_peer_feat)
+        params["enc_b1"] = jnp.zeros(hidden)
+        params["enc_W2"] = jax.random.normal(k2, (hidden, d_embed)) * np.sqrt(2.0 / hidden)
+        params["enc_b2"] = jnp.zeros(d_embed)
+    else:  # linear
+        params["enc_W1"] = jax.random.normal(k1, (n_peer_feat, d_embed)) * np.sqrt(2.0 / n_peer_feat)
+        params["enc_b1"] = jnp.zeros(d_embed)
+
+    params["dec_W1"] = jax.random.normal(k3, (dec_in, hidden)) * np.sqrt(2.0 / dec_in)
+    params["dec_b1"] = jnp.zeros(hidden)
+    params["dec_W2"] = jax.random.normal(k4, (hidden, 1)) * 0.01
+    params["dec_b2"] = jnp.zeros(1)
+    return params
 
 
-def forward(params, peer_input, peer_mask, local_input):
+def forward(params, peer_input, peer_mask, local_input, no_peers=False):
     """Returns predicted log_volume (total) per sample."""
     batch, n_peers, _ = peer_input.shape
 
-    flat = peer_input.reshape(-1, peer_input.shape[-1])
-    h = jnp.maximum(flat @ params["enc_W1"] + params["enc_b1"], 0.0)
-    h = h @ params["enc_W2"] + params["enc_b2"]
-    h = h.reshape(batch, n_peers, -1)
+    if no_peers:
+        d_embed = params["dec_W1"].shape[0] - local_input.shape[-1]
+        summary = jnp.zeros((batch, d_embed))
+    else:
+        flat = peer_input.reshape(-1, peer_input.shape[-1])
+        if "enc_W2" in params:
+            # MLP encoder: 2-layer with ReLU
+            h = jnp.maximum(flat @ params["enc_W1"] + params["enc_b1"], 0.0)
+            h = h @ params["enc_W2"] + params["enc_b2"]
+        else:
+            # Linear encoder: single affine
+            h = flat @ params["enc_W1"] + params["enc_b1"]
+        h = h.reshape(batch, n_peers, -1)
 
-    h_masked = h * peer_mask[:, :, None]
-    n_valid = jnp.maximum(jnp.sum(peer_mask, axis=1, keepdims=True), 1.0)
-    summary = jnp.sum(h_masked, axis=1) / n_valid
+        h_masked = h * peer_mask[:, :, None]
+        n_valid = jnp.maximum(jnp.sum(peer_mask, axis=1, keepdims=True), 1.0)
+        summary = jnp.sum(h_masked, axis=1) / n_valid
 
     dec_in = jnp.concatenate([summary, local_input], axis=-1)
     h_dec = jnp.maximum(dec_in @ params["dec_W1"] + params["dec_b1"], 0.0)
     return (h_dec @ params["dec_W2"] + params["dec_b2"])[:, 0]
 
 
-def loss_fn(params, peer_input, peer_mask, local_input, y, l2_alpha):
-    """MSE on total log_volume + L2 reg."""
-    pred = forward(params, peer_input, peer_mask, local_input)
-    mse = jnp.mean((pred - y) ** 2)
+def loss_fn(params, peer_input, peer_mask, local_input, y, l2_alpha,
+            pool_idx, n_pools, huber_delta, no_peers):
+    """Huber loss with per-pool weighting + L2 reg."""
+    pred = forward(params, peer_input, peer_mask, local_input, no_peers)
+    residuals = pred - y
+    abs_r = jnp.abs(residuals)
+    huber_vals = jnp.where(abs_r <= huber_delta, 0.5 * residuals ** 2,
+                           huber_delta * (abs_r - 0.5 * huber_delta))
+
+    # Per-pool mean loss, then average across pools
+    total = 0.0
+    for i in range(n_pools):
+        mask_i = (pool_idx == i).astype(jnp.float32)
+        n_i = jnp.maximum(jnp.sum(mask_i), 1.0)
+        total = total + jnp.sum(huber_vals * mask_i) / n_i
+    data_loss = total / n_pools
+
     reg = sum(jnp.sum(v ** 2) for k, v in params.items() if "W" in k)
-    return mse + l2_alpha * reg
+    return data_loss + l2_alpha * reg
 
 
-_grad_fn = jax.jit(jax.value_and_grad(loss_fn))
+# n_pools (arg 7) and no_peers (arg 9) must be static for Python control flow
+_grad_fn = jax.jit(jax.value_and_grad(loss_fn), static_argnums=(7, 9))
 
 
 # ---- Training ----
 
 
-def train(params, inputs, n_epochs, lr, l2_alpha, verbose=True):
+def train(params, inputs, n_epochs, lr, l2_alpha, huber_delta=1.0,
+          no_peers=False, verbose=True):
     m = {k: jnp.zeros_like(v) for k, v in params.items()}
     v = {k: jnp.zeros_like(v) for k, v in params.items()}
     final_loss = float("inf")
+
+    n_pools = int(inputs["n_pools"])
+    pool_idx = inputs["pool_idx"]
 
     for epoch in range(n_epochs):
         loss_val, grads = _grad_fn(
             params, inputs["peer_input"], inputs["peer_mask"],
             inputs["local_input"], inputs["y"], l2_alpha,
+            pool_idx, n_pools, huber_delta, no_peers,
         )
         final_loss = float(loss_val)
 
@@ -393,10 +472,11 @@ def train(params, inputs, n_epochs, lr, l2_alpha, verbose=True):
 # ---- Evaluation ----
 
 
-def evaluate(params, inputs, data, label=""):
+def evaluate(params, inputs, data, label="", no_peers=False):
     """Per-pool R² on total volume and noise residual."""
     pred_total = np.array(forward(
-        params, inputs["peer_input"], inputs["peer_mask"], inputs["local_input"],
+        params, inputs["peer_input"], inputs["peer_mask"],
+        inputs["local_input"], no_peers=no_peers,
     ))
     y_total = np.array(inputs["y"])
     v_arb = np.array(inputs["v_arb"])
@@ -469,33 +549,53 @@ def run_temporal(data, feat_cfg, hparams, split_frac=0.7):
     train_inputs = assemble_inputs(train_data, feat_cfg)
     eval_inputs = assemble_inputs(eval_data, feat_cfg)
 
+    encoder_type = hparams.get("encoder_type", "mlp")
+    no_peers = hparams.get("no_peers", False)
+    huber_delta = hparams.get("huber_delta", 1.0)
+
     n_pf = train_inputs["n_peer_feat"]
     n_lf = train_inputs["n_local_feat"]
     n_params = sum(v.size for v in init_params(
         jax.random.PRNGKey(0), n_pf, n_lf, hparams["hidden"], hparams["d_embed"],
+        encoder_type=encoder_type,
     ).values())
 
     print(f"  Train: {int(train_mask.sum())}, Eval: {int(eval_mask.sum())}, "
           f"peer_feat={n_pf}, local_feat={n_lf}, params={n_params}")
+    if encoder_type != "mlp":
+        print(f"  encoder_type={encoder_type}")
+    if no_peers:
+        print(f"  no_peers=True (decoder-only ablation)")
+    if huber_delta != 1.0:
+        print(f"  huber_delta={huber_delta}")
 
     params = init_params(
         jax.random.PRNGKey(42), n_pf, n_lf, hparams["hidden"], hparams["d_embed"],
+        encoder_type=encoder_type,
     )
     t0 = time.time()
     params, final_loss = train(
         params, train_inputs, hparams["n_epochs"], hparams["lr"], hparams["l2_alpha"],
+        huber_delta=huber_delta, no_peers=no_peers,
     )
     print(f"  Training: {time.time() - t0:.1f}s")
 
     print("\n  --- Train ---")
-    evaluate(params, train_inputs, data)
+    evaluate(params, train_inputs, data, no_peers=no_peers)
     print("\n  --- Eval ---")
-    _, med_resid_eval, _, _ = evaluate(params, eval_inputs, data)
+    _, med_resid_eval, _, _ = evaluate(params, eval_inputs, data, no_peers=no_peers)
 
     return med_resid_eval
 
 
 # ---- Optuna ----
+
+
+_FEAT_KEYS = [
+    "peer_vol_lag2", "peer_vol_change", "peer_tvl", "peer_volatility",
+    "own_vol_lag2", "own_vol_change", "own_tvl", "own_volatility",
+    "rel_same_chain", "rel_tvl_ratio", "rel_fee_ratio",
+]
 
 
 def run_optuna(data, n_trials):
@@ -528,6 +628,9 @@ def run_optuna(data, n_trials):
             "own_vol_change": trial.suggest_categorical("own_vol_change", [True, False]),
             "own_tvl": trial.suggest_categorical("own_tvl", [True, False]),
             "own_volatility": trial.suggest_categorical("own_volatility", [True, False]),
+            "rel_same_chain": trial.suggest_categorical("rel_same_chain", [True, False]),
+            "rel_tvl_ratio": trial.suggest_categorical("rel_tvl_ratio", [True, False]),
+            "rel_fee_ratio": trial.suggest_categorical("rel_fee_ratio", [True, False]),
         }
         hparams = {
             "hidden": trial.suggest_categorical("hidden", [8, 16, 32]),
@@ -535,6 +638,9 @@ def run_optuna(data, n_trials):
             "lr": trial.suggest_float("lr", 1e-4, 1e-2, log=True),
             "l2_alpha": trial.suggest_float("l2_alpha", 1e-5, 1e-1, log=True),
             "n_epochs": trial.suggest_categorical("n_epochs", [500, 1000, 2000]),
+            "encoder_type": trial.suggest_categorical("encoder_type", ["mlp", "linear"]),
+            "huber_delta": trial.suggest_categorical("huber_delta", [0.5, 1.0, 1.5, 2.0]),
+            "no_peers": trial.suggest_categorical("no_peers", [True, False]),
         }
 
         train_inputs = assemble_inputs(train_data, feat_cfg)
@@ -544,14 +650,20 @@ def run_optuna(data, n_trials):
             jax.random.PRNGKey(42),
             train_inputs["n_peer_feat"], train_inputs["n_local_feat"],
             hparams["hidden"], hparams["d_embed"],
+            encoder_type=hparams["encoder_type"],
         )
-        params, _ = train(params, train_inputs, hparams["n_epochs"],
-                          hparams["lr"], hparams["l2_alpha"], verbose=False)
+        params, _ = train(
+            params, train_inputs, hparams["n_epochs"],
+            hparams["lr"], hparams["l2_alpha"],
+            huber_delta=hparams["huber_delta"],
+            no_peers=hparams["no_peers"],
+            verbose=False,
+        )
 
         # Eval R² on noise residual
         pred = np.array(forward(
             params, eval_inputs["peer_input"], eval_inputs["peer_mask"],
-            eval_inputs["local_input"],
+            eval_inputs["local_input"], no_peers=hparams["no_peers"],
         ))
         y = np.array(eval_inputs["y"])
         v_arb = np.array(eval_inputs["v_arb"])
@@ -580,11 +692,13 @@ def run_optuna(data, n_trials):
         med_total = float(np.median(r2_totals)) if r2_totals else -10.0
 
         trial.set_user_attr("med_total_r2", med_total)
-        n_feat = sum(feat_cfg.values())
+        n_feat = sum(1 for k in _FEAT_KEYS if feat_cfg.get(k))
         print(f"  Trial {trial.number}: resid={med_resid:.4f} total={med_total:.4f} "
-              f"h={hparams['hidden']} d={hparams['d_embed']} "
+              f"enc={hparams['encoder_type']} h={hparams['hidden']} d={hparams['d_embed']} "
+              f"hub={hparams['huber_delta']} "
+              f"{'no_peers ' if hparams['no_peers'] else ''}"
               f"lr={hparams['lr']:.1e} a={hparams['l2_alpha']:.1e} "
-              f"ep={hparams['n_epochs']} feat={n_feat}/8")
+              f"ep={hparams['n_epochs']} feat={n_feat}/11")
 
         return med_resid
 
@@ -605,15 +719,12 @@ def run_optuna(data, n_trials):
                     reverse=True)
     for t in trials[:10]:
         if t.value is not None:
-            feats = sum(1 for k in ["peer_vol_lag2", "peer_vol_change",
-                                     "peer_tvl", "peer_volatility",
-                                     "own_vol_lag2", "own_vol_change",
-                                     "own_tvl", "own_volatility"]
-                        if t.params.get(k))
+            feats = sum(1 for k in _FEAT_KEYS if t.params.get(k))
             print(f"    #{t.number}: resid={t.value:.4f} "
                   f"total={t.user_attrs.get('med_total_r2', '?'):.4f} "
+                  f"enc={t.params['encoder_type']} "
                   f"h={t.params['hidden']} d={t.params['d_embed']} "
-                  f"feat={feats}/8")
+                  f"feat={feats}/11")
 
     return study
 
@@ -631,6 +742,10 @@ def main():
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--l2-alpha", type=float, default=1e-3)
     parser.add_argument("--epochs", type=int, default=1000)
+    parser.add_argument("--encoder-type", choices=["mlp", "linear"], default="mlp")
+    parser.add_argument("--huber-delta", type=float, default=1.0)
+    parser.add_argument("--no-peers", action="store_true",
+                        help="Decoder-only ablation (zero peer summary)")
     # Feature flags
     parser.add_argument("--peer-vol-lag2", action="store_true")
     parser.add_argument("--peer-vol-change", action="store_true")
@@ -655,6 +770,10 @@ def main():
         "own_vol_change": args.own_vol_change or args.all_features,
         "own_tvl": args.own_tvl or args.all_features,
         "own_volatility": args.own_volatility or args.all_features,
+        # Relational features: always on for CLI, searchable in Optuna
+        "rel_same_chain": True,
+        "rel_tvl_ratio": True,
+        "rel_fee_ratio": True,
     }
     hparams = {
         "hidden": args.hidden,
@@ -662,6 +781,9 @@ def main():
         "lr": args.lr,
         "l2_alpha": args.l2_alpha,
         "n_epochs": args.epochs,
+        "encoder_type": args.encoder_type,
+        "huber_delta": args.huber_delta,
+        "no_peers": args.no_peers,
     }
 
     print("=" * 70)
