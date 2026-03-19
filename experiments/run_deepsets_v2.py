@@ -59,6 +59,7 @@ def build_all_features(matched_clean, option_c_clean):
     from quantammsim.calibration.grid_interpolation import interpolate_pool_daily
     from quantammsim.calibration.pool_data import (
         build_pool_attributes, _parse_tokens, _canonicalize_token,
+        build_x_obs, build_cross_pool_x_obs,
     )
 
     pool_ids = sorted(matched_clean.keys())
@@ -98,6 +99,22 @@ def build_all_features(matched_clean, option_c_clean):
             tvl_matrix[t, j] = panel["log_tvl_lag1"].values[k]
             volatility_matrix[t, j] = panel["volatility"].values[k]
             v_arb_matrix[t, j] = v_arb[k]
+
+    # Per-pool coeffs, gas, and day mapping for learnable cadence
+    pool_coeffs = []
+    pool_gas = []
+    init_log_cadences = np.zeros(n_pools, dtype=np.float32)
+    common_to_grid = np.full((n_pools, n_dates), 0, dtype=np.int32)
+
+    for j, pid in enumerate(pool_ids):
+        entry = matched_clean[pid]
+        oc = option_c_clean[pid]
+        pool_coeffs.append(entry["coeffs"])
+        pool_gas.append(jnp.float64(np.exp(oc["log_gas"])))
+        init_log_cadences[j] = oc["log_cadence"]
+        dates_j = entry["panel"]["date"].values
+        for k, date in enumerate(dates_j):
+            common_to_grid[j, date_to_idx[date]] = entry["day_indices"][k]
 
     for t, date in enumerate(date_list):
         weekday_arr[t] = pd.Timestamp(date).weekday()
@@ -150,6 +167,31 @@ def build_all_features(matched_clean, option_c_clean):
     rel_log_tvl_ratio = _standardize(rel_log_tvl_ratio)
     rel_log_fee_ratio = _standardize(rel_log_fee_ratio)
 
+    # Cross-pool peer maps: which pools share tokens / chain
+    from collections import defaultdict
+    pool_tokens_ordered = {}
+    token_to_pools = defaultdict(set)
+    for i, pid in enumerate(pool_ids):
+        toks = _parse_tokens(matched_clean[pid]["tokens"])
+        ordered = [_canonicalize_token(t) for t in toks[:2]]
+        pool_tokens_ordered[i] = ordered
+        for tok in ordered:
+            token_to_pools[tok].add(i)
+
+    token_a_peers = {}
+    token_b_peers = {}
+    chain_peer_map = {}
+    for i in range(n_pools):
+        toks = pool_tokens_ordered[i]
+        token_a_peers[i] = sorted(token_to_pools[toks[0]] - {i})
+        token_b_peers[i] = sorted(token_to_pools[toks[1]] - {i}) if len(toks) > 1 else []
+        chain_peer_map[i] = [j for j in range(n_pools) if j != i and pool_chains[j] == pool_chains[i]]
+
+    # Per-pool log_fee for interaction features
+    pool_log_fee = raw_log_fee.copy()
+    fee_mean = float(np.mean(pool_log_fee))
+    fee_std = max(float(np.std(pool_log_fee)), 1e-6)
+
     # Standardization stats for volumes
     vol_mean = float(np.nanmean(vol_matrix))
     vol_std = float(np.nanstd(vol_matrix))
@@ -157,6 +199,27 @@ def build_all_features(matched_clean, option_c_clean):
     tvl_std = float(np.nanstd(tvl_matrix))
     vola_mean = float(np.nanmean(volatility_matrix))
     vola_std = float(np.nanstd(volatility_matrix))
+
+    # Build x_obs per pool, mapped to common date grid
+    # x_obs_reduced: (n_dates, n_pools, 4), x_obs_cross: (n_dates, n_pools, 7)
+    from quantammsim.calibration.pool_data import K_OBS_REDUCED, K_OBS_CROSS
+    x_obs_reduced_grid = np.full((n_dates, n_pools, K_OBS_REDUCED), np.nan)
+    x_obs_cross_grid = np.full((n_dates, n_pools, K_OBS_CROSS), np.nan)
+
+    for j, pid in enumerate(pool_ids):
+        entry = matched_clean[pid]
+        panel = entry["panel"]
+        dates_j = panel["date"].values
+
+        # Reduced x_obs (4 features)
+        xr = build_x_obs(panel, reduced=True)  # (n_obs, 4)
+        for k, date in enumerate(dates_j):
+            x_obs_reduced_grid[date_to_idx[date], j] = xr[k]
+
+        # Cross-pool x_obs (7 features) — drops first day
+        xc = build_cross_pool_x_obs(panel, matched_clean, pid)  # (n_obs-1, 7)
+        for k, date in enumerate(dates_j[1:]):
+            x_obs_cross_grid[date_to_idx[date], j] = xc[k]
 
     # Build samples: require t >= 2 (for lag-2), valid vol at t, t-1, t-2
     sample_pools, sample_days = [], []
@@ -198,6 +261,19 @@ def build_all_features(matched_clean, option_c_clean):
     lf_own_volatility = np.zeros(n_samples, dtype=np.float32)
     lf_dow_sin = np.zeros(n_samples, dtype=np.float32)
     lf_dow_cos = np.zeros(n_samples, dtype=np.float32)
+    # Interaction features (from calibration pipeline's x_obs)
+    lf_tvl_x_vola = np.zeros(n_samples, dtype=np.float32)
+    lf_tvl_x_fee = np.zeros(n_samples, dtype=np.float32)
+    lf_vola_x_fee = np.zeros(n_samples, dtype=np.float32)
+    # Cross-pool volume aggregates
+    lf_cross_vol_tok_a = np.zeros(n_samples, dtype=np.float32)
+    lf_cross_vol_tok_b = np.zeros(n_samples, dtype=np.float32)
+    lf_cross_vol_chain = np.zeros(n_samples, dtype=np.float32)
+    lf_market_vol = np.zeros(n_samples, dtype=np.float32)
+    # Cross-pool momentum (peer volume changes)
+    lf_cross_mom_tok_a = np.zeros(n_samples, dtype=np.float32)
+    lf_cross_mom_tok_b = np.zeros(n_samples, dtype=np.float32)
+    lf_cross_mom_chain = np.zeros(n_samples, dtype=np.float32)
 
     # Targets
     y_total = np.zeros(n_samples, dtype=np.float32)
@@ -241,9 +317,63 @@ def build_all_features(matched_clean, option_c_clean):
         lf_dow_sin[s] = np.sin(2 * np.pi * wd / 7)
         lf_dow_cos[s] = np.cos(2 * np.pi * wd / 7)
 
+        # Interaction features (raw products, standardized after loop)
+        norm_fee_i = (raw_log_fee[i] - fee_mean) / fee_std
+        lf_tvl_x_vola[s] = lf_own_tvl[s] * lf_own_volatility[s]
+        lf_tvl_x_fee[s] = lf_own_tvl[s] * norm_fee_i
+        lf_vola_x_fee[s] = lf_own_volatility[s] * norm_fee_i
+
+        # Cross-pool volume aggregates at t-1
+        def _peer_vol_mean(peer_list, t_lag):
+            if not peer_list:
+                return vol_mean  # global fallback
+            vals = vol_matrix[t_lag, peer_list]
+            valid = vals[~np.isnan(vals)]
+            return float(np.mean(valid)) if len(valid) > 0 else vol_mean
+
+        def _peer_vol_change_mean(peer_list, t_lag):
+            if not peer_list:
+                return 0.0
+            v1 = vol_matrix[t_lag, peer_list]
+            v2 = vol_matrix[t_lag - 1, peer_list]
+            valid = ~np.isnan(v1) & ~np.isnan(v2)
+            if valid.sum() == 0:
+                return 0.0
+            return float(np.mean(v1[valid] - v2[valid]))
+
+        lf_cross_vol_tok_a[s] = _norm_vol(_peer_vol_mean(token_a_peers[i], t - 1))
+        lf_cross_vol_tok_b[s] = _norm_vol(_peer_vol_mean(token_b_peers[i], t - 1))
+        lf_cross_vol_chain[s] = _norm_vol(_peer_vol_mean(chain_peer_map[i], t - 1))
+        lf_market_vol[s] = _norm_vol(float(np.nanmean(vol_matrix[t - 1, :])))
+
+        # Cross-pool momentum: mean volume change of peers (t-1 vs t-2)
+        lf_cross_mom_tok_a[s] = _peer_vol_change_mean(token_a_peers[i], t - 1)
+        lf_cross_mom_tok_b[s] = _peer_vol_change_mean(token_b_peers[i], t - 1)
+        lf_cross_mom_chain[s] = _peer_vol_change_mean(chain_peer_map[i], t - 1)
+
         y_total[s] = vol_matrix[t, i]
         v_arb_val = v_arb_matrix[t, i]
         v_arb_samples[s] = v_arb_val if np.isfinite(v_arb_val) else 1e-6
+
+    # Per-sample grid day indices for learnable cadence
+    sample_grid_days = common_to_grid[sample_pools, sample_days]
+
+    # Per-sample x_obs arrays
+    x_obs_reduced = np.zeros((n_samples, K_OBS_REDUCED), dtype=np.float32)
+    x_obs_cross = np.zeros((n_samples, K_OBS_CROSS), dtype=np.float32)
+    for s in range(n_samples):
+        xr = x_obs_reduced_grid[sample_days[s], sample_pools[s]]
+        if np.all(np.isfinite(xr)):
+            x_obs_reduced[s] = xr
+        xc = x_obs_cross_grid[sample_days[s], sample_pools[s]]
+        if np.all(np.isfinite(xc)):
+            x_obs_cross[s] = xc
+
+    # Standardize momentum features (raw volume differences)
+    for arr in [lf_cross_mom_tok_a, lf_cross_mom_tok_b, lf_cross_mom_chain]:
+        mu = np.mean(arr)
+        sigma = max(np.std(arr), 1e-6)
+        arr[:] = ((arr - mu) / sigma).astype(np.float32)
 
     return {
         # Static per-pool
@@ -268,10 +398,30 @@ def build_all_features(matched_clean, option_c_clean):
         "lf_own_volatility": lf_own_volatility,
         "lf_dow_sin": lf_dow_sin,
         "lf_dow_cos": lf_dow_cos,
+        # Interaction features
+        "lf_tvl_x_vola": lf_tvl_x_vola,
+        "lf_tvl_x_fee": lf_tvl_x_fee,
+        "lf_vola_x_fee": lf_vola_x_fee,
+        # Cross-pool volume aggregates
+        "lf_cross_vol_tok_a": lf_cross_vol_tok_a,
+        "lf_cross_vol_tok_b": lf_cross_vol_tok_b,
+        "lf_cross_vol_chain": lf_cross_vol_chain,
+        "lf_market_vol": lf_market_vol,
+        # Cross-pool momentum
+        "lf_cross_mom_tok_a": lf_cross_mom_tok_a,
+        "lf_cross_mom_tok_b": lf_cross_mom_tok_b,
+        "lf_cross_mom_chain": lf_cross_mom_chain,
         # Targets
         "y_total": y_total,
         "y_residual": (y_total - np.log(np.maximum(v_arb_samples, 1e-6))).astype(np.float32),
         "v_arb": v_arb_samples,
+        # Cadence learning (per-pool, not subject to _subset)
+        "pool_coeffs": pool_coeffs,              # list of PoolCoeffsDaily
+        "pool_gas": pool_gas,                    # list of jnp scalars
+        "init_log_cadences": init_log_cadences,  # (n_pools,)
+        "sample_grid_days": sample_grid_days,    # (n_samples,)
+        "x_obs_reduced": x_obs_reduced,          # (n_samples, 4)
+        "x_obs_cross": x_obs_cross,              # (n_samples, 7)
         # Indices
         "pool_idx": sample_pools,
         "day_idx": sample_days,
@@ -359,19 +509,50 @@ def assemble_inputs(data, feat_cfg):
     if feat_cfg.get("own_volatility"):
         local_parts.append(data["lf_own_volatility"][:, None])
 
+    # Interaction features (tvl×vola, tvl×fee, vola×fee)
+    if feat_cfg.get("interactions"):
+        local_parts.append(data["lf_tvl_x_vola"][:, None])
+        local_parts.append(data["lf_tvl_x_fee"][:, None])
+        local_parts.append(data["lf_vola_x_fee"][:, None])
+
+    # Cross-pool volume aggregates (token-peer, chain-peer, market)
+    if feat_cfg.get("cross_pool_vol"):
+        local_parts.append(data["lf_cross_vol_tok_a"][:, None])
+        local_parts.append(data["lf_cross_vol_tok_b"][:, None])
+        local_parts.append(data["lf_cross_vol_chain"][:, None])
+        local_parts.append(data["lf_market_vol"][:, None])
+
+    # Cross-pool momentum (peer volume changes)
+    if feat_cfg.get("cross_pool_momentum"):
+        local_parts.append(data["lf_cross_mom_tok_a"][:, None])
+        local_parts.append(data["lf_cross_mom_tok_b"][:, None])
+        local_parts.append(data["lf_cross_mom_chain"][:, None])
+
+    # Option C x_obs covariates (none / reduced=4 / cross=7)
+    x_obs_mode = feat_cfg.get("x_obs_mode", "none")
+    if x_obs_mode == "reduced" and "x_obs_reduced" in data:
+        local_parts.append(data["x_obs_reduced"])
+    elif x_obs_mode == "cross" and "x_obs_cross" in data:
+        local_parts.append(data["x_obs_cross"])
+
     local_input = np.concatenate(local_parts, axis=-1).astype(np.float32)
 
-    return {
+    result = {
         "peer_input": jnp.array(peer_input),
         "local_input": jnp.array(local_input),
         "peer_mask": jnp.array(data["peer_mask"]),
         "y": jnp.array(data["y_residual"] if feat_cfg.get("target_residual") else data["y_total"]),
+        "y_total": jnp.array(data["y_total"]),
         "v_arb": jnp.array(data["v_arb"]),
         "pool_idx": jnp.array(pool_idx),
         "n_pools": data["n_pools"],
         "n_peer_feat": peer_input.shape[-1],
         "n_local_feat": local_input.shape[-1],
     }
+    # Cadence learning arrays
+    if "sample_grid_days" in data:
+        result["sample_grid_days"] = jnp.array(data["sample_grid_days"])
+    return result
 
 
 # ---- Model ----
@@ -483,24 +664,89 @@ def loss_fn(params, peer_input, peer_mask, local_input, y, l2_alpha,
 _grad_fn = jax.jit(jax.value_and_grad(loss_fn), static_argnums=(7, 9))
 
 
+# ---- Learnable cadence ----
+
+
+def make_cadence_loss_fn(pool_coeffs, pool_gas, n_pools, no_peers):
+    """Build a loss function with per-pool PCHIP coefficients closed over.
+
+    The returned function is JIT-compiled. The Python loop over pools is
+    unrolled at trace time, so each pool's coefficients are constants.
+
+    The neural net predicts log(V_noise). V_arb comes from PCHIP at the
+    current learnable log_cadence. Loss is Huber on log(V_arb + V_noise)
+    vs log(V_obs).
+    """
+    from quantammsim.calibration.grid_interpolation import interpolate_pool_daily
+
+    def loss_fn_cadence(params, peer_input, peer_mask, local_input, y_total,
+                        sample_grid_days, pool_idx, l2_alpha, huber_delta):
+        # Neural net predicts log(V_noise)
+        log_v_noise = forward(params, peer_input, peer_mask, local_input, no_peers)
+
+        # Compute V_arb per sample via PCHIP (loop unrolled at trace time)
+        log_cadence = params["log_cadence"]
+        n_samples = y_total.shape[0]
+        v_arb = jnp.zeros(n_samples)
+
+        for i in range(n_pools):
+            v_arb_all = interpolate_pool_daily(
+                pool_coeffs[i], log_cadence[i], pool_gas[i])
+            # Index into this pool's daily V_arb; clip for safety on other pools' samples
+            safe_days = jnp.clip(sample_grid_days, 0, v_arb_all.shape[0] - 1)
+            v_arb = jnp.where(pool_idx == i, v_arb_all[safe_days], v_arb)
+
+        # Combine: log(V_arb + V_noise) via numerically stable logaddexp
+        log_v_arb = jnp.log(jnp.maximum(v_arb, 1e-10))
+        log_v_total = jnp.logaddexp(log_v_arb, log_v_noise)
+
+        # Huber loss with per-pool weighting
+        residuals = log_v_total - y_total
+        abs_r = jnp.abs(residuals)
+        huber_vals = jnp.where(abs_r <= huber_delta, 0.5 * residuals ** 2,
+                               huber_delta * (abs_r - 0.5 * huber_delta))
+
+        pool_counts = jnp.zeros(n_pools).at[pool_idx].add(
+            jnp.ones_like(pool_idx, dtype=jnp.float32))
+        active = (pool_counts > 0).astype(jnp.float32)
+        n_active = jnp.maximum(jnp.sum(active), 1.0)
+        pool_counts = jnp.maximum(pool_counts, 1.0)
+        pool_sums = jnp.zeros(n_pools).at[pool_idx].add(huber_vals)
+        data_loss = jnp.sum((pool_sums / pool_counts) * active) / n_active
+
+        reg = sum(jnp.sum(v ** 2) for k, v in params.items() if "W" in k)
+        return data_loss + l2_alpha * reg
+
+    grad_fn = jax.jit(jax.value_and_grad(loss_fn_cadence))
+    return grad_fn
+
+
 # ---- Training ----
 
 
 def train(params, inputs, n_epochs, lr, l2_alpha, huber_delta=1.0,
-          no_peers=False, verbose=True):
+          no_peers=False, verbose=True, grad_fn_override=None):
     m = {k: jnp.zeros_like(v) for k, v in params.items()}
     v = {k: jnp.zeros_like(v) for k, v in params.items()}
     final_loss = float("inf")
 
     n_pools = int(inputs["n_pools"])
     pool_idx = inputs["pool_idx"]
+    use_cadence = grad_fn_override is not None
 
     for epoch in range(n_epochs):
-        loss_val, grads = _grad_fn(
-            params, inputs["peer_input"], inputs["peer_mask"],
-            inputs["local_input"], inputs["y"], l2_alpha,
-            pool_idx, n_pools, huber_delta, no_peers,
-        )
+        if use_cadence:
+            loss_val, grads = grad_fn_override(
+                params, inputs["peer_input"], inputs["peer_mask"],
+                inputs["local_input"], inputs["y_total"],
+                inputs["sample_grid_days"], pool_idx, l2_alpha, huber_delta,
+            )
+        else:
+            loss_val, grads = _grad_fn(
+                params, inputs["peer_input"], inputs["peer_mask"],
+                inputs["local_input"], inputs["y"], l2_alpha,
+                pool_idx, n_pools, huber_delta, no_peers,
+            )
         final_loss = float(loss_val)
 
         for k in params:
@@ -511,7 +757,24 @@ def train(params, inputs, n_epochs, lr, l2_alpha, huber_delta=1.0,
             params[k] = params[k] - lr * m_hat / (jnp.sqrt(v_hat) + 1e-8)
 
         if verbose and (epoch % 200 == 0 or epoch == n_epochs - 1):
-            print(f"    epoch {epoch:4d}  loss={final_loss:.6f}")
+            if use_cadence:
+                cads = np.exp(np.array(params["log_cadence"]))
+                # Quick decomposition check: forward pass + V_arb at current cadences
+                _lvn = np.array(forward(
+                    params, inputs["peer_input"], inputs["peer_mask"],
+                    inputs["local_input"], no_peers))
+                _vn = np.exp(_lvn)
+                _vo = np.exp(np.array(inputs["y_total"]))
+                # Approximate arb fraction (use V_obs - V_noise as proxy to avoid PCHIP call)
+                _arb_proxy = np.clip(1.0 - _vn / _vo, 0, None)
+                _n_pathological = np.sum(_arb_proxy < -0.5)  # noise > 1.5x observed
+                _n_bound = np.sum((cads <= 1.01) | (cads >= 59.9))
+                print(f"    epoch {epoch:4d}  loss={final_loss:.6f}"
+                      f"  cad=[{cads.min():.1f}-{np.median(cads):.1f}-{cads.max():.1f}]"
+                      f"  |logVn|={np.mean(np.abs(_lvn)):.1f}"
+                      f"  bound={_n_bound}")
+            else:
+                print(f"    epoch {epoch:4d}  loss={final_loss:.6f}")
 
     return params, final_loss
 
@@ -582,12 +845,173 @@ def evaluate(params, inputs, data, label="", no_peers=False,
     return med_total, med_resid, r2_total, r2_resid
 
 
+def _compute_cadence_decomposition(params, inputs, data, no_peers=False):
+    """Compute V_arb, V_noise, and predictions for cadence mode. Returns numpy arrays."""
+    from quantammsim.calibration.grid_interpolation import interpolate_pool_daily
+
+    log_v_noise = np.array(forward(
+        params, inputs["peer_input"], inputs["peer_mask"],
+        inputs["local_input"], no_peers=no_peers,
+    ))
+    y_total = np.array(inputs["y_total"])
+    pool_idx = np.array(inputs["pool_idx"])
+    sample_grid_days = np.array(inputs["sample_grid_days"])
+
+    pool_coeffs = data["pool_coeffs"]
+    pool_gas = data["pool_gas"]
+    log_cadence = np.array(params["log_cadence"])
+    n_pools = data["n_pools"]
+
+    v_arb = np.zeros(len(y_total))
+    for i in range(n_pools):
+        mask = pool_idx == i
+        if not mask.any():
+            continue
+        v_arb_all = np.array(interpolate_pool_daily(
+            pool_coeffs[i], jnp.float64(log_cadence[i]), pool_gas[i]))
+        v_arb[mask] = v_arb_all[sample_grid_days[mask]]
+
+    v_obs = np.exp(y_total)
+    v_noise = np.exp(log_v_noise)
+    log_v_arb = np.log(np.maximum(v_arb, 1e-10))
+    pred_total = np.logaddexp(log_v_arb, log_v_noise)
+
+    return {
+        "v_arb": v_arb, "v_noise": v_noise, "v_obs": v_obs,
+        "log_v_noise": log_v_noise, "log_v_arb": log_v_arb,
+        "pred_total": pred_total, "y_total": y_total,
+        "pool_idx": pool_idx, "log_cadence": log_cadence,
+    }
+
+
+def evaluate_cadence(params, inputs, data, label="", no_peers=False):
+    """Evaluate with learned cadence: per-pool R², decomposition diagnostics."""
+    dec = _compute_cadence_decomposition(params, inputs, data, no_peers)
+    pool_ids = data.get("pool_ids", [])
+    init_cads = data["init_log_cadences"]
+    n_pools = data["n_pools"]
+
+    if label:
+        print(f"\n  {label}:")
+    print(f"    {'Pool'[:16]:16s} {'R²':>6s} {'Cad init':>8s} {'→learn':>7s}"
+          f" {'Arb%':>6s} {'Noise%':>7s} {'logVn μ':>7s} {'logVn σ':>7s} {'Flag':>5s}")
+    print(f"    {'-'*80}")
+
+    r2_total = {}
+    pool_diag = []
+    for i in range(n_pools):
+        mask = dec["pool_idx"] == i
+        if mask.sum() < 2:
+            continue
+        yt = dec["y_total"][mask]
+        pt = dec["pred_total"][mask]
+        ss_res = np.sum((yt - pt) ** 2)
+        ss_tot = np.sum((yt - yt.mean()) ** 2)
+        r2_total[i] = 1 - ss_res / max(ss_tot, 1e-10)
+
+        pid = pool_ids[i] if i < len(pool_ids) else f"pool_{i}"
+        cad_init = np.exp(init_cads[i])
+        cad_learned = np.exp(dec["log_cadence"][i])
+
+        va = dec["v_arb"][mask]
+        vo = dec["v_obs"][mask]
+        vn = dec["v_noise"][mask]
+        lvn = dec["log_v_noise"][mask]
+
+        arb_pct = np.median(va / vo) * 100
+        noise_pct = np.median(vn / vo) * 100
+        lvn_mu = np.mean(lvn)
+        lvn_std = np.std(lvn)
+
+        # Flags
+        flags = []
+        if arb_pct > 150:
+            flags.append("A")   # arb dominates
+        if cad_learned <= 1.01 or cad_learned >= 59.9:
+            flags.append("B")   # cadence at bound
+        if r2_total[i] < 0:
+            flags.append("X")   # negative R²
+
+        flag_str = "".join(flags) if flags else ""
+        pool_diag.append({
+            "idx": i, "pid": pid, "r2": r2_total[i],
+            "cad_init": cad_init, "cad_learned": cad_learned,
+            "arb_pct": arb_pct, "noise_pct": noise_pct,
+            "lvn_mu": lvn_mu, "lvn_std": lvn_std, "flags": flag_str,
+        })
+
+        print(f"    {pid[:16]:16s} {r2_total[i]:6.3f} {cad_init:7.1f}m {cad_learned:6.1f}m"
+              f" {arb_pct:6.0f}% {noise_pct:6.0f}% {lvn_mu:7.1f} {lvn_std:7.2f}"
+              f" {flag_str:>5s}")
+
+    # ── Summary statistics ──
+    vals = [x for x in r2_total.values() if np.isfinite(x)]
+    med_r2 = np.median(vals) if vals else float("nan")
+    cads = np.exp(dec["log_cadence"])
+
+    n_pathological = sum(1 for d in pool_diag if d["arb_pct"] > 150)
+    n_at_bound = sum(1 for d in pool_diag
+                     if d["cad_learned"] <= 1.01 or d["cad_learned"] >= 59.9)
+    n_negative_r2 = sum(1 for d in pool_diag if d["r2"] < 0)
+    healthy = [d for d in pool_diag if d["arb_pct"] <= 150 and d["r2"] > 0]
+    med_r2_healthy = (np.median([d["r2"] for d in healthy])
+                      if healthy else float("nan"))
+
+    print(f"\n    ── Summary ──")
+    print(f"    Median R² total:   {med_r2:.4f}  (healthy only: {med_r2_healthy:.4f})")
+    print(f"    Cadence range:     {cads.min():.1f} - {np.median(cads):.1f}"
+          f" - {cads.max():.1f} min")
+    print(f"    Decomposition:     {len(pool_diag) - n_pathological}/{len(pool_diag)}"
+          f" healthy (arb≤150%),  {n_pathological} pathological")
+    print(f"    Cadence at bounds: {n_at_bound}/{len(pool_diag)}"
+          f"  (≤1min or ≥60min)")
+    print(f"    Negative R²:       {n_negative_r2}/{len(pool_diag)}")
+    print(f"    Flags: A=arb>150%, B=cadence at bound, X=negative R²")
+
+    return med_r2, r2_total, pool_diag
+
+
+def print_cadence_comparison(train_diag, eval_diag):
+    """Print train vs eval diagnostic comparison."""
+    train_map = {d["pid"]: d for d in train_diag}
+    eval_map = {d["pid"]: d for d in eval_diag}
+    all_pids = sorted(set(train_map) | set(eval_map))
+
+    print(f"\n    ── Train vs Eval Gap ──")
+    print(f"    {'Pool'[:16]:16s} {'R² trn':>7s} {'R² eval':>7s} {'Gap':>6s}"
+          f" {'ArbTrn%':>7s} {'ArbEval%':>8s}")
+    print(f"    {'-'*55}")
+
+    gaps = []
+    for pid in all_pids:
+        td = train_map.get(pid)
+        ed = eval_map.get(pid)
+        if td is None or ed is None:
+            continue
+        gap = td["r2"] - ed["r2"]
+        gaps.append(gap)
+        flag = " ***" if abs(gap) > 0.5 else ""
+        print(f"    {pid[:16]:16s} {td['r2']:7.3f} {ed['r2']:7.3f} {gap:+6.3f}"
+              f" {td['arb_pct']:6.0f}% {ed['arb_pct']:7.0f}%{flag}")
+
+    if gaps:
+        print(f"    Median gap: {np.median(gaps):+.3f}  "
+              f"Mean gap: {np.mean(gaps):+.3f}  "
+              f"Max gap: {max(gaps):+.3f}")
+
+
 # Keys indexed by sample (shape[0] == n_samples)
 _SAMPLE_KEYS = {
     "pf_vol_lag1", "pf_vol_lag2", "pf_vol_change", "pf_tvl", "pf_volatility",
     "peer_mask", "lf_own_vol_lag1", "lf_own_vol_lag2", "lf_own_vol_change",
     "lf_own_tvl", "lf_own_volatility", "lf_dow_sin", "lf_dow_cos",
-    "y_total", "y_residual", "v_arb", "pool_idx", "day_idx",
+    "lf_tvl_x_vola", "lf_tvl_x_fee", "lf_vola_x_fee",
+    "lf_cross_vol_tok_a", "lf_cross_vol_tok_b", "lf_cross_vol_chain",
+    "lf_market_vol", "lf_cross_mom_tok_a", "lf_cross_mom_tok_b",
+    "lf_cross_mom_chain",
+    "y_total", "y_residual", "v_arb", "sample_grid_days",
+    "x_obs_reduced", "x_obs_cross",
+    "pool_idx", "day_idx",
 }
 
 
@@ -622,6 +1046,7 @@ def run_temporal(data, feat_cfg, hparams, split_frac=0.7):
     no_peers = hparams.get("no_peers", False)
     huber_delta = hparams.get("huber_delta", 1.0)
     target_residual = feat_cfg.get("target_residual", False)
+    learn_cadence = hparams.get("learn_cadence", False)
 
     n_pf = train_inputs["n_peer_feat"]
     n_lf = train_inputs["n_local_feat"]
@@ -632,6 +1057,8 @@ def run_temporal(data, feat_cfg, hparams, split_frac=0.7):
 
     print(f"  Train: {int(train_mask.sum())}, Eval: {int(eval_mask.sum())}, "
           f"peer_feat={n_pf}, local_feat={n_lf}, params={n_params}")
+    if learn_cadence:
+        print(f"  learn_cadence=True (joint cadence+noise optimization)")
     if target_residual:
         print(f"  target=residual (log_vol - log_V_arb)")
     if encoder_type != "mlp":
@@ -645,21 +1072,57 @@ def run_temporal(data, feat_cfg, hparams, split_frac=0.7):
         jax.random.PRNGKey(42), n_pf, n_lf, hparams["hidden"], hparams["d_embed"],
         encoder_type=encoder_type,
     )
-    params = warm_start_decoder(params, train_inputs, hparams["d_embed"])
-    t0 = time.time()
-    params, _ = train(
-        params, train_inputs, hparams["n_epochs"], hparams["lr"], hparams["l2_alpha"],
-        huber_delta=huber_delta, no_peers=no_peers,
-    )
-    print(f"  Training: {time.time() - t0:.1f}s")
 
-    eval_kw = dict(no_peers=no_peers, target_residual=target_residual)
-    print("\n  --- Train ---")
-    evaluate(params, train_inputs, data, **eval_kw)
-    print("\n  --- Eval ---")
-    _, med_resid_eval, _, _ = evaluate(params, eval_inputs, data, **eval_kw)
+    if learn_cadence:
+        # Add learnable cadence, initialized from Option C
+        params["log_cadence"] = jnp.array(data["init_log_cadences"])
+        init_cads = np.exp(data["init_log_cadences"])
+        print(f"  Init cadence: {init_cads.min():.1f}-{np.median(init_cads):.1f}"
+              f"-{init_cads.max():.1f} min")
 
-    return med_resid_eval
+        # Warm-start decoder to predict noise residual (log_vol - log_V_arb)
+        # using the Option C V_arb as the initial target
+        ws_inputs = dict(train_inputs)
+        ws_inputs["y"] = train_inputs["y_total"] - jnp.log(
+            jnp.maximum(train_inputs["v_arb"], 1e-6))
+        params = warm_start_decoder(params, ws_inputs, hparams["d_embed"])
+
+        grad_fn = make_cadence_loss_fn(
+            data["pool_coeffs"], data["pool_gas"],
+            data["n_pools"], no_peers)
+
+        print("  Compiling cadence loss (may take a moment)...")
+        t0 = time.time()
+        params, _ = train(
+            params, train_inputs, hparams["n_epochs"], hparams["lr"],
+            hparams["l2_alpha"], huber_delta=huber_delta, no_peers=no_peers,
+            grad_fn_override=grad_fn,
+        )
+        print(f"  Training: {time.time() - t0:.1f}s")
+
+        print("\n  --- Train ---")
+        _, _, train_diag = evaluate_cadence(
+            params, train_inputs, data, no_peers=no_peers)
+        print("\n  --- Eval ---")
+        _, _, eval_diag = evaluate_cadence(
+            params, eval_inputs, data, no_peers=no_peers)
+        print_cadence_comparison(train_diag, eval_diag)
+    else:
+        params = warm_start_decoder(params, train_inputs, hparams["d_embed"])
+        t0 = time.time()
+        params, _ = train(
+            params, train_inputs, hparams["n_epochs"], hparams["lr"],
+            hparams["l2_alpha"], huber_delta=huber_delta, no_peers=no_peers,
+        )
+        print(f"  Training: {time.time() - t0:.1f}s")
+
+        eval_kw = dict(no_peers=no_peers, target_residual=target_residual)
+        print("\n  --- Train ---")
+        evaluate(params, train_inputs, data, **eval_kw)
+        print("\n  --- Eval ---")
+        _, med_resid_eval, _, _ = evaluate(params, eval_inputs, data, **eval_kw)
+
+    return params
 
 
 # ---- LOO cross-validation ----
@@ -770,6 +1233,7 @@ _FEAT_KEYS = [
     "peer_vol_lag2", "peer_vol_change", "peer_tvl", "peer_volatility",
     "own_vol_lag2", "own_vol_change", "own_tvl", "own_volatility",
     "rel_same_chain", "rel_tvl_ratio", "rel_fee_ratio", "minimal_encoder",
+    "interactions", "cross_pool_vol", "cross_pool_momentum",
 ]
 
 
@@ -798,11 +1262,14 @@ def run_optuna(data, n_trials, target_residual=False):
             "rel_tvl_ratio": trial.suggest_categorical("rel_tvl_ratio", [True, False]),
             "rel_fee_ratio": trial.suggest_categorical("rel_fee_ratio", [True, False]),
             "minimal_encoder": trial.suggest_categorical("minimal_encoder", [True, False]),
+            "interactions": trial.suggest_categorical("interactions", [True, False]),
+            "cross_pool_vol": trial.suggest_categorical("cross_pool_vol", [True, False]),
+            "cross_pool_momentum": trial.suggest_categorical("cross_pool_momentum", [True, False]),
             "target_residual": target_residual,
         }
         hparams = {
-            "hidden": trial.suggest_categorical("hidden", [8, 16, 32]),
-            "d_embed": trial.suggest_categorical("d_embed", [4, 8, 16]),
+            "hidden": trial.suggest_categorical("hidden", [16, 32, 64, 128]),
+            "d_embed": trial.suggest_categorical("d_embed", [4, 8, 16, 32]),
             "lr": trial.suggest_float("lr", 1e-4, 1e-2, log=True),
             "l2_alpha": trial.suggest_float("l2_alpha", 1e-5, 1e-1, log=True),
             "n_epochs": trial.suggest_categorical("n_epochs", [500, 1000, 2000]),
@@ -875,7 +1342,7 @@ def run_optuna(data, n_trials, target_residual=False):
               f"hub={hparams['huber_delta']} "
               f"{'no_peers ' if hparams['no_peers'] else ''}"
               f"lr={hparams['lr']:.1e} a={hparams['l2_alpha']:.1e} "
-              f"ep={hparams['n_epochs']} feat={n_feat}/12"
+              f"ep={hparams['n_epochs']} feat={n_feat}/15"
               f"{' minimal' if feat_cfg.get('minimal_encoder') else ''}")
 
         return med_resid
@@ -902,7 +1369,166 @@ def run_optuna(data, n_trials, target_residual=False):
                   f"total={t.user_attrs.get('med_total_r2', '?'):.4f} "
                   f"enc={t.params['encoder_type']} "
                   f"h={t.params['hidden']} d={t.params['d_embed']} "
-                  f"feat={feats}/12")
+                  f"feat={feats}/15")
+
+    return study
+
+
+def run_optuna_cadence(data, n_trials):
+    """Optuna sweep with learnable cadence. Optimizes median eval total R²."""
+    import optuna
+    from quantammsim.calibration.grid_interpolation import interpolate_pool_daily
+
+    day_idx = data["day_idx"]
+    split_day = int(day_idx.max() * 0.7)
+    train_mask = day_idx <= split_day
+    eval_mask = day_idx > split_day
+
+    train_data = _subset(data, train_mask)
+    eval_data = _subset(data, eval_mask)
+
+    pool_coeffs = data["pool_coeffs"]
+    pool_gas = data["pool_gas"]
+    n_pools = data["n_pools"]
+
+    # Pre-build grad_fn closures for (no_peers=True, no_peers=False)
+    # to avoid recompiling on every trial with the same no_peers setting
+    _grad_fn_cache = {}
+
+    def _get_grad_fn(no_peers):
+        if no_peers not in _grad_fn_cache:
+            _grad_fn_cache[no_peers] = make_cadence_loss_fn(
+                pool_coeffs, pool_gas, n_pools, no_peers)
+        return _grad_fn_cache[no_peers]
+
+    def objective(trial):
+        feat_cfg = {
+            "peer_vol_lag2": trial.suggest_categorical("peer_vol_lag2", [True, False]),
+            "peer_vol_change": trial.suggest_categorical("peer_vol_change", [True, False]),
+            "peer_tvl": trial.suggest_categorical("peer_tvl", [True, False]),
+            "peer_volatility": trial.suggest_categorical("peer_volatility", [True, False]),
+            "own_vol_lag2": trial.suggest_categorical("own_vol_lag2", [True, False]),
+            "own_vol_change": trial.suggest_categorical("own_vol_change", [True, False]),
+            "own_tvl": trial.suggest_categorical("own_tvl", [True, False]),
+            "own_volatility": trial.suggest_categorical("own_volatility", [True, False]),
+            "rel_same_chain": trial.suggest_categorical("rel_same_chain", [True, False]),
+            "rel_tvl_ratio": trial.suggest_categorical("rel_tvl_ratio", [True, False]),
+            "rel_fee_ratio": trial.suggest_categorical("rel_fee_ratio", [True, False]),
+            "minimal_encoder": trial.suggest_categorical("minimal_encoder", [True, False]),
+            "interactions": trial.suggest_categorical("interactions", [True, False]),
+            "cross_pool_vol": trial.suggest_categorical("cross_pool_vol", [True, False]),
+            "cross_pool_momentum": trial.suggest_categorical("cross_pool_momentum", [True, False]),
+            "x_obs_mode": trial.suggest_categorical("x_obs_mode", ["none", "reduced", "cross"]),
+        }
+        hparams = {
+            "hidden": trial.suggest_categorical("hidden", [16, 32, 64]),
+            "d_embed": trial.suggest_categorical("d_embed", [4, 8, 16]),
+            "lr": trial.suggest_float("lr", 3e-4, 3e-3, log=True),
+            "l2_alpha": trial.suggest_float("l2_alpha", 1e-5, 1e-2, log=True),
+            "n_epochs": trial.suggest_categorical("n_epochs", [500, 1000, 2000]),
+            "encoder_type": trial.suggest_categorical("encoder_type", ["mlp", "linear"]),
+            "huber_delta": trial.suggest_categorical("huber_delta", [0.5, 1.0, 1.5]),
+            "no_peers": trial.suggest_categorical("no_peers", [True, False]),
+        }
+
+        no_peers = hparams["no_peers"]
+        train_inputs = assemble_inputs(train_data, feat_cfg)
+        eval_inputs = assemble_inputs(eval_data, feat_cfg)
+
+        params = init_params(
+            jax.random.PRNGKey(42),
+            train_inputs["n_peer_feat"], train_inputs["n_local_feat"],
+            hparams["hidden"], hparams["d_embed"],
+            encoder_type=hparams["encoder_type"],
+        )
+        # Learnable cadence from Option C init
+        params["log_cadence"] = jnp.array(data["init_log_cadences"])
+
+        # Warm-start decoder on noise residual
+        ws_inputs = dict(train_inputs)
+        ws_inputs["y"] = train_inputs["y_total"] - jnp.log(
+            jnp.maximum(train_inputs["v_arb"], 1e-6))
+        params = warm_start_decoder(params, ws_inputs, hparams["d_embed"])
+
+        grad_fn = _get_grad_fn(no_peers)
+        params, _ = train(
+            params, train_inputs, hparams["n_epochs"],
+            hparams["lr"], hparams["l2_alpha"],
+            huber_delta=hparams["huber_delta"], no_peers=no_peers,
+            verbose=False, grad_fn_override=grad_fn,
+        )
+
+        # Eval: compute V_arb at learned cadences, combine with net
+        log_v_noise = np.array(forward(
+            params, eval_inputs["peer_input"], eval_inputs["peer_mask"],
+            eval_inputs["local_input"], no_peers=no_peers,
+        ))
+        y_total = np.array(eval_inputs["y_total"])
+        pool_idx = np.array(eval_data["pool_idx"])
+        sample_grid_days = np.array(eval_inputs["sample_grid_days"])
+        log_cadence = np.array(params["log_cadence"])
+
+        v_arb = np.zeros(len(y_total))
+        for i in range(n_pools):
+            mask = pool_idx == i
+            if not mask.any():
+                continue
+            v_arb_all = np.array(interpolate_pool_daily(
+                pool_coeffs[i], jnp.float64(log_cadence[i]), pool_gas[i]))
+            v_arb[mask] = v_arb_all[sample_grid_days[mask]]
+
+        log_v_arb = np.log(np.maximum(v_arb, 1e-10))
+        pred_total = np.logaddexp(log_v_arb, log_v_noise)
+
+        r2_totals = []
+        for i in range(n_pools):
+            mask = pool_idx == i
+            if mask.sum() < 2:
+                continue
+            yt = y_total[mask]
+            pt = pred_total[mask]
+            ss_res = np.sum((yt - pt) ** 2)
+            ss_tot = np.sum((yt - yt.mean()) ** 2)
+            r2_totals.append(1 - ss_res / max(ss_tot, 1e-10))
+
+        med_total = float(np.median(r2_totals)) if r2_totals else -10.0
+
+        cads = np.exp(log_cadence)
+        trial.set_user_attr("med_total_r2", med_total)
+        trial.set_user_attr("cad_median", float(np.median(cads)))
+        n_feat = sum(1 for k in _FEAT_KEYS if feat_cfg.get(k))
+        print(f"  Trial {trial.number}: total={med_total:.4f} "
+              f"enc={hparams['encoder_type']} h={hparams['hidden']} d={hparams['d_embed']} "
+              f"hub={hparams['huber_delta']} "
+              f"{'no_peers ' if no_peers else ''}"
+              f"lr={hparams['lr']:.1e} a={hparams['l2_alpha']:.1e} "
+              f"ep={hparams['n_epochs']} feat={n_feat}/15"
+              f" cad=[{cads.min():.0f}-{np.median(cads):.0f}-{cads.max():.0f}]")
+
+        return med_total
+
+    study = optuna.create_study(direction="maximize")
+    study.optimize(objective, n_trials=n_trials)
+
+    print(f"\n{'='*70}")
+    print("Optuna Results (learn_cadence)")
+    print(f"{'='*70}")
+    print(f"  Best eval total R²: {study.best_value:.4f}")
+    print(f"  Best params:")
+    for k, v in sorted(study.best_params.items()):
+        print(f"    {k}: {v}")
+
+    print(f"\n  Top 10:")
+    trials = sorted(study.trials, key=lambda t: t.value if t.value else -999,
+                    reverse=True)
+    for t in trials[:10]:
+        if t.value is not None:
+            feats = sum(1 for k in _FEAT_KEYS if t.params.get(k))
+            cad_med = t.user_attrs.get("cad_median", "?")
+            print(f"    #{t.number}: total={t.value:.4f} "
+                  f"enc={t.params['encoder_type']} "
+                  f"h={t.params['hidden']} d={t.params['d_embed']} "
+                  f"feat={feats}/15 cad_med={cad_med:.0f}")
 
     return study
 
@@ -924,6 +1550,13 @@ def main():
     parser.add_argument("--huber-delta", type=float, default=1.0)
     parser.add_argument("--no-peers", action="store_true",
                         help="Decoder-only ablation (zero peer summary)")
+    parser.add_argument("--learn-cadence", action="store_true",
+                        help="Jointly optimize per-pool arb cadence via PCHIP")
+    parser.add_argument("--x-obs", choices=["none", "reduced", "cross"],
+                        default="none",
+                        help="Append Option C x_obs covariates to decoder: "
+                             "none, reduced (4: intercept,tvl,dow), "
+                             "cross (7: +peer volumes)")
     parser.add_argument("--minimal-encoder", action="store_true",
                         help="7-feature encoder (fee, tvl, overlap, same_chain) "
                              "instead of full attributes")
@@ -939,6 +1572,12 @@ def main():
     parser.add_argument("--own-vol-change", action="store_true")
     parser.add_argument("--own-tvl", action="store_true")
     parser.add_argument("--own-volatility", action="store_true")
+    parser.add_argument("--interactions", action="store_true",
+                        help="tvl×vola, tvl×fee, vola×fee interaction terms")
+    parser.add_argument("--cross-pool-vol", action="store_true",
+                        help="Token-peer, chain-peer, market volume aggregates")
+    parser.add_argument("--cross-pool-momentum", action="store_true",
+                        help="Peer volume change momentum features")
     parser.add_argument("--all-features", action="store_true",
                         help="Enable all optional features")
     args = parser.parse_args()
@@ -958,8 +1597,12 @@ def main():
         "rel_same_chain": True,
         "rel_tvl_ratio": True,
         "rel_fee_ratio": True,
+        "interactions": args.interactions or args.all_features,
+        "cross_pool_vol": args.cross_pool_vol or args.all_features,
+        "cross_pool_momentum": args.cross_pool_momentum or args.all_features,
         "minimal_encoder": args.minimal_encoder,
         "target_residual": args.target_residual,
+        "x_obs_mode": args.x_obs,
     }
     hparams = {
         "hidden": args.hidden,
@@ -970,6 +1613,7 @@ def main():
         "encoder_type": args.encoder_type,
         "huber_delta": args.huber_delta,
         "no_peers": args.no_peers,
+        "learn_cadence": args.learn_cadence,
     }
 
     print("=" * 70)
@@ -992,6 +1636,8 @@ def main():
         print("Leave-One-Pool-Out Cross-Validation")
         print(f"{'='*70}")
         run_loo(data, feat_cfg, hparams)
+    elif args.tune > 0 and args.learn_cadence:
+        run_optuna_cadence(data, args.tune)
     elif args.tune > 0:
         run_optuna(data, args.tune, target_residual=args.target_residual)
     else:
