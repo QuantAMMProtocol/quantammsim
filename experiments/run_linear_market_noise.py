@@ -140,17 +140,44 @@ def build_data(matched_clean, option_c_clean, trend_windows=(7, 14, 30),
         x_market = np.zeros((n_samples, 0), dtype=np.float32)
         market_names = []
 
-    # Combine features
-    x_all = np.concatenate([x_obs, x_market], axis=1).astype(np.float32)
-    feat_names = [f"xobs_{i}" for i in range(k_obs)] + market_names
+    # Combine base features
+    x_base = np.concatenate([x_obs, x_market], axis=1).astype(np.float32)
+    base_names = [f"xobs_{i}" for i in range(k_obs)] + market_names
 
     # Standardize (except intercept column 0)
-    x_mean = np.mean(x_all, axis=0)
-    x_std = np.std(x_all, axis=0)
+    x_mean = np.mean(x_base, axis=0)
+    x_std = np.std(x_base, axis=0)
     x_std[x_std < 1e-6] = 1.0
     x_mean[0] = 0.0  # don't center intercept
     x_std[0] = 1.0
-    x_all = ((x_all - x_mean) / x_std).astype(np.float32)
+    x_base = ((x_base - x_mean) / x_std).astype(np.float32)
+
+    # Interaction terms (products of standardized features)
+    col_idx = {name: i for i, name in enumerate(base_names)}
+    interactions = []
+    interaction_names = []
+
+    def _add_interaction(name_a, name_b):
+        if name_a in col_idx and name_b in col_idx:
+            interactions.append(
+                x_base[:, col_idx[name_a]] * x_base[:, col_idx[name_b]])
+            interaction_names.append(f"{name_a}×{name_b}")
+
+    _add_interaction("xobs_1", "btc_realized_vol_7d")        # tvl × btc vol
+    _add_interaction("xobs_1", "tok_a_realized_vol_7d")       # tvl × tok_a vol
+    _add_interaction("xobs_1", "pair_realized_vol_7d")         # tvl × pair vol
+    _add_interaction("tok_a_realized_vol_7d", "tok_b_realized_vol_7d")  # cross-token vol
+
+    if interactions:
+        x_interactions = np.column_stack(interactions).astype(np.float32)
+        x_all = np.concatenate([x_base, x_interactions], axis=1)
+        feat_names = base_names + interaction_names
+        # Extend x_mean/x_std for interaction columns (already standardized → 0/1)
+        x_mean = np.concatenate([x_mean, np.zeros(len(interactions))])
+        x_std = np.concatenate([x_std, np.ones(len(interactions))])
+    else:
+        x_all = x_base
+        feat_names = base_names
 
     # Targets
     y_total = np.array([vol_matrix[sample_days[s], sample_pools[s]]
@@ -176,7 +203,12 @@ def build_data(matched_clean, option_c_clean, trend_windows=(7, 14, 30),
 
 
 def make_loss_fn(pool_coeffs, pool_gas, n_pools):
-    """Loss function with learnable cadence + linear noise model."""
+    """Loss function with learnable cadence + linear noise model.
+
+    Supports both shared coefficients (noise_coeffs shape: (n_feat,)) and
+    per-pool coefficients (noise_coeffs shape: (n_pools, n_feat)).
+    Detected at trace time from the array shape.
+    """
     from quantammsim.calibration.grid_interpolation import interpolate_pool_daily
 
     def loss_fn(params, x, y_total, sample_grid_days, pool_idx,
@@ -184,8 +216,15 @@ def make_loss_fn(pool_coeffs, pool_gas, n_pools):
         log_cadence = params["log_cadence"]
         noise_coeffs = params["noise_coeffs"]
 
-        # V_noise = exp(x @ noise_coeffs + pool_intercept)
-        log_v_noise = x @ noise_coeffs
+        # Per-pool or shared coefficients
+        if noise_coeffs.ndim == 2:
+            # Per-pool: (n_pools, n_feat) — gather each sample's pool coeffs
+            per_sample_coeffs = noise_coeffs[pool_idx]  # (n_samples, n_feat)
+            log_v_noise = jnp.sum(x * per_sample_coeffs, axis=1)
+        else:
+            # Shared: (n_feat,)
+            log_v_noise = x @ noise_coeffs
+
         if "pool_intercepts" in params:
             log_v_noise = log_v_noise + params["pool_intercepts"][pool_idx]
 
@@ -267,7 +306,12 @@ def evaluate(params, data, label=""):
     pool_ids = data["pool_ids"]
     n_pools = data["n_pools"]
 
-    log_v_noise = x @ noise_coeffs
+    if noise_coeffs.ndim == 2:
+        # Per-pool: (n_pools, n_feat)
+        per_sample_coeffs = noise_coeffs[pool_idx]
+        log_v_noise = np.sum(x * per_sample_coeffs, axis=1)
+    else:
+        log_v_noise = x @ noise_coeffs
     if "pool_intercepts" in params:
         pool_intercepts = np.array(params["pool_intercepts"])
         log_v_noise = log_v_noise + pool_intercepts[pool_idx]
@@ -349,21 +393,27 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--l2-alpha", type=float, default=1e-3)
     parser.add_argument("--huber-delta", type=float, default=1.0)
-    parser.add_argument("--trend-windows", type=int, nargs="+", default=[7, 14, 30])
+    parser.add_argument("--trend-windows", type=int, nargs="+", default=[7])
     parser.add_argument("--no-market", action="store_true",
                         help="x_obs only, no market features")
     parser.add_argument("--no-cross-pool", action="store_true",
                         help="Reduced x_obs (4) instead of cross-pool (7)")
     parser.add_argument("--pool-intercepts", action="store_true",
                         help="Per-pool intercept (shared slopes + per-pool bias)")
+    parser.add_argument("--per-pool", action="store_true",
+                        help="Per-pool noise coefficients (Option A)")
+    parser.add_argument("--no-split", action="store_true",
+                        help="Train on all data (no temporal holdout)")
     args = parser.parse_args()
 
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
     print("=" * 70)
     print("Linear Noise Model + Learnable Cadence")
-    print(f"  market={not args.no_market}, cross_pool={not args.no_cross_pool}"
-          f", pool_intercepts={args.pool_intercepts}")
+    mode = "per-pool" if args.per_pool else (
+        "shared+intercepts" if args.pool_intercepts else "shared")
+    print(f"  mode={mode}, market={not args.no_market},"
+          f" cross_pool={not args.no_cross_pool}")
     print(f"  trend_windows={args.trend_windows}")
     print(f"  epochs={args.epochs}, lr={args.lr}, l2={args.l2_alpha}")
     print("=" * 70)
@@ -382,34 +432,69 @@ def main():
           f" {data['n_feat']} features, {time.time() - t0:.1f}s")
     print(f"  Features: {data['feat_names']}")
 
-    # Temporal split
+    # Split
     day_idx = data["day_idx"]
-    split_day = int(day_idx.max() * 0.7)
-    train_mask = day_idx <= split_day
-    eval_mask = day_idx > split_day
+    n_samples = len(day_idx)
+    if args.no_split:
+        train_mask = np.ones(n_samples, dtype=bool)
+        eval_mask = None
+    else:
+        split_day = int(day_idx.max() * 0.7)
+        train_mask = day_idx <= split_day
+        eval_mask = day_idx > split_day
 
     train_data = {k: v[train_mask] if isinstance(v, np.ndarray)
-                  and v.shape[0] == len(day_idx) else v
+                  and v.shape[0] == n_samples else v
                   for k, v in data.items()}
-    eval_data = {k: v[eval_mask] if isinstance(v, np.ndarray)
-                 and v.shape[0] == len(day_idx) else v
-                 for k, v in data.items()}
+    if eval_mask is not None:
+        eval_data = {k: v[eval_mask] if isinstance(v, np.ndarray)
+                     and v.shape[0] == n_samples else v
+                     for k, v in data.items()}
+    else:
+        eval_data = None
 
     # Init params
     n_feat = data["n_feat"]
     n_pools = data["n_pools"]
-    params = {
-        "log_cadence": jnp.array(data["init_log_cadences"]),
-        "noise_coeffs": jnp.zeros(n_feat),
-    }
-
-    # Warm-start noise_coeffs via OLS on train: y_total ≈ x @ coeffs
     x_trn = data["x"][train_mask]
     y_trn = data["y_total"][train_mask]
-    sol, _, _, _ = np.linalg.lstsq(x_trn, y_trn, rcond=None)
-    params["noise_coeffs"] = jnp.array(sol.astype(np.float32))
+    pool_idx_trn = data["pool_idx"][train_mask]
 
-    if args.pool_intercepts:
+    if args.per_pool:
+        # Per-pool coefficients: (n_pools, n_feat)
+        # Warm-start each pool via per-pool Ridge (not OLS — avoids blowup
+        # on pools with few samples or near-singular features)
+        from sklearn.linear_model import RidgeCV
+        coeffs_init = np.zeros((n_pools, n_feat), dtype=np.float32)
+        # Shared Ridge as fallback
+        ridge_shared = RidgeCV(alphas=np.logspace(-2, 4, 50))
+        ridge_shared.fit(x_trn, y_trn)
+        for i in range(n_pools):
+            mask_i = pool_idx_trn == i
+            if mask_i.sum() >= 20:
+                ridge_i = RidgeCV(alphas=np.logspace(-2, 4, 50))
+                ridge_i.fit(x_trn[mask_i], y_trn[mask_i])
+                coeffs_init[i] = ridge_i.coef_
+                coeffs_init[i, 0] += ridge_i.intercept_  # fold intercept into xobs_0
+            else:
+                coeffs_init[i] = ridge_shared.coef_
+                coeffs_init[i, 0] += ridge_shared.intercept_
+        params = {
+            "log_cadence": jnp.array(data["init_log_cadences"]),
+            "noise_coeffs": jnp.array(coeffs_init),
+        }
+        print(f"\n  Per-pool coefficients: {n_pools} × {n_feat} = {n_pools * n_feat} params")
+        print(f"  Ridge warm-start |coeffs|={np.mean(np.abs(coeffs_init)):.3f}")
+    else:
+        params = {
+            "log_cadence": jnp.array(data["init_log_cadences"]),
+            "noise_coeffs": jnp.zeros(n_feat),
+        }
+        # Warm-start noise_coeffs via OLS on train
+        sol, _, _, _ = np.linalg.lstsq(x_trn, y_trn, rcond=None)
+        params["noise_coeffs"] = jnp.array(sol.astype(np.float32))
+
+    if args.pool_intercepts and not args.per_pool:
         # Init per-pool intercepts from OLS residuals
         ols_pred = x_trn @ sol
         ols_resid = y_trn - ols_pred
@@ -426,10 +511,8 @@ def main():
     print(f"\n  Init cadence: {np.exp(data['init_log_cadences']).min():.1f}"
           f"-{np.median(np.exp(data['init_log_cadences'])):.1f}"
           f"-{np.exp(data['init_log_cadences']).max():.1f} min")
-    print(f"  OLS warm-start |coeffs|={np.mean(np.abs(sol)):.3f}")
-    print(f"  Total params: {sum(v.size for v in params.values())}"
-          f" ({n_feat} coeffs + {n_pools} cadences"
-          f"{'+ ' + str(n_pools) + ' intercepts' if args.pool_intercepts else ''})")
+    total_params = sum(v.size for v in params.values())
+    print(f"  Total params: {total_params}")
 
     # Build loss and train
     grad_fn = make_loss_fn(data["pool_coeffs"], data["pool_gas"], data["n_pools"])
@@ -442,15 +525,65 @@ def main():
 
     # Print learned coefficients
     nc = np.array(params["noise_coeffs"])
-    print(f"\n  Noise coefficients ({len(nc)}):")
-    for i, name in enumerate(data["feat_names"]):
-        print(f"    {name:30s}  {nc[i]:+8.4f}")
+    if nc.ndim == 2:
+        # Per-pool: print median coefficient across pools
+        print(f"\n  Per-pool noise coefficients — median across {n_pools} pools:")
+        for i, name in enumerate(data["feat_names"]):
+            vals = nc[:, i]
+            print(f"    {name:30s}  med={np.median(vals):+7.3f}"
+                  f"  [{vals.min():+7.3f}, {vals.max():+7.3f}]")
+    else:
+        print(f"\n  Noise coefficients ({len(nc)}):")
+        for i, name in enumerate(data["feat_names"]):
+            print(f"    {name:30s}  {nc[i]:+8.4f}")
 
     # Evaluate
-    print("\n  --- Train ---")
-    evaluate(params, train_data)
-    print("\n  --- Eval ---")
-    evaluate(params, eval_data)
+    if eval_data is not None:
+        print("\n  --- Train ---")
+        evaluate(params, train_data)
+        print("\n  --- Eval ---")
+        evaluate(params, eval_data)
+    else:
+        print("\n  --- All data ---")
+        evaluate(params, train_data)
+
+    # Save artifact
+    artifact_dir = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "results", "linear_market_noise",
+    )
+    os.makedirs(artifact_dir, exist_ok=True)
+    artifact = {
+        "noise_coeffs": np.array(params["noise_coeffs"]),
+        "log_cadence": np.array(params["log_cadence"]),
+        "init_log_cadences": data["init_log_cadences"],
+        "feat_names": data["feat_names"],
+        "pool_ids": data["pool_ids"],
+        "n_pools": data["n_pools"],
+        "n_feat": data["n_feat"],
+        "x_mean": data["x_mean"],
+        "x_std": data["x_std"],
+        "hparams": {
+            "epochs": args.epochs, "lr": args.lr,
+            "l2_alpha": args.l2_alpha, "huber_delta": args.huber_delta,
+            "trend_windows": args.trend_windows,
+            "per_pool": args.per_pool,
+            "pool_intercepts": args.pool_intercepts,
+        },
+    }
+    if "pool_intercepts" in params:
+        artifact["pool_intercepts"] = np.array(params["pool_intercepts"])
+    artifact_path = os.path.join(artifact_dir, "model.npz")
+    np.savez(artifact_path, **{k: v for k, v in artifact.items()
+                               if isinstance(v, np.ndarray)})
+    # Save non-array metadata separately
+    import json
+    meta_path = os.path.join(artifact_dir, "meta.json")
+    meta = {k: v for k, v in artifact.items() if not isinstance(v, np.ndarray)}
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2, default=str)
+    print(f"\n  Saved artifact: {artifact_path}")
+    print(f"  Saved metadata: {meta_path}")
 
     # Baselines
     print(f"\n  Baselines (eval, total volume R²):")

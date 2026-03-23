@@ -186,16 +186,49 @@ def build_data(matched_clean, option_c_clean, trend_windows=(7, 14, 30)):
     n_peer_feat = peer_input.shape[-1]
 
     # Combine linear features (x_obs + market)
-    x_linear = np.concatenate([x_obs, x_market], axis=1).astype(np.float32)
-    linear_names = [f"xobs_{i}" for i in range(K_OBS_CROSS)] + market_names
+    x_base = np.concatenate([x_obs, x_market], axis=1).astype(np.float32)
+    base_names = [f"xobs_{i}" for i in range(K_OBS_CROSS)] + market_names
 
-    # Standardize linear features (except intercept)
-    x_mean = np.mean(x_linear, axis=0)
-    x_std_arr = np.std(x_linear, axis=0)
+    # Standardize base features (except intercept)
+    x_mean = np.mean(x_base, axis=0)
+    x_std_arr = np.std(x_base, axis=0)
     x_std_arr[x_std_arr < 1e-6] = 1.0
     x_mean[0] = 0.0
     x_std_arr[0] = 1.0
-    x_linear = ((x_linear - x_mean) / x_std_arr).astype(np.float32)
+    x_base = ((x_base - x_mean) / x_std_arr).astype(np.float32)
+
+    # Build named column index for interaction construction
+    col_idx = {name: i for i, name in enumerate(base_names)}
+
+    # Interaction terms (products of standardized features)
+    interactions = []
+    interaction_names = []
+
+    def _add_interaction(name_a, name_b):
+        if name_a in col_idx and name_b in col_idx:
+            interactions.append(
+                x_base[:, col_idx[name_a]] * x_base[:, col_idx[name_b]])
+            interaction_names.append(f"{name_a}×{name_b}")
+
+    # TVL × volatility: deep pools respond differently to market stress
+    _add_interaction("xobs_1", "btc_realized_vol_7d")       # tvl × btc vol
+    _add_interaction("xobs_1", "tok_a_realized_vol_7d")      # tvl × tok_a vol
+    _add_interaction("xobs_1", "pair_realized_vol_7d")        # tvl × pair vol
+
+    # Cross-token volatility interaction: both tokens moving = pair activity
+    _add_interaction("tok_a_realized_vol_7d", "tok_b_realized_vol_7d")
+
+    if interactions:
+        x_interactions = np.column_stack(interactions).astype(np.float32)
+        x_linear = np.concatenate([x_base, x_interactions], axis=1)
+        linear_names = base_names + interaction_names
+    else:
+        x_linear = x_base
+        linear_names = base_names
+
+    # Track which columns are tvl and btc_vol for peer_effect interactions in loss
+    tvl_col = col_idx.get("xobs_1", 1)
+    btc_vol_col = col_idx.get("btc_realized_vol_7d")
 
     # Targets and indices
     y_total = np.array([vol_matrix[sample_days[s], sample_pools[s]]
@@ -219,6 +252,8 @@ def build_data(matched_clean, option_c_clean, trend_windows=(7, 14, 30)):
         "n_peer_feat": n_peer_feat,
         "pool_ids": pool_ids,
         "linear_names": linear_names,
+        "tvl_col": tvl_col,
+        "btc_vol_col": btc_vol_col,
     }
 
 
@@ -241,46 +276,70 @@ def _subset(d, mask):
 
 
 def init_params(key, n_peer_feat, n_linear_feat, encoder_hidden,
-                n_peer_outputs, n_pools, init_log_cadences):
+                n_peer_outputs, n_pools, init_log_cadences,
+                encoder_depth=1):
     """Initialize all parameters.
 
-    Encoder: peer_input → hidden → n_peer_outputs (per peer, then mean-pooled)
-    Linear: [x_linear, peer_outputs, peer_outputs × x_linear[1](tvl)] @ coeffs
+    Encoder: peer_input → hidden (× depth) → n_peer_outputs (per peer, mean-pooled)
+    Linear: [x_linear, peer_outputs, peer×tvl, peer×btc_vol] @ coeffs
+
+    encoder_depth: number of hidden layers (1-4).
+    params["enc_depth"] stores the depth as a scalar for forward_encoder.
     """
-    k1, k2 = jax.random.split(key)
+    keys = jax.random.split(key, encoder_depth + 2)
 
-    # Encoder: single hidden layer → n_peer_outputs
-    n_total_linear = n_linear_feat + n_peer_outputs + n_peer_outputs  # +interactions with tvl
+    n_peer_linear = n_peer_outputs * 3
+    n_total_linear = n_linear_feat + n_peer_linear
 
-    params = {
-        "enc_W1": jax.random.normal(k1, (n_peer_feat, encoder_hidden)) * np.sqrt(2.0 / n_peer_feat),
-        "enc_b1": jnp.zeros(encoder_hidden),
-        "enc_W2": jax.random.normal(k2, (encoder_hidden, n_peer_outputs)) * 0.01,
-        "enc_b2": jnp.zeros(n_peer_outputs),
-        "noise_coeffs": jnp.zeros(n_total_linear),
-        "log_cadence": jnp.array(init_log_cadences),
-    }
+    params = {}
+
+    # First layer: input → hidden
+    params["enc_W1"] = jax.random.normal(keys[0], (n_peer_feat, encoder_hidden)) * np.sqrt(2.0 / n_peer_feat)
+    params["enc_b1"] = jnp.zeros(encoder_hidden)
+
+    # Hidden layers 2..depth: hidden → hidden
+    for d in range(2, encoder_depth + 1):
+        params[f"enc_W{d}"] = jax.random.normal(keys[d - 1], (encoder_hidden, encoder_hidden)) * np.sqrt(2.0 / encoder_hidden)
+        params[f"enc_b{d}"] = jnp.zeros(encoder_hidden)
+
+    # Output layer: hidden → n_peer_outputs
+    out_idx = encoder_depth + 1
+    params[f"enc_W{out_idx}"] = jax.random.normal(keys[-1], (encoder_hidden, n_peer_outputs)) * 0.01
+    params[f"enc_b{out_idx}"] = jnp.zeros(n_peer_outputs)
+
+    params["noise_coeffs"] = jnp.zeros(n_total_linear)
+    params["log_cadence"] = jnp.array(init_log_cadences)
+
     return params, n_total_linear
 
 
 def forward_encoder(params, peer_input, peer_mask):
     """DeepSets encoder: per-peer MLP → masked mean → scalar(s).
 
+    Depth determined by counting enc_W* keys.
     Returns (n_samples, n_peer_outputs).
     """
     batch, n_peers, _ = peer_input.shape
     flat = peer_input.reshape(-1, peer_input.shape[-1])
 
-    h = jnp.maximum(flat @ params["enc_W1"] + params["enc_b1"], 0.0)
-    h = h @ params["enc_W2"] + params["enc_b2"]
-    h = h.reshape(batch, n_peers, -1)
+    # Count layers: enc_W1, enc_W2, ..., enc_W{depth+1}
+    n_layers = sum(1 for k in params if k.startswith("enc_W"))
 
+    # Hidden layers with ReLU
+    h = flat
+    for i in range(1, n_layers):
+        h = jnp.maximum(h @ params[f"enc_W{i}"] + params[f"enc_b{i}"], 0.0)
+
+    # Output layer (no activation)
+    h = h @ params[f"enc_W{n_layers}"] + params[f"enc_b{n_layers}"]
+
+    h = h.reshape(batch, n_peers, -1)
     h_masked = h * peer_mask[:, :, None]
     n_valid = jnp.maximum(jnp.sum(peer_mask, axis=1, keepdims=True), 1.0)
-    return jnp.sum(h_masked, axis=1) / n_valid  # (batch, n_peer_outputs)
+    return jnp.sum(h_masked, axis=1) / n_valid
 
 
-def make_loss_fn(pool_coeffs, pool_gas, n_pools):
+def make_loss_fn(pool_coeffs, pool_gas, n_pools, tvl_col, btc_vol_col):
     """Loss with learnable cadence + encoder + linear noise model."""
     from quantammsim.calibration.grid_interpolation import interpolate_pool_daily
 
@@ -290,12 +349,14 @@ def make_loss_fn(pool_coeffs, pool_gas, n_pools):
         # Encoder → peer effect scalar(s)
         peer_effect = forward_encoder(params, peer_input, peer_mask)
 
-        # Build full linear input: [x_linear, peer_effect, peer_effect × tvl]
-        # tvl is x_linear[:, 1] (xobs_1 = log_tvl_lag1, standardized)
-        tvl = x_linear[:, 1:2]  # keep 2D
-        peer_x_tvl = peer_effect * tvl  # interaction
+        # Build full linear input: [x_linear, peer, peer×tvl, peer×btc_vol]
+        tvl = x_linear[:, tvl_col:tvl_col + 1]
+        btc_vol = x_linear[:, btc_vol_col:btc_vol_col + 1]
+        peer_x_tvl = peer_effect * tvl
+        peer_x_btcvol = peer_effect * btc_vol
 
-        x_full = jnp.concatenate([x_linear, peer_effect, peer_x_tvl], axis=1)
+        x_full = jnp.concatenate(
+            [x_linear, peer_effect, peer_x_tvl, peer_x_btcvol], axis=1)
         log_v_noise = x_full @ params["noise_coeffs"]
 
         # V_arb from PCHIP
@@ -325,10 +386,9 @@ def make_loss_fn(pool_coeffs, pool_gas, n_pools):
         pool_sums = jnp.zeros(n_pools).at[pool_idx].add(huber_vals)
         data_loss = jnp.sum((pool_sums / pool_counts) * active) / n_active
 
-        # L2 on encoder weights + noise coeffs
+        # L2 on all encoder weights + noise coeffs
         reg = l2_alpha * (
-            jnp.sum(params["enc_W1"] ** 2) +
-            jnp.sum(params["enc_W2"] ** 2) +
+            sum(jnp.sum(v ** 2) for k, v in params.items() if k.startswith("enc_W")) +
             jnp.sum(params["noise_coeffs"] ** 2)
         )
         return data_loss + reg
@@ -391,10 +451,15 @@ def evaluate(params, data, label=""):
     peer_effect = np.array(forward_encoder(
         params, jnp.array(peer_input), jnp.array(peer_mask)))
 
-    # Build full linear input
-    tvl = x_linear[:, 1:2]
+    # Build full linear input (must match loss_fn construction)
+    tvl_col = data["tvl_col"]
+    btc_vol_col = data["btc_vol_col"]
+    tvl = x_linear[:, tvl_col:tvl_col + 1]
+    btc_vol = x_linear[:, btc_vol_col:btc_vol_col + 1]
     peer_x_tvl = peer_effect * tvl
-    x_full = np.concatenate([x_linear, peer_effect, peer_x_tvl], axis=1)
+    peer_x_btcvol = peer_effect * btc_vol
+    x_full = np.concatenate(
+        [x_linear, peer_effect, peer_x_tvl, peer_x_btcvol], axis=1)
 
     noise_coeffs = np.array(params["noise_coeffs"])
     log_v_noise = x_full @ noise_coeffs
@@ -469,8 +534,7 @@ def evaluate(params, data, label=""):
     # Print coefficient analysis
     nc = np.array(params["noise_coeffs"])
     n_linear = data["n_linear_feat"]
-    n_po = len(nc) - n_linear
-    n_each = n_po // 2
+    n_po = params["enc_W2"].shape[1]  # n_peer_outputs
 
     print(f"\n    Median R²: {med:.4f} (healthy: {med_h:.4f})")
     print(f"    Healthy: {len(pool_diag) - n_path}/{len(pool_diag)},"
@@ -479,23 +543,182 @@ def evaluate(params, data, label=""):
     print(f"\n    Linear coefficients:")
     for j, name in enumerate(data["linear_names"]):
         print(f"      {name:30s}  {nc[j]:+8.4f}")
-    for j in range(n_each):
+    for j in range(n_po):
         print(f"      {'peer_effect_' + str(j):30s}  {nc[n_linear + j]:+8.4f}")
-    for j in range(n_each):
-        print(f"      {'peer_eff_' + str(j) + '×tvl':30s}  {nc[n_linear + n_each + j]:+8.4f}")
+    for j in range(n_po):
+        print(f"      {'peer_eff_' + str(j) + '×tvl':30s}  {nc[n_linear + n_po + j]:+8.4f}")
+    for j in range(n_po):
+        print(f"      {'peer_eff_' + str(j) + '×btc_vol':30s}  {nc[n_linear + 2*n_po + j]:+8.4f}")
 
     return med, r2s, pool_diag
 
 
+def run_optuna(matched_clean, option_c_clean, n_trials):
+    """Optuna sweep over encoder + linear model hyperparameters."""
+    import optuna
+    from quantammsim.calibration.grid_interpolation import interpolate_pool_daily
+
+    # Build data for each trend_windows config (cache to avoid rebuilding)
+    data_cache = {}
+
+    def _get_data(trend_key):
+        if trend_key not in data_cache:
+            data_cache[trend_key] = build_data(
+                matched_clean, option_c_clean,
+                trend_windows=trend_key)
+        return data_cache[trend_key]
+
+    # Cache grad_fn per (n_pools, tvl_col, btc_vol_col) — these are stable
+    grad_fn_cache = {}
+
+    def objective(trial):
+        trend_w = trial.suggest_categorical("trend_window", [7, 14, 30])
+        data = _get_data((trend_w,))
+        n_pools = data["n_pools"]
+
+        encoder_hidden = trial.suggest_categorical("encoder_hidden", [16, 32, 64, 128])
+        encoder_depth = trial.suggest_categorical("encoder_depth", [1, 2, 3, 4])
+        n_peer_outputs = trial.suggest_categorical("n_peer_outputs", [1, 2, 4])
+        lr = trial.suggest_float("lr", 3e-4, 3e-3, log=True)
+        l2_alpha = trial.suggest_float("l2_alpha", 1e-4, 1e-2, log=True)
+        huber_delta = trial.suggest_categorical("huber_delta", [0.5, 1.0, 1.5])
+        n_epochs = trial.suggest_categorical("n_epochs", [1000, 2000, 3000])
+
+        # Temporal split
+        day_idx = data["day_idx"]
+        split_day = int(day_idx.max() * 0.7)
+        train_mask = day_idx <= split_day
+        eval_mask = day_idx > split_day
+        train_data = _subset(data, train_mask)
+        eval_data = _subset(data, eval_mask)
+
+        # Init
+        params, n_total_linear = init_params(
+            jax.random.PRNGKey(42),
+            data["n_peer_feat"], data["n_linear_feat"],
+            encoder_hidden, n_peer_outputs,
+            n_pools, data["init_log_cadences"],
+            encoder_depth=encoder_depth,
+        )
+
+        # OLS warm-start
+        x_trn = data["x_linear"][train_mask]
+        y_trn = data["y_total"][train_mask]
+        n_peer_cols = n_peer_outputs * 3
+        x_trn_padded = np.concatenate([
+            x_trn, np.zeros((x_trn.shape[0], n_peer_cols), dtype=np.float32)
+        ], axis=1)
+        sol, _, _, _ = np.linalg.lstsq(x_trn_padded, y_trn, rcond=None)
+        params["noise_coeffs"] = jnp.array(sol.astype(np.float32))
+
+        # Build grad_fn (cache by config)
+        cache_key = (n_pools, data["tvl_col"], data["btc_vol_col"])
+        if cache_key not in grad_fn_cache:
+            grad_fn_cache[cache_key] = make_loss_fn(
+                data["pool_coeffs"], data["pool_gas"], n_pools,
+                data["tvl_col"], data["btc_vol_col"])
+        grad_fn = grad_fn_cache[cache_key]
+
+        # Train
+        params = train(params, train_data, grad_fn, n_epochs, lr,
+                       l2_alpha, huber_delta, verbose=False)
+
+        # Eval: compute total R²
+        x_linear = np.array(eval_data["x_linear"])
+        peer_input = eval_data["peer_input"]
+        peer_mask = eval_data["peer_mask"]
+        y_total = np.array(eval_data["y_total"])
+        pool_idx = np.array(eval_data["pool_idx"])
+        sgd = np.array(eval_data["sample_grid_days"])
+        log_cadence = np.array(params["log_cadence"])
+
+        peer_effect = np.array(forward_encoder(
+            params, jnp.array(peer_input), jnp.array(peer_mask)))
+
+        tvl_col = data["tvl_col"]
+        btc_vol_col = data["btc_vol_col"]
+        tvl = x_linear[:, tvl_col:tvl_col + 1]
+        btc_vol = x_linear[:, btc_vol_col:btc_vol_col + 1]
+        x_full = np.concatenate([
+            x_linear, peer_effect, peer_effect * tvl, peer_effect * btc_vol
+        ], axis=1)
+
+        noise_coeffs = np.array(params["noise_coeffs"])
+        log_v_noise = x_full @ noise_coeffs
+
+        v_arb = np.zeros(len(y_total))
+        for i in range(n_pools):
+            mask = pool_idx == i
+            if not mask.any():
+                continue
+            v_arb_all = np.array(interpolate_pool_daily(
+                data["pool_coeffs"][i], jnp.float64(log_cadence[i]),
+                data["pool_gas"][i]))
+            v_arb[mask] = v_arb_all[sgd[mask]]
+
+        log_v_arb = np.log(np.maximum(v_arb, 1e-10))
+        pred_total = np.logaddexp(log_v_arb, log_v_noise)
+
+        r2s = []
+        for i in range(n_pools):
+            mask = pool_idx == i
+            if mask.sum() < 2:
+                continue
+            yt = y_total[mask]
+            pt = pred_total[mask]
+            ss_res = np.sum((yt - pt) ** 2)
+            ss_tot = np.sum((yt - yt.mean()) ** 2)
+            r2s.append(1 - ss_res / max(ss_tot, 1e-10))
+
+        med_total = float(np.median(r2s)) if r2s else -10.0
+
+        cads = np.exp(log_cadence)
+        print(f"  Trial {trial.number}: total={med_total:.4f}"
+              f" enc_h={encoder_hidden} d={encoder_depth} n_po={n_peer_outputs}"
+              f" hub={huber_delta} lr={lr:.1e} l2={l2_alpha:.1e}"
+              f" ep={n_epochs} tw={trend_w}"
+              f" cad=[{cads.min():.0f}-{np.median(cads):.0f}-{cads.max():.0f}]")
+
+        return med_total
+
+    study = optuna.create_study(direction="maximize")
+    study.optimize(objective, n_trials=n_trials)
+
+    print(f"\n{'='*70}")
+    print("Optuna Results (hybrid)")
+    print(f"{'='*70}")
+    print(f"  Best eval total R²: {study.best_value:.4f}")
+    print(f"  Best params:")
+    for k, v in sorted(study.best_params.items()):
+        print(f"    {k}: {v}")
+
+    print(f"\n  Top 10:")
+    trials = sorted(study.trials, key=lambda t: t.value if t.value else -999,
+                    reverse=True)
+    for t in trials[:10]:
+        if t.value is not None:
+            print(f"    #{t.number}: total={t.value:.4f}"
+                  f" enc_h={t.params['encoder_hidden']}"
+                  f" d={t.params['encoder_depth']}"
+                  f" n_po={t.params['n_peer_outputs']}"
+                  f" ep={t.params['n_epochs']}"
+                  f" tw={t.params['trend_window']}")
+
+    return study
+
+
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--tune", type=int, default=0,
+                        help="Number of Optuna trials (0 = single run)")
     parser.add_argument("--epochs", type=int, default=2000)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--l2-alpha", type=float, default=1e-3)
     parser.add_argument("--huber-delta", type=float, default=1.0)
     parser.add_argument("--encoder-hidden", type=int, default=16)
+    parser.add_argument("--encoder-depth", type=int, default=1)
     parser.add_argument("--n-peer-outputs", type=int, default=1)
-    parser.add_argument("--trend-windows", type=int, nargs="+", default=[7, 14, 30])
+    parser.add_argument("--trend-windows", type=int, nargs="+", default=[7])
     args = parser.parse_args()
 
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
@@ -508,6 +731,10 @@ def main():
     print("=" * 70)
 
     matched_clean, option_c_clean = load_stage1()
+
+    if args.tune > 0:
+        run_optuna(matched_clean, option_c_clean, args.tune)
+        return
 
     print("\nBuilding data...")
     t0 = time.time()
@@ -535,15 +762,17 @@ def main():
         data["n_peer_feat"], data["n_linear_feat"],
         args.encoder_hidden, args.n_peer_outputs,
         n_pools, data["init_log_cadences"],
+        encoder_depth=args.encoder_depth,
     )
 
     # Warm-start linear coeffs via OLS (peer_effect = 0 initially)
     x_trn = data["x_linear"][train_mask]
     y_trn = data["y_total"][train_mask]
-    # Pad with zeros for peer_effect columns
+    # Pad with zeros for peer_effect columns (raw + ×tvl + ×btc_vol)
+    n_peer_cols = args.n_peer_outputs * 3
     x_trn_padded = np.concatenate([
         x_trn,
-        np.zeros((x_trn.shape[0], args.n_peer_outputs * 2), dtype=np.float32)
+        np.zeros((x_trn.shape[0], n_peer_cols), dtype=np.float32)
     ], axis=1)
     sol, _, _, _ = np.linalg.lstsq(x_trn_padded, y_trn, rcond=None)
     params["noise_coeffs"] = jnp.array(sol.astype(np.float32))
@@ -559,7 +788,8 @@ def main():
           f"-{np.exp(data['init_log_cadences']).max():.1f} min")
 
     # Train
-    grad_fn = make_loss_fn(data["pool_coeffs"], data["pool_gas"], n_pools)
+    grad_fn = make_loss_fn(data["pool_coeffs"], data["pool_gas"], n_pools,
+                           data["tvl_col"], data["btc_vol_col"])
 
     print("\n  Compiling...")
     t0 = time.time()

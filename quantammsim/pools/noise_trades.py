@@ -347,3 +347,48 @@ def reclamm_calibrated_noise_volume(
     return jnp.maximum(0.0, daily_vol / 1440.0)
 
 
+@jit
+def reclamm_market_linear_noise_volume(
+    effective_value_usd,
+    noise_base,
+    noise_tvl_coeff,
+):
+    """Market-feature linear noise model with precomputed daily coefficients.
+
+    The full model is::
+
+        log(V_daily_noise) = base_t + tvl_coeff_t * log(effective_TVL)
+
+    where ``base_t`` absorbs all non-TVL terms (intercept, market regime,
+    token volatility, pair volatility, day-of-week, cross-pool volumes)
+    and ``tvl_coeff_t`` is the effective TVL coefficient including
+    interaction terms (tvl×btc_vol, tvl×tok_a_vol, tvl×pair_vol).
+
+    Both are precomputed daily from the per-pool calibrated noise model
+    and passed in as dynamic input arrays decimated to the arb frequency.
+
+    Under counterfactual (varying reClAMM concentration), only
+    ``effective_value_usd`` changes — all market/peer features are held
+    at observed values via the precomputed arrays.
+
+    Parameters
+    ----------
+    effective_value_usd : float
+        Effective TVL in USD: (Ra+Va)*pA + (Rb+Vb)*pB.
+    noise_base : float
+        Precomputed non-TVL component of log(V_daily_noise) for this step.
+    noise_tvl_coeff : float
+        Precomputed effective coefficient on log(TVL) for this step,
+        including base b_tvl and interaction terms.
+
+    Returns
+    -------
+    float
+        Per-minute noise volume (USD), floored at zero.
+    """
+    log_tvl = jnp.log(jnp.maximum(effective_value_usd, 1.0))
+    log_daily_noise = noise_base + noise_tvl_coeff * log_tvl
+    daily_noise = jnp.exp(log_daily_noise)
+    return jnp.maximum(0.0, daily_noise / 1440.0)
+
+
