@@ -229,9 +229,16 @@ class ReClammPool(AbstractPool):
                   "noise_base": None, "noise_tvl_coeff": None}
 
         if noise_model == "market_linear":
-            # Precomputed arrays passed via run_fingerprint
+            # Load precomputed arrays from path (cached on instance) or direct
             nb = run_fingerprint.get("noise_base_array")
             ntc = run_fingerprint.get("noise_tvl_coeff_array")
+            if nb is None and "noise_arrays_path" in run_fingerprint:
+                path = run_fingerprint["noise_arrays_path"]
+                if not hasattr(self, "_market_linear_cache") or self._market_linear_cache[0] != path:
+                    arrays = np.load(path)
+                    self._market_linear_cache = (path, arrays["noise_base"], arrays["noise_tvl_coeff"])
+                nb = self._market_linear_cache[1]
+                ntc = self._market_linear_cache[2]
             if nb is not None:
                 result["noise_base"] = _prepare_dynamic_array(
                     jnp.array(nb), start_index, bout_length, arb_freq, max_len)

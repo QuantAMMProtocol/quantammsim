@@ -352,20 +352,25 @@ def reclamm_market_linear_noise_volume(
     effective_value_usd,
     noise_base,
     noise_tvl_coeff,
+    tvl_mean=0.0,
+    tvl_std=1.0,
 ):
     """Market-feature linear noise model with precomputed daily coefficients.
 
     The full model is::
 
-        log(V_daily_noise) = base_t + tvl_coeff_t * log(effective_TVL)
+        log(V_daily_noise) = base_t + tvl_coeff_t * standardized_log_tvl
 
     where ``base_t`` absorbs all non-TVL terms (intercept, market regime,
     token volatility, pair volatility, day-of-week, cross-pool volumes)
     and ``tvl_coeff_t`` is the effective TVL coefficient including
     interaction terms (tvl×btc_vol, tvl×tok_a_vol, tvl×pair_vol).
 
-    Both are precomputed daily from the per-pool calibrated noise model
-    and passed in as dynamic input arrays decimated to the arb frequency.
+    The log(TVL) is standardized using the same mean/std from training
+    to ensure the coefficient scale matches.
+
+    Both base_t and tvl_coeff_t are precomputed daily from the per-pool
+    calibrated noise model and passed in as dynamic input arrays.
 
     Under counterfactual (varying reClAMM concentration), only
     ``effective_value_usd`` changes — all market/peer features are held
@@ -378,8 +383,11 @@ def reclamm_market_linear_noise_volume(
     noise_base : float
         Precomputed non-TVL component of log(V_daily_noise) for this step.
     noise_tvl_coeff : float
-        Precomputed effective coefficient on log(TVL) for this step,
-        including base b_tvl and interaction terms.
+        Precomputed effective coefficient on log(TVL) for this step.
+    tvl_mean : float
+        Mean of log(TVL) from training data standardization.
+    tvl_std : float
+        Std of log(TVL) from training data standardization.
 
     Returns
     -------
@@ -387,7 +395,8 @@ def reclamm_market_linear_noise_volume(
         Per-minute noise volume (USD), floored at zero.
     """
     log_tvl = jnp.log(jnp.maximum(effective_value_usd, 1.0))
-    log_daily_noise = noise_base + noise_tvl_coeff * log_tvl
+    standardized_log_tvl = (log_tvl - tvl_mean) / tvl_std
+    log_daily_noise = noise_base + noise_tvl_coeff * standardized_log_tvl
     daily_noise = jnp.exp(log_daily_noise)
     return jnp.maximum(0.0, daily_noise / 1440.0)
 

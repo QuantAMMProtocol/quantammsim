@@ -1033,8 +1033,11 @@ def _reclamm_scan_step_with_fees_and_revenue(
         real_value = jnp.sum(jnp.array([Ra_new, Rb_new]) * prices)
         effective_value = (Ra_new + Va) * prices[0] + (Rb_new + Vb) * prices[1]
 
+        _np = noise_params if noise_params is not None else {}
         noise_vol = reclamm_market_linear_noise_volume(
             effective_value, noise_base, noise_tvl_coeff,
+            tvl_mean=_np.get("tvl_mean", 0.0),
+            tvl_std=_np.get("tvl_std", 1.0),
         )
 
         noise_fee_income = (1.0 - gamma) * noise_vol
