@@ -77,6 +77,10 @@ def _compute_token_features(
     For market-level tokens (BTC): includes log_price as regime proxy.
     For pool tokens: only returns/vol/trends (comparable across tokens).
 
+    Volume is normalised as z-score within each token: today's log-volume
+    relative to a 30-day trailing mean/std. This captures "is this token
+    unusually active today" without the cross-token scale problem.
+
     Returns DataFrame indexed by date.
     """
     out = pd.DataFrame(index=daily.index)
@@ -89,6 +93,13 @@ def _compute_token_features(
 
     # Realized volatility: std of log returns over trailing 7 days
     out["realized_vol_7d"] = out["log_return"].rolling(7, min_periods=3).std()
+
+    # Volume: z-score relative to trailing 30d mean/std of log-volume
+    # Captures "unusually active day for this token" — comparable across tokens
+    log_vol = np.log(daily["volume_usd"].clip(lower=1.0))
+    vol_mean_30d = log_vol.rolling(30, min_periods=10).mean()
+    vol_std_30d = log_vol.rolling(30, min_periods=10).std().clip(lower=0.1)
+    out["volume_zscore"] = (log_vol - vol_mean_30d) / vol_std_30d
 
     # Trend: rolling mean log return at various horizons
     for w in trend_windows:
