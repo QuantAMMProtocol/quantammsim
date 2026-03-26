@@ -272,3 +272,132 @@ def reclamm_loglinear_noise_volume(
     return jnp.maximum(0.0, daily_vol / 1440.0 - arb_volume_this_period)
 
 
+@jit
+def reclamm_calibrated_noise_volume(
+    effective_value_usd,
+    gamma,
+    volatility,
+    arb_volume_this_period,
+    dow_sin,
+    dow_cos,
+    noise_params=None,
+):
+    """8-covariate calibrated noise volume from cross-pool log-linear model.
+
+    Predicts per-minute noise volume using::
+
+        log(V_daily) = c_0 + c_1*log(TVL) + c_2*log(sigma)
+                        + c_3*log(TVL)*log(sigma) + c_4*log(TVL)*fee
+                        + c_5*log(sigma)*fee + c_6*dow_sin + c_7*dow_cos
+        V_noise = max(0, exp(log_daily_vol) / 1440 - arb_volume)
+
+    where sigma is annualised daily realised volatility, fee = 1 - gamma,
+    and dow_sin/dow_cos encode day-of-week seasonality.
+
+    Parameters
+    ----------
+    effective_value_usd : float
+        Effective TVL in USD: (Ra+Va)*pA + (Rb+Vb)*pB.
+    gamma : float
+        Fee parameter (1 - fee_rate).
+    volatility : float
+        Annualised daily realised volatility of the price ratio.
+    arb_volume_this_period : float
+        Arb volume already accounted for this time step (USD).
+    dow_sin : float
+        sin(2*pi*weekday/7) for the current day.
+    dow_cos : float
+        cos(2*pi*weekday/7) for the current day.
+    noise_params : dict, optional
+        Calibrated coefficients: c_0 .. c_7.
+
+    Returns
+    -------
+    float
+        Per-minute noise volume (USD), floored at zero.
+    """
+    if noise_params is None:
+        noise_params = {}
+    c_0 = noise_params.get("c_0", 0.0)
+    c_1 = noise_params.get("c_1", 1.0)
+    c_2 = noise_params.get("c_2", 0.0)
+    c_3 = noise_params.get("c_3", 0.0)
+    c_4 = noise_params.get("c_4", 0.0)
+    c_5 = noise_params.get("c_5", 0.0)
+    c_6 = noise_params.get("c_6", 0.0)
+    c_7 = noise_params.get("c_7", 0.0)
+
+    fee = 1.0 - gamma
+    log_tvl = jnp.log(jnp.maximum(effective_value_usd, 1.0))
+    log_sigma = jnp.log(jnp.maximum(volatility, 1e-10))
+
+    log_daily_vol = (
+        c_0
+        + c_1 * log_tvl
+        + c_2 * log_sigma
+        + c_3 * log_tvl * log_sigma
+        + c_4 * log_tvl * fee
+        + c_5 * log_sigma * fee
+        + c_6 * dow_sin
+        + c_7 * dow_cos
+    )
+    daily_vol = jnp.exp(log_daily_vol)
+    # noise_coeffs predict V_noise directly (not V_total), so no need to
+    # subtract arb volume — that would double-count the arb subtraction.
+    return jnp.maximum(0.0, daily_vol / 1440.0)
+
+
+@jit
+def reclamm_market_linear_noise_volume(
+    effective_value_usd,
+    noise_base,
+    noise_tvl_coeff,
+    tvl_mean=0.0,
+    tvl_std=1.0,
+):
+    """Market-feature linear noise model with precomputed daily coefficients.
+
+    The full model is::
+
+        log(V_daily_noise) = base_t + tvl_coeff_t * standardized_log_tvl
+
+    where ``base_t`` absorbs all non-TVL terms (intercept, market regime,
+    token volatility, pair volatility, day-of-week, cross-pool volumes)
+    and ``tvl_coeff_t`` is the effective TVL coefficient including
+    interaction terms (tvl×btc_vol, tvl×tok_a_vol, tvl×pair_vol).
+
+    The log(TVL) is standardized using the same mean/std from training
+    to ensure the coefficient scale matches.
+
+    Both base_t and tvl_coeff_t are precomputed daily from the per-pool
+    calibrated noise model and passed in as dynamic input arrays.
+
+    Under counterfactual (varying reClAMM concentration), only
+    ``effective_value_usd`` changes — all market/peer features are held
+    at observed values via the precomputed arrays.
+
+    Parameters
+    ----------
+    effective_value_usd : float
+        Effective TVL in USD: (Ra+Va)*pA + (Rb+Vb)*pB.
+    noise_base : float
+        Precomputed non-TVL component of log(V_daily_noise) for this step.
+    noise_tvl_coeff : float
+        Precomputed effective coefficient on log(TVL) for this step.
+    tvl_mean : float
+        Mean of log(TVL) from training data standardization.
+    tvl_std : float
+        Std of log(TVL) from training data standardization.
+
+    Returns
+    -------
+    float
+        Per-minute noise volume (USD), floored at zero.
+    """
+    log_tvl = jnp.log(jnp.maximum(effective_value_usd, 1.0))
+    standardized_log_tvl = (log_tvl - tvl_mean) / tvl_std
+    log_daily_noise = noise_base + noise_tvl_coeff * standardized_log_tvl
+    daily_noise = jnp.exp(log_daily_noise)
+    return jnp.maximum(0.0, daily_noise / 1440.0)
+
+

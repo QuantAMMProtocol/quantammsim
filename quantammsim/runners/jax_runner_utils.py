@@ -658,7 +658,7 @@ class NestedHashabledict(dict):
 # These are excluded when creating static_dict from run_fingerprint
 _TRAINING_ONLY_FIELDS = frozenset({
     "optimisation_settings",  # Contains lr, optimizer, etc.
-    "startDateString",  # Data loading dates
+    # startDateString kept in static dict — needed by calibrated noise model
     "endDateString",
     "endTestDateString",
     "subsidary_pools",  # Handled separately

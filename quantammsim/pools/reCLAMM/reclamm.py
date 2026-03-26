@@ -246,18 +246,92 @@ class ReClammPool(AbstractPool):
         if noise_params is not None and type(noise_params) is not dict:
             noise_params = dict(noise_params)
 
-        arb_vol = None
-        if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
-            volatility_array = self.calculate_volatility_array(prices, run_fingerprint)
-            arb_vol = _prepare_dynamic_array(
-                volatility_array,
-                start_index=start_index,
-                bout_length=bout_length,
-                arb_frequency=arb_freq,
-                max_len=arb_len,
-            )
+        noise_arrays = self._prepare_noise_arrays(
+            prices,
+            run_fingerprint,
+            start_index,
+            bout_length,
+            arb_freq,
+            arb_len,
+        )
 
-        return lp_prepared, noise_model, noise_params, arb_vol
+        return lp_prepared, noise_model, noise_params, noise_arrays
+
+    def _prepare_noise_arrays(self, prices, run_fingerprint, start_index,
+                              bout_length, arb_freq, max_len):
+        """Prepare dynamic input arrays for noise models.
+
+        Returns dict with keys depending on noise_model:
+          - "ratio": {}
+          - "tsoukalas_*"/"loglinear": {"volatility": array}
+          - "calibrated": {"volatility": array, "dow_sin": array, "dow_cos": array}
+          - "market_linear": {"noise_base": array, "noise_tvl_coeff": array}
+        """
+        noise_model = run_fingerprint.get("noise_model", "ratio")
+        result = {"volatility": None, "dow_sin": None, "dow_cos": None,
+                  "noise_base": None, "noise_tvl_coeff": None}
+
+        if noise_model == "market_linear":
+            # Load precomputed arrays from path (cached on instance) or direct.
+            nb = run_fingerprint.get("noise_base_array")
+            ntc = run_fingerprint.get("noise_tvl_coeff_array")
+            if nb is None and "noise_arrays_path" in run_fingerprint:
+                path = run_fingerprint["noise_arrays_path"]
+                if (
+                    not hasattr(self, "_market_linear_cache")
+                    or self._market_linear_cache[0] != path
+                ):
+                    arrays = np.load(path)
+                    self._market_linear_cache = (
+                        path,
+                        arrays["noise_base"],
+                        arrays["noise_tvl_coeff"],
+                    )
+                nb = self._market_linear_cache[1]
+                ntc = self._market_linear_cache[2]
+            if nb is not None:
+                result["noise_base"] = _prepare_dynamic_array(
+                    jnp.array(nb), start_index, bout_length, arb_freq, max_len,
+                )
+            if ntc is not None:
+                result["noise_tvl_coeff"] = _prepare_dynamic_array(
+                    jnp.array(ntc), start_index, bout_length, arb_freq, max_len,
+                )
+            return result
+
+        needs_vol = noise_model in (
+            "tsoukalas_sqrt", "tsoukalas_log", "loglinear", "calibrated",
+        )
+        if not needs_vol:
+            return result
+
+        volatility_array = self.calculate_volatility_array(
+            prices, run_fingerprint,
+        )
+        result["volatility"] = _prepare_dynamic_array(
+            volatility_array, start_index, bout_length, arb_freq, max_len,
+        )
+
+        if noise_model != "calibrated":
+            return result
+
+        # Day-of-week sin/cos arrays for the calibrated noise model.
+        import pandas as pd
+
+        start_dt = pd.Timestamp(run_fingerprint["startDateString"])
+        n_minutes = prices.shape[0]
+        day_indices = np.arange(n_minutes) // 1440
+        start_weekday = start_dt.weekday()
+        weekdays = ((start_weekday + day_indices) % 7).astype(np.float64)
+        dow_sin_full = jnp.array(np.sin(2.0 * np.pi * weekdays / 7.0))
+        dow_cos_full = jnp.array(np.cos(2.0 * np.pi * weekdays / 7.0))
+        result["dow_sin"] = _prepare_dynamic_array(
+            dow_sin_full, start_index, bout_length, arb_freq, max_len,
+        )
+        result["dow_cos"] = _prepare_dynamic_array(
+            dow_cos_full, start_index, bout_length, arb_freq, max_len,
+        )
+        return result
 
     @partial(jit, static_argnums=(2,))
     def calculate_reserves_with_fees(
@@ -271,12 +345,14 @@ class ReClammPool(AbstractPool):
     ) -> jnp.ndarray:
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
         ste_temperature = self._resolve_ste_temperature(run_fingerprint)
-        lp_prepared, noise_model, noise_params, arb_vol = self._resolve_noise_inputs(
-            run_fingerprint,
-            prices,
-            start_index,
-            s.arb_prices.shape[0],
-            lp_supply_array=lp_supply_array,
+        lp_prepared, noise_model, noise_params, noise_arrays = (
+            self._resolve_noise_inputs(
+                run_fingerprint,
+                prices,
+                start_index,
+                s.arb_prices.shape[0],
+                lp_supply_array=lp_supply_array,
+            )
         )
 
         if run_fingerprint["do_arb"]:
@@ -300,7 +376,11 @@ class ReClammPool(AbstractPool):
                 lp_supply_array=lp_prepared,
                 noise_model=noise_model,
                 noise_params=noise_params,
-                volatility_array=arb_vol,
+                volatility_array=noise_arrays["volatility"],
+                dow_sin_array=noise_arrays["dow_sin"],
+                dow_cos_array=noise_arrays["dow_cos"],
+                noise_base_array=noise_arrays["noise_base"],
+                noise_tvl_coeff_array=noise_arrays["noise_tvl_coeff"],
             )
         return jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape)
 
@@ -324,12 +404,14 @@ class ReClammPool(AbstractPool):
         """
         s = self._init_pool_state(params, run_fingerprint, prices, start_index)
         ste_temperature = self._resolve_ste_temperature(run_fingerprint)
-        lp_prepared, noise_model, noise_params, arb_vol = self._resolve_noise_inputs(
-            run_fingerprint,
-            prices,
-            start_index,
-            s.arb_prices.shape[0],
-            lp_supply_array=lp_supply_array,
+        lp_prepared, noise_model, noise_params, noise_arrays = (
+            self._resolve_noise_inputs(
+                run_fingerprint,
+                prices,
+                start_index,
+                s.arb_prices.shape[0],
+                lp_supply_array=lp_supply_array,
+            )
         )
 
         if run_fingerprint["do_arb"]:
@@ -353,7 +435,11 @@ class ReClammPool(AbstractPool):
                 lp_supply_array=lp_prepared,
                 noise_model=noise_model,
                 noise_params=noise_params,
-                volatility_array=arb_vol,
+                volatility_array=noise_arrays["volatility"],
+                dow_sin_array=noise_arrays["dow_sin"],
+                dow_cos_array=noise_arrays["dow_cos"],
+                noise_base_array=noise_arrays["noise_base"],
+                noise_tvl_coeff_array=noise_arrays["noise_tvl_coeff"],
             )
         return (
             jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape),
@@ -389,11 +475,11 @@ class ReClammPool(AbstractPool):
             do_trades=False,
             dtype=s.arb_prices.dtype,
         )
-        _, noise_model, noise_params, arb_vol = self._resolve_noise_inputs(
+        _, noise_model, noise_params, noise_arrays = self._resolve_noise_inputs(
             run_fingerprint,
             prices,
             start_index,
-            s.arb_prices.shape[0],
+            max_len,
             lp_supply_array=None,
         )
 
@@ -418,7 +504,11 @@ class ReClammPool(AbstractPool):
             lp_supply_array=materialized_inputs.lp_supply,
             noise_model=noise_model,
             noise_params=noise_params,
-            volatility_array=arb_vol,
+            volatility_array=noise_arrays["volatility"],
+            dow_sin_array=noise_arrays["dow_sin"],
+            dow_cos_array=noise_arrays["dow_cos"],
+            noise_base_array=noise_arrays["noise_base"],
+            noise_tvl_coeff_array=noise_arrays["noise_tvl_coeff"],
         )
 
     @partial(jit, static_argnums=(2,))
@@ -497,11 +587,11 @@ class ReClammPool(AbstractPool):
             do_trades=False,
             dtype=s.arb_prices.dtype,
         )
-        _, noise_model, noise_params, arb_vol = self._resolve_noise_inputs(
+        _, noise_model, noise_params, noise_arrays = self._resolve_noise_inputs(
             run_fingerprint,
             prices,
             start_index,
-            s.arb_prices.shape[0],
+            max_len,
             lp_supply_array=None,
         )
 
@@ -526,7 +616,11 @@ class ReClammPool(AbstractPool):
             lp_supply_array=materialized_inputs.lp_supply,
             noise_model=noise_model,
             noise_params=noise_params,
-            volatility_array=arb_vol,
+            volatility_array=noise_arrays["volatility"],
+            dow_sin_array=noise_arrays["dow_sin"],
+            dow_cos_array=noise_arrays["dow_cos"],
+            noise_base_array=noise_arrays["noise_base"],
+            noise_tvl_coeff_array=noise_arrays["noise_tvl_coeff"],
         )
 
     def init_base_parameters(

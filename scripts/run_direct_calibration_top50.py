@@ -32,7 +32,7 @@ OUTPUT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)),
     "results", "direct_calibration_top50",
 )
-TRAIN_DAYS = 90
+TRAIN_DAYS = 0  # 0 = no filter, use all available data per pool
 TOP_N = 50
 OPTION_C_MAXITER = 500
 JOINT_MAXITER = 500
@@ -40,18 +40,28 @@ OPTION_C_LOSS_CUTOFF = 5.0  # Drop pools with Option C loss above this from join
 
 
 def load_and_match():
-    """Load panel, filter to 90 days, match to grids."""
+    """Load panel, match to grids. No date filter — each pool uses all data."""
+    from quantammsim.calibration.pool_data import (
+        match_grids_to_panel,
+        replace_panel_volatility_with_binance,
+    )
+
     panel = pd.read_parquet(PANEL_CACHE)
-    max_date = panel["date"].max()
-    if not isinstance(max_date, date):
-        max_date = pd.Timestamp(max_date).date()
-    cutoff = max_date - timedelta(days=TRAIN_DAYS)
-    panel = panel[
-        panel["date"].apply(
-            lambda d: d >= cutoff if isinstance(d, date)
-            else pd.Timestamp(d).date() >= cutoff
-        )
-    ].copy()
+
+    # Optional date filter (TRAIN_DAYS=0 means no filter)
+    if TRAIN_DAYS > 0:
+        max_date = panel["date"].max()
+        if not isinstance(max_date, date):
+            max_date = pd.Timestamp(max_date).date()
+        cutoff = max_date - timedelta(days=TRAIN_DAYS)
+        panel = panel[
+            panel["date"].apply(
+                lambda d: d >= cutoff if isinstance(d, date)
+                else pd.Timestamp(d).date() >= cutoff
+            )
+        ].copy()
+    else:
+        panel = panel.copy()
 
     if "log_tvl_lag1" not in panel.columns:
         panel = panel.sort_values(["pool_id", "date"]).reset_index(drop=True)
@@ -62,21 +72,27 @@ def load_and_match():
     valid = pool_counts[pool_counts >= 10].index
     panel = panel[panel["pool_id"].isin(valid)].copy()
 
-    print(f"Panel: {len(panel)} obs, {panel['pool_id'].nunique()} pools, "
-          f"{cutoff} to {max_date}")
+    # Replace Balancer-hourly volatility with Binance-minute volatility
+    print("Replacing volatility with Binance minute data...")
+    panel = replace_panel_volatility_with_binance(panel)
 
-    from quantammsim.calibration.pool_data import match_grids_to_panel
+    min_date = panel["date"].min()
+    max_date = panel["date"].max()
+    print(f"Panel: {len(panel)} obs, {panel['pool_id'].nunique()} pools, "
+          f"{min_date} to {max_date}")
+
     matched = match_grids_to_panel(GRID_DIR, panel)
     print(f"Matched: {len(matched)} pools with grids")
 
     return panel, matched
 
 
-def run_option_c(matched):
+def run_option_c(matched, fix_gas_to_chain=False):
     """Per-pool L-BFGS-B fits."""
     from quantammsim.calibration.per_pool_fit import fit_all_pools
-    print(f"\n--- Option C: per-pool fits ({len(matched)} pools) ---")
-    results = fit_all_pools(matched)
+    gas_label = " (gas fixed to chain)" if fix_gas_to_chain else ""
+    print(f"\n--- Option C: per-pool fits ({len(matched)} pools){gas_label} ---")
+    results = fit_all_pools(matched, fix_gas_to_chain=fix_gas_to_chain)
     n_converged = sum(1 for r in results.values() if r["converged"])
     losses = [r["loss"] for r in results.values()]
     print(f"  Converged: {n_converged}/{len(results)}")
@@ -86,7 +102,7 @@ def run_option_c(matched):
     return results
 
 
-def run_option_a(matched, option_c_results):
+def run_option_a(matched, option_c_results, fix_gas_to_chain=False):
     """Joint end-to-end optimization, warm-started from Option C.
 
     Drops pathological pools (Option C loss > OPTION_C_LOSS_CUTOFF) from the
@@ -106,26 +122,29 @@ def run_option_a(matched, option_c_results):
             r = option_c_results[p]
             print(f"    {p} {r['tokens']:<16} loss={r['loss']:.1f}")
 
+    gas_label = ", gas fixed" if fix_gas_to_chain else ""
     print(f"\n--- Option A: joint fit (per_pool_noise, {len(matched_clean)} pools, "
-          f"warm-start from C, no chain dummies) ---")
+          f"warm-start from C, no chain dummies{gas_label}) ---")
     result_ppn = fit_joint(
         matched_clean,
         mode="per_pool_noise",
         init_from_option_c=good_pools,
         maxiter=JOINT_MAXITER,
         drop_chain_dummies=True,
+        fix_gas_to_chain=fix_gas_to_chain,
     )
     print(f"  Loss: {result_ppn['init_loss']:.4f} -> {result_ppn['loss']:.4f}")
     print(f"  Converged: {result_ppn['converged']}")
 
     print(f"\n--- Option A: joint fit (shared_noise, {len(matched_clean)} pools, "
-          f"warm-start from C, no chain dummies) ---")
+          f"warm-start from C, no chain dummies{gas_label}) ---")
     result_sn = fit_joint(
         matched_clean,
         mode="shared_noise",
         init_from_option_c=good_pools,
         maxiter=JOINT_MAXITER,
         drop_chain_dummies=True,
+        fix_gas_to_chain=fix_gas_to_chain,
     )
     print(f"  Loss: {result_sn['init_loss']:.4f} -> {result_sn['loss']:.4f}")
     print(f"  Converged: {result_sn['converged']}")
@@ -170,115 +189,103 @@ def run_option_rf(matched, option_c_results):
     attr_names = [attr_names_full[i] for i in non_chain_mask]
     k_attr = len(attr_names)
 
-    print(f"\n--- Option RF: 2-stage mapping ({n_pools} pools, {k_attr} features) ---")
+    # Detect if gas was fixed in Option C
+    gas_fixed = any(good_pools[p].get("gas_fixed", False) for p in pool_ids)
+
+    if gas_fixed:
+        print(f"\n--- Option RF: 2-stage mapping ({n_pools} pools, {k_attr} features, "
+              f"cadence only — gas fixed) ---")
+    else:
+        print(f"\n--- Option RF: 2-stage mapping ({n_pools} pools, {k_attr} features) ---")
     print(f"  Features: {', '.join(attr_names)}")
 
     Y_cad = np.array([good_pools[p]["log_cadence"] for p in pool_ids])
     Y_gas = np.array([good_pools[p]["log_gas"] for p in pool_ids])
-    Y = np.column_stack([Y_cad, Y_gas])
 
     ss_tot_cad = np.sum((Y_cad - Y_cad.mean()) ** 2)
-    ss_tot_gas = np.sum((Y_gas - Y_gas.mean()) ** 2)
 
     def compute_r2(y_true, y_pred, ss_tot):
         return 1 - np.sum((y_true - y_pred) ** 2) / max(ss_tot, 1e-10)
 
-    # ---- Ridge regression (multi-output via separate fits) ----
+    # ---- Ridge regression (cadence only when gas is fixed) ----
     alphas = np.logspace(-2, 4, 50)
     ridge_cad = RidgeCV(alphas=alphas, cv=None)  # GCV/LOO built-in
-    ridge_gas = RidgeCV(alphas=alphas, cv=None)
     ridge_cad.fit(X_attr, Y_cad)
-    ridge_gas.fit(X_attr, Y_gas)
 
-    Y_ridge_train = np.column_stack([ridge_cad.predict(X_attr),
-                                     ridge_gas.predict(X_attr)])
-    r2_ridge_cad = compute_r2(Y_cad, Y_ridge_train[:, 0], ss_tot_cad)
-    r2_ridge_gas = compute_r2(Y_gas, Y_ridge_train[:, 1], ss_tot_gas)
+    Y_ridge_cad_train = ridge_cad.predict(X_attr)
+    r2_ridge_cad = compute_r2(Y_cad, Y_ridge_cad_train, ss_tot_cad)
 
-    print(f"\n  Ridge (alpha_cad={ridge_cad.alpha_:.1f}, alpha_gas={ridge_gas.alpha_:.1f}):")
-    print(f"    In-sample R²:  cadence={r2_ridge_cad:.3f}, gas={r2_ridge_gas:.3f}")
+    print(f"\n  Ridge (alpha_cad={ridge_cad.alpha_:.1f}):")
+    print(f"    In-sample R² cadence: {r2_ridge_cad:.3f}")
 
-    # Ridge LOO-CV
+    # Ridge LOO-CV (cadence only)
     loo = LeaveOneOut()
-    Y_ridge_loo = np.zeros_like(Y)
+    Y_ridge_cad_loo = np.zeros_like(Y_cad)
     for train_idx, test_idx in loo.split(X_attr):
         rc = RidgeCV(alphas=alphas, cv=None).fit(X_attr[train_idx], Y_cad[train_idx])
-        rg = RidgeCV(alphas=alphas, cv=None).fit(X_attr[train_idx], Y_gas[train_idx])
-        Y_ridge_loo[test_idx, 0] = rc.predict(X_attr[test_idx])
-        Y_ridge_loo[test_idx, 1] = rg.predict(X_attr[test_idx])
+        Y_ridge_cad_loo[test_idx] = rc.predict(X_attr[test_idx])
 
-    r2_ridge_loo_cad = compute_r2(Y_cad, Y_ridge_loo[:, 0], ss_tot_cad)
-    r2_ridge_loo_gas = compute_r2(Y_gas, Y_ridge_loo[:, 1], ss_tot_gas)
-    print(f"    LOO-CV R²:     cadence={r2_ridge_loo_cad:.3f}, gas={r2_ridge_loo_gas:.3f}")
-    print(f"    LOO-CV MAE:    cadence={np.mean(np.abs(np.exp(Y_cad) - np.exp(Y_ridge_loo[:, 0]))):.1f} min, "
-          f"gas=${np.mean(np.abs(np.exp(Y_gas) - np.exp(Y_ridge_loo[:, 1]))):.2f}")
+    r2_ridge_loo_cad = compute_r2(Y_cad, Y_ridge_cad_loo, ss_tot_cad)
+    print(f"    LOO-CV R² cadence: {r2_ridge_loo_cad:.3f}")
+    print(f"    LOO-CV MAE cadence: {np.mean(np.abs(np.exp(Y_cad) - np.exp(Y_ridge_cad_loo))):.1f} min")
 
     # Ridge coefficients
-    print(f"    Coefficients (cadence | gas):")
-    print(f"      {'intercept':<20} {ridge_cad.intercept_:>7.3f}  {ridge_gas.intercept_:>7.3f}")
+    print(f"    Coefficients (cadence):")
+    print(f"      {'intercept':<20} {ridge_cad.intercept_:>7.3f}")
     for j, name in enumerate(attr_names):
-        print(f"      {name:<20} {ridge_cad.coef_[j]:>7.3f}  {ridge_gas.coef_[j]:>7.3f}")
+        print(f"      {name:<20} {ridge_cad.coef_[j]:>7.3f}")
 
-    # ---- Random Forest (reduced features) ----
+    # ---- Random Forest (cadence only) ----
     rf = RandomForestRegressor(
         n_estimators=200,
         max_depth=None,
-        min_samples_leaf=3,  # stronger regularization
-        max_features=min(4, k_attr),  # cap at 4 features per split
+        min_samples_leaf=3,
+        max_features=min(4, k_attr),
         random_state=42,
         n_jobs=-1,
     )
-    rf.fit(X_attr, Y)
-    Y_rf_train = rf.predict(X_attr)
+    rf.fit(X_attr, Y_cad)
+    Y_rf_cad_train = rf.predict(X_attr)
 
-    r2_rf_cad = compute_r2(Y_cad, Y_rf_train[:, 0], ss_tot_cad)
-    r2_rf_gas = compute_r2(Y_gas, Y_rf_train[:, 1], ss_tot_gas)
+    r2_rf_cad = compute_r2(Y_cad, Y_rf_cad_train, ss_tot_cad)
 
     print(f"\n  Random Forest (min_leaf=3, max_feat=4):")
-    print(f"    In-sample R²:  cadence={r2_rf_cad:.3f}, gas={r2_rf_gas:.3f}")
+    print(f"    In-sample R² cadence: {r2_rf_cad:.3f}")
 
     # RF LOO-CV
-    Y_rf_loo = np.zeros_like(Y)
+    Y_rf_cad_loo = np.zeros_like(Y_cad)
     for train_idx, test_idx in loo.split(X_attr):
         rf_loo = RandomForestRegressor(
             n_estimators=200, max_depth=None, min_samples_leaf=3,
             max_features=min(4, k_attr), random_state=42, n_jobs=-1,
         )
-        rf_loo.fit(X_attr[train_idx], Y[train_idx])
-        Y_rf_loo[test_idx] = rf_loo.predict(X_attr[test_idx])
+        rf_loo.fit(X_attr[train_idx], Y_cad[train_idx])
+        Y_rf_cad_loo[test_idx] = rf_loo.predict(X_attr[test_idx])
 
-    r2_rf_loo_cad = compute_r2(Y_cad, Y_rf_loo[:, 0], ss_tot_cad)
-    r2_rf_loo_gas = compute_r2(Y_gas, Y_rf_loo[:, 1], ss_tot_gas)
-    print(f"    LOO-CV R²:     cadence={r2_rf_loo_cad:.3f}, gas={r2_rf_loo_gas:.3f}")
-    print(f"    LOO-CV MAE:    cadence={np.mean(np.abs(np.exp(Y_cad) - np.exp(Y_rf_loo[:, 0]))):.1f} min, "
-          f"gas=${np.mean(np.abs(np.exp(Y_gas) - np.exp(Y_rf_loo[:, 1]))):.2f}")
+    r2_rf_loo_cad = compute_r2(Y_cad, Y_rf_cad_loo, ss_tot_cad)
+    print(f"    LOO-CV R² cadence: {r2_rf_loo_cad:.3f}")
+    print(f"    LOO-CV MAE cadence: {np.mean(np.abs(np.exp(Y_cad) - np.exp(Y_rf_cad_loo))):.1f} min")
 
     print(f"\n    Feature importances:")
     for j, name in enumerate(attr_names):
         print(f"      {name:<20} {rf.feature_importances_[j]:.3f}")
 
     # ---- Pick best LOO model ----
-    ridge_loo_total = r2_ridge_loo_cad + r2_ridge_loo_gas
-    rf_loo_total = r2_rf_loo_cad + r2_rf_loo_gas
-    best = "ridge" if ridge_loo_total >= rf_loo_total else "rf"
-    print(f"\n  Best LOO model: {best} (ridge={ridge_loo_total:.3f} vs rf={rf_loo_total:.3f})")
+    best = "ridge" if r2_ridge_loo_cad >= r2_rf_loo_cad else "rf"
+    print(f"\n  Best LOO model: {best} (ridge={r2_ridge_loo_cad:.3f} vs rf={r2_rf_loo_cad:.3f})")
 
     if best == "ridge":
-        Y_best_train = Y_ridge_train
-        Y_best_loo = Y_ridge_loo
+        Y_best_cad_train = Y_ridge_cad_train
+        Y_best_cad_loo = Y_ridge_cad_loo
         r2_best_cad = r2_ridge_cad
-        r2_best_gas = r2_ridge_gas
         r2_best_loo_cad = r2_ridge_loo_cad
-        r2_best_loo_gas = r2_ridge_loo_gas
     else:
-        Y_best_train = Y_rf_train
-        Y_best_loo = Y_rf_loo
+        Y_best_cad_train = Y_rf_cad_train
+        Y_best_cad_loo = Y_rf_cad_loo
         r2_best_cad = r2_rf_cad
-        r2_best_gas = r2_rf_gas
         r2_best_loo_cad = r2_rf_loo_cad
-        r2_best_loo_gas = r2_rf_loo_gas
 
-    # Build result dict using the best model's predictions
+    # Build result dict — gas comes from Option C (which used chain-level values)
     noise_all = np.array([good_pools[p]["noise_coeffs"] for p in pool_ids])
 
     result = {
@@ -288,21 +295,20 @@ def run_option_rf(matched, option_c_results):
         "best_model": best,
         "predictions": {},
         "loo_predictions": {},
-        "noise_coeffs": noise_all,  # from Option C
+        "noise_coeffs": noise_all,
         "r2_train_cad": r2_best_cad,
-        "r2_train_gas": r2_best_gas,
         "r2_loo_cad": r2_best_loo_cad,
-        "r2_loo_gas": r2_best_loo_gas,
     }
 
     for i, pid in enumerate(pool_ids):
+        log_gas_fixed = good_pools[pid]["log_gas"]
         result["predictions"][pid] = {
-            "log_cadence": float(Y_best_train[i, 0]),
-            "log_gas": float(Y_best_train[i, 1]),
+            "log_cadence": float(Y_best_cad_train[i]),
+            "log_gas": float(log_gas_fixed),
         }
         result["loo_predictions"][pid] = {
-            "log_cadence": float(Y_best_loo[i, 0]),
-            "log_gas": float(Y_best_loo[i, 1]),
+            "log_cadence": float(Y_best_cad_loo[i]),
+            "log_gas": float(log_gas_fixed),
         }
 
     return result
@@ -369,7 +375,12 @@ def compute_per_pool_predictions(matched, option_c_results, joint_result, rf_res
             ji = joint_pid_to_idx[pid]
             x_attr = X_attr_joint[ji]
             log_cad_a = float(joint_result["bias_cad"]) + float(x_attr @ joint_result["W_cad"])
-            log_gas_a = float(joint_result["bias_gas"]) + float(x_attr @ joint_result["W_gas"])
+            if joint_result.get("fix_gas"):
+                gas_a = float(joint_result["gas_per_pool"][ji])
+                log_gas_a = np.log(max(gas_a, 1e-6))
+            else:
+                log_gas_a = float(joint_result["bias_gas"]) + float(x_attr @ joint_result["W_gas"])
+                gas_a = np.exp(log_gas_a)
             noise_c_a = joint_result["noise_coeffs"][ji]
 
             v_arb_all_a = np.array(interpolate_pool_daily(
@@ -379,7 +390,6 @@ def compute_per_pool_predictions(matched, option_c_results, joint_result, rf_res
             v_noise_a = np.exp(x_obs @ noise_c_a)
             r2_a = r2(v_arb_a, v_noise_a, y_obs)
             cad_a = np.exp(log_cad_a)
-            gas_a = np.exp(log_gas_a)
         else:
             v_arb_a = np.full(len(y_obs), np.nan)
             v_noise_a = np.full(len(y_obs), np.nan)
@@ -800,11 +810,11 @@ def main():
 
     panel, matched = load_and_match()
 
-    # Step 1: Option C
-    option_c = run_option_c(matched)
+    # Step 1: Option C (gas fixed to chain-level costs)
+    option_c = run_option_c(matched, fix_gas_to_chain=True)
 
-    # Step 2: Option A (linear mapping)
-    joint_ppn, joint_sn = run_option_a(matched, option_c)
+    # Step 2: Option A (linear mapping, gas fixed)
+    joint_ppn, joint_sn = run_option_a(matched, option_c, fix_gas_to_chain=True)
 
     # Step 3: Option RF (random forest 2-stage)
     rf_result = run_option_rf(matched, option_c)

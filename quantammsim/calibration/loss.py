@@ -16,6 +16,17 @@ from quantammsim.calibration.grid_interpolation import (
 
 K_OBS = 8  # observation-level covariates
 
+# Known chain gas costs (USD) — used when fixing gas to chain-level values.
+# These are effective per-transaction costs, not per-gas-unit.
+CHAIN_GAS_USD = {
+    "MAINNET": 1.0,
+    "POLYGON": 0.005,
+    "GNOSIS": 0.001,
+    "ARBITRUM": 0.01,
+    "BASE": 0.005,
+    "SONIC": 0.005,
+}
+
 
 def noise_volume(
     noise_coeffs: jnp.ndarray, x_obs: jnp.ndarray
@@ -39,6 +50,35 @@ def unpack_params(
 ) -> Tuple[float, float, jnp.ndarray]:
     """Unpack flat array to (log_cadence, log_gas, noise_coeffs)."""
     return flat[0], flat[1], flat[2:]
+
+
+def pack_params_fixed_gas(
+    log_cadence: float, noise_coeffs: jnp.ndarray
+) -> jnp.ndarray:
+    """Pack into flat array with gas excluded: [log_cadence, noise_coeffs...]."""
+    return jnp.concatenate([
+        jnp.array([log_cadence]),
+        jnp.asarray(noise_coeffs),
+    ])
+
+
+def unpack_params_fixed_gas(
+    flat: jnp.ndarray,
+) -> Tuple[float, jnp.ndarray]:
+    """Unpack flat array to (log_cadence, noise_coeffs). Gas not included."""
+    return flat[0], flat[1:]
+
+
+def _compute_loss_huber(
+    residuals: jnp.ndarray,
+    delta: float = 1.5,
+) -> jnp.ndarray:
+    """Huber loss: 0.5*r^2 for |r|<=delta, delta*(|r|-0.5*delta) otherwise."""
+    abs_r = jnp.abs(residuals)
+    return jnp.mean(
+        jnp.where(abs_r <= delta, 0.5 * residuals ** 2,
+                  delta * (abs_r - 0.5 * delta))
+    )
 
 
 def pool_loss(
@@ -70,5 +110,30 @@ def pool_loss(
     v_noise = noise_volume(noise_coeffs, x_obs)  # (n_obs,)
 
     # Log-space L2 loss
+    log_v_pred = jnp.log(jnp.maximum(v_arb + v_noise, 1e-6))
+    return jnp.mean((log_v_pred - y_obs) ** 2)
+
+
+def pool_loss_fixed_gas(
+    params_flat: jnp.ndarray,
+    fixed_log_gas: float,
+    coeffs: PoolCoeffsDaily,
+    x_obs: jnp.ndarray,
+    y_obs: jnp.ndarray,
+    day_indices: jnp.ndarray,
+) -> jnp.ndarray:
+    """Per-pool loss with gas fixed to a known chain-level value.
+
+    Args:
+        params_flat: [log_cadence, noise_coeffs...] — no log_gas
+        fixed_log_gas: log(gas_usd) held constant (not optimized)
+        coeffs, x_obs, y_obs, day_indices: as in pool_loss
+    """
+    log_cadence, noise_coeffs = unpack_params_fixed_gas(params_flat)
+
+    v_arb_all = interpolate_pool_daily(coeffs, log_cadence, jnp.exp(fixed_log_gas))
+    v_arb = v_arb_all[day_indices]
+    v_noise = noise_volume(noise_coeffs, x_obs)
+
     log_v_pred = jnp.log(jnp.maximum(v_arb + v_noise, 1e-6))
     return jnp.mean((log_v_pred - y_obs) ** 2)
