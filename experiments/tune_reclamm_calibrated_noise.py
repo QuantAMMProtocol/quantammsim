@@ -75,10 +75,12 @@ def _build_market_linear_arrays(args):
     print(f"  Building market_linear noise arrays for {POOL_ID}...")
     print(f"  Date range: {start} → {end}")
     arrays = build_simulator_arrays(
-        pool_id=POOL_ID,
+        token_a="AAVE",
+        token_b="ETH",
         start_date=start,
         end_date=end,
         artifact_dir=args.artifact_dir,
+        pool_id=POOL_ID,
     )
     print(f"  {arrays['n_days']} days, {arrays['n_minutes']} minutes")
     print(f"  noise_base range: [{arrays['noise_base'].min():.2f},"

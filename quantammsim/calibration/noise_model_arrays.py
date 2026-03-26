@@ -1,30 +1,27 @@
 """Precompute noise_base and noise_tvl_coeff arrays for the simulator.
 
-Takes a trained per-pool noise model artifact and produces the two daily
-arrays needed by reclamm_market_linear_noise_volume():
+Builds daily feature vectors from Binance price data only — no panel/API
+dependency. Works for any date range covered by Binance parquets.
+
+Produces the two arrays needed by reclamm_market_linear_noise_volume():
 
     log(V_daily_noise) = noise_base_t + noise_tvl_coeff_t * log(effective_TVL)
-
-The arrays are at daily resolution and need to be expanded to minute-level
-(by repeating each day's value 1440 times) before passing to the simulator.
 
 Usage:
     from quantammsim.calibration.noise_model_arrays import build_simulator_arrays
 
     arrays = build_simulator_arrays(
-        pool_id="0x0b09dea16768f0",
-        start_date="2025-06-01",
+        token_a="AAVE", token_b="ETH",
+        start_date="2024-06-01",
         end_date="2026-03-01",
         artifact_dir="results/linear_market_noise",
+        pool_id="0x9d1fcf346ea1b0",  # for per-pool coeffs
     )
-    # arrays["noise_base"]       — (n_minutes,) float64
-    # arrays["noise_tvl_coeff"]  — (n_minutes,) float64
 """
 
 import json
 import os
-from datetime import date, timedelta
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -51,8 +48,7 @@ def _identify_tvl_columns(feat_names: list) -> Tuple[int, list]:
 
     Returns:
         tvl_col: index of the pure log_tvl feature (xobs_1)
-        tvl_interaction_cols: list of (col_idx, paired_col_idx) for
-            interaction terms that multiply TVL with another feature
+        tvl_interaction_cols: list of (col_idx, paired_col_idx)
     """
     tvl_col = None
     tvl_interaction_cols = []
@@ -60,9 +56,8 @@ def _identify_tvl_columns(feat_names: list) -> Tuple[int, list]:
     for i, name in enumerate(feat_names):
         if name == "xobs_1":
             tvl_col = i
-        elif "xobs_1×" in name:
-            # e.g. "xobs_1×btc_realized_vol_7d" — find the paired feature
-            paired_name = name.split("×")[1]
+        elif "xobs_1\u00d7" in name:
+            paired_name = name.split("\u00d7")[1]
             for j, n2 in enumerate(feat_names):
                 if n2 == paired_name:
                     tvl_interaction_cols.append((i, j))
@@ -74,96 +69,119 @@ def _identify_tvl_columns(feat_names: list) -> Tuple[int, list]:
     return tvl_col, tvl_interaction_cols
 
 
-def build_daily_features(
-    pool_id: str,
-    matched_clean: dict,
+def build_daily_features_from_binance(
+    token_a: str,
+    token_b: str,
     start_date: str,
     end_date: str,
-    feat_names: list,
+    feat_names: List[str],
     x_mean: np.ndarray,
     x_std: np.ndarray,
     trend_windows: tuple = (7,),
 ) -> Tuple[np.ndarray, list]:
-    """Build the full standardized feature matrix for a pool over a date range.
+    """Build daily feature matrix from Binance data only.
 
-    Returns (x_daily, dates) where x_daily is (n_days, n_feat) and dates
-    is the list of dates. TVL column (xobs_1) is filled with the pool's
-    observed log_tvl_lag1 where available, 0 otherwise.
+    No panel or API dependency. Features:
+      - xobs_0 (intercept), xobs_1 (log_tvl — filled with 0, handled at runtime),
+        xobs_2/3 (dow_sin/cos)
+      - BTC: log_price, log_return, realized_vol_7d, trend, volume_zscore
+      - Token A/B: log_return, realized_vol_7d, trend, volume_zscore
+      - Pair realized_vol_7d
+      - Interaction terms
     """
-    from quantammsim.calibration.pool_data import (
-        build_x_obs, build_cross_pool_x_obs, K_OBS_CROSS,
-    )
     from quantammsim.calibration.market_features import (
-        build_pool_market_features,
+        build_btc_daily_features,
+        build_token_daily_features,
+        _compute_pair_volatility,
+        TOKEN_MAP,
     )
 
-    # Find the pool
-    pid_match = None
-    for pid in matched_clean:
-        if pool_id.startswith(pid) or pid.startswith(pool_id):
-            pid_match = pid
-            break
-    if pid_match is None:
-        raise ValueError(f"Pool {pool_id} not found in matched_clean")
-
-    entry = matched_clean[pid_match]
-    panel = entry["panel"]
-
-    # Filter panel to date range
     start = pd.Timestamp(start_date)
     end = pd.Timestamp(end_date)
-    panel_dates = pd.to_datetime(panel["date"])
-    mask = (panel_dates >= start) & (panel_dates <= end)
-    panel_sub = panel[mask.values].copy()
-    n_days = len(panel_sub)
 
-    if n_days < 2:
-        raise ValueError(f"Only {n_days} days in range for pool {pool_id}")
+    # Generate complete daily date range
+    date_range = pd.date_range(start, end, freq="D")
+    n_days = len(date_range)
 
-    dates = panel_sub["date"].values
+    # BTC features
+    btc_feat = build_btc_daily_features(list(trend_windows))
 
-    # x_obs (cross-pool, 7 features) — need at least 1 lag
-    xc = build_cross_pool_x_obs(panel_sub, matched_clean, pid_match)
-    # xc drops first row; align
-    if len(xc) < n_days:
-        # Pad first row with zeros
-        xc = np.vstack([np.zeros((1, xc.shape[1])), xc])
+    # Token features
+    mapped_a = TOKEN_MAP.get(token_a, token_a)
+    mapped_b = TOKEN_MAP.get(token_b, token_b)
+    feat_a = build_token_daily_features(mapped_a, list(trend_windows))
+    feat_b = build_token_daily_features(mapped_b, list(trend_windows))
 
-    # Market features
-    pool_feat = build_pool_market_features(
-        matched_clean, trend_windows=list(trend_windows))
-    pf = pool_feat.get(pid_match)
-    if pf is None:
-        raise ValueError(f"No market features for {pool_id}")
+    # Pair volatility
+    pair_vol = _compute_pair_volatility(token_a, token_b)
 
-    # Align market features to panel dates
-    n_base = K_OBS_CROSS
-    market_cols = [c for c in sorted(pf.columns)]
-    n_market = len(market_cols)
+    # Identify which features are x_obs vs market
+    # x_obs features: xobs_0 (intercept), xobs_1 (tvl), xobs_2 (dow_sin), xobs_3 (dow_cos)
+    # Remaining xobs_4,5,6 are cross-pool — skip if not in feat_names
+    n_xobs = sum(1 for f in feat_names if f.startswith("xobs_"))
 
-    x_base = np.zeros((n_days, n_base + n_market), dtype=np.float32)
-    x_base[:, :n_base] = xc[:n_days]
+    # Build market feature column list (everything after x_obs, before interactions)
+    market_names = [f for f in feat_names
+                    if not f.startswith("xobs_") and "\u00d7" not in f]
 
-    for k, d in enumerate(dates):
-        day = pd.Timestamp(d).normalize()
-        if day in pf.index:
-            for m, col in enumerate(market_cols):
-                val = pf.loc[day, col]
-                if np.isfinite(val):
-                    x_base[k, n_base + m] = val
+    # Build per-day feature vectors
+    x_base_cols = n_xobs + len(market_names)
+    x_base = np.zeros((n_days, x_base_cols), dtype=np.float32)
 
-    # Standardize using saved stats (base features only)
-    n_base_total = n_base + n_market
-    x_base = ((x_base - x_mean[:n_base_total]) / x_std[:n_base_total]).astype(np.float32)
+    for k, day in enumerate(date_range):
+        day_norm = day.normalize()
+
+        # x_obs
+        x_base[k, 0] = 1.0  # intercept
+        # x_base[k, 1] = 0.0  # log_tvl — placeholder, handled at runtime
+        weekday = day.weekday()
+        if n_xobs > 2:
+            x_base[k, 2] = np.sin(2 * np.pi * weekday / 7)
+        if n_xobs > 3:
+            x_base[k, 3] = np.cos(2 * np.pi * weekday / 7)
+        # xobs_4,5,6 (cross-pool) left as 0 if present
+
+        # Market features
+        col = n_xobs
+        for mname in market_names:
+            val = 0.0
+            if mname.startswith("btc_") and btc_feat is not None:
+                bcol = mname[4:]  # strip "btc_"
+                if day_norm in btc_feat.index and bcol in btc_feat.columns:
+                    v = btc_feat.loc[day_norm, bcol]
+                    if np.isfinite(v):
+                        val = v
+            elif mname.startswith("tok_a_") and feat_a is not None:
+                acol = mname[6:]
+                if day_norm in feat_a.index and acol in feat_a.columns:
+                    v = feat_a.loc[day_norm, acol]
+                    if np.isfinite(v):
+                        val = v
+            elif mname.startswith("tok_b_") and feat_b is not None:
+                bcol = mname[6:]
+                if day_norm in feat_b.index and bcol in feat_b.columns:
+                    v = feat_b.loc[day_norm, bcol]
+                    if np.isfinite(v):
+                        val = v
+            elif mname == "pair_realized_vol_7d" and pair_vol is not None:
+                if day_norm in pair_vol.index:
+                    v = pair_vol.loc[day_norm, "pair_realized_vol_7d"]
+                    if np.isfinite(v):
+                        val = v
+            x_base[k, col] = val
+            col += 1
+
+    # Standardize base features
+    x_base = ((x_base - x_mean[:x_base_cols]) / x_std[:x_base_cols]).astype(np.float32)
 
     # Interaction terms
-    base_names = [f"xobs_{i}" for i in range(n_base)] + market_cols
-    col_idx = {name: i for i, name in enumerate(base_names)}
+    base_feat_names = feat_names[:x_base_cols]
+    col_idx = {name: i for i, name in enumerate(base_feat_names)}
 
     interactions = []
-    for fname in feat_names[n_base_total:]:
-        if "×" in fname:
-            parts = fname.split("×")
+    for fname in feat_names[x_base_cols:]:
+        if "\u00d7" in fname:
+            parts = fname.split("\u00d7")
             if parts[0] in col_idx and parts[1] in col_idx:
                 interactions.append(
                     x_base[:, col_idx[parts[0]]] * x_base[:, col_idx[parts[1]]])
@@ -178,40 +196,37 @@ def build_daily_features(
     else:
         x_all = x_base
 
-    return x_all, dates.tolist()
+    return x_all, date_range.tolist()
 
 
 def build_simulator_arrays(
-    pool_id: str,
+    token_a: str,
+    token_b: str,
     start_date: str,
     end_date: str,
     artifact_dir: str = "results/linear_market_noise",
-    matched_clean: Optional[dict] = None,
-    arb_frequency: int = 1,
-) -> Dict[str, np.ndarray]:
+    pool_id: Optional[str] = None,
+) -> Dict:
     """Build noise_base and noise_tvl_coeff arrays for the simulator.
+
+    No panel dependency — uses Binance data only.
 
     Parameters
     ----------
-    pool_id : str
-        Pool ID (full or prefix).
+    token_a, token_b : str
+        Token symbols (e.g. "AAVE", "ETH"). Mapped to Binance symbols
+        internally (WETH→ETH, wstETH→ETH, etc.)
     start_date, end_date : str
         Date range (inclusive).
     artifact_dir : str
         Directory containing model.npz and meta.json.
-    matched_clean : dict, optional
-        Pre-loaded matched_clean dict. If None, loads from stage1.pkl.
-    arb_frequency : int
-        Arb frequency in minutes. Arrays are at minute resolution,
-        repeated from daily values.
+    pool_id : str, optional
+        Pool ID for per-pool coefficients. If None or not found,
+        uses median coefficients.
 
     Returns
     -------
-    dict with:
-        noise_base : (n_minutes,) array
-        noise_tvl_coeff : (n_minutes,) array
-        dates : list of dates
-        pool_index : int (index in calibration set, or -1)
+    dict with noise_base, noise_tvl_coeff, tvl_mean, tvl_std, dates, etc.
     """
     art, meta = load_artifact(artifact_dir)
     noise_coeffs = art["noise_coeffs"]
@@ -222,51 +237,44 @@ def build_simulator_arrays(
     per_pool = noise_coeffs.ndim == 2
     trend_windows = tuple(meta["hparams"]["trend_windows"])
 
-    # Load matched_clean if needed
-    if matched_clean is None:
-        import pickle
-        cache_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__)))),
-            "results", "token_factored_calibration", "_cache",
-        )
-        with open(os.path.join(cache_dir, "stage1.pkl"), "rb") as f:
-            data = pickle.load(f)
-        matched_clean = data["matched_clean"]
-
     # Find pool coefficients
-    pool_idx = _find_pool_index(pool_id, pool_ids)
+    pool_idx = -1
+    if pool_id is not None:
+        pool_idx = _find_pool_index(pool_id, pool_ids)
+
     if pool_idx >= 0 and per_pool:
         coeffs = noise_coeffs[pool_idx]
+        print(f"  Using per-pool coefficients (pool idx {pool_idx})")
     elif per_pool:
-        print(f"  Warning: pool {pool_id} not in calibration set, using median coeffs")
         coeffs = np.median(noise_coeffs, axis=0)
+        print(f"  Pool not found, using median coefficients")
     else:
         coeffs = noise_coeffs
 
-    # Build daily features
-    x_daily, dates = build_daily_features(
-        pool_id, matched_clean, start_date, end_date,
+    # Build daily features from Binance
+    print(f"  Building features from Binance data: {token_a}/{token_b},"
+          f" {start_date} → {end_date}")
+    x_daily, dates = build_daily_features_from_binance(
+        token_a, token_b, start_date, end_date,
         feat_names, x_mean, x_std, trend_windows,
     )
     n_days = len(dates)
+    print(f"  {n_days} days, {len(feat_names)} features")
 
     # Decompose into base (non-TVL) and tvl_coeff
     tvl_col, tvl_interactions = _identify_tvl_columns(feat_names)
 
-    # tvl_coeff_t = coeffs[tvl_col] + sum(coeffs[inter_col] * x[paired_col])
     tvl_coeff_daily = np.full(n_days, coeffs[tvl_col], dtype=np.float64)
     for inter_col, paired_col in tvl_interactions:
         tvl_coeff_daily += coeffs[inter_col] * x_daily[:, paired_col]
 
-    # base_t = sum(coeffs[j] * x[j]) for j not in {tvl_col, interaction_cols}
     tvl_related = {tvl_col} | {ic for ic, _ in tvl_interactions}
     base_daily = np.zeros(n_days, dtype=np.float64)
     for j in range(len(feat_names)):
         if j not in tvl_related:
             base_daily += coeffs[j] * x_daily[:, j]
 
-    # Expand to minute resolution: each day's value repeats 1440 times
+    # Expand to minute resolution
     n_minutes = n_days * 1440
     noise_base = np.repeat(base_daily, 1440)
     noise_tvl_coeff = np.repeat(tvl_coeff_daily, 1440)
