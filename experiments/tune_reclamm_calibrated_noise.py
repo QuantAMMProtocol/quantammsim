@@ -114,6 +114,37 @@ def _build_market_linear_arrays(args):
     return arrays_path, max(1, round(learned_cadence))
 
 
+def _build_opt_settings(args):
+    """Build optimisation_settings for either optuna or bfgs."""
+    if args.method == "bfgs":
+        return {
+            "method": "bfgs",
+            "n_parameter_sets": args.n_parameter_sets,
+            **({"val_fraction": args.val_fraction} if args.val_fraction is not None else {}),
+            "bfgs_settings": {
+                "maxiter": args.bfgs_maxiter,
+                "tol": args.bfgs_tol,
+                "n_evaluation_points": args.bfgs_eval_points,
+                "compute_dtype": "float64",
+            },
+        }
+    else:
+        return {
+            "method": "optuna",
+            "n_parameter_sets": 1,
+            **({"val_fraction": args.val_fraction} if args.val_fraction is not None else {}),
+            "optuna_settings": {
+                "make_scalar": True,
+                "expand_around": False,
+                "n_trials": args.n_trials,
+                "multi_objective": False,
+                "parameter_config": PARAMETER_CONFIG,
+                **({"overfitting_penalty": args.overfitting_penalty}
+                   if args.overfitting_penalty is not None else {}),
+            },
+        }
+
+
 def build_fingerprint(objective, args, noise_arrays_path=None, arb_freq=None):
     """Build run fingerprint with calibrated noise model."""
     if args.noise_model == "market_linear" and noise_arrays_path is not None:
@@ -151,7 +182,7 @@ def build_fingerprint(objective, args, noise_arrays_path=None, arb_freq=None):
         "fees": args.fees,
         "gas_cost": args.gas_cost,
         "arb_fees": 0.0,
-        "protocol_fee_split": 0.5,
+        "protocol_fee_split": 0.25,
         **noise_block,
         "return_val": objective,
         "reclamm_interpolation_method": args.interpolation,
@@ -159,19 +190,7 @@ def build_fingerprint(objective, args, noise_arrays_path=None, arb_freq=None):
         "reclamm_learn_arc_length_speed": False,
         "reclamm_use_shift_exponent": True,
         **({"bout_offset": args.bout_offset} if args.bout_offset is not None else {}),
-        "optimisation_settings": {
-            "method": "optuna",
-            "n_parameter_sets": 1,
-            **({"val_fraction": args.val_fraction} if args.val_fraction is not None else {}),
-            "optuna_settings": {
-                "make_scalar": True,
-                "expand_around": False,
-                "n_trials": args.n_trials,
-                "multi_objective": False,
-                "parameter_config": PARAMETER_CONFIG,
-                **({"overfitting_penalty": args.overfitting_penalty} if args.overfitting_penalty is not None else {}),
-            },
-        },
+        "optimisation_settings": _build_opt_settings(args),
     }
 
 
@@ -180,6 +199,7 @@ def run_single(objective, args, noise_arrays_path=None, arb_freq=None):
     print(f"\n{'='*60}")
     print(f"  Objective: {objective}")
     print(f"  Noise model: {args.noise_model}")
+    print(f"  Method: {args.method}")
     print(f"  Pool: AAVE/WETH Mainnet ({POOL_ID})")
     print(f"  Train: {args.start_date} → {args.end_date}")
     print(f"  Test:  {args.end_date} → {args.end_test_date}")
@@ -202,7 +222,16 @@ def main():
     parser = argparse.ArgumentParser(
         description="Tune reClAMM params with calibrated 8-covariate noise model"
     )
-    parser.add_argument("--n-trials", type=int, default=50)
+    parser.add_argument("--method", default="optuna", choices=["optuna", "bfgs"],
+                        help="Optimisation method")
+    parser.add_argument("--n-trials", type=int, default=50,
+                        help="Optuna trials (ignored for bfgs)")
+    parser.add_argument("--n-parameter-sets", type=int, default=1,
+                        help="Number of parameter sets for bfgs")
+    parser.add_argument("--bfgs-maxiter", type=int, default=100)
+    parser.add_argument("--bfgs-tol", type=float, default=1e-6)
+    parser.add_argument("--bfgs-eval-points", type=int, default=20,
+                        help="Number of evaluation points for bfgs")
     parser.add_argument("--noise-model", default="market_linear",
                         choices=["calibrated", "market_linear"],
                         help="Noise model variant")
@@ -221,10 +250,10 @@ def main():
     parser.add_argument("--interpolation", default="geometric",
                         choices=["geometric", "constant_arc_length"])
     parser.add_argument("--centeredness-scaling", action="store_true")
-    parser.add_argument("--start-date", default="2025-08-03 00:00:00")
-    parser.add_argument("--end-date", default="2025-12-01 00:00:00",
+    parser.add_argument("--start-date", default="2024-06-01 00:00:00")
+    parser.add_argument("--end-date", default="2025-06-01 00:00:00",
                         help="End of training / start of test")
-    parser.add_argument("--end-test-date", default="2026-02-18 00:00:00",
+    parser.add_argument("--end-test-date", default="2026-03-01 00:00:00",
                         help="End of test (latest available data)")
     parser.add_argument("--bout-offset", type=int, default=None)
     parser.add_argument("--val-fraction", type=float, default=None)
