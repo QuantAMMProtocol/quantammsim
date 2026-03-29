@@ -16,6 +16,7 @@ speed rather than pushing shift_exponent higher.
 """
 
 import gc
+import hashlib
 import math
 import os
 
@@ -41,17 +42,25 @@ def to_daily_price_shift_base(daily_price_shift_exponent):
     return 1.0 - daily_price_shift_exponent / 124649.0
 
 
-RUN_CONSTANT_ARC_LENGTH = False
+def build_inclusive_sweep(start, stop, step):
+    """Build a sweep that keeps the requested step and explicitly includes the stop."""
+    values = np.arange(start, stop + 1.0e-12, step, dtype=float)
+    if values.size == 0 or not np.isclose(values[-1], stop):
+        values = np.append(values, float(stop))
+    return values
+
+
+RUN_CONSTANT_ARC_LENGTH = True
 INTERPOLATION_METHODS = (
     ("geometric", "constant_arc_length")
     if RUN_CONSTANT_ARC_LENGTH
     else ("geometric",)
 )
-HEATMAP_PRICE_RATIOS = np.arange(1.01, 1.50 + 1e-9, 0.025)
-HEATMAP_MARGINS = np.linspace(0.05, 0.90, 20)
-HEATMAP_SHIFT_EXPONENTS = np.arange(0.01, 0.50 + 1e-9, 0.025)
+HEATMAP_PRICE_RATIOS = build_inclusive_sweep(1.01, 3.00, 0.025)
+HEATMAP_MARGINS = np.linspace(0.05, 0.90, 39)
+HEATMAP_SHIFT_EXPONENTS = build_inclusive_sweep(0.01, 0.50, 0.0125)
 HEATMAP_ARC_LENGTH_SPEEDS = np.geomspace(1.0e-6, 5.0e-4, 11)
-PRICE_RATIO_TICKS = np.array([1.01, 1.10, 1.20, 1.30, 1.40, 1.50])
+PRICE_RATIO_TICKS = np.array([1.01, 1.25, 1.50, 2.00, 2.50, 3.00])
 MARGIN_TICKS = np.array([0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.90])
 SHIFT_EXPONENT_TICKS = np.array([0.01, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50])
 ARC_LENGTH_SPEED_TICKS = np.array([
@@ -76,6 +85,17 @@ TVL_SWEEP_VALUES = (
 CENTER_ZERO_HEATMAP_COLOR_NORM = "symlog"
 CENTER_ZERO_HEATMAP_COLOR_TAG = "symlog20"
 CENTER_ZERO_HEATMAP_SYMLOG_LINTHRESH = 20.0
+FIXED_SLICE_FRACTIONS = (0.125, 0.375, 0.625, 0.875)
+FIXED_SLICE_LABELS = ("Q1", "Q2", "Q3", "Q4")
+THREE_D_VIEW_ELEVATION = 22.0
+THREE_D_VIEW_AZIMUTH = 140.0
+HEATMAP_FORWARD_CACHE_ENABLED = True
+HEATMAP_FORWARD_CACHE_RUN_NAME = "aave_eth_thermostat_heatmaps_v1"
+HEATMAP_FORWARD_CACHE_ROOT = os.path.join(
+    "results",
+    "reclamm_heatmap_forward_cache",
+)
+HEATMAP_FORWARD_CACHE_FLUSH_EVERY = 32
 
 AAVE_WETH_POOL_ID = "0x9d1fcf346ea1b0"
 DEFAULT_MARKET_LINEAR_ARTIFACT_DIR = "results/linear_market_noise"
@@ -94,14 +114,28 @@ LEGACY_NOISE_COEFFS = [
 ]
 LEGACY_LOG_CADENCE = 2.68
 LEGACY_ARB_FREQUENCY = max(1, round(math.exp(LEGACY_LOG_CADENCE)))
+FIXED_COMPARE_ARB_FREQUENCY = LEGACY_ARB_FREQUENCY
 AAVE_ETH_NOISE_SETTINGS = {
     "enable_noise_model": True,
     "noise_model": DEFAULT_NOISE_MODEL,
     "noise_artifact_dir": DEFAULT_MARKET_LINEAR_ARTIFACT_DIR,
     "noise_pool_id": AAVE_WETH_POOL_ID,
+    "arb_frequency": FIXED_COMPARE_ARB_FREQUENCY,
     "gas_cost": DEFAULT_GAS_COST,
     "protocol_fee_split": DEFAULT_PROTOCOL_FEE_SPLIT,
 }
+PERSISTED_FORWARD_VALUE_COLUMNS = (
+    "cache_key_hash",
+    "final_value",
+    "method",
+    "enable_noise_model",
+    "noise_model",
+    "price_ratio",
+    "centeredness_margin",
+    "daily_price_shift_exponent",
+    "initial_pool_value",
+    "arb_frequency",
+)
 
 GEOMETRIC_ONLY_HEATMAP_METRIC_KEYS = (
     "geometric_vs_launch_geometric_pct",
@@ -175,6 +209,23 @@ def heatmap_artifact_filename(spec, cfg, suffix=None):
     return tvl_artifact_filename(stem, cfg, suffix=suffix)
 
 
+def three_d_heatmap_artifact_filename(spec, cfg, suffix=None):
+    """Build a 3D heatmap filename, including any colour-style tag."""
+    stem = f"reclamm_heatmap_3d_{spec['slug']}"
+    artifact_tag = spec.get("artifact_tag")
+    if artifact_tag:
+        stem = f"{stem}_{artifact_tag}"
+    return tvl_artifact_filename(stem, cfg, suffix=suffix)
+
+
+def format_heatmap_param_value(value):
+    """Format a sweep parameter compactly for titles and logs."""
+    value = float(value)
+    if abs(value) >= 1.0:
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
 def configs_for_tvl(base_configs, initial_pool_value):
     """Attach a shared initial TVL to each compare configuration."""
     configs = []
@@ -185,33 +236,74 @@ def configs_for_tvl(base_configs, initial_pool_value):
     return configs
 
 
+def _normalize_arb_frequency(value, default=FIXED_COMPARE_ARB_FREQUENCY):
+    """Return a stable integer arb cadence for thermostat comparisons."""
+    if value is None:
+        if default is None:
+            return None
+        value = default
+    return max(int(round(float(value))), 1)
+
+
+def get_effective_arb_frequency(cfg, noise_cfg=None):
+    """Resolve the arb cadence used by a thermostat comparison run."""
+    del noise_cfg
+    return _normalize_arb_frequency(FIXED_COMPARE_ARB_FREQUENCY)
+
+
+def normalize_compare_run_cfg(cfg, enable_noise_model=None):
+    """Canonicalize the compare-run config so non-axis inputs stay fixed."""
+    updated = dict(cfg)
+    updated["price_ratio"] = float(cfg["price_ratio"])
+    updated["centeredness_margin"] = float(cfg["centeredness_margin"])
+    updated["daily_price_shift_exponent"] = float(cfg["daily_price_shift_exponent"])
+    updated["initial_pool_value"] = float(get_initial_pool_value(cfg))
+    updated["gas_cost"] = DEFAULT_GAS_COST
+    updated["protocol_fee_split"] = DEFAULT_PROTOCOL_FEE_SPLIT
+    updated["arb_fees"] = 0.0
+    updated["arb_frequency"] = get_effective_arb_frequency(cfg)
+    updated["noise_trader_ratio"] = 0.0
+
+    arc_length_speed = cfg.get("arc_length_speed")
+    if arc_length_speed is None:
+        updated.pop("arc_length_speed", None)
+    else:
+        updated["arc_length_speed"] = float(arc_length_speed)
+
+    use_noise = (
+        bool(cfg.get("enable_noise_model", False))
+        if enable_noise_model is None
+        else bool(enable_noise_model)
+    )
+    updated["enable_noise_model"] = use_noise
+
+    requested_mode = cfg.get("noise_model", DEFAULT_NOISE_MODEL) or DEFAULT_NOISE_MODEL
+    if use_noise:
+        updated["noise_model"] = requested_mode
+        if requested_mode == "market_linear":
+            updated["noise_artifact_dir"] = DEFAULT_MARKET_LINEAR_ARTIFACT_DIR
+            updated["noise_pool_id"] = AAVE_WETH_POOL_ID
+        else:
+            updated.pop("noise_artifact_dir", None)
+            updated.pop("noise_pool_id", None)
+        updated.pop("reclamm_noise_params", None)
+        updated.pop("noise_arrays_path", None)
+    else:
+        updated["noise_model"] = None
+        for key in (
+            "reclamm_noise_params",
+            "noise_arrays_path",
+            "noise_artifact_dir",
+            "noise_pool_id",
+        ):
+            updated.pop(key, None)
+
+    return updated
+
+
 def make_noise_variant_cfg(cfg, enable_noise_model):
     """Return a config with either noise modelling or pure arb-only enabled."""
-    updated = dict(cfg)
-    if enable_noise_model:
-        updated["enable_noise_model"] = True
-        return updated
-
-    matched_noise = resolve_reclamm_noise_settings(cfg)
-
-    updated["enable_noise_model"] = False
-    updated["noise_model"] = None
-    updated["gas_cost"] = cfg.get("gas_cost", DEFAULT_GAS_COST)
-    updated["protocol_fee_split"] = cfg.get(
-        "protocol_fee_split", DEFAULT_PROTOCOL_FEE_SPLIT
-    )
-    updated["noise_trader_ratio"] = 0.0
-    matched_arb_frequency = matched_noise.get("arb_frequency")
-    if matched_arb_frequency is not None:
-        updated["arb_frequency"] = matched_arb_frequency
-    for key in (
-        "reclamm_noise_params",
-        "noise_arrays_path",
-        "noise_artifact_dir",
-        "noise_pool_id",
-    ):
-        updated.pop(key, None)
-    return updated
+    return normalize_compare_run_cfg(cfg, enable_noise_model=enable_noise_model)
 
 
 def _warn_noise_fallback(message):
@@ -228,36 +320,39 @@ def _hashable_noise_params(params):
     return tuple(sorted((str(k), round(float(v), 12)) for k, v in params.items()))
 
 
-def _legacy_calibrated_noise_settings(reason=None):
+def _legacy_calibrated_noise_settings(reason=None, arb_frequency=None):
     """Fallback calibrated noise config used when market-linear artifacts are absent."""
     if reason:
         _warn_noise_fallback(
             "market_linear noise unavailable for thermostat comparison; "
             f"falling back to calibrated legacy coefficients ({reason})."
         )
+    arb_frequency = _normalize_arb_frequency(arb_frequency)
     return {
         "noise_model": "calibrated",
         "noise_trader_ratio": 0.0,
         "reclamm_noise_params": {
             f"c_{i}": LEGACY_NOISE_COEFFS[i] for i in range(len(LEGACY_NOISE_COEFFS))
         },
-        "arb_frequency": LEGACY_ARB_FREQUENCY,
+        "arb_frequency": arb_frequency,
         "noise_summary": (
             "calibrated legacy 8-covariate "
-            f"(arb_frequency={LEGACY_ARB_FREQUENCY})"
+            f"(arb_frequency={arb_frequency})"
         ),
         "noise_cache_key": (
             "calibrated",
             tuple(round(float(c), 12) for c in LEGACY_NOISE_COEFFS),
-            LEGACY_ARB_FREQUENCY,
+            arb_frequency,
         ),
     }
 
 
 def resolve_reclamm_noise_settings(cfg):
     """Resolve the active reCLAMM noise-model fingerprint block for a config."""
+    cfg = normalize_compare_run_cfg(cfg)
     enable_noise_model = cfg.get("enable_noise_model", False)
     requested_mode = cfg.get("noise_model", DEFAULT_NOISE_MODEL)
+    requested_arb_frequency = get_effective_arb_frequency(cfg)
     cache_key = (
         tuple(cfg.get("tokens", [])),
         cfg.get("start"),
@@ -266,7 +361,7 @@ def resolve_reclamm_noise_settings(cfg):
         requested_mode,
         cfg.get("noise_artifact_dir", DEFAULT_MARKET_LINEAR_ARTIFACT_DIR),
         cfg.get("noise_pool_id", AAVE_WETH_POOL_ID),
-        cfg.get("arb_frequency"),
+        requested_arb_frequency,
         round(float(cfg.get("noise_trader_ratio", 0.0)), 12),
         _hashable_noise_params(cfg.get("reclamm_noise_params")),
         cfg.get("noise_arrays_path"),
@@ -280,7 +375,7 @@ def resolve_reclamm_noise_settings(cfg):
             "noise_trader_ratio": 0.0,
             "reclamm_noise_params": None,
             "noise_arrays_path": None,
-            "arb_frequency": None,
+            "arb_frequency": requested_arb_frequency,
             "noise_summary": "arb-only (noise disabled)",
             "noise_cache_key": ("disabled",),
         }
@@ -290,11 +385,7 @@ def resolve_reclamm_noise_settings(cfg):
         start_date = str(cfg["start"]).split(" ")[0]
         end_date = str(cfg["end"]).split(" ")[0]
         try:
-            from quantammsim.calibration.noise_model_arrays import (
-                _find_pool_index,
-                build_simulator_arrays,
-                load_artifact,
-            )
+            from quantammsim.calibration.noise_model_arrays import build_simulator_arrays
 
             model_path = os.path.join(artifact_dir, "model.npz")
             meta_path = os.path.join(artifact_dir, "meta.json")
@@ -311,6 +402,8 @@ def resolve_reclamm_noise_settings(cfg):
             )
             if not os.path.exists(arrays_path):
                 arrays = build_simulator_arrays(
+                    token_a=cfg["tokens"][0],
+                    token_b=cfg["tokens"][1],
                     pool_id=pool_id,
                     start_date=start_date,
                     end_date=end_date,
@@ -328,13 +421,7 @@ def resolve_reclamm_noise_settings(cfg):
                 tvl_mean = float(arrays["tvl_mean"])
                 tvl_std = float(arrays["tvl_std"])
 
-            art, meta = load_artifact(artifact_dir)
-            pool_idx = _find_pool_index(pool_id, meta["pool_ids"])
-            if pool_idx >= 0:
-                learned_cadence = float(np.exp(art["log_cadence"][pool_idx]))
-            else:
-                learned_cadence = 5.0
-            arb_frequency = max(1, round(learned_cadence))
+            arb_frequency = requested_arb_frequency
             result = {
                 "noise_model": "market_linear",
                 "noise_trader_ratio": 0.0,
@@ -351,30 +438,19 @@ def resolve_reclamm_noise_settings(cfg):
                     arb_frequency,
                     round(tvl_mean, 12),
                     round(tvl_std, 12),
-                ),
-            }
+                    ),
+                }
         except Exception as exc:  # pragma: no cover - fallback path depends on local artifacts
-            result = _legacy_calibrated_noise_settings(str(exc))
+            result = _legacy_calibrated_noise_settings(
+                str(exc),
+                arb_frequency=requested_arb_frequency,
+            )
     elif requested_mode == "calibrated":
-        params = cfg.get("reclamm_noise_params")
-        if params is None:
-            result = _legacy_calibrated_noise_settings()
-        else:
-            arb_frequency = cfg.get("arb_frequency", LEGACY_ARB_FREQUENCY)
-            result = {
-                "noise_model": "calibrated",
-                "noise_trader_ratio": cfg.get("noise_trader_ratio", 0.0),
-                "reclamm_noise_params": dict(params),
-                "arb_frequency": arb_frequency,
-                "noise_summary": f"calibrated (arb_frequency={arb_frequency})",
-                "noise_cache_key": (
-                    "calibrated",
-                    _hashable_noise_params(params),
-                    arb_frequency,
-                ),
-            }
+        result = _legacy_calibrated_noise_settings(
+            arb_frequency=requested_arb_frequency
+        )
     else:
-        arb_frequency = cfg.get("arb_frequency")
+        arb_frequency = requested_arb_frequency
         result = {
             "noise_model": requested_mode,
             "noise_trader_ratio": cfg.get("noise_trader_ratio", 0.0),
@@ -430,13 +506,14 @@ CONFIGS = [
 
 def make_fingerprint(cfg, interpolation_method):
     """Build run fingerprint for a given config and interpolation method."""
+    cfg = normalize_compare_run_cfg(cfg)
     speed_override = (
         cfg.get("arc_length_speed")
         if interpolation_method == "constant_arc_length"
         else None
     )
     noise_cfg = resolve_reclamm_noise_settings(cfg)
-    arb_frequency = cfg.get("arb_frequency", noise_cfg.get("arb_frequency"))
+    arb_frequency = get_effective_arb_frequency(cfg, noise_cfg)
     fingerprint = {
         "tokens": cfg["tokens"],
         "rule": "reclamm",
@@ -471,6 +548,7 @@ def make_fingerprint(cfg, interpolation_method):
 
 def make_params(cfg):
     """Build pool params from config."""
+    cfg = normalize_compare_run_cfg(cfg)
     return {
         "price_ratio": jnp.array(cfg["price_ratio"]),
         "centeredness_margin": jnp.array(cfg["centeredness_margin"]),
@@ -528,7 +606,7 @@ def _set_padded_ylim(ax, series_list, pad_ratio=0.04):
 
 
 def _cache_size(cache):
-    """Count memoized final-value runs."""
+    """Count memoized final-value cache entries materialised in memory."""
     return len(cache.get("_final_value_cache", {}))
 
 
@@ -537,13 +615,140 @@ def _comparison_cache_size(cache):
     return len(cache.get("_comparison_cache", {}))
 
 
-def make_sweep_cache(price_data):
-    """Create a shared cache for heatmap and line sweeps."""
+def _heatmap_forward_cache_scope_slug(cfg):
+    """Build a compact cache scope slug for a shared-TVL heatmap run."""
+    if cfg is None:
+        return "unspecified_tvl"
+    return f"tvl_{format_tvl_millions_slug(cfg)}"
+
+
+def _heatmap_forward_cache_path(cfg):
+    """Return the parquet path for persisted scalar forward values."""
+    if not HEATMAP_FORWARD_CACHE_ENABLED:
+        return None
+    return os.path.join(
+        HEATMAP_FORWARD_CACHE_ROOT,
+        HEATMAP_FORWARD_CACHE_RUN_NAME,
+        f"forward_values_{_heatmap_forward_cache_scope_slug(cfg)}.parquet",
+    )
+
+
+def _make_method_cache_hash(key):
+    """Build a compact stable digest for a method cache key."""
+    return hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
+
+
+def _build_persistent_final_value_record(cfg, method, cache_key_hash, final_value):
+    """Build one self-describing parquet row for a cached scalar run result."""
+    cfg = normalize_compare_run_cfg(cfg)
+    noise_cfg = resolve_reclamm_noise_settings(cfg)
     return {
+        "cache_key_hash": str(cache_key_hash),
+        "final_value": float(final_value),
+        "method": str(method),
+        "enable_noise_model": bool(cfg.get("enable_noise_model", False)),
+        "noise_model": noise_cfg.get("noise_model"),
+        "price_ratio": float(cfg["price_ratio"]),
+        "centeredness_margin": float(cfg["centeredness_margin"]),
+        "daily_price_shift_exponent": float(cfg["daily_price_shift_exponent"]),
+        "initial_pool_value": float(get_initial_pool_value(cfg)),
+        "arb_frequency": get_effective_arb_frequency(cfg, noise_cfg),
+    }
+
+
+def _load_persistent_final_value_cache(cache):
+    """Load persisted scalar forward values from parquet once per sweep cache."""
+    if cache.get("_persistent_final_value_cache_loaded"):
+        return
+
+    disk_cache = {}
+    disk_records = {}
+    cache_path = cache.get("_persistent_final_value_cache_path")
+    if cache_path and os.path.exists(cache_path):
+        frame = pd.read_parquet(cache_path)
+        if not frame.empty:
+            for row in frame.itertuples(index=False):
+                cache_key_hash = str(row.cache_key_hash)
+                final_value = float(row.final_value)
+                disk_cache[cache_key_hash] = final_value
+                record = {
+                    "cache_key_hash": cache_key_hash,
+                    "final_value": final_value,
+                }
+                for column in PERSISTED_FORWARD_VALUE_COLUMNS:
+                    if column in {"cache_key_hash", "final_value"}:
+                        continue
+                    record[column] = getattr(row, column, None)
+                disk_records[cache_key_hash] = record
+        print(
+            f"Loaded {len(disk_cache)} persisted heatmap forward values from {cache_path}"
+        )
+
+    cache["_persistent_final_value_cache"] = disk_cache
+    cache["_persistent_final_value_records"] = disk_records
+    cache["_persistent_final_value_cache_loaded"] = True
+
+
+def flush_sweep_cache(cache, force=False):
+    """Persist newly computed scalar forward values to parquet."""
+    if not HEATMAP_FORWARD_CACHE_ENABLED:
+        return
+
+    pending = cache.get("_pending_persistent_final_values")
+    if not pending:
+        return
+    if not force and len(pending) < HEATMAP_FORWARD_CACHE_FLUSH_EVERY:
+        return
+
+    _load_persistent_final_value_cache(cache)
+    disk_cache = cache.setdefault("_persistent_final_value_cache", {})
+    disk_records = cache.setdefault("_persistent_final_value_records", {})
+    for cache_key_hash, record in pending.items():
+        merged = dict(disk_records.get(cache_key_hash, {}))
+        merged.update(record)
+        merged["cache_key_hash"] = str(cache_key_hash)
+        merged["final_value"] = float(merged["final_value"])
+        disk_records[cache_key_hash] = merged
+        disk_cache[cache_key_hash] = merged["final_value"]
+
+    cache_path = cache.get("_persistent_final_value_cache_path")
+    if cache_path is None:
+        pending.clear()
+        return
+
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    sorted_records = [disk_records[key] for key in sorted(disk_records)]
+    payload = {
+        column: [record.get(column) for record in sorted_records]
+        for column in PERSISTED_FORWARD_VALUE_COLUMNS
+    }
+    payload["final_value"] = np.asarray(payload["final_value"], dtype=np.float64)
+    frame = pd.DataFrame(payload)
+    frame.sort_values("cache_key_hash", inplace=True, ignore_index=True)
+    frame.to_parquet(cache_path, index=False, compression="zstd")
+    print(
+        f"Persisted {len(pending)} new heatmap forward values to {cache_path} "
+        f"({len(disk_cache)} total cached values)."
+    )
+    pending.clear()
+
+
+def make_sweep_cache(price_data, cache_scope_cfg=None):
+    """Create a shared cache for heatmap and line sweeps."""
+    cache = {
         "_shared_price_data": price_data,
         "_final_value_cache": {},
         "_comparison_cache": {},
+        "_pending_persistent_final_values": {},
+        "_persistent_final_value_cache": {},
+        "_persistent_final_value_records": {},
+        "_persistent_final_value_cache_loaded": False,
+        "_persistent_final_value_cache_path": _heatmap_forward_cache_path(
+            cache_scope_cfg
+        ),
     }
+    _load_persistent_final_value_cache(cache)
+    return cache
 
 
 def _missing_artifacts(progress_label, filenames):
@@ -571,8 +776,9 @@ def _speed_cache_key(speed):
 
 def _make_method_cache_key(cfg, method):
     """Cache key for a single-method final-value run."""
+    cfg = normalize_compare_run_cfg(cfg)
     noise_cfg = resolve_reclamm_noise_settings(cfg)
-    arb_frequency = cfg.get("arb_frequency", noise_cfg.get("arb_frequency"))
+    arb_frequency = get_effective_arb_frequency(cfg, noise_cfg)
     key = (
         method,
         bool(cfg.get("enable_noise_model", False)),
@@ -630,16 +836,34 @@ def _run_method_final_value_cached(cfg, method, cache):
     """Memoize final value for a single interpolation method."""
     final_value_cache = cache.setdefault("_final_value_cache", {})
     key = _make_method_cache_key(cfg, method)
-    if key not in final_value_cache:
-        result = do_run_on_historic_data(
-            run_fingerprint=make_fingerprint(cfg, method),
-            params=make_params(cfg),
-            price_data=cache["_shared_price_data"],
-            low_data_mode=True,
+    if key in final_value_cache:
+        return final_value_cache[key]
+
+    _load_persistent_final_value_cache(cache)
+    key_hash = _make_method_cache_hash(key)
+    persisted_cache = cache.setdefault("_persistent_final_value_cache", {})
+    if key_hash in persisted_cache:
+        final_value_cache[key] = persisted_cache[key_hash]
+        return final_value_cache[key]
+
+    result = do_run_on_historic_data(
+        run_fingerprint=make_fingerprint(cfg, method),
+        params=make_params(cfg),
+        price_data=cache["_shared_price_data"],
+        low_data_mode=True,
+    )
+    final_value_cache[key] = float(result["final_value"])
+    cache.setdefault("_pending_persistent_final_values", {})[key_hash] = (
+        _build_persistent_final_value_record(
+            cfg=cfg,
+            method=method,
+            cache_key_hash=key_hash,
+            final_value=final_value_cache[key],
         )
-        final_value_cache[key] = float(result["final_value"])
-        del result
-        gc.collect()
+    )
+    flush_sweep_cache(cache, force=False)
+    del result
+    gc.collect()
     return final_value_cache[key]
 
 
@@ -860,15 +1084,16 @@ def build_heatmap_matrices(
                 data[metric_key][yi, xi] = metrics[metric_key]
 
         completed_points = (yi + 1) * len(x_values)
-        row_new_final_runs = _cache_size(cache) - final_cache_before_row
+        row_new_final_entries = _cache_size(cache) - final_cache_before_row
         row_new_comparisons = (
             _comparison_cache_size(cache) - comparison_cache_before_row
         )
         row_pct = completed_points / total_points * 100.0
+        flush_sweep_cache(cache, force=True)
         print(
             f"[{progress_label}] row {yi + 1}/{len(y_values)} complete "
             f"({y_key}={float(y_value):.4f}, {completed_points}/{total_points} "
-            f"points, {row_pct:.1f}%, {row_new_final_runs} new final-value runs, "
+            f"points, {row_pct:.1f}%, {row_new_final_entries} new final-value cache entries, "
             f"{row_new_comparisons} new comparison bundles)"
         )
 
@@ -910,6 +1135,7 @@ def build_metric_curve(
             metric_keys=(metric_key,),
         )
         data[xi] = metrics[metric_key]
+    flush_sweep_cache(cache, force=True)
     return data
 
 
@@ -937,6 +1163,226 @@ def _compute_axis_edges(values, scale="linear"):
     return edges
 
 
+def build_fixed_slice_variants(values):
+    """Pick four representative quarter-range slices from a sweep grid."""
+    values = np.asarray(values, dtype=float)
+    if values.size < len(FIXED_SLICE_FRACTIONS):
+        raise ValueError("Need at least four grid points to build fixed slices")
+
+    variants = []
+    used_indices = set()
+    for idx, fraction in enumerate(FIXED_SLICE_FRACTIONS):
+        target_index = int(round(fraction * (values.size - 1)))
+        while target_index in used_indices and target_index + 1 < values.size:
+            target_index += 1
+        while target_index in used_indices and target_index - 1 >= 0:
+            target_index -= 1
+        if target_index in used_indices:
+            raise ValueError("Could not build four unique fixed slices from sweep grid")
+        used_indices.add(target_index)
+        variants.append(
+            {
+                "index": target_index,
+                "fraction": fraction,
+                "label": FIXED_SLICE_LABELS[idx],
+                "slug": f"q{idx + 1}",
+                "value": float(values[target_index]),
+            }
+        )
+    return variants
+
+
+def _pair_slice_suffix(pair, slice_variant):
+    """Build a stable artifact suffix for a pairwise fixed-variable slice."""
+    return f"{pair['slug']}_{pair['fixed_slug']}_{slice_variant['slug']}"
+
+
+def _build_heatmap_norm(
+    data_arrays,
+    center_zero,
+    color_norm=None,
+    symlog_linthresh=None,
+):
+    """Build a color normalizer shared by 2D and 3D heatmaps."""
+    finite_parts = []
+    for data in data_arrays:
+        finite = np.asarray(data, dtype=float)
+        finite = finite[np.isfinite(finite)]
+        if finite.size:
+            finite_parts.append(finite)
+    finite = np.concatenate(finite_parts) if finite_parts else np.array([], dtype=float)
+
+    if center_zero:
+        if finite.size == 0:
+            vmax = 1.0
+        else:
+            vmax = max(abs(float(finite.min())), abs(float(finite.max())), 1e-9)
+        if (
+            color_norm == "symlog"
+            and symlog_linthresh is not None
+            and vmax > symlog_linthresh
+        ):
+            return SymLogNorm(
+                linthresh=symlog_linthresh,
+                linscale=1.0,
+                vmin=-vmax,
+                vmax=vmax,
+                base=10.0,
+            )
+        return TwoSlopeNorm(vcenter=0.0, vmin=-vmax, vmax=vmax)
+
+    if finite.size == 0:
+        vmin, vmax = 0.0, 1.0
+    else:
+        vmin = float(finite.min())
+        vmax = float(finite.max())
+        if np.isclose(vmin, vmax):
+            pad = max(abs(vmin) * 0.01, 1e-9)
+            vmin -= pad
+            vmax += pad
+    return Normalize(vmin=vmin, vmax=vmax)
+
+
+def get_pair_heatmap_metric_specs():
+    """Return the standard thermostat pairwise heatmap metrics."""
+    metric_specs = [
+        {
+            "key": "efficiency_pct",
+            "title": "Efficiency vs heatmap geometric",
+            "colorbar_label": "Const Arc - heatmap Geo (% of heatmap geometric final value)",
+            "slug": "efficiency",
+            "center_zero": True,
+            "cmap": "RdYlGn",
+        },
+        {
+            "key": "launch_geometric_efficiency_pct",
+            "title": "Efficiency vs launch-style geometric",
+            "colorbar_label": "Const Arc - launch Geo (% of launch geometric final value)",
+            "slug": "launch_geometric_efficiency",
+            "center_zero": True,
+            "cmap": "RdYlGn",
+        },
+        {
+            "key": "geometric_vs_launch_geometric_pct",
+            "title": "Geometric tuning vs launch-style geometric",
+            "colorbar_label": "Candidate Geo - launch Geo (% of launch geometric final value)",
+            "slug": "geometric_vs_launch_geometric",
+            "center_zero": True,
+            "cmap": "RdYlGn",
+        },
+        {
+            "key": "constant_arc_vs_launch_constant_arc_pct",
+            "title": "Const arc tuning vs launch-style const arc",
+            "colorbar_label": "Candidate Const Arc - launch Const Arc (% of launch const arc final value)",
+            "slug": "constant_arc_vs_launch_constant_arc",
+            "center_zero": True,
+            "cmap": "RdYlGn",
+        },
+        {
+            "key": "noise_geometric_final_value_musd",
+            "title": "Geometric final value with noise model",
+            "colorbar_label": "Geometric final value with noise model ($M)",
+            "slug": "noise_geometric_final_value",
+            "center_zero": False,
+            "cmap": "viridis",
+        },
+        {
+            "key": "noise_constant_arc_final_value_musd",
+            "title": "Const arc final value with noise model",
+            "colorbar_label": "Const Arc final value with noise model ($M)",
+            "slug": "noise_constant_arc_final_value",
+            "center_zero": False,
+            "cmap": "viridis",
+        },
+        {
+            "key": "noise_vs_arb_geometric_improvement_pct",
+            "title": "Noise-model improvement over arb-only (geometric)",
+            "colorbar_label": "Noise-model Geo - arb-only Geo (% of arb-only final value)",
+            "slug": "noise_vs_arb_geometric_improvement",
+            "center_zero": True,
+            "cmap": "RdYlGn",
+        },
+        {
+            "key": "noise_vs_arb_constant_arc_improvement_pct",
+            "title": "Noise-model improvement over arb-only (const arc)",
+            "colorbar_label": "Noise-model Const Arc - arb-only Const Arc (% of arb-only final value)",
+            "slug": "noise_vs_arb_constant_arc_improvement",
+            "center_zero": True,
+            "cmap": "RdYlGn",
+        },
+    ]
+    for spec in metric_specs:
+        if spec["center_zero"]:
+            spec["color_norm"] = CENTER_ZERO_HEATMAP_COLOR_NORM
+            spec["symlog_linthresh"] = CENTER_ZERO_HEATMAP_SYMLOG_LINTHRESH
+            spec["artifact_tag"] = CENTER_ZERO_HEATMAP_COLOR_TAG
+    if not RUN_CONSTANT_ARC_LENGTH:
+        metric_specs = [
+            spec
+            for spec in metric_specs
+            if spec["key"] in GEOMETRIC_ONLY_HEATMAP_METRIC_KEYS
+        ]
+    return metric_specs
+
+
+def get_pair_heatmap_specs(base_cfg):
+    """Return the three pairwise thermostat heatmap families plus slice settings."""
+    fixed_slice_variants = {
+        "price_ratio": build_fixed_slice_variants(HEATMAP_PRICE_RATIOS),
+        "centeredness_margin": build_fixed_slice_variants(HEATMAP_MARGINS),
+        "daily_price_shift_exponent": build_fixed_slice_variants(
+            HEATMAP_SHIFT_EXPONENTS
+        ),
+    }
+    return [
+        {
+            "slug": "price_ratio_vs_margin",
+            "x_values": HEATMAP_PRICE_RATIOS,
+            "y_values": HEATMAP_MARGINS,
+            "x_key": "price_ratio",
+            "y_key": "centeredness_margin",
+            "x_label": "Price ratio",
+            "y_label": "Centeredness margin",
+            "xticks": PRICE_RATIO_TICKS,
+            "yticks": MARGIN_TICKS,
+            "fixed_key": "daily_price_shift_exponent",
+            "fixed_label": "Shift exponent",
+            "fixed_slug": "shift_exp",
+            "fixed_slices": fixed_slice_variants["daily_price_shift_exponent"],
+        },
+        {
+            "slug": "shift_exp_vs_margin",
+            "x_values": HEATMAP_SHIFT_EXPONENTS,
+            "y_values": HEATMAP_MARGINS,
+            "x_key": "daily_price_shift_exponent",
+            "y_key": "centeredness_margin",
+            "x_label": "Shift exponent",
+            "y_label": "Centeredness margin",
+            "xticks": SHIFT_EXPONENT_TICKS,
+            "yticks": MARGIN_TICKS,
+            "fixed_key": "price_ratio",
+            "fixed_label": "Price ratio",
+            "fixed_slug": "price_ratio",
+            "fixed_slices": fixed_slice_variants["price_ratio"],
+        },
+        {
+            "slug": "price_ratio_vs_shift_exp",
+            "x_values": HEATMAP_PRICE_RATIOS,
+            "y_values": HEATMAP_SHIFT_EXPONENTS,
+            "x_key": "price_ratio",
+            "y_key": "daily_price_shift_exponent",
+            "x_label": "Price ratio",
+            "y_label": "Shift exponent",
+            "xticks": PRICE_RATIO_TICKS,
+            "yticks": SHIFT_EXPONENT_TICKS,
+            "fixed_key": "centeredness_margin",
+            "fixed_label": "Centeredness margin",
+            "fixed_slug": "margin",
+            "fixed_slices": fixed_slice_variants["centeredness_margin"],
+        },
+    ]
+
+
 def plot_heatmap(
     data,
     x_values,
@@ -955,34 +1401,13 @@ def plot_heatmap(
     symlog_linthresh=None,
 ):
     """Render and save a single heatmap."""
-    finite = np.asarray(data, dtype=float)
-    finite = finite[np.isfinite(finite)]
-
-    if center_zero:
-        vmax = max(abs(float(np.nanmin(data))), abs(float(np.nanmax(data))), 1e-9)
-        if color_norm == "symlog" and symlog_linthresh is not None and vmax > symlog_linthresh:
-            norm = SymLogNorm(
-                linthresh=symlog_linthresh,
-                linscale=1.0,
-                vmin=-vmax,
-                vmax=vmax,
-                base=10.0,
-            )
-        else:
-            norm = TwoSlopeNorm(vcenter=0.0, vmin=-vmax, vmax=vmax)
-        cmap_name = cmap or "RdYlGn"
-    else:
-        if finite.size == 0:
-            vmin, vmax = 0.0, 1.0
-        else:
-            vmin = float(finite.min())
-            vmax = float(finite.max())
-            if np.isclose(vmin, vmax):
-                pad = max(abs(vmin) * 0.01, 1e-9)
-                vmin -= pad
-                vmax += pad
-        norm = Normalize(vmin=vmin, vmax=vmax)
-        cmap_name = cmap or "viridis"
+    norm = _build_heatmap_norm(
+        [data],
+        center_zero=center_zero,
+        color_norm=color_norm,
+        symlog_linthresh=symlog_linthresh,
+    )
+    cmap_name = cmap or ("RdYlGn" if center_zero else "viridis")
 
     x_edges = _compute_axis_edges(x_values, scale=xscale)
     y_edges = _compute_axis_edges(y_values, scale="linear")
@@ -1007,6 +1432,112 @@ def plot_heatmap(
     ax.grid(False)
 
     cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label(colorbar_label)
+
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150)
+    print(f"Saved {filename}")
+    plt.close(fig)
+
+
+def plot_three_variable_heatmap_3d(
+    price_margin_data,
+    shift_margin_data,
+    price_shift_data,
+    fixed_price_ratio,
+    fixed_margin,
+    fixed_shift_exponent,
+    title,
+    colorbar_label,
+    filename,
+    center_zero=True,
+    cmap=None,
+    color_norm=None,
+    symlog_linthresh=None,
+):
+    """Render orthogonal 3D heatmap surfaces across the three thermostat variables."""
+    norm = _build_heatmap_norm(
+        [price_margin_data, shift_margin_data, price_shift_data],
+        center_zero=center_zero,
+        color_norm=color_norm,
+        symlog_linthresh=symlog_linthresh,
+    )
+    cmap_name = cmap or ("RdYlGn" if center_zero else "viridis")
+    cmap_obj = plt.get_cmap(cmap_name)
+
+    price_margin_x, price_margin_y = np.meshgrid(HEATMAP_PRICE_RATIOS, HEATMAP_MARGINS)
+    price_margin_z = np.full_like(price_margin_x, fixed_shift_exponent, dtype=float)
+
+    shift_margin_z, shift_margin_y = np.meshgrid(
+        HEATMAP_SHIFT_EXPONENTS,
+        HEATMAP_MARGINS,
+    )
+    shift_margin_x = np.full_like(shift_margin_z, fixed_price_ratio, dtype=float)
+
+    price_shift_x, price_shift_z = np.meshgrid(
+        HEATMAP_PRICE_RATIOS,
+        HEATMAP_SHIFT_EXPONENTS,
+    )
+    price_shift_y = np.full_like(price_shift_x, fixed_margin, dtype=float)
+
+    fig = plt.figure(figsize=(10.5, 7.2))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.set_facecolor("white")
+    fig.patch.set_facecolor("white")
+
+    ax.plot_surface(
+        price_margin_x,
+        price_margin_y,
+        price_margin_z,
+        facecolors=cmap_obj(norm(np.asarray(price_margin_data, dtype=float))),
+        shade=False,
+    )
+    ax.plot_surface(
+        shift_margin_x,
+        shift_margin_y,
+        shift_margin_z,
+        facecolors=cmap_obj(norm(np.asarray(shift_margin_data, dtype=float))),
+        shade=False,
+    )
+    ax.plot_surface(
+        price_shift_x,
+        price_shift_y,
+        price_shift_z,
+        facecolors=cmap_obj(norm(np.asarray(price_shift_data, dtype=float))),
+        shade=False,
+    )
+
+    ax.set_xlim(float(HEATMAP_PRICE_RATIOS.min()), float(HEATMAP_PRICE_RATIOS.max()))
+    ax.set_ylim(float(HEATMAP_MARGINS.min()), float(HEATMAP_MARGINS.max()))
+    ax.set_zlim(
+        float(HEATMAP_SHIFT_EXPONENTS.min()),
+        float(HEATMAP_SHIFT_EXPONENTS.max()),
+    )
+    ax.set_xlabel("Price ratio")
+    ax.set_ylabel("Centeredness margin")
+    ax.set_zlabel("Shift exponent")
+    ax.set_xticks(PRICE_RATIO_TICKS)
+    ax.set_yticks(MARGIN_TICKS[::2])
+    ax.set_zticks(SHIFT_EXPONENT_TICKS)
+    ax.set_title(title)
+    ax.grid(False)
+    ax.view_init(elev=THREE_D_VIEW_ELEVATION, azim=THREE_D_VIEW_AZIMUTH)
+    try:
+        ax.set_box_aspect(
+            (
+                float(HEATMAP_PRICE_RATIOS.max() - HEATMAP_PRICE_RATIOS.min()),
+                float(HEATMAP_MARGINS.max() - HEATMAP_MARGINS.min()),
+                float(
+                    HEATMAP_SHIFT_EXPONENTS.max() - HEATMAP_SHIFT_EXPONENTS.min()
+                ),
+            )
+        )
+    except AttributeError:
+        pass
+
+    sm = ScalarMappable(norm=norm, cmap=cmap_obj)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.1, shrink=0.82)
     cbar.set_label(colorbar_label)
 
     plt.tight_layout()
@@ -1090,128 +1621,11 @@ def generate_heatmaps(base_cfg, price_data, launch_final_values, cache=None):
     """Generate pairwise heatmaps for thermostat tuning and noise-vs-arb effects."""
     owns_cache = cache is None
     if cache is None:
-        cache = make_sweep_cache(price_data)
-    metric_specs = [
-        {
-            "key": "efficiency_pct",
-            "title": "Efficiency vs heatmap geometric",
-            "colorbar_label": "Const Arc - heatmap Geo (% of heatmap geometric final value)",
-            "slug": "efficiency",
-            "center_zero": True,
-            "cmap": "RdYlGn",
-        },
-        {
-            "key": "launch_geometric_efficiency_pct",
-            "title": "Efficiency vs launch-style geometric",
-            "colorbar_label": "Const Arc - launch Geo (% of launch geometric final value)",
-            "slug": "launch_geometric_efficiency",
-            "center_zero": True,
-            "cmap": "RdYlGn",
-        },
-        {
-            "key": "geometric_vs_launch_geometric_pct",
-            "title": "Geometric tuning vs launch-style geometric",
-            "colorbar_label": "Candidate Geo - launch Geo (% of launch geometric final value)",
-            "slug": "geometric_vs_launch_geometric",
-            "center_zero": True,
-            "cmap": "RdYlGn",
-        },
-        {
-            "key": "constant_arc_vs_launch_constant_arc_pct",
-            "title": "Const arc tuning vs launch-style const arc",
-            "colorbar_label": "Candidate Const Arc - launch Const Arc (% of launch const arc final value)",
-            "slug": "constant_arc_vs_launch_constant_arc",
-            "center_zero": True,
-            "cmap": "RdYlGn",
-        },
-        {
-            "key": "noise_geometric_final_value_musd",
-            "title": "Geometric final value with noise model",
-            "colorbar_label": "Geometric final value with noise model ($M)",
-            "slug": "noise_geometric_final_value",
-            "center_zero": False,
-            "cmap": "viridis",
-        },
-        {
-            "key": "noise_constant_arc_final_value_musd",
-            "title": "Const arc final value with noise model",
-            "colorbar_label": "Const Arc final value with noise model ($M)",
-            "slug": "noise_constant_arc_final_value",
-            "center_zero": False,
-            "cmap": "viridis",
-        },
-        {
-            "key": "noise_vs_arb_geometric_improvement_pct",
-            "title": "Noise-model improvement over arb-only (geometric)",
-            "colorbar_label": "Noise-model Geo - arb-only Geo (% of arb-only final value)",
-            "slug": "noise_vs_arb_geometric_improvement",
-            "center_zero": True,
-            "cmap": "RdYlGn",
-        },
-        {
-            "key": "noise_vs_arb_constant_arc_improvement_pct",
-            "title": "Noise-model improvement over arb-only (const arc)",
-            "colorbar_label": "Noise-model Const Arc - arb-only Const Arc (% of arb-only final value)",
-            "slug": "noise_vs_arb_constant_arc_improvement",
-            "center_zero": True,
-            "cmap": "RdYlGn",
-        },
-    ]
-    for spec in metric_specs:
-        if spec["center_zero"]:
-            spec["color_norm"] = CENTER_ZERO_HEATMAP_COLOR_NORM
-            spec["symlog_linthresh"] = CENTER_ZERO_HEATMAP_SYMLOG_LINTHRESH
-            spec["artifact_tag"] = CENTER_ZERO_HEATMAP_COLOR_TAG
-    if not RUN_CONSTANT_ARC_LENGTH:
-        metric_specs = [
-            spec
-            for spec in metric_specs
-            if spec["key"] in GEOMETRIC_ONLY_HEATMAP_METRIC_KEYS
-        ]
-    pair_specs = [
-        {
-            "slug": "price_ratio_vs_margin",
-            "x_values": HEATMAP_PRICE_RATIOS,
-            "y_values": HEATMAP_MARGINS,
-            "x_key": "price_ratio",
-            "y_key": "centeredness_margin",
-            "x_label": "Price ratio",
-            "y_label": "Centeredness margin",
-            "title_suffix": (
-                f"shift_exp fixed at {base_cfg['daily_price_shift_exponent']:.2f}"
-            ),
-            "xticks": PRICE_RATIO_TICKS,
-            "yticks": MARGIN_TICKS
-        },
-        {
-            "slug": "shift_exp_vs_margin",
-            "x_values": HEATMAP_SHIFT_EXPONENTS,
-            "y_values": HEATMAP_MARGINS,
-            "x_key": "daily_price_shift_exponent",
-            "y_key": "centeredness_margin",
-            "x_label": "Shift exponent",
-            "y_label": "Centeredness margin",
-            "title_suffix": f"price_ratio fixed at {base_cfg['price_ratio']:.2f}",
-            "xticks": SHIFT_EXPONENT_TICKS,
-            "yticks": MARGIN_TICKS
-        },
-        {
-            "slug": "price_ratio_vs_shift_exp",
-            "x_values": HEATMAP_PRICE_RATIOS,
-            "y_values": HEATMAP_SHIFT_EXPONENTS,
-            "x_key": "price_ratio",
-            "y_key": "daily_price_shift_exponent",
-            "x_label": "Price ratio",
-            "y_label": "Shift exponent",
-            "title_suffix": (
-                f"margin fixed at {base_cfg['centeredness_margin']:.2f}"
-            ),
-            "xticks": PRICE_RATIO_TICKS,
-            "yticks": SHIFT_EXPONENT_TICKS,
-        },
-    ]
-
+        cache = make_sweep_cache(price_data, cache_scope_cfg=base_cfg)
+    metric_specs = get_pair_heatmap_metric_specs()
+    pair_specs = get_pair_heatmap_specs(base_cfg)
     metric_spec_map = {spec["key"]: spec for spec in metric_specs}
+    slice_count = len(pair_specs[0]["fixed_slices"]) if pair_specs else 0
 
     if RUN_CONSTANT_ARC_LENGTH:
         print(
@@ -1222,9 +1636,11 @@ def generate_heatmaps(base_cfg, price_data, launch_final_values, cache=None):
         )
         print(
             "Running {count} heatmap pair sweeps sequentially "
-            "(current outputs use cached noise-model runs; improvement heatmaps "
-            "reuse those values and add cached arb-only runs).".format(
-                count=len(pair_specs)
+            "(3 pair grids x {slice_count} fixed-variable quarter slices; "
+            "cached noise-model runs are reused across the absolute, launch, "
+            "and arb-only comparison outputs).".format(
+                count=len(pair_specs) * slice_count,
+                slice_count=slice_count,
             )
         )
     else:
@@ -1235,20 +1651,135 @@ def generate_heatmaps(base_cfg, price_data, launch_final_values, cache=None):
         )
         print(
             "RUN_CONSTANT_ARC_LENGTH=False, so only geometric heatmaps will be generated "
-            "and only geometric/arb-only geometric runs will be scheduled."
+            f"across {len(pair_specs) * slice_count} fixed-variable pair sweeps."
         )
 
     for pair in pair_specs:
+        for slice_variant in pair["fixed_slices"]:
+            pair_suffix = _pair_slice_suffix(pair, slice_variant)
+            slice_cfg = dict(base_cfg)
+            slice_cfg[pair["fixed_key"]] = float(slice_variant["value"])
+            output_files = {
+                spec["key"]: heatmap_artifact_filename(
+                    spec,
+                    base_cfg,
+                    suffix=pair_suffix,
+                )
+                for spec in metric_specs
+            }
+            missing_files = _missing_artifacts(
+                pair_suffix,
+                list(output_files.values()),
+            )
+            if not missing_files:
+                continue
+
+            missing_metric_keys = [
+                spec["key"]
+                for spec in metric_specs
+                if output_files[spec["key"]] in missing_files
+            ]
+            data_by_metric = build_heatmap_matrices(
+                x_values=pair["x_values"],
+                y_values=pair["y_values"],
+                x_key=pair["x_key"],
+                y_key=pair["y_key"],
+                base_cfg=slice_cfg,
+                metric_keys=missing_metric_keys,
+                cache=cache,
+                progress_label=pair_suffix,
+                launch_final_values=launch_final_values,
+            )
+            print(f"[{pair_suffix}] plotting missing heatmaps...")
+            for metric_key in missing_metric_keys:
+                spec = metric_spec_map[metric_key]
+                plot_heatmap(
+                    data=data_by_metric[metric_key],
+                    x_values=pair["x_values"],
+                    y_values=pair["y_values"],
+                    x_label=pair["x_label"],
+                    y_label=pair["y_label"],
+                    title=(
+                        f"{spec['title']}: {pair['fixed_label']} {slice_variant['label']} "
+                        f"slice fixed at {format_heatmap_param_value(slice_variant['value'])} | "
+                        f"TVL {format_tvl_millions_label(base_cfg)}"
+                    ),
+                    colorbar_label=spec["colorbar_label"],
+                    filename=output_files[metric_key],
+                    xticks=pair["xticks"],
+                    yticks=pair["yticks"],
+                    center_zero=spec["center_zero"],
+                    cmap=spec["cmap"],
+                    color_norm=spec.get("color_norm"),
+                    symlog_linthresh=spec.get("symlog_linthresh"),
+                )
+            del data_by_metric
+            gc.collect()
+
+    if owns_cache:
+        flush_sweep_cache(cache, force=True)
+        cache.clear()
+        gc.collect()
+        print("Released heatmap metric cache.")
+
+
+def generate_three_variable_3d_heatmaps(
+    base_cfg,
+    price_data,
+    launch_final_values,
+    cache=None,
+):
+    """Render 3D thermostat heatmaps from the three pairwise quarter slices."""
+    owns_cache = cache is None
+    if cache is None:
+        cache = make_sweep_cache(price_data, cache_scope_cfg=base_cfg)
+
+    metric_specs = get_pair_heatmap_metric_specs()
+    metric_spec_map = {spec["key"]: spec for spec in metric_specs}
+    pair_specs = get_pair_heatmap_specs(base_cfg)
+    pair_by_fixed_key = {pair["fixed_key"]: pair for pair in pair_specs}
+    price_margin_pair = pair_by_fixed_key["daily_price_shift_exponent"]
+    shift_margin_pair = pair_by_fixed_key["price_ratio"]
+    price_shift_pair = pair_by_fixed_key["centeredness_margin"]
+    slice_count = len(price_margin_pair["fixed_slices"])
+
+    def build_pair_slice_data(pair, slice_variant, metric_keys):
+        pair_cfg = dict(base_cfg)
+        pair_cfg[pair["fixed_key"]] = float(slice_variant["value"])
+        return build_heatmap_matrices(
+            x_values=pair["x_values"],
+            y_values=pair["y_values"],
+            x_key=pair["x_key"],
+            y_key=pair["y_key"],
+            base_cfg=pair_cfg,
+            metric_keys=metric_keys,
+            cache=cache,
+            progress_label=f"3d_{_pair_slice_suffix(pair, slice_variant)}",
+            launch_final_values=launch_final_values,
+        )
+
+    print(
+        "\nGenerating 3D thermostat heatmaps "
+        f"({slice_count} quarter-slice variants, TVL={format_tvl_millions_label(base_cfg)})..."
+    )
+
+    for slice_idx in range(slice_count):
+        shift_slice = price_margin_pair["fixed_slices"][slice_idx]
+        price_slice = shift_margin_pair["fixed_slices"][slice_idx]
+        margin_slice = price_shift_pair["fixed_slices"][slice_idx]
+        slice_slug = shift_slice["slug"]
+        slice_label = shift_slice["label"]
+
         output_files = {
-            spec["key"]: heatmap_artifact_filename(
+            spec["key"]: three_d_heatmap_artifact_filename(
                 spec,
                 base_cfg,
-                suffix=pair["slug"],
+                suffix=f"slice_{slice_slug}",
             )
             for spec in metric_specs
         }
         missing_files = _missing_artifacts(
-            pair["slug"],
+            f"3d_slice_{slice_slug}",
             list(output_files.values()),
         )
         if not missing_files:
@@ -1259,46 +1790,53 @@ def generate_heatmaps(base_cfg, price_data, launch_final_values, cache=None):
             for spec in metric_specs
             if output_files[spec["key"]] in missing_files
         ]
-        data_by_metric = build_heatmap_matrices(
-            x_values=pair["x_values"],
-            y_values=pair["y_values"],
-            x_key=pair["x_key"],
-            y_key=pair["y_key"],
-            base_cfg=base_cfg,
-            metric_keys=missing_metric_keys,
-            cache=cache,
-            progress_label=pair["slug"],
-            launch_final_values=launch_final_values,
+        price_margin_data = build_pair_slice_data(
+            price_margin_pair,
+            shift_slice,
+            missing_metric_keys,
         )
-        print(f"[{pair['slug']}] plotting missing heatmaps...")
+        shift_margin_data = build_pair_slice_data(
+            shift_margin_pair,
+            price_slice,
+            missing_metric_keys,
+        )
+        price_shift_data = build_pair_slice_data(
+            price_shift_pair,
+            margin_slice,
+            missing_metric_keys,
+        )
+
         for metric_key in missing_metric_keys:
             spec = metric_spec_map[metric_key]
-            plot_heatmap(
-                data=data_by_metric[metric_key],
-                x_values=pair["x_values"],
-                y_values=pair["y_values"],
-                x_label=pair["x_label"],
-                y_label=pair["y_label"],
+            plot_three_variable_heatmap_3d(
+                price_margin_data=price_margin_data[metric_key],
+                shift_margin_data=shift_margin_data[metric_key],
+                price_shift_data=price_shift_data[metric_key],
+                fixed_price_ratio=float(price_slice["value"]),
+                fixed_margin=float(margin_slice["value"]),
+                fixed_shift_exponent=float(shift_slice["value"]),
                 title=(
-                    f"{spec['title']}: {pair['title_suffix']} | "
-                    f"TVL {format_tvl_millions_label(base_cfg)}"
+                    f"{spec['title']} 3D {slice_label} slice | TVL {format_tvl_millions_label(base_cfg)}\n"
+                    f"price_ratio={format_heatmap_param_value(price_slice['value'])}, "
+                    f"margin={format_heatmap_param_value(margin_slice['value'])}, "
+                    f"shift_exp={format_heatmap_param_value(shift_slice['value'])}"
                 ),
                 colorbar_label=spec["colorbar_label"],
                 filename=output_files[metric_key],
-                xticks=pair["xticks"],
-                yticks=pair["yticks"],
                 center_zero=spec["center_zero"],
                 cmap=spec["cmap"],
                 color_norm=spec.get("color_norm"),
                 symlog_linthresh=spec.get("symlog_linthresh"),
             )
-        del data_by_metric
+
+        del price_margin_data, shift_margin_data, price_shift_data
         gc.collect()
 
     if owns_cache:
+        flush_sweep_cache(cache, force=True)
         cache.clear()
         gc.collect()
-        print("Released heatmap metric cache.")
+        print("Released 3D heatmap cache.")
 
 
 def compute_auto_calibrated_arc_length_speed(cfg, price_data):
@@ -1378,7 +1916,7 @@ def generate_arc_speed_efficiency_artifacts(
         return
     owns_cache = cache is None
     if cache is None:
-        cache = make_sweep_cache(price_data)
+        cache = make_sweep_cache(price_data, cache_scope_cfg=base_cfg)
     launch_auto_speed = compute_auto_calibrated_arc_length_speed(launch_cfg, price_data)
     heatmap_metric_specs = [
         {
@@ -1559,6 +2097,7 @@ def generate_arc_speed_efficiency_artifacts(
         gc.collect()
 
     if owns_cache:
+        flush_sweep_cache(cache, force=True)
         cache.clear()
         gc.collect()
         print("Released arc-speed sweep cache.")
@@ -1965,7 +2504,10 @@ if __name__ == "__main__":
             launch_cfg=tvl_configs[0],
             price_data=shared_price_data,
         )
-        shared_sweep_cache = make_sweep_cache(shared_price_data)
+        shared_sweep_cache = make_sweep_cache(
+            shared_price_data,
+            cache_scope_cfg=tvl_configs[1],
+        )
 
         print(f"\nGenerating thermostat heatmaps for TVL {tvl_label}...")
         generate_heatmaps(
@@ -1982,6 +2524,13 @@ if __name__ == "__main__":
             launch_final_values=launch_final_values,
             cache=shared_sweep_cache,
         )
+        generate_three_variable_3d_heatmaps(
+            dict(tvl_configs[1]),
+            price_data=shared_price_data,
+            launch_final_values=launch_final_values,
+            cache=shared_sweep_cache,
+        )
+        flush_sweep_cache(shared_sweep_cache, force=True)
         shared_sweep_cache.clear()
         gc.collect()
         print(f"Released shared sweep cache for TVL {tvl_label}.")
