@@ -32,7 +32,7 @@ def test_build_run_specs_from_adjacent_row_maps_csv_cells_to_two_specs():
     row = {
         "metric_key": "noise_vs_arb_geometric_improvement_pct",
         "metric_unit": "pct",
-        "source_noise_profile": "legacy_calibrated",
+        "source_noise_profile": "market_linear",
         "pair_slug": "price_ratio_vs_margin",
         "slice_slug": "q2",
         "adjacency_axis": "horizontal",
@@ -58,7 +58,7 @@ def test_build_run_specs_from_adjacent_row_maps_csv_cells_to_two_specs():
     assert "adjacent_pairs.csv row 0" in description
     assert "price_ratio_vs_margin q2" in description
     assert "horizontal" in description
-    assert "noise_profile=legacy_calibrated" in description
+    assert "noise_profile=market_linear" in description
     assert len(run_specs) == 2
     assert run_specs[0]["name"] == "Top diff row cell 1"
     assert run_specs[0]["price_ratio"] == 1.335
@@ -66,7 +66,7 @@ def test_build_run_specs_from_adjacent_row_maps_csv_cells_to_two_specs():
     assert run_specs[0]["daily_price_shift_exponent"] == 0.1975
     assert run_specs[0]["tvl_usd"] == 1_000_000.0
     assert run_specs[0]["color"] == "C0"
-    assert run_specs[0]["source_noise_profile"] == "legacy_calibrated"
+    assert run_specs[0]["source_noise_profile"] == "market_linear"
     assert "heatmap_value=-53.054321" in run_specs[0]["reason"]
     assert run_specs[1]["name"] == "Top diff row cell 2"
     assert run_specs[1]["price_ratio"] == 1.36
@@ -86,7 +86,7 @@ def test_default_output_file_for_adjacent_csv_uses_csv_stem_and_row_index():
     )
 
 
-def test_build_run_config_honors_legacy_calibrated_noise_profile():
+def test_build_run_config_rejects_legacy_calibrated_noise_profile():
     module = load_script_module()
     base_config = {
         "name": "base",
@@ -107,11 +107,57 @@ def test_build_run_config_honors_legacy_calibrated_noise_profile():
         "source_noise_profile": "legacy_calibrated",
     }
 
-    cfg = module.build_run_config(spec, base_config=base_config)
+    import pytest
 
-    assert cfg["noise_model"] == "calibrated"
-    assert "reclamm_noise_params" not in cfg
-    assert "noise_arrays_path" not in cfg
+    with pytest.raises(ValueError):
+        module.build_run_config(spec, base_config=base_config)
+
+
+def test_build_run_variants_canonicalizes_noise_and_arb_only_configs():
+    module = load_script_module()
+    fixed_path = str(
+        Path(__file__).resolve().parents[2]
+        / "results"
+        / "linear_market_noise"
+        / "_sim_arrays"
+        / "0x9d1fcf346ea1b0_2024-06-01_2026-03-01.npz"
+    )
+    base_config = {
+        "name": "base",
+        "price_ratio": 1.1,
+        "centeredness_margin": 0.6,
+        "daily_price_shift_exponent": 0.1,
+        "initial_pool_value": 1_000_000.0,
+        "noise_model": "market_linear",
+        "noise_arrays_path": fixed_path,
+    }
+    spec = {
+        "name": "cell",
+        "price_ratio": 1.335,
+        "centeredness_margin": 0.3184210526,
+        "daily_price_shift_exponent": 0.1975,
+        "tvl_usd": 1_000_000.0,
+        "source_noise_profile": "market_linear",
+    }
+
+    class FakeThermostatCompare:
+        @staticmethod
+        def make_noise_variant_cfg(cfg, enable_noise_model):
+            updated = dict(cfg)
+            updated["enable_noise_model"] = bool(enable_noise_model)
+            updated["noise_model"] = "market_linear" if enable_noise_model else "arb_only"
+            updated["noise_arrays_path"] = fixed_path
+            updated["reclamm_noise_params"] = {"tvl_mean": 1.0, "tvl_std": 2.0}
+            return updated
+
+    variants = module.build_run_variants(spec, base_config, FakeThermostatCompare)
+
+    assert variants["noise"]["noise_model"] == "market_linear"
+    assert variants["arb"]["noise_model"] == "arb_only"
+    assert variants["noise"]["noise_arrays_path"] == fixed_path
+    assert variants["arb"]["noise_arrays_path"] == fixed_path
+    assert variants["noise"]["reclamm_noise_params"] == {"tvl_mean": 1.0, "tvl_std": 2.0}
+    assert variants["arb"]["reclamm_noise_params"] == {"tvl_mean": 1.0, "tvl_std": 2.0}
 
 
 def test_print_run_inputs_to_terminal_includes_fingerprint_and_update_params(capsys):

@@ -30,7 +30,7 @@ import pandas as pd
 
 
 DEFAULT_SOURCE_HEATMAP_DESCRIPTION = (
-    "legacy unsuffixed price_ratio_vs_margin heatmap with shift_exp fixed at 0.10"
+    "market_linear price_ratio_vs_margin heatmap with shift_exp fixed at 0.10"
 )
 DEFAULT_RUN_SPECS = [
     {
@@ -42,7 +42,7 @@ DEFAULT_RUN_SPECS = [
         "color": "C0",
         "reason": (
             "Geometric noise-model run taken from the positive cell in the "
-            "legacy price_ratio-vs-margin heatmap at price_ratio=1.31 and the "
+            "market_linear price_ratio-vs-margin heatmap at price_ratio=1.31 and the "
             "lower adjacent centeredness row."
         ),
     },
@@ -55,7 +55,7 @@ DEFAULT_RUN_SPECS = [
         "color": "C1",
         "reason": (
             "Geometric noise-model run taken from the negative cell directly "
-            "above the green cell in the legacy price_ratio-vs-margin heatmap "
+            "above the green cell in the market_linear price_ratio-vs-margin heatmap "
             "at price_ratio=1.31."
         ),
     },
@@ -205,18 +205,23 @@ def build_run_config(spec, base_config):
         }
     )
     source_noise_profile = spec.get("source_noise_profile")
-    if source_noise_profile == "legacy_calibrated":
-        cfg["noise_model"] = "calibrated"
-        cfg.pop("reclamm_noise_params", None)
-        cfg.pop("noise_arrays_path", None)
-    elif source_noise_profile == "market_linear":
+    if source_noise_profile == "market_linear":
         cfg["noise_model"] = "market_linear"
+    elif source_noise_profile not in (None, "", "unknown"):
+        raise ValueError(
+            "compare_reclamm_geometric_noise_runs.py only supports the current "
+            f"market_linear source profile, got {source_noise_profile!r}. "
+            "Regenerate the adjacent-pairs CSV with the current heatmap cache."
+        )
     return cfg
 
 
 def build_run_variants(spec, base_config, thermostat_compare):
     """Build matched noise-model and arb-only variants for one highlighted cell."""
-    noise_cfg = build_run_config(spec, base_config=base_config)
+    noise_cfg = thermostat_compare.make_noise_variant_cfg(
+        build_run_config(spec, base_config=base_config),
+        True,
+    )
     noise_cfg["variant_key"] = "noise"
     noise_cfg["variant_label"] = "noise-model"
 

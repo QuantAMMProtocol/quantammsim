@@ -228,30 +228,11 @@ def test_run_top_row_geometric_comparison_dispatches_to_compare_module(monkeypat
     }
 
 
-def test_autodetect_lightweight_noise_profile_switches_to_legacy_calibrated():
+def test_autodetect_lightweight_noise_profile_keeps_market_linear():
     module = load_script_module()
     compare_context = module._LightweightCompareContext()
     base_cfg = compare_context.configs_for_tvl(compare_context.CONFIGS, 1_000_000.0)[1]
     pair_spec = compare_context.get_pair_heatmap_specs(base_cfg)[0]
-    slice_variant = [variant for variant in pair_spec["fixed_slices"] if variant["slug"] == "q2"][0]
-
-    sample_x_indices = sorted({0, len(pair_spec["x_values"]) // 2, len(pair_spec["x_values"]) - 1})
-    sample_y_indices = sorted({0, len(pair_spec["y_values"]) // 2, len(pair_spec["y_values"]) - 1})
-
-    cache_lookup = {}
-    compare_context.set_noise_profile("legacy_calibrated")
-    slice_cfg = dict(base_cfg)
-    slice_cfg[pair_spec["fixed_key"]] = float(slice_variant["value"])
-    for y_index in sample_y_indices:
-        for x_index in sample_x_indices:
-            cfg = dict(slice_cfg)
-            cfg[pair_spec["x_key"]] = float(pair_spec["x_values"][x_index])
-            cfg[pair_spec["y_key"]] = float(pair_spec["y_values"][y_index])
-            for source_name in ("noise_geometric", "arb_geometric"):
-                source_cfg, method = module._source_variant(compare_context, cfg, source_name)
-                cache_key = compare_context._make_method_cache_key(source_cfg, method)
-                cache_key_hash = compare_context._make_method_cache_hash(cache_key)
-                cache_lookup[cache_key_hash] = 1_000_000.0
 
     compare_context.set_noise_profile("market_linear")
     module.autodetect_lightweight_noise_profile(
@@ -260,10 +241,18 @@ def test_autodetect_lightweight_noise_profile_switches_to_legacy_calibrated():
         pair_specs=[pair_spec],
         metric_key="noise_vs_arb_geometric_improvement_pct",
         slice_slug="q2",
-        cache_lookup=cache_lookup,
+        cache_lookup={},
     )
 
-    assert compare_context.noise_profile == "legacy_calibrated"
+    assert compare_context.noise_profile == "market_linear"
+
+
+def test_lightweight_context_rejects_legacy_noise_profile():
+    module = load_script_module()
+    compare_context = module._LightweightCompareContext()
+
+    with pytest.raises(ValueError):
+        compare_context.set_noise_profile("legacy_calibrated")
 
 
 def test_source_variant_sets_explicit_market_and_arb_only_noise_models():
@@ -285,14 +274,18 @@ def test_source_variant_sets_explicit_market_and_arb_only_noise_models():
     assert noise_method == "geometric"
     assert noise_cfg["enable_noise_model"] is True
     assert noise_cfg["noise_model"] == "market_linear"
+    assert noise_cfg["noise_arrays_path"] == compare_context.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
 
     assert arb_method == "geometric"
     assert arb_cfg["enable_noise_model"] is False
     assert arb_cfg["noise_model"] == "arb_only"
+    assert arb_cfg["noise_arrays_path"] == compare_context.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
 
     resolved_arb = compare_context.resolve_reclamm_noise_settings(arb_cfg)
     assert resolved_arb["noise_model"] == "arb_only"
-    assert resolved_arb["noise_cache_key"] == ("disabled",)
+    assert resolved_arb["noise_arrays_path"] == compare_context.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
+    assert set(resolved_arb["reclamm_noise_params"]) == {"tvl_mean", "tvl_std"}
+    assert resolved_arb["noise_cache_key"][0] == "arb_only"
 
 
 def test_lightweight_context_defaults_to_fixed_compare_arb_cadence():
@@ -308,6 +301,7 @@ def test_lightweight_context_defaults_to_fixed_compare_arb_cadence():
 
     assert arb_cfg["arb_frequency"] == compare_context.FIXED_COMPARE_ARB_FREQUENCY
     assert arb_cfg["noise_model"] == "arb_only"
+    assert arb_cfg["noise_arrays_path"] == compare_context.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
     assert resolved_noise["arb_frequency"] == compare_context.FIXED_COMPARE_ARB_FREQUENCY
     assert arb_cfg["gas_cost"] == compare_context.DEFAULT_GAS_COST
     assert arb_cfg["protocol_fee_split"] == compare_context.DEFAULT_PROTOCOL_FEE_SPLIT

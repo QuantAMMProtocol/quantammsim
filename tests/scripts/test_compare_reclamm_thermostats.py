@@ -163,16 +163,21 @@ def test_make_noise_variant_cfg_disables_noise_fields(script_module, base_cfg):
     resolved = script_module.resolve_reclamm_noise_settings(arb_only_cfg)
 
     assert arb_only_cfg["enable_noise_model"] is False
-    assert arb_only_cfg["noise_model"] is None
+    assert arb_only_cfg["noise_model"] == "arb_only"
+    assert arb_only_cfg["noise_reference_model"] == "market_linear"
     assert arb_only_cfg["gas_cost"] == script_module.DEFAULT_GAS_COST
     assert arb_only_cfg["protocol_fee_split"] == script_module.DEFAULT_PROTOCOL_FEE_SPLIT
     assert arb_only_cfg["arb_frequency"] == script_module.FIXED_COMPARE_ARB_FREQUENCY
-    assert "noise_artifact_dir" not in arb_only_cfg
-    assert "noise_pool_id" not in arb_only_cfg
+    assert arb_only_cfg["noise_artifact_dir"] == script_module.DEFAULT_MARKET_LINEAR_ARTIFACT_DIR
+    assert arb_only_cfg["noise_pool_id"] == script_module.AAVE_WETH_POOL_ID
+    assert arb_only_cfg["noise_arrays_path"] == script_module.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
     assert "reclamm_noise_params" not in arb_only_cfg
-    assert "noise_arrays_path" not in arb_only_cfg
-    assert resolved["noise_model"] is None
-    assert resolved["noise_summary"] == "arb-only (noise disabled)"
+    assert resolved["noise_model"] == "arb_only"
+    assert resolved["noise_arrays_path"] == script_module.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
+    assert set(resolved["reclamm_noise_params"]) == {"tvl_mean", "tvl_std"}
+    assert resolved["noise_summary"] == (
+        f"arb_only (arb_frequency={script_module.FIXED_COMPARE_ARB_FREQUENCY})"
+    )
 
 
 def test_make_noise_variant_cfg_defaults_to_fixed_compare_arb_cadence(
@@ -192,6 +197,7 @@ def test_make_noise_variant_cfg_defaults_to_fixed_compare_arb_cadence(
     resolved_noise = script_module.resolve_reclamm_noise_settings(noisy_cfg)
 
     assert arb_only_cfg["arb_frequency"] == script_module.FIXED_COMPARE_ARB_FREQUENCY
+    assert arb_only_cfg["noise_arrays_path"] == script_module.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
     assert resolved_noise["arb_frequency"] == script_module.FIXED_COMPARE_ARB_FREQUENCY
 
 
@@ -229,9 +235,134 @@ def test_make_fingerprint_ignores_non_axis_override_fields(script_module, base_c
     assert overridden_fingerprint["arb_frequency"] == script_module.FIXED_COMPARE_ARB_FREQUENCY
     assert overridden_fingerprint["gas_cost"] == script_module.DEFAULT_GAS_COST
     assert (
+        overridden_fingerprint["noise_arrays_path"]
+        == script_module.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
+    )
+    assert (
         overridden_fingerprint["protocol_fee_split"]
         == script_module.DEFAULT_PROTOCOL_FEE_SPLIT
     )
+
+
+def test_arb_only_fingerprint_only_changes_noise_model(script_module, base_cfg):
+    noisy_cfg = {
+        **base_cfg,
+        "enable_noise_model": True,
+        "noise_model": "market_linear",
+    }
+
+    noise_fingerprint = script_module.make_fingerprint(noisy_cfg, "geometric")
+    arb_only_cfg = script_module.make_noise_variant_cfg(noisy_cfg, enable_noise_model=False)
+    arb_fingerprint = script_module.make_fingerprint(arb_only_cfg, "geometric")
+
+    expected_arb = dict(noise_fingerprint)
+    expected_arb["noise_model"] = "arb_only"
+
+    assert noise_fingerprint["noise_model"] == "market_linear"
+    assert noise_fingerprint["noise_arrays_path"] == script_module.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
+    assert arb_fingerprint == expected_arb
+
+
+def test_make_fingerprint_keeps_path_fallback_when_arrays_not_preloaded(
+    script_module,
+    base_cfg,
+):
+    noisy_cfg = {
+        **base_cfg,
+        "enable_noise_model": True,
+        "noise_model": "market_linear",
+    }
+
+    fingerprint = script_module.make_fingerprint(noisy_cfg, "geometric")
+
+    assert fingerprint["noise_arrays_path"] == script_module.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
+    assert "noise_base_array" not in fingerprint
+    assert "noise_tvl_coeff_array" not in fingerprint
+
+
+def test_make_fingerprint_includes_preloaded_market_linear_arrays(
+    script_module,
+    base_cfg,
+):
+    noisy_cfg = {
+        **base_cfg,
+        "enable_noise_model": True,
+        "noise_model": "market_linear",
+    }
+    shared_noise = {
+        "arrays_path": script_module.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH,
+        "noise_base_array": np.array([1.0, 2.0]),
+        "noise_tvl_coeff_array": np.array([3.0, 4.0]),
+        "tvl_mean": 10.0,
+        "tvl_std": 5.0,
+    }
+
+    fingerprint = script_module.make_fingerprint(
+        noisy_cfg,
+        "geometric",
+        market_linear_noise_data=shared_noise,
+    )
+
+    assert fingerprint["noise_arrays_path"] == script_module.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
+    assert np.array_equal(fingerprint["noise_base_array"], shared_noise["noise_base_array"])
+    assert np.array_equal(
+        fingerprint["noise_tvl_coeff_array"],
+        shared_noise["noise_tvl_coeff_array"],
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "updated_value"),
+    [
+        ("fees", 0.01),
+        ("start", "2024-07-01 00:00:00"),
+        ("end", "2025-07-01 00:00:00"),
+        ("tokens", ["WBTC", "ETH"]),
+    ],
+)
+def test_method_cache_key_includes_run_identity_fields(
+    script_module,
+    base_cfg,
+    field,
+    updated_value,
+):
+    canonical_cfg = {
+        **base_cfg,
+        "enable_noise_model": True,
+        "noise_model": "market_linear",
+    }
+    updated_cfg = dict(canonical_cfg)
+    updated_cfg[field] = updated_value
+
+    canonical_key = script_module._make_method_cache_key(canonical_cfg, "geometric")
+    updated_key = script_module._make_method_cache_key(updated_cfg, "geometric")
+
+    assert updated_key != canonical_key
+
+
+@pytest.mark.parametrize(
+    "cfg_overrides",
+    [
+        {"enable_noise_model": True, "noise_model": "calibrated"},
+        {
+            "enable_noise_model": False,
+            "noise_model": "arb_only",
+            "noise_reference_model": "calibrated",
+        },
+    ],
+)
+def test_resolve_reclamm_noise_settings_rejects_legacy_modes(
+    script_module,
+    base_cfg,
+    cfg_overrides,
+):
+    cfg = {
+        **base_cfg,
+        **cfg_overrides,
+    }
+
+    with pytest.raises(ValueError, match="market_linear"):
+        script_module.resolve_reclamm_noise_settings(cfg)
 
 
 def test_generate_heatmaps_skips_existing_pairs(
@@ -474,6 +605,71 @@ def test_run_method_final_value_cached_reuses_persisted_parquet_value(
     assert value == pytest.approx(1_234_567.0)
 
 
+def test_run_method_final_value_cached_passes_preloaded_market_linear_arrays(
+    monkeypatch,
+    script_module,
+    base_cfg,
+):
+    captured = {}
+    shared_noise = {
+        "arrays_path": script_module.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH,
+        "noise_base_array": np.array([11.0, 12.0]),
+        "noise_tvl_coeff_array": np.array([21.0, 22.0]),
+        "tvl_mean": 100.0,
+        "tvl_std": 25.0,
+    }
+
+    monkeypatch.setattr(
+        script_module,
+        "_load_persistent_final_value_cache",
+        lambda cache: cache.update(
+            {
+                "_persistent_final_value_cache_loaded": True,
+                "_persistent_final_value_cache": {},
+                "_persistent_final_value_next_batch_id": 0,
+            }
+        ),
+    )
+    monkeypatch.setattr(script_module, "flush_sweep_cache", lambda *args, **kwargs: None)
+
+    def fake_do_run_on_historic_data(**kwargs):
+        captured["run_fingerprint"] = kwargs["run_fingerprint"]
+        return {"final_value": 1_111_111.0}
+
+    monkeypatch.setattr(
+        script_module,
+        "do_run_on_historic_data",
+        fake_do_run_on_historic_data,
+    )
+
+    cfg = {
+        **base_cfg,
+        "enable_noise_model": True,
+        "noise_model": "market_linear",
+    }
+    cache = script_module.make_sweep_cache(
+        price_data=None,
+        cache_scope_cfg=cfg,
+        market_linear_noise_data=shared_noise,
+    )
+
+    value = script_module._run_method_final_value_cached(cfg, "geometric", cache)
+
+    assert value == pytest.approx(1_111_111.0)
+    assert np.array_equal(
+        captured["run_fingerprint"]["noise_base_array"],
+        shared_noise["noise_base_array"],
+    )
+    assert np.array_equal(
+        captured["run_fingerprint"]["noise_tvl_coeff_array"],
+        shared_noise["noise_tvl_coeff_array"],
+    )
+    assert (
+        captured["run_fingerprint"]["noise_arrays_path"]
+        == script_module.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
+    )
+
+
 def test_arc_speed_artifacts_only_build_missing_line_output(
     monkeypatch,
     script_module,
@@ -547,15 +743,73 @@ def test_arc_speed_artifacts_only_build_missing_line_output(
     assert plotted_lines == [missing_line]
 
 
+def test_compute_auto_calibrated_arc_length_speed_uses_nearest_datetime_row(
+    monkeypatch,
+    script_module,
+):
+    real_pd = pytest.importorskip("pandas")
+    monkeypatch.setattr(script_module.pd, "Timestamp", real_pd.Timestamp)
+    monkeypatch.setattr(script_module.pd, "DatetimeIndex", real_pd.DatetimeIndex)
+    monkeypatch.setattr(script_module.pd, "DataFrame", real_pd.DataFrame)
+    monkeypatch.setattr(
+        script_module.pd,
+        "MultiIndex",
+        real_pd.MultiIndex,
+        raising=False,
+    )
+
+    price_data = real_pd.DataFrame(
+        {
+            "close_AAVE": [10.0, 30.0],
+            "close_ETH": [1.0, 1.0],
+        },
+        index=real_pd.DatetimeIndex(
+            ["2024-06-01 00:01:00", "2024-06-01 00:03:00"]
+        ),
+    )
+    cfg = {
+        "tokens": ["AAVE", "ETH"],
+        "start": "2024-06-01 00:02:10",
+        "price_ratio": 1.10,
+        "centeredness_margin": 0.60,
+        "daily_price_shift_exponent": 0.1,
+        "initial_pool_value": 1_000_000.0,
+    }
+    captured = {}
+
+    monkeypatch.setattr(
+        script_module,
+        "initialise_reclamm_reserves",
+        lambda *args, **kwargs: (np.array([1.0, 1.0]), 1.0, 1.0),
+    )
+    monkeypatch.setattr(
+        script_module,
+        "compute_price_ratio",
+        lambda *args, **kwargs: 1.0,
+    )
+
+    def fake_calibrate_arc_length_speed(*args, **kwargs):
+        captured["market_price_0"] = args[7]
+        return 123.0
+
+    monkeypatch.setattr(
+        script_module,
+        "calibrate_arc_length_speed",
+        fake_calibrate_arc_length_speed,
+    )
+
+    result = script_module.compute_auto_calibrated_arc_length_speed(cfg, price_data)
+
+    assert result == pytest.approx(123.0)
+    assert captured["market_price_0"] == pytest.approx(30.0)
+
+
 def test_flush_sweep_cache_writes_compact_scalar_parquet(script_module):
     captured = {}
 
     class FakeFrame:
         def __init__(self, payload):
             captured["payload"] = payload
-
-        def sort_values(self, *args, **kwargs):
-            captured["sort_values"] = (args, kwargs)
 
         def to_parquet(self, path, index=False, compression=None):
             captured["path"] = path
@@ -583,7 +837,7 @@ def test_flush_sweep_cache_writes_compact_scalar_parquet(script_module):
             }
         },
         "_persistent_final_value_cache": {},
-        "_persistent_final_value_records": {},
+        "_persistent_final_value_next_batch_id": 0,
         "_persistent_final_value_cache_loaded": True,
         "_persistent_final_value_cache_path": "results/reclamm_heatmap_forward_cache/test/forward_values_tvl_5m.parquet",
     }
@@ -598,10 +852,81 @@ def test_flush_sweep_cache_writes_compact_scalar_parquet(script_module):
     assert captured["payload"]["arb_frequency"] == [15]
     assert captured["index"] is False
     assert captured["compression"] == "zstd"
-    assert captured["path"].endswith(".parquet")
+    assert captured["makedirs"].endswith("forward_values_tvl_5m.parquet")
+    assert captured["path"].endswith("forward_values_tvl_5m.parquet/batch_00000000.parquet")
     assert cache["_pending_persistent_final_values"] == {}
     assert cache["_persistent_final_value_cache"] == {"abc123": 123.45}
-    assert cache["_persistent_final_value_records"]["abc123"]["noise_model"] == "market_linear"
+    assert cache["_persistent_final_value_next_batch_id"] == 1
+
+
+def test_load_persistent_final_value_cache_reads_sharded_parquet_dir(
+    monkeypatch,
+    script_module,
+):
+    frames = {
+        "results/reclamm_heatmap_forward_cache/test/forward_values_tvl_1m.parquet/batch_00000000.parquet": [
+            types.SimpleNamespace(
+                cache_key_hash="first123",
+                final_value=111.0,
+                method="geometric",
+                enable_noise_model=True,
+                noise_model="market_linear",
+                price_ratio=1.1,
+                centeredness_margin=0.6,
+                daily_price_shift_exponent=0.1,
+                initial_pool_value=1_000_000.0,
+                arb_frequency=15,
+            )
+        ],
+        "results/reclamm_heatmap_forward_cache/test/forward_values_tvl_1m.parquet/batch_00000001.parquet": [
+            types.SimpleNamespace(
+                cache_key_hash="second456",
+                final_value=222.0,
+                method="geometric",
+                enable_noise_model=False,
+                noise_model="arb_only",
+                price_ratio=1.2,
+                centeredness_margin=0.7,
+                daily_price_shift_exponent=0.2,
+                initial_pool_value=1_000_000.0,
+                arb_frequency=15,
+            )
+        ],
+    }
+
+    class FakeFrame:
+        def __init__(self, rows):
+            self._rows = rows
+            self.empty = not rows
+
+        def itertuples(self, index=False):
+            return list(self._rows)
+
+    monkeypatch.setattr(script_module.os.path, "exists", lambda filename: True)
+    monkeypatch.setattr(script_module.os.path, "isdir", lambda filename: True)
+    monkeypatch.setattr(
+        script_module.os,
+        "listdir",
+        lambda path: ["batch_00000001.parquet", "batch_00000000.parquet"],
+    )
+    monkeypatch.setattr(
+        script_module.pd,
+        "read_parquet",
+        lambda path, *args, **kwargs: FakeFrame(frames[path]),
+    )
+
+    cache = {
+        "_persistent_final_value_cache_loaded": False,
+        "_persistent_final_value_cache_path": "results/reclamm_heatmap_forward_cache/test/forward_values_tvl_1m.parquet",
+    }
+
+    script_module._load_persistent_final_value_cache(cache)
+
+    assert cache["_persistent_final_value_cache"] == {
+        "first123": 111.0,
+        "second456": 222.0,
+    }
+    assert cache["_persistent_final_value_next_batch_id"] == 2
 
 
 def test_load_persistent_final_value_cache_supports_legacy_two_column_parquet(
@@ -630,8 +955,27 @@ def test_load_persistent_final_value_cache_supports_legacy_two_column_parquet(
     script_module._load_persistent_final_value_cache(cache)
 
     assert cache["_persistent_final_value_cache"] == {"legacy123": 999.0}
-    assert cache["_persistent_final_value_records"]["legacy123"]["final_value"] == pytest.approx(999.0)
-    assert cache["_persistent_final_value_records"]["legacy123"]["price_ratio"] is None
+    assert cache["_persistent_final_value_next_batch_id"] == 0
+
+
+def test_make_sweep_cache_does_not_eagerly_load_persisted_parquet(
+    monkeypatch,
+    script_module,
+):
+    calls = []
+
+    monkeypatch.setattr(
+        script_module,
+        "_load_persistent_final_value_cache",
+        lambda cache: calls.append(dict(cache)),
+    )
+
+    cache = script_module.make_sweep_cache(price_data=None, cache_scope_cfg=None)
+
+    assert calls == []
+    assert cache["_persistent_final_value_cache"] == {}
+    assert cache["_persistent_final_value_next_batch_id"] == 0
+    assert cache["_persistent_final_value_cache_loaded"] is False
 
 
 def test_run_comparison_cached_only_uses_geometric_runs_when_constant_arc_disabled(

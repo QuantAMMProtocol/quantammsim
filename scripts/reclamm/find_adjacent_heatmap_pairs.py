@@ -96,6 +96,30 @@ def build_inclusive_sweep(start: float, stop: float, step: float) -> np.ndarray:
     return values
 
 
+def _resolve_repo_root(script_path):
+    """Locate the repository root from either scripts/ or scripts/reclamm/."""
+    script_path = Path(script_path).resolve()
+    for parent in script_path.parents:
+        if (parent / "quantammsim").exists() and (parent / "scripts").exists():
+            return parent
+    return script_path.parents[1]
+
+
+REPO_ROOT = _resolve_repo_root(__file__)
+DEFAULT_MARKET_LINEAR_NOISE_START_DATE = "2024-06-01"
+DEFAULT_MARKET_LINEAR_NOISE_END_DATE = "2026-03-01"
+DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH = str(
+    REPO_ROOT
+    / "results"
+    / "linear_market_noise"
+    / "_sim_arrays"
+    / (
+        "0x9d1fcf346ea1b0_"
+        f"{DEFAULT_MARKET_LINEAR_NOISE_START_DATE}_{DEFAULT_MARKET_LINEAR_NOISE_END_DATE}.npz"
+    )
+)
+
+
 class _LightweightCompareContext:
     """Small subset of compare_reclamm_thermostats usable without JAX."""
 
@@ -112,13 +136,16 @@ class _LightweightCompareContext:
     FIXED_SLICE_FRACTIONS = (0.125, 0.375, 0.625, 0.875)
     FIXED_SLICE_LABELS = ("Q1", "Q2", "Q3", "Q4")
     HEATMAP_FORWARD_CACHE_ENABLED = True
-    HEATMAP_FORWARD_CACHE_RUN_NAME = "aave_eth_thermostat_heatmaps_v1"
+    HEATMAP_FORWARD_CACHE_RUN_NAME = "aave_eth_thermostat_heatmaps_market_linear_v2"
     HEATMAP_FORWARD_CACHE_ROOT = os.path.join(
         "results",
         "reclamm_heatmap_forward_cache",
     )
     AAVE_WETH_POOL_ID = "0x9d1fcf346ea1b0"
     DEFAULT_MARKET_LINEAR_ARTIFACT_DIR = "results/linear_market_noise"
+    DEFAULT_MARKET_LINEAR_NOISE_START_DATE = DEFAULT_MARKET_LINEAR_NOISE_START_DATE
+    DEFAULT_MARKET_LINEAR_NOISE_END_DATE = DEFAULT_MARKET_LINEAR_NOISE_END_DATE
+    DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH = DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
     DEFAULT_NOISE_MODEL = "market_linear"
     DEFAULT_GAS_COST = 1.0
     DEFAULT_PROTOCOL_FEE_SPLIT = 0.25
@@ -138,8 +165,10 @@ class _LightweightCompareContext:
     AAVE_ETH_NOISE_SETTINGS = {
         "enable_noise_model": True,
         "noise_model": DEFAULT_NOISE_MODEL,
+        "noise_reference_model": DEFAULT_NOISE_MODEL,
         "noise_artifact_dir": DEFAULT_MARKET_LINEAR_ARTIFACT_DIR,
         "noise_pool_id": AAVE_WETH_POOL_ID,
+        "noise_arrays_path": DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH,
         "arb_frequency": FIXED_COMPARE_ARB_FREQUENCY,
         "gas_cost": DEFAULT_GAS_COST,
         "protocol_fee_split": DEFAULT_PROTOCOL_FEE_SPLIT,
@@ -197,6 +226,9 @@ class _LightweightCompareContext:
             "HEATMAP_FORWARD_CACHE_ROOT",
             "AAVE_WETH_POOL_ID",
             "DEFAULT_MARKET_LINEAR_ARTIFACT_DIR",
+            "DEFAULT_MARKET_LINEAR_NOISE_START_DATE",
+            "DEFAULT_MARKET_LINEAR_NOISE_END_DATE",
+            "DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH",
             "DEFAULT_NOISE_MODEL",
             "DEFAULT_GAS_COST",
             "DEFAULT_PROTOCOL_FEE_SPLIT",
@@ -225,7 +257,7 @@ class _LightweightCompareContext:
         return context
 
     def set_noise_profile(self, profile):
-        if profile not in {"market_linear", "legacy_calibrated"}:
+        if profile != "market_linear":
             raise ValueError(f"Unsupported lightweight noise profile: {profile}")
         if profile != self.noise_profile:
             self.noise_profile = profile
@@ -353,6 +385,13 @@ class _LightweightCompareContext:
         del noise_cfg
         return self._normalize_arb_frequency(self.FIXED_COMPARE_ARB_FREQUENCY)
 
+    def _canonical_noise_reference_model(self, cfg):
+        noise_model = cfg.get("noise_model", self.DEFAULT_NOISE_MODEL) or self.DEFAULT_NOISE_MODEL
+        reference_model = cfg.get("noise_reference_model")
+        if reference_model is None:
+            reference_model = self.DEFAULT_NOISE_MODEL if noise_model == "arb_only" else noise_model
+        return str(reference_model)
+
     def normalize_compare_run_cfg(self, cfg, enable_noise_model=None):
         updated = dict(cfg)
         updated["price_ratio"] = float(cfg["price_ratio"])
@@ -380,53 +419,79 @@ class _LightweightCompareContext:
         )
         updated["enable_noise_model"] = use_noise
 
-        requested_mode = (
-            cfg.get("noise_model", self.DEFAULT_NOISE_MODEL)
-            or self.DEFAULT_NOISE_MODEL
-        )
+        reference_mode = self._canonical_noise_reference_model(cfg)
         if use_noise:
-            canonical_noise_model = (
-                requested_mode
-                if requested_mode != "arb_only"
-                else self.DEFAULT_NOISE_MODEL
-            )
-            updated["noise_model"] = canonical_noise_model
-            if canonical_noise_model == "market_linear":
-                updated["noise_artifact_dir"] = self.DEFAULT_MARKET_LINEAR_ARTIFACT_DIR
-                updated["noise_pool_id"] = self.AAVE_WETH_POOL_ID
-            else:
-                updated.pop("noise_artifact_dir", None)
-                updated.pop("noise_pool_id", None)
-            updated.pop("reclamm_noise_params", None)
-            updated.pop("noise_arrays_path", None)
+            updated["noise_model"] = reference_mode
+            updated["noise_reference_model"] = reference_mode
         else:
             updated["noise_model"] = "arb_only"
-            for key in (
-                "reclamm_noise_params",
-                "noise_arrays_path",
-                "noise_artifact_dir",
-                "noise_pool_id",
-            ):
-                updated.pop(key, None)
+            updated["noise_reference_model"] = reference_mode
+
+        if reference_mode == "market_linear":
+            updated["noise_arrays_path"] = self.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
+            updated.pop("reclamm_noise_params", None)
+            if use_noise or updated["noise_model"] == "arb_only":
+                updated["noise_artifact_dir"] = self.DEFAULT_MARKET_LINEAR_ARTIFACT_DIR
+                updated["noise_pool_id"] = self.AAVE_WETH_POOL_ID
+        else:
+            updated.pop("reclamm_noise_params", None)
+            updated.pop("noise_arrays_path", None)
+            updated.pop("noise_artifact_dir", None)
+            updated.pop("noise_pool_id", None)
 
         return updated
 
-    def _legacy_calibrated_noise_settings(self, arb_frequency=None):
+    def _load_market_linear_noise_stats(self, arrays_path=None):
+        arrays_path = os.path.abspath(
+            os.fspath(arrays_path or self.DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH)
+        )
+        if not os.path.exists(arrays_path):
+            raise FileNotFoundError(f"market_linear arrays file not found: {arrays_path}")
+
+        with np.load(arrays_path) as arrays:
+            required_keys = {"noise_base", "noise_tvl_coeff", "tvl_mean", "tvl_std"}
+            missing_keys = sorted(required_keys.difference(arrays.files))
+            if missing_keys:
+                raise KeyError(
+                    f"market_linear arrays file {arrays_path} is missing keys: {missing_keys}"
+                )
+            return arrays_path, float(arrays["tvl_mean"]), float(arrays["tvl_std"])
+
+    def _market_linear_noise_settings(self, noise_model="market_linear", arb_frequency=None):
+        arrays_path, tvl_mean, tvl_std = self._load_market_linear_noise_stats()
         arb_frequency = self._normalize_arb_frequency(arb_frequency)
         return {
-            "noise_model": "calibrated",
+            "noise_model": noise_model,
+            "noise_trader_ratio": 0.0,
+            "reclamm_noise_params": {
+                "tvl_mean": tvl_mean,
+                "tvl_std": tvl_std,
+            },
+            "noise_arrays_path": arrays_path,
+            "arb_frequency": arb_frequency,
+            "noise_summary": f"{noise_model} (arb_frequency={arb_frequency})",
+            "noise_cache_key": (
+                noise_model,
+                arrays_path,
+                arb_frequency,
+                round(tvl_mean, 12),
+                round(tvl_std, 12),
+            ),
+        }
+
+    def _legacy_calibrated_noise_settings(self, arb_frequency=None, noise_model="calibrated"):
+        arb_frequency = self._normalize_arb_frequency(arb_frequency)
+        return {
+            "noise_model": noise_model,
             "noise_trader_ratio": 0.0,
             "reclamm_noise_params": {
                 f"c_{i}": self.LEGACY_NOISE_COEFFS[i]
                 for i in range(len(self.LEGACY_NOISE_COEFFS))
             },
             "arb_frequency": arb_frequency,
-            "noise_summary": (
-                "calibrated legacy 8-covariate "
-                f"(arb_frequency={arb_frequency})"
-            ),
+            "noise_summary": f"{noise_model} (arb_frequency={arb_frequency})",
             "noise_cache_key": (
-                "calibrated",
+                noise_model,
                 tuple(round(float(c), 12) for c in self.LEGACY_NOISE_COEFFS),
                 arb_frequency,
             ),
@@ -436,6 +501,7 @@ class _LightweightCompareContext:
         cfg = self.normalize_compare_run_cfg(cfg)
         enable_noise_model = cfg.get("enable_noise_model", False)
         requested_mode = cfg.get("noise_model", self.DEFAULT_NOISE_MODEL)
+        reference_mode = cfg.get("noise_reference_model", self.DEFAULT_NOISE_MODEL)
         requested_arb_frequency = self.get_effective_arb_frequency(cfg)
         cache_key = (
             tuple(cfg.get("tokens", [])),
@@ -443,6 +509,7 @@ class _LightweightCompareContext:
             cfg.get("end"),
             enable_noise_model,
             requested_mode,
+            reference_mode,
             cfg.get("noise_artifact_dir", self.DEFAULT_MARKET_LINEAR_ARTIFACT_DIR),
             cfg.get("noise_pool_id", self.AAVE_WETH_POOL_ID),
             requested_arb_frequency,
@@ -453,68 +520,39 @@ class _LightweightCompareContext:
         if cache_key in self._noise_settings_cache:
             return self._noise_settings_cache[cache_key]
 
-        if not enable_noise_model:
-            result = {
-                "noise_model": "arb_only",
-                "noise_trader_ratio": 0.0,
-                "reclamm_noise_params": None,
-                "noise_arrays_path": None,
-                "arb_frequency": requested_arb_frequency,
-                "noise_summary": "arb_only (noise disabled)",
-                "noise_cache_key": ("disabled",),
-            }
-        elif requested_mode == "market_linear":
-            if self.noise_profile == "legacy_calibrated":
-                result = self._legacy_calibrated_noise_settings(
+        if requested_mode == "arb_only":
+            if reference_mode == "market_linear":
+                result = self._market_linear_noise_settings(
+                    noise_model="arb_only",
                     arb_frequency=requested_arb_frequency
                 )
-                self._noise_settings_cache[cache_key] = result
-                return result
-            artifact_dir = cfg.get(
-                "noise_artifact_dir",
-                self.DEFAULT_MARKET_LINEAR_ARTIFACT_DIR,
-            )
-            pool_id = cfg.get("noise_pool_id", self.AAVE_WETH_POOL_ID)
-            start_date = str(cfg["start"]).split(" ")[0]
-            end_date = str(cfg["end"]).split(" ")[0]
-            arrays_path = cfg.get("noise_arrays_path") or os.path.join(
-                artifact_dir,
-                "_sim_arrays",
-                f"{pool_id}_{start_date}_{end_date}.npz",
-            )
-            meta_path = os.path.join(artifact_dir, "meta.json")
-            model_path = os.path.join(artifact_dir, "model.npz")
-            if not (
-                os.path.exists(arrays_path)
-                and os.path.exists(meta_path)
-                and os.path.exists(model_path)
-            ):
+            elif reference_mode == "calibrated":
                 result = self._legacy_calibrated_noise_settings(
+                    noise_model="arb_only",
                     arb_frequency=requested_arb_frequency
                 )
             else:
-                with np.load(arrays_path) as arrays:
-                    tvl_mean = float(arrays["tvl_mean"])
-                    tvl_std = float(arrays["tvl_std"])
                 arb_frequency = requested_arb_frequency
                 result = {
-                    "noise_model": "market_linear",
-                    "noise_trader_ratio": 0.0,
-                    "reclamm_noise_params": {
-                        "tvl_mean": tvl_mean,
-                        "tvl_std": tvl_std,
-                    },
-                    "noise_arrays_path": arrays_path,
+                    "noise_model": "arb_only",
+                    "noise_trader_ratio": cfg.get("noise_trader_ratio", 0.0),
+                    "reclamm_noise_params": cfg.get("reclamm_noise_params"),
+                    "noise_arrays_path": cfg.get("noise_arrays_path"),
                     "arb_frequency": arb_frequency,
-                    "noise_summary": f"market_linear (arb_frequency={arb_frequency})",
+                    "noise_summary": f"arb_only (arb_frequency={arb_frequency})",
                     "noise_cache_key": (
-                        "market_linear",
-                        arrays_path,
+                        "arb_only",
+                        round(float(cfg.get("noise_trader_ratio", 0.0)), 12),
+                        self._hashable_noise_params(cfg.get("reclamm_noise_params")),
+                        cfg.get("noise_arrays_path"),
                         arb_frequency,
-                        round(tvl_mean, 12),
-                        round(tvl_std, 12),
                     ),
                 }
+        elif requested_mode == "market_linear":
+            result = self._market_linear_noise_settings(
+                noise_model="market_linear",
+                arb_frequency=requested_arb_frequency,
+            )
         elif requested_mode == "calibrated":
             result = self._legacy_calibrated_noise_settings(
                 arb_frequency=requested_arb_frequency
@@ -815,65 +853,15 @@ def autodetect_lightweight_noise_profile(
 ):
     if not hasattr(compare_module, "set_noise_profile"):
         return
-
-    metric_spec = get_metric_spec(metric_key)
-    if not pair_specs:
-        return
-
-    pair_spec = pair_specs[0]
-    slice_variants = resolve_slice_variants(pair_spec, slice_slug)
-    if not slice_variants:
-        return
-
-    slice_variant = slice_variants[0]
-    x_values = list(pair_spec["x_values"])
-    y_values = list(pair_spec["y_values"])
-    sample_x_indices = sorted({0, len(x_values) // 2, len(x_values) - 1})
-    sample_y_indices = sorted({0, len(y_values) // 2, len(y_values) - 1})
-
-    scores = {}
-    for profile in ("market_linear", "legacy_calibrated"):
-        compare_module.set_noise_profile(profile)
-        hit_count = 0
-        probe_count = 0
-        slice_cfg = dict(base_cfg)
-        slice_cfg[pair_spec["fixed_key"]] = float(slice_variant["value"])
-        for y_index in sample_y_indices:
-            for x_index in sample_x_indices:
-                cfg = dict(slice_cfg)
-                cfg[pair_spec["x_key"]] = float(x_values[x_index])
-                cfg[pair_spec["y_key"]] = float(y_values[y_index])
-                for source_name in metric_spec["sources"]:
-                    source_cfg, method = _source_variant(compare_module, cfg, source_name)
-                    cache_key = compare_module._make_method_cache_key(source_cfg, method)
-                    cache_key_hash = compare_module._make_method_cache_hash(cache_key)
-                    probe_count += 1
-                    if cache_key_hash in cache_lookup:
-                        hit_count += 1
-        scores[profile] = (hit_count, probe_count)
-
-    best_profile = max(
-        scores,
-        key=lambda profile: (scores[profile][0], scores[profile][1], profile == "market_linear"),
-    )
-    compare_module.set_noise_profile(best_profile)
-    hit_count, probe_count = scores[best_profile]
-    print(
-        f"Lightweight noise profile auto-detect chose {best_profile} "
-        f"({hit_count}/{probe_count} sample cache hits)."
-    )
+    del base_cfg, pair_specs, metric_key, slice_slug, cache_lookup
+    compare_module.set_noise_profile("market_linear")
+    print("Lightweight noise profile fixed to market_linear.")
 
 
 def _source_variant(compare_module, cfg: Mapping[str, object], source_name: str):
     enable_noise_model = source_name.startswith("noise_")
     method = "geometric" if source_name.endswith("geometric") else "constant_arc_length"
-    source_cfg = compare_module.make_noise_variant_cfg(cfg, enable_noise_model)
-    source_cfg["noise_model"] = (
-        getattr(compare_module, "DEFAULT_NOISE_MODEL", "market_linear")
-        if enable_noise_model
-        else "arb_only"
-    )
-    return source_cfg, method
+    return compare_module.make_noise_variant_cfg(cfg, enable_noise_model), method
 
 
 def _compute_metric_value(metric_key: str, final_values: Mapping[str, float]) -> float:
@@ -1169,7 +1157,10 @@ def main() -> int:
     )
     cache_path = resolve_existing_cache_path(cache_path)
     if not cache_path.exists():
-        raise FileNotFoundError(f"Cache parquet not found: {cache_path}")
+        raise FileNotFoundError(
+            f"Cache parquet not found: {cache_path}. "
+            "Generate the current market_linear/arb_only heatmap cache first."
+        )
 
     cache_lookup = load_cache_lookup(cache_path)
     autodetect_lightweight_noise_profile(
@@ -1227,7 +1218,9 @@ def main() -> int:
     if missing_any and not args.allow_partial_cache:
         raise RuntimeError(
             "Cache was incomplete for at least one requested heatmap slice. "
-            "Re-run with --allow-partial-cache to write the rows that were resolvable."
+            "This cache does not match the current market_linear/arb_only "
+            "parameterization. Regenerate the heatmap cache, or re-run with "
+            "--allow-partial-cache to write only the rows that were resolvable."
         )
 
     frame = rows_to_frame(rows)

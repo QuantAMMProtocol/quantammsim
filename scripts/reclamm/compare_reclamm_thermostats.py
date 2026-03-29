@@ -17,8 +17,8 @@ speed rather than pushing shift_exponent higher.
 
 import gc
 import hashlib
-import math
 import os
+from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
@@ -48,6 +48,15 @@ def build_inclusive_sweep(start, stop, step):
     if values.size == 0 or not np.isclose(values[-1], stop):
         values = np.append(values, float(stop))
     return values
+
+
+def _resolve_repo_root(script_path):
+    """Locate the repository root from either scripts/ or scripts/reclamm/."""
+    script_path = Path(script_path).resolve()
+    for parent in script_path.parents:
+        if (parent / "quantammsim").exists() and (parent / "scripts").exists():
+            return parent
+    return script_path.parents[1]
 
 
 RUN_CONSTANT_ARC_LENGTH = True
@@ -90,36 +99,39 @@ FIXED_SLICE_LABELS = ("Q1", "Q2", "Q3", "Q4")
 THREE_D_VIEW_ELEVATION = 22.0
 THREE_D_VIEW_AZIMUTH = 140.0
 HEATMAP_FORWARD_CACHE_ENABLED = True
-HEATMAP_FORWARD_CACHE_RUN_NAME = "aave_eth_thermostat_heatmaps_v1"
+HEATMAP_FORWARD_CACHE_RUN_NAME = "aave_eth_thermostat_heatmaps_market_linear_v2"
 HEATMAP_FORWARD_CACHE_ROOT = os.path.join(
     "results",
     "reclamm_heatmap_forward_cache",
 )
 HEATMAP_FORWARD_CACHE_FLUSH_EVERY = 32
 
+REPO_ROOT = _resolve_repo_root(__file__)
 AAVE_WETH_POOL_ID = "0x9d1fcf346ea1b0"
 DEFAULT_MARKET_LINEAR_ARTIFACT_DIR = "results/linear_market_noise"
+DEFAULT_MARKET_LINEAR_NOISE_START_DATE = "2024-06-01"
+DEFAULT_MARKET_LINEAR_NOISE_END_DATE = "2026-03-01"
+DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH = str(
+    REPO_ROOT
+    / "results"
+    / "linear_market_noise"
+    / "_sim_arrays"
+    / (
+        f"{AAVE_WETH_POOL_ID}_{DEFAULT_MARKET_LINEAR_NOISE_START_DATE}_"
+        f"{DEFAULT_MARKET_LINEAR_NOISE_END_DATE}.npz"
+    )
+)
 DEFAULT_NOISE_MODEL = "market_linear"
 DEFAULT_GAS_COST = 1.0
 DEFAULT_PROTOCOL_FEE_SPLIT = 0.25
-LEGACY_NOISE_COEFFS = [
-    -0.453,
-    0.025,
-    -0.060,
-    0.310,
-    -0.149,
-    0.359,
-    0.061,
-    0.060,
-]
-LEGACY_LOG_CADENCE = 2.68
-LEGACY_ARB_FREQUENCY = max(1, round(math.exp(LEGACY_LOG_CADENCE)))
-FIXED_COMPARE_ARB_FREQUENCY = LEGACY_ARB_FREQUENCY
+FIXED_COMPARE_ARB_FREQUENCY = 15
 AAVE_ETH_NOISE_SETTINGS = {
     "enable_noise_model": True,
     "noise_model": DEFAULT_NOISE_MODEL,
+    "noise_reference_model": DEFAULT_NOISE_MODEL,
     "noise_artifact_dir": DEFAULT_MARKET_LINEAR_ARTIFACT_DIR,
     "noise_pool_id": AAVE_WETH_POOL_ID,
+    "noise_arrays_path": DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH,
     "arb_frequency": FIXED_COMPARE_ARB_FREQUENCY,
     "gas_cost": DEFAULT_GAS_COST,
     "protocol_fee_split": DEFAULT_PROTOCOL_FEE_SPLIT,
@@ -164,7 +176,7 @@ HEATMAP_METRIC_DEPENDENCIES = {
 }
 
 _NOISE_SETTINGS_CACHE = {}
-_WARNED_NOISE_FALLBACKS = set()
+_MARKET_LINEAR_NOISE_DATA_CACHE = {}
 
 
 def get_initial_pool_value(cfg):
@@ -251,6 +263,27 @@ def get_effective_arb_frequency(cfg, noise_cfg=None):
     return _normalize_arb_frequency(FIXED_COMPARE_ARB_FREQUENCY)
 
 
+def _canonical_noise_reference_model(cfg):
+    """Resolve the only supported thermostat noise parametrisation."""
+    noise_model = cfg.get("noise_model", DEFAULT_NOISE_MODEL) or DEFAULT_NOISE_MODEL
+    reference_model = cfg.get("noise_reference_model")
+    if reference_model is None:
+        reference_model = DEFAULT_NOISE_MODEL if noise_model == "arb_only" else noise_model
+    noise_model = str(noise_model)
+    reference_model = str(reference_model)
+    if noise_model not in {DEFAULT_NOISE_MODEL, "arb_only"}:
+        raise ValueError(
+            "compare_reclamm_thermostats only supports "
+            "'market_linear' noise and 'arb_only' baselines."
+        )
+    if reference_model != DEFAULT_NOISE_MODEL:
+        raise ValueError(
+            "compare_reclamm_thermostats only supports the "
+            "'market_linear' noise parametrisation."
+        )
+    return reference_model
+
+
 def normalize_compare_run_cfg(cfg, enable_noise_model=None):
     """Canonicalize the compare-run config so non-axis inputs stay fixed."""
     updated = dict(cfg)
@@ -277,26 +310,18 @@ def normalize_compare_run_cfg(cfg, enable_noise_model=None):
     )
     updated["enable_noise_model"] = use_noise
 
-    requested_mode = cfg.get("noise_model", DEFAULT_NOISE_MODEL) or DEFAULT_NOISE_MODEL
+    reference_mode = _canonical_noise_reference_model(cfg)
     if use_noise:
-        updated["noise_model"] = requested_mode
-        if requested_mode == "market_linear":
-            updated["noise_artifact_dir"] = DEFAULT_MARKET_LINEAR_ARTIFACT_DIR
-            updated["noise_pool_id"] = AAVE_WETH_POOL_ID
-        else:
-            updated.pop("noise_artifact_dir", None)
-            updated.pop("noise_pool_id", None)
-        updated.pop("reclamm_noise_params", None)
-        updated.pop("noise_arrays_path", None)
+        updated["noise_model"] = reference_mode
+        updated["noise_reference_model"] = reference_mode
     else:
-        updated["noise_model"] = None
-        for key in (
-            "reclamm_noise_params",
-            "noise_arrays_path",
-            "noise_artifact_dir",
-            "noise_pool_id",
-        ):
-            updated.pop(key, None)
+        updated["noise_model"] = "arb_only"
+        updated["noise_reference_model"] = reference_mode
+
+    updated["noise_arrays_path"] = DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH
+    updated.pop("reclamm_noise_params", None)
+    updated["noise_artifact_dir"] = DEFAULT_MARKET_LINEAR_ARTIFACT_DIR
+    updated["noise_pool_id"] = AAVE_WETH_POOL_ID
 
     return updated
 
@@ -306,13 +331,6 @@ def make_noise_variant_cfg(cfg, enable_noise_model):
     return normalize_compare_run_cfg(cfg, enable_noise_model=enable_noise_model)
 
 
-def _warn_noise_fallback(message):
-    """Print a one-time message when the preferred noise setup is unavailable."""
-    if message not in _WARNED_NOISE_FALLBACKS:
-        print(message)
-        _WARNED_NOISE_FALLBACKS.add(message)
-
-
 def _hashable_noise_params(params):
     """Convert a noise-params dict into a stable cache key fragment."""
     if params is None:
@@ -320,38 +338,76 @@ def _hashable_noise_params(params):
     return tuple(sorted((str(k), round(float(v), 12)) for k, v in params.items()))
 
 
-def _legacy_calibrated_noise_settings(reason=None, arb_frequency=None):
-    """Fallback calibrated noise config used when market-linear artifacts are absent."""
-    if reason:
-        _warn_noise_fallback(
-            "market_linear noise unavailable for thermostat comparison; "
-            f"falling back to calibrated legacy coefficients ({reason})."
-        )
+def load_shared_market_linear_noise_data(
+    arrays_path=DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH,
+):
+    """Load the market_linear arrays once so compare runs can reuse them."""
+    arrays_path = os.path.abspath(os.fspath(arrays_path))
+    cached = _MARKET_LINEAR_NOISE_DATA_CACHE.get(arrays_path)
+    if cached is not None:
+        return cached
+
+    if not os.path.exists(arrays_path):
+        raise FileNotFoundError(f"market_linear arrays file not found: {arrays_path}")
+
+    with np.load(arrays_path) as arrays:
+        required_keys = {"noise_base", "noise_tvl_coeff", "tvl_mean", "tvl_std"}
+        missing_keys = sorted(required_keys.difference(arrays.files))
+        if missing_keys:
+            raise KeyError(
+                f"market_linear arrays file {arrays_path} is missing keys: {missing_keys}"
+            )
+        shared = {
+            "arrays_path": arrays_path,
+            "noise_base_array": np.asarray(arrays["noise_base"]),
+            "noise_tvl_coeff_array": np.asarray(arrays["noise_tvl_coeff"]),
+            "tvl_mean": float(arrays["tvl_mean"]),
+            "tvl_std": float(arrays["tvl_std"]),
+        }
+    _MARKET_LINEAR_NOISE_DATA_CACHE[arrays_path] = shared
+    return shared
+
+
+def _load_market_linear_noise_stats(arrays_path=DEFAULT_MARKET_LINEAR_NOISE_ARRAYS_PATH):
+    """Load the exact arrays file used by the market_linear run fingerprint.
+
+    The simulator consumes ``noise_base`` and ``noise_tvl_coeff`` from
+    ``run_fingerprint["noise_arrays_path"]`` and uses ``tvl_mean``/``tvl_std``
+    from the same file for TVL standardization.
+    """
+    shared = load_shared_market_linear_noise_data(arrays_path=arrays_path)
+    return shared["arrays_path"], shared["tvl_mean"], shared["tvl_std"]
+
+
+def _market_linear_noise_settings(noise_model="market_linear", arb_frequency=None):
+    """Build the tuned market_linear fingerprint block from the fixed arrays file."""
+    arrays_path, tvl_mean, tvl_std = _load_market_linear_noise_stats()
     arb_frequency = _normalize_arb_frequency(arb_frequency)
     return {
-        "noise_model": "calibrated",
+        "noise_model": noise_model,
         "noise_trader_ratio": 0.0,
         "reclamm_noise_params": {
-            f"c_{i}": LEGACY_NOISE_COEFFS[i] for i in range(len(LEGACY_NOISE_COEFFS))
+            "tvl_mean": tvl_mean,
+            "tvl_std": tvl_std,
         },
+        "noise_arrays_path": arrays_path,
         "arb_frequency": arb_frequency,
-        "noise_summary": (
-            "calibrated legacy 8-covariate "
-            f"(arb_frequency={arb_frequency})"
-        ),
+        "noise_summary": f"{noise_model} (arb_frequency={arb_frequency})",
         "noise_cache_key": (
-            "calibrated",
-            tuple(round(float(c), 12) for c in LEGACY_NOISE_COEFFS),
+            noise_model,
+            arrays_path,
             arb_frequency,
+            round(tvl_mean, 12),
+            round(tvl_std, 12),
         ),
     }
-
 
 def resolve_reclamm_noise_settings(cfg):
     """Resolve the active reCLAMM noise-model fingerprint block for a config."""
     cfg = normalize_compare_run_cfg(cfg)
     enable_noise_model = cfg.get("enable_noise_model", False)
     requested_mode = cfg.get("noise_model", DEFAULT_NOISE_MODEL)
+    reference_mode = cfg.get("noise_reference_model", DEFAULT_NOISE_MODEL)
     requested_arb_frequency = get_effective_arb_frequency(cfg)
     cache_key = (
         tuple(cfg.get("tokens", [])),
@@ -359,6 +415,7 @@ def resolve_reclamm_noise_settings(cfg):
         cfg.get("end"),
         enable_noise_model,
         requested_mode,
+        reference_mode,
         cfg.get("noise_artifact_dir", DEFAULT_MARKET_LINEAR_ARTIFACT_DIR),
         cfg.get("noise_pool_id", AAVE_WETH_POOL_ID),
         requested_arb_frequency,
@@ -369,103 +426,21 @@ def resolve_reclamm_noise_settings(cfg):
     if cache_key in _NOISE_SETTINGS_CACHE:
         return _NOISE_SETTINGS_CACHE[cache_key]
 
-    if not enable_noise_model:
-        result = {
-            "noise_model": None,
-            "noise_trader_ratio": 0.0,
-            "reclamm_noise_params": None,
-            "noise_arrays_path": None,
-            "arb_frequency": requested_arb_frequency,
-            "noise_summary": "arb-only (noise disabled)",
-            "noise_cache_key": ("disabled",),
-        }
-    elif requested_mode == "market_linear":
-        artifact_dir = cfg.get("noise_artifact_dir", DEFAULT_MARKET_LINEAR_ARTIFACT_DIR)
-        pool_id = cfg.get("noise_pool_id", AAVE_WETH_POOL_ID)
-        start_date = str(cfg["start"]).split(" ")[0]
-        end_date = str(cfg["end"]).split(" ")[0]
-        try:
-            from quantammsim.calibration.noise_model_arrays import build_simulator_arrays
-
-            model_path = os.path.join(artifact_dir, "model.npz")
-            meta_path = os.path.join(artifact_dir, "meta.json")
-            if not (os.path.exists(model_path) and os.path.exists(meta_path)):
-                raise FileNotFoundError(
-                    f"expected {model_path} and {meta_path}"
-                )
-
-            cache_dir = os.path.join(artifact_dir, "_sim_arrays")
-            os.makedirs(cache_dir, exist_ok=True)
-            arrays_path = os.path.join(
-                cache_dir,
-                f"{pool_id}_{start_date}_{end_date}.npz",
-            )
-            if not os.path.exists(arrays_path):
-                arrays = build_simulator_arrays(
-                    token_a=cfg["tokens"][0],
-                    token_b=cfg["tokens"][1],
-                    pool_id=pool_id,
-                    start_date=start_date,
-                    end_date=end_date,
-                    artifact_dir=artifact_dir,
-                )
-                np.savez(
-                    arrays_path,
-                    noise_base=arrays["noise_base"],
-                    noise_tvl_coeff=arrays["noise_tvl_coeff"],
-                    tvl_mean=arrays["tvl_mean"],
-                    tvl_std=arrays["tvl_std"],
-                )
-
-            with np.load(arrays_path) as arrays:
-                tvl_mean = float(arrays["tvl_mean"])
-                tvl_std = float(arrays["tvl_std"])
-
-            arb_frequency = requested_arb_frequency
-            result = {
-                "noise_model": "market_linear",
-                "noise_trader_ratio": 0.0,
-                "reclamm_noise_params": {
-                    "tvl_mean": tvl_mean,
-                    "tvl_std": tvl_std,
-                },
-                "noise_arrays_path": arrays_path,
-                "arb_frequency": arb_frequency,
-                "noise_summary": f"market_linear (arb_frequency={arb_frequency})",
-                "noise_cache_key": (
-                    "market_linear",
-                    arrays_path,
-                    arb_frequency,
-                    round(tvl_mean, 12),
-                    round(tvl_std, 12),
-                    ),
-                }
-        except Exception as exc:  # pragma: no cover - fallback path depends on local artifacts
-            result = _legacy_calibrated_noise_settings(
-                str(exc),
-                arb_frequency=requested_arb_frequency,
-            )
-    elif requested_mode == "calibrated":
-        result = _legacy_calibrated_noise_settings(
-            arb_frequency=requested_arb_frequency
+    if requested_mode == "arb_only":
+        result = _market_linear_noise_settings(
+            noise_model="arb_only",
+            arb_frequency=requested_arb_frequency,
+        )
+    elif requested_mode == DEFAULT_NOISE_MODEL:
+        result = _market_linear_noise_settings(
+            noise_model=DEFAULT_NOISE_MODEL,
+            arb_frequency=requested_arb_frequency,
         )
     else:
-        arb_frequency = requested_arb_frequency
-        result = {
-            "noise_model": requested_mode,
-            "noise_trader_ratio": cfg.get("noise_trader_ratio", 0.0),
-            "reclamm_noise_params": cfg.get("reclamm_noise_params"),
-            "noise_arrays_path": cfg.get("noise_arrays_path"),
-            "arb_frequency": arb_frequency,
-            "noise_summary": f"{requested_mode} (arb_frequency={arb_frequency})",
-            "noise_cache_key": (
-                requested_mode,
-                round(float(cfg.get("noise_trader_ratio", 0.0)), 12),
-                _hashable_noise_params(cfg.get("reclamm_noise_params")),
-                cfg.get("noise_arrays_path"),
-                arb_frequency,
-            ),
-        }
+        raise ValueError(
+            "compare_reclamm_thermostats only supports "
+            "'market_linear' noise and 'arb_only' baselines."
+        )
 
     _NOISE_SETTINGS_CACHE[cache_key] = result
     return result
@@ -504,7 +479,29 @@ CONFIGS = [
 ]
 
 
-def make_fingerprint(cfg, interpolation_method):
+def _attach_market_linear_noise_arrays(
+    fingerprint,
+    noise_cfg,
+    market_linear_noise_data,
+):
+    """Attach preloaded market_linear arrays when the compare flow has them."""
+    if market_linear_noise_data is None:
+        return
+    expected_path = noise_cfg.get("noise_arrays_path")
+    if expected_path is None:
+        return
+    shared_path = os.path.abspath(os.fspath(market_linear_noise_data["arrays_path"]))
+    expected_path = os.path.abspath(os.fspath(expected_path))
+    if shared_path != expected_path:
+        raise ValueError(
+            "Shared market_linear noise arrays path does not match "
+            f"the resolved compare-run noise path: {shared_path} != {expected_path}"
+        )
+    fingerprint["noise_base_array"] = market_linear_noise_data["noise_base_array"]
+    fingerprint["noise_tvl_coeff_array"] = market_linear_noise_data["noise_tvl_coeff_array"]
+
+
+def make_fingerprint(cfg, interpolation_method, market_linear_noise_data=None):
     """Build run fingerprint for a given config and interpolation method."""
     cfg = normalize_compare_run_cfg(cfg)
     speed_override = (
@@ -541,6 +538,11 @@ def make_fingerprint(cfg, interpolation_method):
         fingerprint["reclamm_noise_params"] = noise_cfg["reclamm_noise_params"]
     if noise_cfg.get("noise_arrays_path") is not None:
         fingerprint["noise_arrays_path"] = noise_cfg["noise_arrays_path"]
+        _attach_market_linear_noise_arrays(
+            fingerprint,
+            noise_cfg,
+            market_linear_noise_data,
+        )
     if arb_frequency is not None:
         fingerprint["arb_frequency"] = arb_frequency
     return fingerprint
@@ -564,13 +566,22 @@ def load_shared_price_data(configs, root=None):
     return get_historic_parquet_data(tokens, cols=["close"], root=root)
 
 
-def run_comparison(cfg, price_data=None, low_data_mode=False):
+def run_comparison(
+    cfg,
+    price_data=None,
+    low_data_mode=False,
+    market_linear_noise_data=None,
+):
     """Run both interpolation variants, return results dict."""
     params = make_params(cfg)
 
     results = {}
     for method in INTERPOLATION_METHODS:
-        fp = make_fingerprint(cfg, method)
+        fp = make_fingerprint(
+            cfg,
+            method,
+            market_linear_noise_data=market_linear_noise_data,
+        )
         results[method] = do_run_on_historic_data(
             run_fingerprint=fp,
             params=params,
@@ -662,30 +673,44 @@ def _load_persistent_final_value_cache(cache):
         return
 
     disk_cache = {}
-    disk_records = {}
+    next_batch_id = 0
     cache_path = cache.get("_persistent_final_value_cache_path")
     if cache_path and os.path.exists(cache_path):
-        frame = pd.read_parquet(cache_path)
-        if not frame.empty:
+        parquet_files = []
+        if os.path.isdir(cache_path):
+            parquet_files = [
+                os.path.join(cache_path, filename)
+                for filename in sorted(os.listdir(cache_path))
+                if filename.endswith(".parquet")
+            ]
+            batch_ids = []
+            for filename in os.listdir(cache_path):
+                if not (filename.startswith("batch_") and filename.endswith(".parquet")):
+                    continue
+                token = filename[len("batch_") : -len(".parquet")]
+                if token.isdigit():
+                    batch_ids.append(int(token))
+            next_batch_id = (max(batch_ids) + 1) if batch_ids else 0
+        else:
+            parquet_files = [cache_path]
+
+        for parquet_file in parquet_files:
+            frame = pd.read_parquet(
+                parquet_file,
+                columns=["cache_key_hash", "final_value"],
+            )
+            if frame.empty:
+                continue
             for row in frame.itertuples(index=False):
                 cache_key_hash = str(row.cache_key_hash)
                 final_value = float(row.final_value)
                 disk_cache[cache_key_hash] = final_value
-                record = {
-                    "cache_key_hash": cache_key_hash,
-                    "final_value": final_value,
-                }
-                for column in PERSISTED_FORWARD_VALUE_COLUMNS:
-                    if column in {"cache_key_hash", "final_value"}:
-                        continue
-                    record[column] = getattr(row, column, None)
-                disk_records[cache_key_hash] = record
         print(
             f"Loaded {len(disk_cache)} persisted heatmap forward values from {cache_path}"
         )
 
     cache["_persistent_final_value_cache"] = disk_cache
-    cache["_persistent_final_value_records"] = disk_records
+    cache["_persistent_final_value_next_batch_id"] = next_batch_id
     cache["_persistent_final_value_cache_loaded"] = True
 
 
@@ -702,52 +727,63 @@ def flush_sweep_cache(cache, force=False):
 
     _load_persistent_final_value_cache(cache)
     disk_cache = cache.setdefault("_persistent_final_value_cache", {})
-    disk_records = cache.setdefault("_persistent_final_value_records", {})
+    batch_records = []
     for cache_key_hash, record in pending.items():
-        merged = dict(disk_records.get(cache_key_hash, {}))
-        merged.update(record)
-        merged["cache_key_hash"] = str(cache_key_hash)
-        merged["final_value"] = float(merged["final_value"])
-        disk_records[cache_key_hash] = merged
-        disk_cache[cache_key_hash] = merged["final_value"]
+        normalized = dict(record)
+        normalized["cache_key_hash"] = str(cache_key_hash)
+        normalized["final_value"] = float(normalized["final_value"])
+        disk_cache[cache_key_hash] = normalized["final_value"]
+        batch_records.append(normalized)
 
     cache_path = cache.get("_persistent_final_value_cache_path")
     if cache_path is None:
         pending.clear()
         return
 
-    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-    sorted_records = [disk_records[key] for key in sorted(disk_records)]
+    if os.path.exists(cache_path) and not os.path.isdir(cache_path):
+        raise RuntimeError(
+            f"Persistent cache path {cache_path} already exists as a file. "
+            "Use a fresh cache namespace for append-only parquet shards."
+        )
+
+    os.makedirs(cache_path, exist_ok=True)
+    batch_records.sort(key=lambda record: record["cache_key_hash"])
     payload = {
-        column: [record.get(column) for record in sorted_records]
+        column: [record.get(column) for record in batch_records]
         for column in PERSISTED_FORWARD_VALUE_COLUMNS
     }
     payload["final_value"] = np.asarray(payload["final_value"], dtype=np.float64)
     frame = pd.DataFrame(payload)
-    frame.sort_values("cache_key_hash", inplace=True, ignore_index=True)
-    frame.to_parquet(cache_path, index=False, compression="zstd")
+    batch_id = int(cache.setdefault("_persistent_final_value_next_batch_id", 0))
+    batch_path = os.path.join(cache_path, f"batch_{batch_id:08d}.parquet")
+    cache["_persistent_final_value_next_batch_id"] = batch_id + 1
+    frame.to_parquet(batch_path, index=False, compression="zstd")
     print(
-        f"Persisted {len(pending)} new heatmap forward values to {cache_path} "
+        f"Persisted {len(pending)} new heatmap forward values to {batch_path} "
         f"({len(disk_cache)} total cached values)."
     )
     pending.clear()
 
 
-def make_sweep_cache(price_data, cache_scope_cfg=None):
+def make_sweep_cache(
+    price_data,
+    cache_scope_cfg=None,
+    market_linear_noise_data=None,
+):
     """Create a shared cache for heatmap and line sweeps."""
     cache = {
         "_shared_price_data": price_data,
+        "_shared_market_linear_noise_data": market_linear_noise_data,
         "_final_value_cache": {},
         "_comparison_cache": {},
         "_pending_persistent_final_values": {},
         "_persistent_final_value_cache": {},
-        "_persistent_final_value_records": {},
+        "_persistent_final_value_next_batch_id": 0,
         "_persistent_final_value_cache_loaded": False,
         "_persistent_final_value_cache_path": _heatmap_forward_cache_path(
             cache_scope_cfg
         ),
     }
-    _load_persistent_final_value_cache(cache)
     return cache
 
 
@@ -781,6 +817,10 @@ def _make_method_cache_key(cfg, method):
     arb_frequency = get_effective_arb_frequency(cfg, noise_cfg)
     key = (
         method,
+        tuple(str(token) for token in cfg["tokens"]),
+        str(cfg["start"]),
+        str(cfg["end"]),
+        round(float(cfg["fees"]), 12),
         bool(cfg.get("enable_noise_model", False)),
         round(float(cfg["price_ratio"]), 6),
         round(float(cfg["centeredness_margin"]), 6),
@@ -810,6 +850,40 @@ def _make_method_cache_key(cfg, method):
     if method == "constant_arc_length":
         key += (_speed_cache_key(cfg.get("arc_length_speed")),)
     return key
+
+
+def _nearest_price_row(price_data, start_ts):
+    """Select the closest available price row to the requested start timestamp."""
+    if len(price_data.index) == 0:
+        raise ValueError("price_data is empty")
+
+    if isinstance(price_data.index, pd.DatetimeIndex):
+        target_ts = start_ts
+        index_tz = getattr(price_data.index, "tz", None)
+        if index_tz is not None and target_ts.tzinfo is None:
+            target_ts = target_ts.tz_localize(index_tz)
+        elif index_tz is None and target_ts.tzinfo is not None:
+            target_ts = target_ts.tz_convert(None)
+        target_value = int(target_ts.value)
+        index_values = price_data.index.asi8
+    else:
+        target_value = int(start_ts.timestamp() * 1000.0)
+        index_values = price_data.index.to_numpy(dtype=np.int64)
+
+    row_idx = int(np.searchsorted(index_values, target_value, side="left"))
+    if row_idx >= len(index_values):
+        row_idx = len(index_values) - 1
+    elif row_idx > 0 and index_values[row_idx] != target_value:
+        prev_idx = row_idx - 1
+        if abs(int(index_values[prev_idx]) - target_value) <= abs(
+            int(index_values[row_idx]) - target_value
+        ):
+            row_idx = prev_idx
+
+    row = price_data.iloc[row_idx]
+    if isinstance(row, pd.DataFrame):
+        row = row.iloc[0]
+    return row
 
 
 def _make_comparison_cache_key(cfg, launch_final_values):
@@ -847,7 +921,11 @@ def _run_method_final_value_cached(cfg, method, cache):
         return final_value_cache[key]
 
     result = do_run_on_historic_data(
-        run_fingerprint=make_fingerprint(cfg, method),
+        run_fingerprint=make_fingerprint(
+            cfg,
+            method,
+            market_linear_noise_data=cache.get("_shared_market_linear_noise_data"),
+        ),
         params=make_params(cfg),
         price_data=cache["_shared_price_data"],
         low_data_mode=True,
@@ -1842,25 +1920,7 @@ def generate_three_variable_3d_heatmaps(
 def compute_auto_calibrated_arc_length_speed(cfg, price_data):
     """Compute the launch/reference auto-calibrated speed for a config."""
     start_ts = pd.Timestamp(cfg["start"])
-
-    if isinstance(price_data.index, pd.DatetimeIndex):
-        row = price_data.loc[start_ts]
-    else:
-        start_unix_ms = int(start_ts.timestamp() * 1000.0)
-        index_values = price_data.index.to_numpy(dtype=np.int64)
-        row_idx = int(np.searchsorted(index_values, start_unix_ms, side="left"))
-        if row_idx >= len(index_values):
-            row_idx = len(index_values) - 1
-        if row_idx > 0 and index_values[row_idx] != start_unix_ms:
-            prev_idx = row_idx - 1
-            if abs(index_values[prev_idx] - start_unix_ms) <= abs(
-                index_values[row_idx] - start_unix_ms
-            ):
-                row_idx = prev_idx
-        row = price_data.iloc[row_idx]
-
-    if isinstance(row, pd.DataFrame):
-        row = row.iloc[0]
+    row = _nearest_price_row(price_data, start_ts)
 
     if isinstance(price_data.columns, pd.MultiIndex):
         initial_price_values = [
@@ -2103,7 +2163,12 @@ def generate_arc_speed_efficiency_artifacts(
         print("Released arc-speed sweep cache.")
 
 
-def get_launch_final_values(all_results, launch_cfg, price_data):
+def get_launch_final_values(
+    all_results,
+    launch_cfg,
+    price_data,
+    market_linear_noise_data=None,
+):
     """Reuse launch-style runs when available; otherwise run them once."""
     for cfg, results in all_results:
         if cfg["name"] == launch_cfg["name"]:
@@ -2121,6 +2186,7 @@ def get_launch_final_values(all_results, launch_cfg, price_data):
         launch_cfg,
         price_data=price_data,
         low_data_mode=True,
+        market_linear_noise_data=market_linear_noise_data,
     )
     launch_final_values = {
         "geometric": float(launch_results["geometric"]["final_value"]),
@@ -2388,6 +2454,7 @@ def plot_comparison(cfg, results, fig_idx):
 
 if __name__ == "__main__":
     shared_price_data = load_shared_price_data(CONFIGS)
+    shared_market_linear_noise_data = load_shared_market_linear_noise_data()
 
     for initial_pool_value in TVL_SWEEP_VALUES:
         tvl_configs = configs_for_tvl(CONFIGS, initial_pool_value)
@@ -2398,7 +2465,11 @@ if __name__ == "__main__":
         for i, cfg in enumerate(tvl_configs):
             print(f"\n>>> Running {cfg['name']} at TVL {tvl_label}...")
             try:
-                results = run_comparison(cfg, price_data=shared_price_data)
+                results = run_comparison(
+                    cfg,
+                    price_data=shared_price_data,
+                    market_linear_noise_data=shared_market_linear_noise_data,
+                )
                 print_comparison(cfg, results)
                 plot_comparison(cfg, results, i)
                 all_results.append((cfg, results))
@@ -2503,10 +2574,12 @@ if __name__ == "__main__":
             all_results,
             launch_cfg=tvl_configs[0],
             price_data=shared_price_data,
+            market_linear_noise_data=shared_market_linear_noise_data,
         )
         shared_sweep_cache = make_sweep_cache(
             shared_price_data,
             cache_scope_cfg=tvl_configs[1],
+            market_linear_noise_data=shared_market_linear_noise_data,
         )
 
         print(f"\nGenerating thermostat heatmaps for TVL {tvl_label}...")
