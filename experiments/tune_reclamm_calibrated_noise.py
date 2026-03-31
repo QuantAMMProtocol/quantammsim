@@ -115,7 +115,7 @@ def _build_market_linear_arrays(args):
 
 
 def _build_opt_settings(args):
-    """Build optimisation_settings for either optuna or bfgs."""
+    """Build optimisation_settings for optuna, bfgs, or cma_es."""
     if args.method == "bfgs":
         return {
             "method": "bfgs",
@@ -126,6 +126,20 @@ def _build_opt_settings(args):
                 "tol": args.bfgs_tol,
                 "n_evaluation_points": args.bfgs_eval_points,
                 "compute_dtype": "float64",
+            },
+        }
+    elif args.method == "cma_es":
+        return {
+            "method": "cma_es",
+            "n_parameter_sets": args.n_parameter_sets,
+            **({"val_fraction": args.val_fraction} if args.val_fraction is not None else {}),
+            "cma_es_settings": {
+                "population_size": args.cma_pop_size,
+                "n_generations": args.cma_generations,
+                "sigma0": args.cma_sigma0,
+                "tol": 1e-8,
+                "n_evaluation_points": args.cma_eval_points,
+                "compute_dtype": "float32",
             },
         }
     else:
@@ -141,6 +155,8 @@ def _build_opt_settings(args):
                 "parameter_config": PARAMETER_CONFIG,
                 **({"overfitting_penalty": args.overfitting_penalty}
                    if args.overfitting_penalty is not None else {}),
+                **({"min_train_returns_over_hodl": args.min_train_ret}
+                   if args.min_train_ret is not None else {}),
             },
         }
 
@@ -222,7 +238,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Tune reClAMM params with calibrated 8-covariate noise model"
     )
-    parser.add_argument("--method", default="optuna", choices=["optuna", "bfgs"],
+    parser.add_argument("--method", default="optuna",
+                        choices=["optuna", "bfgs", "cma_es"],
                         help="Optimisation method")
     parser.add_argument("--n-trials", type=int, default=50,
                         help="Optuna trials (ignored for bfgs)")
@@ -232,6 +249,15 @@ def main():
     parser.add_argument("--bfgs-tol", type=float, default=1e-6)
     parser.add_argument("--bfgs-eval-points", type=int, default=20,
                         help="Number of evaluation points for bfgs")
+    # CMA-ES
+    parser.add_argument("--cma-generations", type=int, default=300)
+    parser.add_argument("--cma-sigma0", type=float, default=0.5,
+                        help="Initial step size for CMA-ES")
+    parser.add_argument("--cma-pop-size", type=int, default=None,
+                        help="Population size (None = auto)")
+    parser.add_argument("--cma-eval-points", type=int, default=20)
+    parser.add_argument("--min-train-ret", type=float, default=-0.5,
+                        help="Reject trials with IS returns_over_hodl below this")
     parser.add_argument("--noise-model", default="market_linear",
                         choices=["calibrated", "market_linear"],
                         help="Noise model variant")
