@@ -395,7 +395,10 @@ def reclamm_market_linear_noise_volume(
         Per-minute noise volume (USD), floored at zero.
     """
     log_tvl = jnp.log(jnp.maximum(effective_value_usd, 1.0))
-    standardized_log_tvl = (log_tvl - tvl_mean) / tvl_std
+    # Clamp standardized TVL to training range [-3, +3] std to prevent
+    # extreme concentration from wireheading the noise model
+    standardized_log_tvl = jnp.clip(
+        (log_tvl - tvl_mean) / tvl_std, -3.0, 3.0)
     log_daily_noise = noise_base + noise_tvl_coeff * standardized_log_tvl
     daily_noise = jnp.exp(log_daily_noise)
     return jnp.maximum(0.0, daily_noise / 1440.0)
