@@ -51,16 +51,19 @@ def load_stage1():
     return data["matched_clean"], data["option_c_clean"]
 
 
+COMPETITOR_TVL_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "results", "competitor_tvl", "competitor_tvl.npz",
+)
+
+
 def build_mm_data(matched_clean, option_c_clean, trend_windows=(7,),
-                  include_cross_pool=False):
+                  include_cross_pool=False, competitor_tvl_path=None):
     """Build data with MM structure: separate TVL from market features.
 
-    Also builds per-sample Binance log-volumes for predicting K.
+    Loads observed competitor TVL from DeFi Llama for K.
     """
     from experiments.run_linear_market_noise import build_data
-    from quantammsim.calibration.market_features import (
-        _load_binance_daily, TOKEN_MAP,
-    )
     from quantammsim.calibration.pool_data import _parse_tokens
 
     # Get full feature matrix from linear model's pipeline
@@ -71,8 +74,7 @@ def build_mm_data(matched_clean, option_c_clean, trend_windows=(7,),
         include_cross_pool=include_cross_pool,
     )
 
-    # Remove TVL column and TVL interaction terms — TVL handled by MM,
-    # interactions subsumed by time-varying K from Binance volumes
+    # Remove TVL column and TVL interaction terms — TVL handled by MM
     feat_names = data["feat_names"]
     x_full = data["x"]
     tvl_col = feat_names.index("xobs_1")
@@ -86,7 +88,7 @@ def build_mm_data(matched_clean, option_c_clean, trend_windows=(7,),
     pool_ids = data["pool_ids"]
     n_pools = data["n_pools"]
 
-    # Rebuild raw log_tvl from panel
+    # Common date grid
     all_dates = set()
     for pid in pool_ids:
         all_dates.update(matched_clean[pid]["panel"]["date"].values)
@@ -94,6 +96,7 @@ def build_mm_data(matched_clean, option_c_clean, trend_windows=(7,),
     date_to_idx = {d: i for i, d in enumerate(date_list)}
     n_dates = len(date_list)
 
+    # Rebuild raw log_tvl from panel
     tvl_grid = np.full((n_dates, n_pools), np.nan)
     for j, pid in enumerate(pool_ids):
         panel = matched_clean[pid]["panel"]
@@ -104,70 +107,87 @@ def build_mm_data(matched_clean, option_c_clean, trend_windows=(7,),
 
     pool_idx = data["pool_idx"]
     day_idx = data["day_idx"]
+    n_samples = len(pool_idx)
     log_tvl = np.array([tvl_grid[day_idx[s], pool_idx[s]]
-                        for s in range(len(pool_idx))], dtype=np.float32)
+                        for s in range(n_samples)], dtype=np.float32)
 
-    # Binance daily log-volumes per token, for predicting K
-    binance_cache = {}
+    # Load observed competitor TVL (K)
+    comp_path = competitor_tvl_path or COMPETITOR_TVL_PATH
+    if os.path.exists(comp_path):
+        comp_data = np.load(comp_path, allow_pickle=True)
+        comp_pool_ids = list(comp_data["pool_ids"])
+        comp_dates = list(comp_data["date_list"])
+        # Use K_eff (network conductance) if available, else direct competitor TVL
+        if "k_eff" in comp_data:
+            comp_tvl_matrix = comp_data["k_eff"]
+            print(f"  Using network K_eff (direct + multi-hop)")
+        else:
+            comp_tvl_matrix = comp_data["competitor_tvl"]
+            print(f"  Using direct competitor TVL only")
 
-    def _get_binance_daily(symbol):
-        mapped = TOKEN_MAP.get(symbol, symbol)
-        if mapped not in binance_cache:
-            daily = _load_binance_daily(mapped)
-            if daily is not None:
-                binance_cache[mapped] = {
-                    d: float(np.log(max(v, 1.0)))
-                    for d, v in daily["volume_usd"].items()
-                }
-            else:
-                binance_cache[mapped] = {}
-        return binance_cache[mapped]
+        # Build date index for competitor data (normalize to YYYY-MM-DD)
+        comp_date_to_idx = {}
+        for ci, d in enumerate(comp_dates):
+            comp_date_to_idx[str(d)[:10]] = ci
 
+        # Map competitor TVL to our (n_dates, n_pools) grid
+        comp_tvl_grid = np.full((n_dates, n_pools), np.nan)
+        for j, pid in enumerate(pool_ids):
+            if pid not in comp_pool_ids:
+                continue
+            cj = comp_pool_ids.index(pid)
+            for t, date in enumerate(date_list):
+                date_str = str(pd.Timestamp(date))[:10]
+                if date_str in comp_date_to_idx:
+                    ci = comp_date_to_idx[date_str]
+                    val = comp_tvl_matrix[ci, cj]
+                    if np.isfinite(val) and val > 0:
+                        comp_tvl_grid[t, j] = val
+
+        # Forward-fill / back-fill gaps per pool
+        for j in range(n_pools):
+            col = comp_tvl_grid[:, j]
+            mask = np.isfinite(col)
+            if mask.any() and not mask.all():
+                s = pd.Series(col, index=date_list).ffill().bfill()
+                comp_tvl_grid[:, j] = s.values
+
+        # Flag pools with no competitor data
+        has_comp = np.zeros(n_pools, dtype=bool)
+        for j in range(n_pools):
+            has_comp[j] = np.isfinite(comp_tvl_grid[:, j]).any()
+
+        n_with = has_comp.sum()
+        print(f"  Competitor TVL: {n_with}/{n_pools} pools with data")
+
+        # Per-sample log(competitor_tvl), floor at $1
+        raw_comp = np.array([
+            comp_tvl_grid[day_idx[s], pool_idx[s]]
+            for s in range(n_samples)], dtype=np.float64)
+
+        # For pools without data, impute with median of pools that have data
+        valid_comp = raw_comp[np.isfinite(raw_comp) & (raw_comp > 0)]
+        fallback_val = float(np.median(valid_comp)) if len(valid_comp) > 0 else 1e6
+        raw_comp = np.where(np.isfinite(raw_comp) & (raw_comp > 0),
+                            raw_comp, fallback_val)
+        log_comp_tvl = np.log(np.maximum(raw_comp, 1.0)).astype(np.float32)
+        print(f"  Fallback comp TVL for missing pools: ${fallback_val:,.0f}")
+        for j in range(n_pools):
+            if not has_comp[j]:
+                print(f"    No competitor data: {pool_ids[j][:16]}"
+                      f" ({matched_clean[pool_ids[j]].get('tokens', '?')})")
+    else:
+        print(f"  WARNING: no competitor TVL file at {comp_path}")
+        log_comp_tvl = np.full(n_samples, np.log(1e6), dtype=np.float32)
+        has_comp = np.zeros(n_pools, dtype=bool)
+
+    # Token info
     pool_tokens = []
-    log_vol_a_grid = np.full((n_dates, n_pools), np.nan)
-    log_vol_b_grid = np.full((n_dates, n_pools), np.nan)
-
-    for j, pid in enumerate(pool_ids):
+    for pid in pool_ids:
         toks = _parse_tokens(matched_clean[pid]["tokens"])
         tok_a = toks[0]
         tok_b = toks[1] if len(toks) > 1 else toks[0]
         pool_tokens.append((tok_a, tok_b))
-
-        bvol_a = _get_binance_daily(tok_a)
-        bvol_b = _get_binance_daily(tok_b)
-
-        panel = matched_clean[pid]["panel"]
-        for k, date in enumerate(panel["date"].values):
-            t = date_to_idx[date]
-            day = pd.Timestamp(date).normalize()
-            if day in bvol_a:
-                log_vol_a_grid[t, j] = bvol_a[day]
-            if day in bvol_b:
-                log_vol_b_grid[t, j] = bvol_b[day]
-
-    # Per-sample Binance volumes (impute missing with per-pool median)
-    n_samples = len(pool_idx)
-    log_vol_a = np.array([log_vol_a_grid[day_idx[s], pool_idx[s]]
-                          for s in range(n_samples)], dtype=np.float32)
-    log_vol_b = np.array([log_vol_b_grid[day_idx[s], pool_idx[s]]
-                          for s in range(n_samples)], dtype=np.float32)
-
-    # Impute NaN with per-pool median
-    for i in range(n_pools):
-        mask = pool_idx == i
-        for arr in (log_vol_a, log_vol_b):
-            pool_vals = arr[mask]
-            if np.isnan(pool_vals).all():
-                arr[mask] = 20.0  # fallback ~$500M daily vol
-            elif np.isnan(pool_vals).any():
-                arr[mask] = np.where(np.isnan(pool_vals),
-                                     np.nanmedian(pool_vals), pool_vals)
-
-    n_missing = np.isnan(log_vol_a).sum() + np.isnan(log_vol_b).sum()
-    if n_missing > 0:
-        print(f"  WARNING: {n_missing} NaN in Binance volumes after imputation")
-        log_vol_a = np.nan_to_num(log_vol_a, nan=20.0)
-        log_vol_b = np.nan_to_num(log_vol_b, nan=20.0)
 
     removed_names = [feat_names[i] for i in sorted(remove_cols)]
     print(f"  Removed: {removed_names}")
@@ -176,8 +196,8 @@ def build_mm_data(matched_clean, option_c_clean, trend_windows=(7,),
     return {
         "x_market": x_market,
         "log_tvl": log_tvl,
-        "log_vol_a": log_vol_a,
-        "log_vol_b": log_vol_b,
+        "log_comp_tvl": log_comp_tvl,
+        "has_comp": has_comp,
         "y_total": data["y_total"],
         "pool_idx": pool_idx,
         "day_idx": day_idx,
@@ -197,13 +217,14 @@ def build_mm_data(matched_clean, option_c_clean, trend_windows=(7,),
 
 # ---- Model ----
 
-def forward_mm(params, x_market, log_tvl, pool_idx,
-               log_vol_a=None, log_vol_b=None):
+def forward_mm(params, x_market, log_tvl, pool_idx, log_comp_tvl=None):
     """MM forward pass → log(V_noise) per sample.
 
-    Supports two K modes:
+    K modes (checked in order):
+      - Observed: log_comp_tvl provided + params has "k_scale" (2,)
+          K = exp(k_scale[0] + k_scale[1] * log_comp_tvl)
       - Per-pool: params contains "log_K" (n_pools,)
-      - Binance-volume: params contains "k_params" (3,) + log_vol_a/b
+      - Shared k_params: params contains "k_params" (3,)  [legacy]
     """
     log_alpha = params["log_alpha"]
     gamma = params["gamma"]
@@ -211,15 +232,22 @@ def forward_mm(params, x_market, log_tvl, pool_idx,
     alpha_i = log_alpha[pool_idx]
     tvl = jnp.exp(log_tvl)
 
-    # K: per-pool or from Binance volumes
-    if "k_params" in params:
-        k_params = params["k_params"]
-        vol_min = jnp.minimum(log_vol_a, log_vol_b)
-        vol_max = jnp.maximum(log_vol_a, log_vol_b)
-        log_K = k_params[0] + k_params[1] * vol_min + k_params[2] * vol_max
+    # K
+    if log_comp_tvl is not None and "k_scale" in params:
+        # Observed competitor TVL with learned scale/offset
+        k_s = params["k_scale"]
+        log_K = k_s[0] + k_s[1] * log_comp_tvl
         K = jnp.exp(log_K)
-    else:
+    elif log_comp_tvl is not None and "k_scale" not in params and "log_K" not in params:
+        # Observed competitor TVL, used directly as K
+        K = jnp.exp(log_comp_tvl)
+    elif "log_K" in params:
         K = jnp.exp(params["log_K"][pool_idx])
+    elif "k_params" in params:
+        # Legacy Binance-volume mode (kept for loading old models)
+        K = jnp.exp(params["k_params"][0])
+    else:
+        K = jnp.exp(jnp.array(14.5))  # fallback
 
     # Market features: shared or per-pool gamma
     if gamma.ndim == 2:
@@ -236,7 +264,7 @@ def make_loss_fn(pool_coeffs, pool_gas, n_pools):
     """Loss with PCHIP arb + MM noise."""
     from quantammsim.calibration.grid_interpolation import interpolate_pool_daily
 
-    def loss_fn(params, x_market, log_tvl, log_vol_a, log_vol_b, y_total,
+    def loss_fn(params, x_market, log_tvl, log_comp_tvl, y_total,
                 sample_grid_days, pool_idx, l2_alpha, huber_delta):
         log_cadence = params["log_cadence"]
 
@@ -255,7 +283,7 @@ def make_loss_fn(pool_coeffs, pool_gas, n_pools):
         # V_noise from MM
         log_v_noise = forward_mm(
             params, x_market, log_tvl, pool_idx,
-            log_vol_a=log_vol_a, log_vol_b=log_vol_b)
+            log_comp_tvl=log_comp_tvl)
 
         # V_total
         log_v_total = jnp.logaddexp(log_v_arb, log_v_noise)
@@ -299,15 +327,14 @@ def train(params, data, grad_fn, n_epochs, lr, l2_alpha, huber_delta,
 
     x_market = jnp.array(data["x_market"])
     log_tvl = jnp.array(data["log_tvl"])
-    log_vol_a = jnp.array(data["log_vol_a"])
-    log_vol_b = jnp.array(data["log_vol_b"])
+    log_comp_tvl = jnp.array(data["log_comp_tvl"])
     y_total = jnp.array(data["y_total"])
     sgd = jnp.array(data["sample_grid_days"])
     pidx = jnp.array(data["pool_idx"])
 
     for epoch in range(n_epochs):
         loss, grads = grad_fn(
-            params, x_market, log_tvl, log_vol_a, log_vol_b,
+            params, x_market, log_tvl, log_comp_tvl,
             y_total, sgd, pidx, l2_alpha, huber_delta)
 
         for k in params:
@@ -320,7 +347,10 @@ def train(params, data, grad_fn, n_epochs, lr, l2_alpha, huber_delta,
 
         if verbose and (epoch % 200 == 0 or epoch == n_epochs - 1):
             ev = evaluate(params, data)
-            if "k_params" in params:
+            if "k_scale" in params:
+                ks = np.array(params["k_scale"])
+                k_str = f"  k_s=[{ks[0]:.2f},{ks[1]:.3f}]"
+            elif "k_params" in params:
                 k_p = np.array(params["k_params"])
                 k_str = f"  k=[{k_p[0]:.2f},{k_p[1]:.3f},{k_p[2]:.3f}]"
             else:
@@ -364,8 +394,7 @@ def evaluate(params, data):
         params, jnp.array(data["x_market"]),
         jnp.array(data["log_tvl"]),
         jnp.array(data["pool_idx"]),
-        log_vol_a=jnp.array(data["log_vol_a"]),
-        log_vol_b=jnp.array(data["log_vol_b"])))
+        log_comp_tvl=jnp.array(data["log_comp_tvl"])))
 
     log_v_total = np.logaddexp(log_v_arb, log_v_noise)
     v_noise = np.exp(log_v_noise)
@@ -385,22 +414,34 @@ def evaluate(params, data):
         noise_shares[data["pool_ids"][i]] = float(np.median(
             v_noise[mask] / v_total[mask]))
 
-    # Per-pool K values
+    # Per-pool median K
     K_values = {}
-    if "k_params" in params:
-        k_p = np.array(params["k_params"])
+    if "k_scale" in params:
+        ks = np.array(params["k_scale"])
         for i in range(n_pools):
             mask = pool_idx == i
             if not mask.any():
-                K_values[data["pool_ids"][i]] = float(np.exp(k_p[0]))
+                K_values[data["pool_ids"][i]] = 0
                 continue
-            va = data["log_vol_a"][mask]
-            vb = data["log_vol_b"][mask]
-            log_K_i = k_p[0] + k_p[1] * np.minimum(va, vb) + k_p[2] * np.maximum(va, vb)
+            lc = data["log_comp_tvl"][mask]
+            log_K_i = ks[0] + ks[1] * lc
             K_values[data["pool_ids"][i]] = float(np.exp(np.median(log_K_i)))
-    else:
+    elif "log_K" in params:
         for i in range(n_pools):
             K_values[data["pool_ids"][i]] = float(np.exp(params["log_K"][i]))
+    elif "k_params" in params:
+        k_p = np.array(params["k_params"])
+        for i in range(n_pools):
+            K_values[data["pool_ids"][i]] = float(np.exp(k_p[0]))
+    else:
+        # Observed K: compute from log_comp_tvl directly
+        for i in range(n_pools):
+            mask = pool_idx == i
+            if mask.any():
+                K_values[data["pool_ids"][i]] = float(
+                    np.exp(np.median(data["log_comp_tvl"][mask])))
+            else:
+                K_values[data["pool_ids"][i]] = 1e6
 
     return {
         "r2s": r2s,
@@ -431,15 +472,18 @@ def tvl_response_check(params, data):
         if mask.sum() == 0:
             continue
 
-        # Per-pool K
-        if "k_params" in params:
-            k_p = np.array(params["k_params"])
-            va = data["log_vol_a"][mask]
-            vb = data["log_vol_b"][mask]
-            log_K_i = k_p[0] + k_p[1] * np.minimum(va, vb) + k_p[2] * np.maximum(va, vb)
-            K_i = float(np.exp(np.median(log_K_i)))
-        else:
+        # Per-pool K (median)
+        if "k_scale" in params:
+            ks = np.array(params["k_scale"])
+            lc = data["log_comp_tvl"][mask]
+            K_i = float(np.exp(np.median(ks[0] + ks[1] * lc)))
+        elif "log_K" in params:
             K_i = float(np.exp(params["log_K"][i]))
+        elif "k_params" in params:
+            K_i = float(np.exp(np.array(params["k_params"])[0]))
+        else:
+            # Observed K directly from competitor TVL
+            K_i = float(np.exp(np.median(data["log_comp_tvl"][mask])))
         x_med = np.median(data["x_market"][mask], axis=0)
 
         gamma = np.array(params["gamma"])
@@ -477,8 +521,9 @@ def main():
     parser.add_argument("--init-log-K", type=float, default=17.0,
                         help="Initial log(K) ~ log($24M)")
     parser.add_argument("--shared-K", action="store_true",
-                        help="Predict K from Binance volumes (3 shared params)"
-                             " instead of per-pool K")
+                        help="Predict K from Binance volumes (3 shared params)")
+    parser.add_argument("--observed-K", action="store_true",
+                        help="Use observed competitor TVL from DeFi Llama as K")
     parser.add_argument("--per-pool-gamma", action="store_true",
                         help="Per-pool market feature coefficients")
     parser.add_argument("--no-split", action="store_true")
@@ -554,7 +599,11 @@ def main():
         "gamma": gamma_init,
         "log_cadence": jnp.array(data["init_log_cadences"]),
     }
-    if args.shared_K:
+    if args.observed_K:
+        # K = competitor_tvl directly. No learned params for K.
+        # log_comp_tvl is passed as data, not as a parameter.
+        pass
+    elif args.shared_K:
         params["k_params"] = jnp.array([args.init_log_K, 0.0, 0.0])
     else:
         params["log_K"] = jnp.full(n_pools, args.init_log_K)
@@ -607,12 +656,18 @@ def main():
     train_eval = evaluate(params, train_data)
     print(f"  Median R²: {train_eval['median_r2']:.4f}")
 
-    if "k_params" in params:
+    if "k_scale" in params:
+        ks = np.array(params["k_scale"])
+        print(f"  Observed K: offset={ks[0]:.3f}, slope={ks[1]:.3f}")
+    elif "k_params" in params:
         k_p = np.array(params["k_params"])
         print(f"  k_params: k_0={k_p[0]:.2f}, k_min={k_p[1]:.4f}, k_max={k_p[2]:.4f}")
-    else:
+    elif "log_K" in params:
         K_med = float(np.exp(np.median(np.array(params["log_K"]))))
         print(f"  Per-pool K: median=${K_med/1e6:.1f}M")
+    else:
+        K_med = float(np.median(list(train_eval["K_values"].values())))
+        print(f"  Observed K (fixed): median=${K_med/1e6:.1f}M")
 
     print(f"\n  {'Pool':>16s}  {'Tokens':>16s}  {'R²':>6s}"
           f"  {'Noise%':>7s}  {'K ($M)':>10s}")

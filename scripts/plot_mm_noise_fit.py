@@ -45,18 +45,24 @@ def load_model(artifact_dir):
 
 
 def get_pool_K(params, decomp, pool_i):
-    """Get median K for a pool, handling both per-pool and k_params modes."""
-    if "k_params" in params:
-        k_p = np.array(params["k_params"])
-        mask = decomp["pool_idx"] == pool_i
+    """Get median K for a pool, handling all K modes."""
+    mask = decomp["pool_idx"] == pool_i
+    if "k_scale" in params:
+        ks = np.array(params["k_scale"])
         if not mask.any():
-            return float(np.exp(k_p[0]))
-        va = decomp.get("log_vol_a", np.zeros(mask.sum()))[mask]
-        vb = decomp.get("log_vol_b", np.zeros(mask.sum()))[mask]
-        log_K = k_p[0] + k_p[1] * np.minimum(va, vb) + k_p[2] * np.maximum(va, vb)
+            return float(np.exp(ks[0]))
+        lc = decomp.get("log_comp_tvl", np.zeros(mask.sum()))[mask]
+        log_K = ks[0] + ks[1] * lc
         return float(np.exp(np.median(log_K)))
-    else:
+    elif "log_K" in params:
         return float(np.exp(params["log_K"][pool_i]))
+    elif "k_params" in params:
+        k_p = np.array(params["k_params"])
+        return float(np.exp(k_p[0]))
+    elif "log_comp_tvl" in decomp and mask.any():
+        # Observed K directly from competitor TVL
+        return float(np.exp(np.median(decomp["log_comp_tvl"][mask])))
+    return np.exp(14.5)
 
 
 def compute_decomposition(params, meta, matched_clean, option_c_clean):
@@ -95,8 +101,7 @@ def compute_decomposition(params, meta, matched_clean, option_c_clean):
         params, jnp.array(data["x_market"]),
         jnp.array(data["log_tvl"]),
         jnp.array(data["pool_idx"]),
-        log_vol_a=jnp.array(data["log_vol_a"]),
-        log_vol_b=jnp.array(data["log_vol_b"])))
+        log_comp_tvl=jnp.array(data["log_comp_tvl"])))
     v_noise = np.exp(log_v_noise)
     v_total = v_arb + v_noise
     v_obs = np.exp(y)
@@ -119,8 +124,7 @@ def compute_decomposition(params, meta, matched_clean, option_c_clean):
         "v_total": v_total,
         "v_obs": v_obs,
         "log_tvl": log_tvl,
-        "log_vol_a": data["log_vol_a"],
-        "log_vol_b": data["log_vol_b"],
+        "log_comp_tvl": data["log_comp_tvl"],
         "tvl": np.exp(log_tvl),
     }
 

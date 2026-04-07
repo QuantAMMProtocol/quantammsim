@@ -291,3 +291,170 @@ def build_simulator_arrays(
         "coeffs": coeffs,
         "tvl_col": tvl_col,
     }
+
+
+def build_mm_simulator_arrays(
+    token_a: str,
+    token_b: str,
+    start_date: str,
+    end_date: str,
+    mm_artifact_dir: str = "results/mm_noise",
+    competitor_tvl_path: str = "results/competitor_tvl/competitor_tvl.npz",
+    pool_id: Optional[str] = None,
+) -> Dict:
+    """Build noise_base and competitor_tvl arrays for the MM simulator.
+
+    The MM noise model evaluates::
+
+        V_noise = exp(noise_base_t) * TVL / (K_t + TVL)
+
+    where noise_base_t = alpha_i + gamma_i @ x_market_t absorbs all
+    non-TVL terms, and K_t = competitor_tvl_t is observed from DeFi
+    Llama (network conductance model: direct + multi-hop).
+
+    Parameters
+    ----------
+    token_a, token_b : str
+        Token symbols.
+    start_date, end_date : str
+        Date range.
+    mm_artifact_dir : str
+        Directory with MM model.npz and meta.json.
+    competitor_tvl_path : str
+        Path to competitor_tvl.npz from fetch_competitor_tvl.py.
+    pool_id : str, optional
+        Pool ID for per-pool alpha/gamma.
+
+    Returns
+    -------
+    dict with noise_base, competitor_tvl (minute arrays), dates, etc.
+    """
+    # Load MM model
+    art, meta = load_artifact(mm_artifact_dir)
+    pool_ids = meta["pool_ids"]
+    market_names = meta["market_names"]
+    n_market = meta["n_market_feat"]
+    per_pool_gamma = meta.get("per_pool_gamma", False)
+
+    pool_idx = -1
+    if pool_id is not None:
+        pool_idx = _find_pool_index(pool_id, pool_ids)
+
+    log_alpha = art["log_alpha"]
+    gamma = art["gamma"]
+
+    if pool_idx >= 0:
+        alpha_i = float(log_alpha[pool_idx])
+        gamma_i = gamma[pool_idx] if per_pool_gamma else gamma
+        print(f"  MM model: pool idx {pool_idx}, alpha={alpha_i:.3f}")
+    else:
+        alpha_i = float(np.median(log_alpha))
+        gamma_i = np.median(gamma, axis=0) if per_pool_gamma else gamma
+        print(f"  MM model: pool not found, using median alpha={alpha_i:.3f}")
+
+    # Build daily market features from Binance
+    # The MM model uses the same features as the linear model minus TVL
+    # We need x_mean/x_std from the linear model artifact for standardization
+    linear_art_dir = os.path.join(
+        os.path.dirname(os.path.dirname(mm_artifact_dir)),
+        "results", "linear_market_noise")
+    if os.path.exists(os.path.join(linear_art_dir, "model.npz")):
+        lin_art, lin_meta = load_artifact(linear_art_dir)
+        x_mean = lin_art["x_mean"]
+        x_std = lin_art["x_std"]
+        feat_names = lin_meta["feat_names"]
+    else:
+        # Fallback: try to get from MM artifact
+        x_mean = art.get("x_mean", np.zeros(n_market))
+        x_std = art.get("x_std", np.ones(n_market))
+        feat_names = market_names
+
+    trend_windows = (7,)
+
+    print(f"  Building features from Binance: {token_a}/{token_b},"
+          f" {start_date} → {end_date}")
+    x_daily, dates = build_daily_features_from_binance(
+        token_a, token_b, start_date, end_date,
+        feat_names, x_mean, x_std, trend_windows,
+    )
+    n_days = len(dates)
+
+    # Extract market features (exclude TVL and TVL interactions)
+    tvl_col = None
+    tvl_interaction_cols = set()
+    for i, name in enumerate(feat_names):
+        if name == "xobs_1":
+            tvl_col = i
+        elif name.startswith("xobs_1\u00d7"):
+            tvl_interaction_cols.add(i)
+
+    keep_cols = [i for i in range(len(feat_names))
+                 if i != tvl_col and i not in tvl_interaction_cols]
+
+    # Map market_names to x_daily columns
+    x_market_daily = np.zeros((n_days, n_market), dtype=np.float32)
+    for mi, mname in enumerate(market_names):
+        # Find mname in feat_names
+        for fi, fname in enumerate(feat_names):
+            if fname == mname and fi in keep_cols:
+                col_in_daily = fi
+                x_market_daily[:, mi] = x_daily[:, col_in_daily]
+                break
+
+    # Compute noise_base = alpha_i + gamma_i @ x_market
+    noise_base_daily = alpha_i + x_market_daily @ gamma_i
+    noise_base_daily = noise_base_daily.astype(np.float64)
+
+    # Load competitor TVL (K)
+    print(f"  Loading competitor TVL from {competitor_tvl_path}")
+    comp_data = np.load(competitor_tvl_path, allow_pickle=True)
+    comp_pool_ids = list(comp_data["pool_ids"])
+    comp_dates = list(comp_data["date_list"])
+    k_eff = comp_data["k_eff"]  # (n_comp_dates, n_comp_pools)
+
+    # Find pool in competitor data
+    comp_pool_idx = -1
+    if pool_id is not None:
+        comp_pool_idx = _find_pool_index(pool_id, comp_pool_ids)
+
+    if comp_pool_idx < 0:
+        print(f"  WARNING: pool not in competitor TVL data, using K=$10M")
+        K_daily = np.full(n_days, 10e6, dtype=np.float64)
+    else:
+        # Build date index for competitor data
+        comp_date_to_idx = {}
+        for ci, d in enumerate(comp_dates):
+            comp_date_to_idx[str(d)[:10]] = ci
+
+        K_daily = np.full(n_days, np.nan, dtype=np.float64)
+        for k, day in enumerate(dates):
+            ds = str(pd.Timestamp(day))[:10]
+            if ds in comp_date_to_idx:
+                ci = comp_date_to_idx[ds]
+                val = k_eff[ci, comp_pool_idx]
+                if np.isfinite(val) and val > 0:
+                    K_daily[k] = val
+
+        # Forward-fill / back-fill
+        s = pd.Series(K_daily).ffill().bfill()
+        K_daily = s.values.astype(np.float64)
+
+        # Floor
+        K_daily = np.maximum(K_daily, 1.0)
+        med_K = np.median(K_daily[np.isfinite(K_daily)])
+        print(f"  K (competitor TVL): median=${med_K:,.0f},"
+              f" range=[${K_daily.min():,.0f}, ${K_daily.max():,.0f}]")
+
+    # Expand to minute resolution
+    n_minutes = n_days * 1440
+    noise_base = np.repeat(noise_base_daily, 1440)
+    competitor_tvl_array = np.repeat(K_daily, 1440)
+
+    return {
+        "noise_base": noise_base,
+        "competitor_tvl": competitor_tvl_array,
+        "dates": dates,
+        "pool_index": pool_idx,
+        "n_days": n_days,
+        "n_minutes": n_minutes,
+    }
