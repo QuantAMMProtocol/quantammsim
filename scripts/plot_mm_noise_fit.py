@@ -44,6 +44,21 @@ def load_model(artifact_dir):
     return params, meta
 
 
+def get_pool_K(params, decomp, pool_i):
+    """Get median K for a pool, handling both per-pool and k_params modes."""
+    if "k_params" in params:
+        k_p = np.array(params["k_params"])
+        mask = decomp["pool_idx"] == pool_i
+        if not mask.any():
+            return float(np.exp(k_p[0]))
+        va = decomp.get("log_vol_a", np.zeros(mask.sum()))[mask]
+        vb = decomp.get("log_vol_b", np.zeros(mask.sum()))[mask]
+        log_K = k_p[0] + k_p[1] * np.minimum(va, vb) + k_p[2] * np.maximum(va, vb)
+        return float(np.exp(np.median(log_K)))
+    else:
+        return float(np.exp(params["log_K"][pool_i]))
+
+
 def compute_decomposition(params, meta, matched_clean, option_c_clean):
     """Compute V_arb, V_noise, V_total for all pools."""
     from experiments.run_mm_noise import build_mm_data, forward_mm
@@ -79,7 +94,9 @@ def compute_decomposition(params, meta, matched_clean, option_c_clean):
     log_v_noise = np.array(forward_mm(
         params, jnp.array(data["x_market"]),
         jnp.array(data["log_tvl"]),
-        jnp.array(data["pool_idx"])))
+        jnp.array(data["pool_idx"]),
+        log_vol_a=jnp.array(data["log_vol_a"]),
+        log_vol_b=jnp.array(data["log_vol_b"])))
     v_noise = np.exp(log_v_noise)
     v_total = v_arb + v_noise
     v_obs = np.exp(y)
@@ -102,6 +119,8 @@ def compute_decomposition(params, meta, matched_clean, option_c_clean):
         "v_total": v_total,
         "v_obs": v_obs,
         "log_tvl": log_tvl,
+        "log_vol_a": data["log_vol_a"],
+        "log_vol_b": data["log_vol_b"],
         "tvl": np.exp(log_tvl),
     }
 
@@ -124,7 +143,7 @@ def plot_pool_timeseries(decomp, params, pool_i, output_dir):
     v_obs = decomp["v_obs"][mask]
     tvl = decomp["tvl"][mask]
 
-    K_i = float(np.exp(params["log_K"][pool_i]))
+    K_i = get_pool_K(params, decomp, pool_i)
 
     # R²
     log_pred = np.log(np.maximum(v_total, 1e-10))
@@ -244,12 +263,11 @@ def plot_tvl_response(params, meta, decomp, output_dir):
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
 
-    # Select pools with enough data for interesting plots
     pool_idx_arr = np.array(decomp["pool_idx"])
     interesting = []
     for i in range(n_pools):
         n = (pool_idx_arr == i).sum()
-        if n >= 50:
+        if n > 0:
             interesting.append(i)
 
     colors = plt.cm.tab20(np.linspace(0, 1, len(interesting)))
@@ -257,7 +275,7 @@ def plot_tvl_response(params, meta, decomp, output_dir):
     # Panel 1: Noise volume vs TVL (absolute)
     ax = axes[0]
     for ci, i in enumerate(interesting):
-        K_i = float(np.exp(params["log_K"][i]))
+        K_i = get_pool_K(params, decomp, i)
 
         mask = pool_idx_arr == i
         actual_noise = np.median(decomp["v_noise"][mask])
@@ -269,7 +287,7 @@ def plot_tvl_response(params, meta, decomp, output_dir):
 
         label = f"{pool_tokens[i][0]}/{pool_tokens[i][1]}"
         ax.plot(tvl_range / 1e6, noise_curve / 1e6, color=colors[ci],
-                linewidth=1.0, alpha=0.7, label=label if ci < 10 else None)
+                linewidth=1.0, alpha=0.7, label=label)
         # Mark actual TVL
         ax.scatter([actual_tvl / 1e6], [actual_noise / 1e6],
                    color=colors[ci], s=20, zorder=5)
@@ -279,13 +297,13 @@ def plot_tvl_response(params, meta, decomp, output_dir):
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_title("Noise Volume vs TVL (MM saturation)")
-    ax.legend(fontsize=6, ncol=2)
+    ax.legend(fontsize=5, ncol=3, loc="best")
     ax.grid(True, alpha=0.3)
 
     # Panel 2: Noise/TVL ratio vs TVL
     ax = axes[1]
     for ci, i in enumerate(interesting):
-        K_i = float(np.exp(params["log_K"][i]))
+        K_i = get_pool_K(params, decomp, i)
         mask = pool_idx_arr == i
         actual_noise = np.median(decomp["v_noise"][mask])
         actual_tvl = np.median(decomp["tvl"][mask])
@@ -296,24 +314,24 @@ def plot_tvl_response(params, meta, decomp, output_dir):
 
         label = f"{pool_tokens[i][0]}/{pool_tokens[i][1]}"
         ax.plot(tvl_range / 1e6, ratio_curve, color=colors[ci],
-                linewidth=1.0, alpha=0.7, label=label if ci < 10 else None)
+                linewidth=1.0, alpha=0.7, label=label)
 
     ax.set_xlabel("TVL ($M)")
     ax.set_ylabel("Noise / TVL (%)")
     ax.set_xscale("log")
     ax.set_title("Noise as Fraction of TVL")
-    ax.legend(fontsize=6, ncol=2)
+    ax.legend(fontsize=5, ncol=3, loc="best")
     ax.grid(True, alpha=0.3)
 
     # Panel 3: Elasticity vs TVL
     ax = axes[2]
     for ci, i in enumerate(interesting):
-        K_i = float(np.exp(params["log_K"][i]))
+        K_i = get_pool_K(params, decomp, i)
         eps_curve = K_i / (K_i + tvl_range)
 
         label = f"{pool_tokens[i][0]}/{pool_tokens[i][1]}"
         ax.plot(tvl_range / 1e6, eps_curve, color=colors[ci],
-                linewidth=1.0, alpha=0.7, label=label if ci < 10 else None)
+                linewidth=1.0, alpha=0.7, label=label)
         # Mark actual TVL
         actual_tvl = np.median(decomp["tvl"][pool_idx_arr == i])
         eps_actual = K_i / (K_i + actual_tvl)
@@ -326,7 +344,7 @@ def plot_tvl_response(params, meta, decomp, output_dir):
     ax.set_xscale("log")
     ax.set_ylim(0, 1.05)
     ax.set_title("TVL Elasticity (K/(K+TVL))")
-    ax.legend(fontsize=6, ncol=2)
+    ax.legend(fontsize=5, ncol=3, loc="best")
     ax.grid(True, alpha=0.3)
 
     fig.suptitle("Michaelis-Menten Noise Model — TVL Response", fontsize=13)
@@ -351,7 +369,7 @@ def plot_K_distribution(params, meta, decomp, output_dir):
     for i in range(n_pools):
         mask = pool_idx_arr == i
         n = mask.sum()
-        K_i = float(np.exp(params["log_K"][i]))
+        K_i = get_pool_K(params, decomp, i)
         K_vals.append(K_i)
         tok = pool_tokens[i]
         labels.append(f"{tok[0]}/{tok[1]}")
@@ -417,8 +435,8 @@ def main():
     parser.add_argument("--all-pools", action="store_true")
     parser.add_argument("--artifact-dir", default="results/mm_noise")
     parser.add_argument("--output-dir", default="results/mm_noise/plots")
-    parser.add_argument("--top-n", type=int, default=10,
-                        help="Plot top N pools by sample count")
+    parser.add_argument("--top-n", type=int, default=None,
+                        help="Plot top N pools by sample count (default: all)")
     args = parser.parse_args()
 
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
@@ -444,13 +462,13 @@ def main():
     if args.pool:
         targets = [i for i, pid in enumerate(pool_ids)
                    if pid.startswith(args.pool)]
-    elif args.all_pools:
-        targets = list(range(len(pool_ids)))
-    else:
-        # Top N by sample count
+    elif args.top_n is not None:
         counts = [(pool_idx == i).sum() for i in range(len(pool_ids))]
         targets = sorted(range(len(pool_ids)), key=lambda i: -counts[i])
         targets = targets[:args.top_n]
+    else:
+        # Default: all pools
+        targets = list(range(len(pool_ids)))
 
     # Per-pool time series
     print(f"\nPlotting {len(targets)} pools...")

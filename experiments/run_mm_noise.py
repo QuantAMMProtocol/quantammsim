@@ -53,8 +53,15 @@ def load_stage1():
 
 def build_mm_data(matched_clean, option_c_clean, trend_windows=(7,),
                   include_cross_pool=False):
-    """Build data with MM structure: separate TVL from market features."""
+    """Build data with MM structure: separate TVL from market features.
+
+    Also builds per-sample Binance log-volumes for predicting K.
+    """
     from experiments.run_linear_market_noise import build_data
+    from quantammsim.calibration.market_features import (
+        _load_binance_daily, TOKEN_MAP,
+    )
+    from quantammsim.calibration.pool_data import _parse_tokens
 
     # Get full feature matrix from linear model's pipeline
     data = build_data(
@@ -64,23 +71,18 @@ def build_mm_data(matched_clean, option_c_clean, trend_windows=(7,),
         include_cross_pool=include_cross_pool,
     )
 
-    # Separate TVL from other features
+    # Remove TVL column and TVL interaction terms — TVL handled by MM,
+    # interactions subsumed by time-varying K from Binance volumes
     feat_names = data["feat_names"]
     x_full = data["x"]
-
-    # Find TVL column (xobs_1) and TVL interaction columns
     tvl_col = feat_names.index("xobs_1")
     tvl_interaction_cols = [i for i, name in enumerate(feat_names)
                            if name.startswith("xobs_1\u00d7")]
-
-    # Remove TVL and its interactions from market features
     remove_cols = {tvl_col} | set(tvl_interaction_cols)
     keep_cols = [i for i in range(len(feat_names)) if i not in remove_cols]
     x_market = x_full[:, keep_cols].astype(np.float32)
     market_names = [feat_names[i] for i in keep_cols]
 
-    # TVL comes from the raw panel data (unstandardized log_tvl)
-    # x_full[:, tvl_col] might be standardized, so get raw from panel
     pool_ids = data["pool_ids"]
     n_pools = data["n_pools"]
 
@@ -105,47 +107,77 @@ def build_mm_data(matched_clean, option_c_clean, trend_windows=(7,),
     log_tvl = np.array([tvl_grid[day_idx[s], pool_idx[s]]
                         for s in range(len(pool_idx))], dtype=np.float32)
 
-    # Token info for display
-    from quantammsim.calibration.pool_data import _parse_tokens
+    # Binance daily log-volumes per token, for predicting K
+    binance_cache = {}
+
+    def _get_binance_daily(symbol):
+        mapped = TOKEN_MAP.get(symbol, symbol)
+        if mapped not in binance_cache:
+            daily = _load_binance_daily(mapped)
+            if daily is not None:
+                binance_cache[mapped] = {
+                    d: float(np.log(max(v, 1.0)))
+                    for d, v in daily["volume_usd"].items()
+                }
+            else:
+                binance_cache[mapped] = {}
+        return binance_cache[mapped]
+
     pool_tokens = []
-    for pid in pool_ids:
+    log_vol_a_grid = np.full((n_dates, n_pools), np.nan)
+    log_vol_b_grid = np.full((n_dates, n_pools), np.nan)
+
+    for j, pid in enumerate(pool_ids):
         toks = _parse_tokens(matched_clean[pid]["tokens"])
         tok_a = toks[0]
         tok_b = toks[1] if len(toks) > 1 else toks[0]
         pool_tokens.append((tok_a, tok_b))
 
-    removed_names = [feat_names[i] for i in sorted(remove_cols)]
-    print(f"  Removed TVL features: {removed_names}")
-    print(f"  Market features ({len(market_names)}): {market_names}")
+        bvol_a = _get_binance_daily(tok_a)
+        bvol_b = _get_binance_daily(tok_b)
 
-    # Build per-pool temporal ordering for EWMA
-    # For each pool, store the sample indices sorted by day_idx
-    # Pad to max length so we can use lax.scan uniformly
-    pool_time_indices = []  # (n_pools, max_T) — sample indices in time order
-    pool_time_lengths = []  # (n_pools,) — actual length per pool
+        panel = matched_clean[pid]["panel"]
+        for k, date in enumerate(panel["date"].values):
+            t = date_to_idx[date]
+            day = pd.Timestamp(date).normalize()
+            if day in bvol_a:
+                log_vol_a_grid[t, j] = bvol_a[day]
+            if day in bvol_b:
+                log_vol_b_grid[t, j] = bvol_b[day]
+
+    # Per-sample Binance volumes (impute missing with per-pool median)
+    n_samples = len(pool_idx)
+    log_vol_a = np.array([log_vol_a_grid[day_idx[s], pool_idx[s]]
+                          for s in range(n_samples)], dtype=np.float32)
+    log_vol_b = np.array([log_vol_b_grid[day_idx[s], pool_idx[s]]
+                          for s in range(n_samples)], dtype=np.float32)
+
+    # Impute NaN with per-pool median
     for i in range(n_pools):
         mask = pool_idx == i
-        idxs = np.where(mask)[0]
-        # Sort by day_idx
-        order = np.argsort(day_idx[idxs])
-        pool_time_indices.append(idxs[order])
-        pool_time_lengths.append(len(idxs))
+        for arr in (log_vol_a, log_vol_b):
+            pool_vals = arr[mask]
+            if np.isnan(pool_vals).all():
+                arr[mask] = 20.0  # fallback ~$500M daily vol
+            elif np.isnan(pool_vals).any():
+                arr[mask] = np.where(np.isnan(pool_vals),
+                                     np.nanmedian(pool_vals), pool_vals)
 
-    max_T = max(pool_time_lengths) if pool_time_lengths else 0
-    # Pad to uniform length (pad with 0, masked later)
-    pool_time_padded = np.zeros((n_pools, max_T), dtype=np.int32)
-    pool_time_mask = np.zeros((n_pools, max_T), dtype=np.float32)
-    for i in range(n_pools):
-        L = pool_time_lengths[i]
-        pool_time_padded[i, :L] = pool_time_indices[i]
-        pool_time_mask[i, :L] = 1.0
+    n_missing = np.isnan(log_vol_a).sum() + np.isnan(log_vol_b).sum()
+    if n_missing > 0:
+        print(f"  WARNING: {n_missing} NaN in Binance volumes after imputation")
+        log_vol_a = np.nan_to_num(log_vol_a, nan=20.0)
+        log_vol_b = np.nan_to_num(log_vol_b, nan=20.0)
 
-    print(f"  EWMA: max_T={max_T}, pools with data: "
-          f"{sum(1 for l in pool_time_lengths if l > 0)}")
+    removed_names = [feat_names[i] for i in sorted(remove_cols)]
+    print(f"  Removed: {removed_names}")
+    print(f"  Market features ({len(market_names)}): {market_names}")
 
     return {
         "x_market": x_market,
         "log_tvl": log_tvl,
+        "log_vol_a": log_vol_a,
+        "log_vol_b": log_vol_b,
         "y_total": data["y_total"],
         "pool_idx": pool_idx,
         "day_idx": day_idx,
@@ -160,63 +192,34 @@ def build_mm_data(matched_clean, option_c_clean, trend_windows=(7,),
         "market_names": market_names,
         "x_mean": data["x_mean"],
         "x_std": data["x_std"],
-        "pool_time_padded": pool_time_padded,
-        "pool_time_mask": pool_time_mask,
     }
 
 
 # ---- Model ----
 
-def ewma_smooth(log_tvl, raw_lambda, pool_time_padded, pool_time_mask):
-    """Apply learned EWMA smoothing to log_tvl, per pool.
-
-    smooth_t = λ * log_tvl_t + (1-λ) * smooth_{t-1}
-
-    Returns smoothed log_tvl in the same sample order as input.
-    """
-    lam = jax.nn.sigmoid(raw_lambda)  # constrain to (0, 1)
-    n_pools = pool_time_padded.shape[0]
-    smoothed = jnp.array(log_tvl)  # copy
-
-    for i in range(n_pools):
-        idxs = pool_time_padded[i]    # (max_T,) sample indices
-        mask = pool_time_mask[i]       # (max_T,) 1.0 or 0.0
-        raw_vals = log_tvl[idxs]       # (max_T,) raw log_tvl in time order
-
-        # lax.scan for EWMA
-        def step(carry, x):
-            prev_smooth, = carry
-            raw_val, m = x
-            new_smooth = jnp.where(
-                m > 0,
-                lam * raw_val + (1.0 - lam) * prev_smooth,
-                prev_smooth)
-            return (new_smooth,), new_smooth
-
-        init = (raw_vals[0],)
-        _, smooth_vals = jax.lax.scan(step, init, (raw_vals, mask))
-
-        # Scatter smoothed values back to sample positions
-        smoothed = smoothed.at[idxs].set(
-            jnp.where(mask > 0, smooth_vals, smoothed[idxs]))
-
-    return smoothed
-
-
-def forward_mm(params, x_market, log_tvl_smooth, pool_idx):
+def forward_mm(params, x_market, log_tvl, pool_idx,
+               log_vol_a=None, log_vol_b=None):
     """MM forward pass → log(V_noise) per sample.
 
-    log(V_noise) = log_alpha_i + x_market @ gamma[_i]
-                   + log(TVL_smooth) - log(K_i + TVL_smooth)
+    Supports two K modes:
+      - Per-pool: params contains "log_K" (n_pools,)
+      - Binance-volume: params contains "k_params" (3,) + log_vol_a/b
     """
     log_alpha = params["log_alpha"]
-    log_K = params["log_K"]
     gamma = params["gamma"]
 
-    # Per-sample pool params
     alpha_i = log_alpha[pool_idx]
-    K_i = jnp.exp(log_K[pool_idx])
-    tvl = jnp.exp(log_tvl_smooth)
+    tvl = jnp.exp(log_tvl)
+
+    # K: per-pool or from Binance volumes
+    if "k_params" in params:
+        k_params = params["k_params"]
+        vol_min = jnp.minimum(log_vol_a, log_vol_b)
+        vol_max = jnp.maximum(log_vol_a, log_vol_b)
+        log_K = k_params[0] + k_params[1] * vol_min + k_params[2] * vol_max
+        K = jnp.exp(log_K)
+    else:
+        K = jnp.exp(params["log_K"][pool_idx])
 
     # Market features: shared or per-pool gamma
     if gamma.ndim == 2:
@@ -225,9 +228,7 @@ def forward_mm(params, x_market, log_tvl_smooth, pool_idx):
     else:
         market_term = x_market @ gamma
 
-    # MM saturation on smoothed TVL
-    log_saturation = log_tvl_smooth - jnp.log(K_i + tvl)
-
+    log_saturation = log_tvl - jnp.log(K + tvl)
     return alpha_i + market_term + log_saturation
 
 
@@ -235,15 +236,9 @@ def make_loss_fn(pool_coeffs, pool_gas, n_pools):
     """Loss with PCHIP arb + MM noise."""
     from quantammsim.calibration.grid_interpolation import interpolate_pool_daily
 
-    def loss_fn(params, x_market, log_tvl, y_total,
-                sample_grid_days, pool_idx, pool_time_padded,
-                pool_time_mask, l2_alpha, huber_delta):
+    def loss_fn(params, x_market, log_tvl, log_vol_a, log_vol_b, y_total,
+                sample_grid_days, pool_idx, l2_alpha, huber_delta):
         log_cadence = params["log_cadence"]
-
-        # EWMA smooth TVL
-        log_tvl_smooth = ewma_smooth(
-            log_tvl, params["raw_lambda"],
-            pool_time_padded, pool_time_mask)
 
         # V_arb from PCHIP
         n_samples = x_market.shape[0]
@@ -257,8 +252,10 @@ def make_loss_fn(pool_coeffs, pool_gas, n_pools):
                 jnp.log(jnp.maximum(v_arb_all[safe_days], 1e-10)),
                 log_v_arb)
 
-        # V_noise from MM with smoothed TVL
-        log_v_noise = forward_mm(params, x_market, log_tvl_smooth, pool_idx)
+        # V_noise from MM
+        log_v_noise = forward_mm(
+            params, x_market, log_tvl, pool_idx,
+            log_vol_a=log_vol_a, log_vol_b=log_vol_b)
 
         # V_total
         log_v_total = jnp.logaddexp(log_v_arb, log_v_noise)
@@ -302,16 +299,16 @@ def train(params, data, grad_fn, n_epochs, lr, l2_alpha, huber_delta,
 
     x_market = jnp.array(data["x_market"])
     log_tvl = jnp.array(data["log_tvl"])
+    log_vol_a = jnp.array(data["log_vol_a"])
+    log_vol_b = jnp.array(data["log_vol_b"])
     y_total = jnp.array(data["y_total"])
     sgd = jnp.array(data["sample_grid_days"])
     pidx = jnp.array(data["pool_idx"])
-    pt_padded = jnp.array(data["pool_time_padded"])
-    pt_mask = jnp.array(data["pool_time_mask"])
 
     for epoch in range(n_epochs):
         loss, grads = grad_fn(
-            params, x_market, log_tvl, y_total, sgd, pidx,
-            pt_padded, pt_mask, l2_alpha, huber_delta)
+            params, x_market, log_tvl, log_vol_a, log_vol_b,
+            y_total, sgd, pidx, l2_alpha, huber_delta)
 
         for k in params:
             g = grads[k]
@@ -322,15 +319,17 @@ def train(params, data, grad_fn, n_epochs, lr, l2_alpha, huber_delta,
             params[k] = params[k] - lr * m_hat / (jnp.sqrt(v_hat) + eps)
 
         if verbose and (epoch % 200 == 0 or epoch == n_epochs - 1):
-            log_K_med = float(jnp.median(params["log_K"]))
-            K_med = float(jnp.exp(log_K_med))
+            ev = evaluate(params, data)
+            if "k_params" in params:
+                k_p = np.array(params["k_params"])
+                k_str = f"  k=[{k_p[0]:.2f},{k_p[1]:.3f},{k_p[2]:.3f}]"
+            else:
+                k_str = ""
+            K_med = float(np.median(list(ev["K_values"].values())))
             cad = np.exp(np.array(params["log_cadence"]))
-            gamma_norm = float(jnp.sqrt(jnp.mean(params["gamma"] ** 2)))
-            lam = float(jax.nn.sigmoid(params["raw_lambda"]))
             print(f"  epoch {epoch:5d}  loss={float(loss):.4f}"
-                  f"  K_med=${K_med:,.0f}"
-                  f"  λ={lam:.3f}"
-                  f"  |γ|={gamma_norm:.3f}"
+                  f"  R²={ev['median_r2']:.3f}"
+                  f"  K_med=${K_med/1e6:.1f}M{k_str}"
                   f"  cad=[{cad.min():.0f},{np.median(cad):.0f},{cad.max():.0f}]")
 
     return params
@@ -361,16 +360,12 @@ def evaluate(params, data):
         v_arb[mask] = v_arb_all[safe]
     log_v_arb = np.log(np.maximum(v_arb, 1e-10))
 
-    # Smooth TVL with learned lambda
-    log_tvl_smooth = np.array(ewma_smooth(
-        jnp.array(data["log_tvl"]), params["raw_lambda"],
-        jnp.array(data["pool_time_padded"]),
-        jnp.array(data["pool_time_mask"])))
-
     log_v_noise = np.array(forward_mm(
         params, jnp.array(data["x_market"]),
-        jnp.array(log_tvl_smooth),
-        jnp.array(data["pool_idx"])))
+        jnp.array(data["log_tvl"]),
+        jnp.array(data["pool_idx"]),
+        log_vol_a=jnp.array(data["log_vol_a"]),
+        log_vol_b=jnp.array(data["log_vol_b"])))
 
     log_v_total = np.logaddexp(log_v_arb, log_v_noise)
     v_noise = np.exp(log_v_noise)
@@ -390,8 +385,22 @@ def evaluate(params, data):
         noise_shares[data["pool_ids"][i]] = float(np.median(
             v_noise[mask] / v_total[mask]))
 
-    K_values = {data["pool_ids"][i]: float(np.exp(params["log_K"][i]))
-                for i in range(n_pools)}
+    # Per-pool K values
+    K_values = {}
+    if "k_params" in params:
+        k_p = np.array(params["k_params"])
+        for i in range(n_pools):
+            mask = pool_idx == i
+            if not mask.any():
+                K_values[data["pool_ids"][i]] = float(np.exp(k_p[0]))
+                continue
+            va = data["log_vol_a"][mask]
+            vb = data["log_vol_b"][mask]
+            log_K_i = k_p[0] + k_p[1] * np.minimum(va, vb) + k_p[2] * np.maximum(va, vb)
+            K_values[data["pool_ids"][i]] = float(np.exp(np.median(log_K_i)))
+    else:
+        for i in range(n_pools):
+            K_values[data["pool_ids"][i]] = float(np.exp(params["log_K"][i]))
 
     return {
         "r2s": r2s,
@@ -414,7 +423,7 @@ def tvl_response_check(params, data):
 
     tvl_test = [1e5, 1e6, 1e7, 1e8, 1e9]
 
-    for i in range(min(n_pools, 15)):
+    for i in range(n_pools):
         pid = data["pool_ids"][i]
         toks = data["pool_tokens"][i]
         label = f"{toks[0]}/{toks[1]}"
@@ -422,7 +431,15 @@ def tvl_response_check(params, data):
         if mask.sum() == 0:
             continue
 
-        K_i = float(np.exp(params["log_K"][i]))
+        # Per-pool K
+        if "k_params" in params:
+            k_p = np.array(params["k_params"])
+            va = data["log_vol_a"][mask]
+            vb = data["log_vol_b"][mask]
+            log_K_i = k_p[0] + k_p[1] * np.minimum(va, vb) + k_p[2] * np.maximum(va, vb)
+            K_i = float(np.exp(np.median(log_K_i)))
+        else:
+            K_i = float(np.exp(params["log_K"][i]))
         x_med = np.median(data["x_market"][mask], axis=0)
 
         gamma = np.array(params["gamma"])
@@ -459,11 +476,16 @@ def main():
     parser.add_argument("--huber-delta", type=float, default=1.0)
     parser.add_argument("--init-log-K", type=float, default=17.0,
                         help="Initial log(K) ~ log($24M)")
+    parser.add_argument("--shared-K", action="store_true",
+                        help="Predict K from Binance volumes (3 shared params)"
+                             " instead of per-pool K")
     parser.add_argument("--per-pool-gamma", action="store_true",
                         help="Per-pool market feature coefficients")
     parser.add_argument("--no-split", action="store_true")
     parser.add_argument("--trend-windows", type=int, nargs="+", default=[7])
     parser.add_argument("--include-cross-pool", action="store_true")
+    parser.add_argument("--tune", type=int, default=0,
+                        help="Optuna sweep (0 = single run)")
     parser.add_argument("--save-artifact", default="results/mm_noise")
     args = parser.parse_args()
 
@@ -488,6 +510,10 @@ def main():
     n_samples = len(data["pool_idx"])
     print(f"  {n_samples} samples, {n_pools} pools,"
           f" {n_market} market features, {time.time() - t0:.1f}s")
+
+    if args.tune > 0:
+        run_optuna(data, args.tune)
+        return
 
     # Pool summary
     pool_idx = data["pool_idx"]
@@ -525,11 +551,13 @@ def main():
 
     params = {
         "log_alpha": jnp.zeros(n_pools),
-        "log_K": jnp.full(n_pools, args.init_log_K),
         "gamma": gamma_init,
         "log_cadence": jnp.array(data["init_log_cadences"]),
-        "raw_lambda": jnp.array(2.0),  # sigmoid(2) ≈ 0.88 — mostly raw
     }
+    if args.shared_K:
+        params["k_params"] = jnp.array([args.init_log_K, 0.0, 0.0])
+    else:
+        params["log_K"] = jnp.full(n_pools, args.init_log_K)
     n_params = sum(v.size for v in params.values())
     print(f"\n  Parameters: {n_params}"
           f" (α: {n_pools}, K: {n_pools},"
@@ -578,6 +606,13 @@ def main():
     print("=" * 70)
     train_eval = evaluate(params, train_data)
     print(f"  Median R²: {train_eval['median_r2']:.4f}")
+
+    if "k_params" in params:
+        k_p = np.array(params["k_params"])
+        print(f"  k_params: k_0={k_p[0]:.2f}, k_min={k_p[1]:.4f}, k_max={k_p[2]:.4f}")
+    else:
+        K_med = float(np.exp(np.median(np.array(params["log_K"]))))
+        print(f"  Per-pool K: median=${K_med/1e6:.1f}M")
 
     print(f"\n  {'Pool':>16s}  {'Tokens':>16s}  {'R²':>6s}"
           f"  {'Noise%':>7s}  {'K ($M)':>10s}")
@@ -629,6 +664,146 @@ def main():
         with open(os.path.join(args.save_artifact, "meta.json"), "w") as f:
             json.dump(meta, f, indent=2)
         print(f"\n  Saved: {args.save_artifact}/")
+
+
+def run_optuna(data, n_trials):
+    """Optuna hyperparameter sweep for MM noise model."""
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    n_pools = data["n_pools"]
+    n_market = data["n_market_feat"]
+    n_samples = len(data["pool_idx"])
+
+    # 70/30 temporal split
+    day_idx = data["day_idx"]
+    split_day = int(day_idx.max() * 0.7)
+    train_mask = day_idx <= split_day
+    eval_mask = day_idx > split_day
+    train_data = {k: v[train_mask] if isinstance(v, np.ndarray)
+                  and v.shape[0] == n_samples else v
+                  for k, v in data.items()}
+    eval_data = {k: v[eval_mask] if isinstance(v, np.ndarray)
+                 and v.shape[0] == n_samples else v
+                 for k, v in data.items()}
+    print(f"  Optuna split: {train_mask.sum()} train, {eval_mask.sum()} eval")
+
+    def _ridge(X, y, alpha=1.0):
+        XtX = X.T @ X + alpha * np.eye(X.shape[1])
+        return np.linalg.solve(XtX, X.T @ y)
+
+    def objective(trial):
+        lr = trial.suggest_float("lr", 1e-4, 3e-2, log=True)
+        l2_alpha = trial.suggest_float("l2_alpha", 1e-5, 1e-1, log=True)
+        huber_delta = trial.suggest_categorical("huber_delta", [0.5, 1.0, 1.5])
+        init_log_K = trial.suggest_float("init_log_K", 14.0, 20.0)
+        n_epochs = trial.suggest_categorical("n_epochs", [2000, 3000, 5000])
+        per_pool_gamma = trial.suggest_categorical("per_pool_gamma", [True, False])
+        if per_pool_gamma:
+            gamma_init = jnp.zeros((n_pools, n_market))
+        else:
+            gamma_init = jnp.zeros(n_market)
+
+        params = {
+            "log_alpha": jnp.zeros(n_pools),
+            "k_params": jnp.array([init_log_K, 0.0, 0.0]),
+            "gamma": gamma_init,
+            "log_cadence": jnp.array(data["init_log_cadences"]),
+        }
+
+        # Warm-start gamma
+        x_trn = train_data["x_market"]
+        y_trn = train_data["y_total"]
+        if per_pool_gamma:
+            pidx = train_data["pool_idx"]
+            for i in range(n_pools):
+                mask_i = pidx == i
+                if mask_i.sum() < 5:
+                    continue
+                X_i = np.concatenate([x_trn[mask_i],
+                                      np.ones((mask_i.sum(), 1))], 1)
+                w = _ridge(X_i, y_trn[mask_i])
+                params["gamma"] = params["gamma"].at[i].set(
+                    jnp.array(w[:-1].astype(np.float32)))
+                params["log_alpha"] = params["log_alpha"].at[i].set(
+                    float(w[-1]))
+        else:
+            X_all = np.concatenate([x_trn, np.ones((len(y_trn), 1))], 1)
+            w = _ridge(X_all, y_trn)
+            params["gamma"] = jnp.array(w[:-1].astype(np.float32))
+
+        grad_fn = make_loss_fn(data["pool_coeffs"], data["pool_gas"], n_pools)
+        params = train(params, train_data, grad_fn, n_epochs, lr,
+                       l2_alpha, huber_delta, verbose=False)
+
+        # Eval
+        eval_result = evaluate(params, eval_data)
+        med_r2 = eval_result["median_r2"]
+
+        K_med = float(np.median([v for v in eval_result["K_values"].values()]))
+        k_p = np.array(params["k_params"])
+        pp_str = "pp" if per_pool_gamma else "sh"
+        print(f"  Trial {trial.number}: eval={med_r2:.4f}"
+              f"  K_med=${K_med/1e6:.1f}M"
+              f"  k=[{k_p[0]:.1f},{k_p[1]:.3f},{k_p[2]:.3f}]"
+              f"  {pp_str} ep={n_epochs} lr={lr:.1e} l2={l2_alpha:.1e}"
+              f"  hub={huber_delta}")
+
+        # Save every trial
+        trial_dir = os.path.join("results", "mm_noise", "trials",
+                                 f"trial_{trial.number:04d}")
+        os.makedirs(trial_dir, exist_ok=True)
+        save_dict = {k: np.array(v) for k, v in params.items()}
+        np.savez(os.path.join(trial_dir, "model.npz"), **save_dict)
+        meta = {
+            "pool_ids": data["pool_ids"],
+            "pool_tokens": data["pool_tokens"],
+            "market_names": data["market_names"],
+            "n_pools": n_pools,
+            "n_market_feat": n_market,
+            "per_pool_gamma": per_pool_gamma,
+            "eval_r2": med_r2,
+            "hparams": {
+                "lr": lr, "l2_alpha": l2_alpha, "huber_delta": huber_delta,
+                "init_log_K": init_log_K, "n_epochs": n_epochs,
+                "per_pool_gamma": per_pool_gamma,
+            },
+        }
+        with open(os.path.join(trial_dir, "meta.json"), "w") as f:
+            json.dump(meta, f, indent=2)
+
+        return med_r2
+
+    study = optuna.create_study(direction="maximize")
+    study.optimize(objective, n_trials=n_trials)
+
+    print(f"\n{'='*70}")
+    print(f"Optuna Results (MM noise)")
+    print(f"{'='*70}")
+    print(f"  Best eval R²: {study.best_value:.4f}")
+    print(f"  Best params:")
+    for k, v in sorted(study.best_params.items()):
+        print(f"    {k}: {v}")
+
+    trials = sorted(study.trials, key=lambda t: t.value if t.value else -999,
+                    reverse=True)
+    print(f"\n  Top 10:")
+    for t in trials[:10]:
+        if t.value is not None:
+            print(f"    #{t.number}: eval={t.value:.4f}  {t.params}")
+
+    # Copy best to top-level
+    best_dir = os.path.join("results", "mm_noise", "trials",
+                            f"trial_{study.best_trial.number:04d}")
+    if os.path.exists(os.path.join(best_dir, "model.npz")):
+        import shutil
+        for fn in ("model.npz", "meta.json"):
+            shutil.copy2(os.path.join(best_dir, fn),
+                         os.path.join("results", "mm_noise", fn))
+        print(f"\n  Copied best trial ({study.best_trial.number})"
+              f" to results/mm_noise/")
+
+    return study
 
 
 if __name__ == "__main__":
