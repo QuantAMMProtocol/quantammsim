@@ -37,6 +37,7 @@ from quantammsim.pools.noise_trades import (
     reclamm_loglinear_noise_volume,
     reclamm_calibrated_noise_volume,
     reclamm_market_linear_noise_volume,
+    reclamm_mm_observed_noise_volume,
 )
 
 # Reference balance for initialisation (matches Solidity _INITIALIZATION_MAX_BALANCE_A)
@@ -1049,6 +1050,20 @@ def _reclamm_scan_step_with_fees_and_revenue(
         scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
         Ra_new = (Ra_new + Va) * scale - Va
         Rb_new = (Rb_new + Vb) * scale - Vb
+    elif noise_model == "mm_observed":
+        noise_base = input_list[9]
+        competitor_tvl = input_list[10]
+        effective_value = (Ra_new + Va) * prices[0] + (Rb_new + Vb) * prices[1]
+
+        noise_vol = reclamm_mm_observed_noise_volume(
+            effective_value, noise_base, competitor_tvl,
+        )
+
+        minutes_per_step = seconds_per_step / 60.0
+        noise_fee_income = (1.0 - gamma) * noise_vol * minutes_per_step
+        scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
+        Ra_new = (Ra_new + Va) * scale - Va
+        Rb_new = (Rb_new + Vb) * scale - Vb
     # else: "arb_only" — no noise trades
 
     # Clamp-to-edge: if a real reserve would go negative, apply an
@@ -1306,6 +1321,7 @@ def _jax_calc_reclamm_reserves_with_fees(
     dow_cos_array=None,
     noise_base_array=None,
     noise_tvl_coeff_array=None,
+    competitor_tvl_array=None,
 ):
     """Calculate reClAMM reserves over time with fees.
 
@@ -1371,6 +1387,9 @@ def _jax_calc_reclamm_reserves_with_fees(
     elif noise_model == "market_linear":
         scan_inputs.append(noise_base_array)
         scan_inputs.append(noise_tvl_coeff_array)
+    elif noise_model == "mm_observed":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(competitor_tvl_array)
 
     carry_init = [
         initial_reserves,
@@ -1416,6 +1435,7 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
     dow_cos_array=None,
     noise_base_array=None,
     noise_tvl_coeff_array=None,
+    competitor_tvl_array=None,
 ):
     """Calculate reClAMM reserves with time-varying fees/arb arrays."""
     if lp_supply_array is None:
@@ -1490,6 +1510,9 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
     elif noise_model == "market_linear":
         scan_inputs.append(noise_base_array)
         scan_inputs.append(noise_tvl_coeff_array)
+    elif noise_model == "mm_observed":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(competitor_tvl_array)
 
     carry_init = [
         initial_reserves,
@@ -1625,6 +1648,7 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
     dow_cos_array=None,
     noise_base_array=None,
     noise_tvl_coeff_array=None,
+    competitor_tvl_array=None,
 ):
     """Calculate reClAMM reserves and LP fee revenue over time with fees.
 
@@ -1692,6 +1716,9 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
     elif noise_model == "market_linear":
         scan_inputs.append(noise_base_array)
         scan_inputs.append(noise_tvl_coeff_array)
+    elif noise_model == "mm_observed":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(competitor_tvl_array)
 
     carry_init = [
         initial_reserves,
@@ -1737,6 +1764,7 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
     dow_cos_array=None,
     noise_base_array=None,
     noise_tvl_coeff_array=None,
+    competitor_tvl_array=None,
 ):
     """Calculate reClAMM reserves and LP fee revenue with time-varying fees/arb arrays.
 
@@ -1817,6 +1845,9 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
     elif noise_model == "market_linear":
         scan_inputs.append(noise_base_array)
         scan_inputs.append(noise_tvl_coeff_array)
+    elif noise_model == "mm_observed":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(competitor_tvl_array)
 
     carry_init = [
         initial_reserves,
