@@ -335,19 +335,58 @@ class TestDynamicInputPreparation:
         assert flags["has_dynamic_arb_fees"] is True
         assert flags["has_lp_supply"] is True
         assert flags["has_reclamm_price_ratio_updates"] is False
+        assert flags["has_oracle_prices"] is False
         assert train_inputs.trades.shape == (2, 3)
         assert train_inputs.fees.shape == (2,)
         assert train_inputs.gas_cost.shape == (2,)
         assert train_inputs.arb_fees.shape == (2,)
         assert train_inputs.lp_supply.shape == (2,)
         assert train_inputs.reclamm_price_ratio_updates.shape == (1, 4)
+        assert train_inputs.oracle_prices.shape == (1, 1)
         assert test_inputs.trades.shape == (2, 3)
         assert test_inputs.fees.shape == (2,)
         assert test_inputs.gas_cost.shape == (2,)
         assert test_inputs.arb_fees.shape == (2,)
         assert test_inputs.lp_supply.shape == (2,)
         assert test_inputs.reclamm_price_ratio_updates.shape == (1, 4)
+        assert test_inputs.oracle_prices.shape == (1, 1)
         np.testing.assert_allclose(np.asarray(train_inputs.fees), np.array([0.003, 0.003]))
+
+    def test_prepare_dynamic_inputs_normalizes_oracle_prices(self):
+        """Oracle price frames should align to token order and ffill by minute."""
+        from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
+        from quantammsim.runners.jax_runner_utils import prepare_dynamic_inputs
+
+        run_fingerprint = {
+            "tokens": ["ETH", "USDC"],
+            "startDateString": "2023-01-01 00:00:00",
+            "endDateString": "2023-01-01 00:03:00",
+            "endTestDateString": "2023-01-01 00:05:00",
+        }
+
+        oracle_prices = pd.DataFrame(
+            {
+                "unix": [1672531200000, 1672531320000],
+                "ETH": [1200.0, 1210.0],
+                "USDC": [1.0, 1.0],
+            }
+        )
+
+        prepared = prepare_dynamic_inputs(
+            run_fingerprint,
+            dynamic_input_frames=DynamicInputFrames(oracle_prices=oracle_prices),
+            do_test_period=True,
+        )
+
+        assert prepared["dynamic_input_flags"]["has_oracle_prices"] is True
+        np.testing.assert_allclose(
+            np.asarray(prepared["train_dynamic_inputs"].oracle_prices),
+            np.array([[1200.0, 1.0], [1200.0, 1.0], [1210.0, 1.0]]),
+        )
+        np.testing.assert_allclose(
+            np.asarray(prepared["test_dynamic_inputs"].oracle_prices),
+            np.array([[1210.0, 1.0], [1210.0, 1.0]]),
+        )
 
     def test_prepare_dynamic_inputs_normalizes_reclamm_price_ratio_updates(self):
         """Manual reCLAMM update schedules should map to per-step event rows."""

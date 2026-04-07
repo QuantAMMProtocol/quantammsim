@@ -4,6 +4,7 @@ from abc import ABC
 from jax import tree_util
 
 from quantammsim.pools.G3M.balancer.balancer import BalancerPool
+from quantammsim.pools.G3M.balancer.hypersurge_balancer import HyperSurgeBalancerPool
 from quantammsim.pools.G3M.quantamm.momentum_pool import MomentumPool
 from quantammsim.pools.G3M.quantamm.antimomentum_pool import AntiMomentumPool
 from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
@@ -132,6 +133,7 @@ def create_pool(rule):
         Valid base pool types:
 
         - ``"balancer"`` : Standard Balancer constant-weight pool.
+        - ``"balancer_hypersurge"`` : Balancer pool with HyperSurge dynamic fees.
         - ``"momentum"`` : Momentum (trend-following) QuantAMM pool.
         - ``"anti_momentum"`` : Anti-momentum (contrarian) QuantAMM pool.
         - ``"power_channel"`` : Power-law channel QuantAMM pool.
@@ -203,6 +205,8 @@ def create_pool(rule):
     # Create base pool instance
     if base_rule == "balancer":
         base_pool = BalancerPool()
+    elif base_rule in ("balancer_hypersurge", "hypersurge_balancer"):
+        base_pool = HyperSurgeBalancerPool()
     elif base_rule == "momentum":
         base_pool = MomentumPool()
     elif base_rule == "anti_momentum":

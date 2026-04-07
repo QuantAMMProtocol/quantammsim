@@ -223,6 +223,42 @@ optuna_settings = {
             "log_scale": False,
             "scalar": False,
         },
+        "hypersurge_arb_max_fee": {
+            "low": 0.0,
+            "high": 0.20,
+            "log_scale": False,
+            "scalar": True,
+        },
+        "hypersurge_arb_threshold": {
+            "low": 0.0,
+            "high": 1.0,
+            "log_scale": False,
+            "scalar": True,
+        },
+        "hypersurge_arb_cap_deviation": {
+            "low": 0.0,
+            "high": 2.0,
+            "log_scale": False,
+            "scalar": True,
+        },
+        "hypersurge_noise_max_fee": {
+            "low": 0.0,
+            "high": 0.50,
+            "log_scale": False,
+            "scalar": True,
+        },
+        "hypersurge_noise_threshold": {
+            "low": 0.0,
+            "high": 1.0,
+            "log_scale": False,
+            "scalar": True,
+        },
+        "hypersurge_noise_cap_deviation": {
+            "low": 0.0,
+            "high": 2.0,
+            "log_scale": False,
+            "scalar": True,
+        },
     },
 }
 

@@ -1280,6 +1280,7 @@ def forward_pass_nograd(
             reclamm_price_ratio_updates=stop_gradient(
                 dynamic_inputs.reclamm_price_ratio_updates
             ),
+            oracle_prices=stop_gradient(dynamic_inputs.oracle_prices),
         )
     return forward_pass(
         params,
