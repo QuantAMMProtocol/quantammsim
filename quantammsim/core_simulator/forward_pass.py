@@ -44,6 +44,7 @@ else:
     config.update("jax_platform_name", "cpu")
 
 
+import jax
 import jax.numpy as jnp
 import jax.random
 from jax import jit, vmap, devices
@@ -786,7 +787,7 @@ def _calculate_return_value(
         "daily_log_sharpe": lambda: _daily_log_sharpe(value_over_time),
         "daily_log_sharpe_excess": lambda: _daily_log_sharpe_excess(
             value_over_time,
-            jnp.sum(stop_gradient(initial_reserves) * local_prices, axis=-1),
+            jnp.sum(stop_gradient(initial_reserves) * local_prices[:value_over_time.shape[0]], axis=-1),
         ),
         "returns": lambda: value_over_time[-1] / value_over_time[0] - 1.0,
         "annualised_returns": lambda: (
