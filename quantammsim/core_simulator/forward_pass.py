@@ -112,6 +112,7 @@ def _apply_price_noise(prices, sigma, seed_int):
 DAILY_COMPATIBLE_METRICS = frozenset({
     # Sharpe / VaR / ROVAR metrics naturally operate on day-boundary values.
     "daily_log_sharpe",
+    # "daily_log_sharpe_excess" excluded — needs HODL value series from prices
     "daily_sharpe",
     "daily_var_95%_trad",
     "daily_var_99%_trad",
@@ -288,6 +289,46 @@ def _daily_log_sharpe(values: jnp.ndarray) -> jnp.ndarray:
 
     # Annualize daily stats (calendar days)
     return jnp.sqrt(365.0) * (mean / (std + 1e-8))
+
+def _daily_log_sharpe_excess(
+    pool_values: jnp.ndarray,
+    hodl_values: jnp.ndarray,
+) -> jnp.ndarray:
+    r"""Annualized Sharpe ratio on daily log *excess* returns over HODL.
+
+    Isolates LP alpha by subtracting the HODL benchmark return at each
+    daily interval.  This removes crypto beta — a strategy that's just
+    long ETH no longer scores well in a bull-market window.
+
+    .. math::
+
+        e_t = \log(V^{\mathrm{pool}}_t / V^{\mathrm{pool}}_{t-1})
+              - \log(V^{\mathrm{hodl}}_t / V^{\mathrm{hodl}}_{t-1})
+
+        S_{\mathrm{excess}} = \sqrt{365} \cdot
+            \frac{\mu(e_t)}{\sigma(e_t) + \epsilon}
+
+    Parameters
+    ----------
+    pool_values : jnp.ndarray
+        Pool value time series at minute resolution, shape ``(T,)``.
+    hodl_values : jnp.ndarray
+        HODL value time series at minute resolution, shape ``(T,)``.
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar annualized excess-over-HODL log Sharpe.
+    """
+    daily_pool = pool_values[::1440]
+    daily_hodl = hodl_values[::1440]
+
+    log_ret_pool = jnp.diff(jnp.log(daily_pool + 1e-12))
+    log_ret_hodl = jnp.diff(jnp.log(daily_hodl + 1e-12))
+
+    excess = log_ret_pool - log_ret_hodl
+    return jnp.sqrt(365.0) * (excess.mean() / (excess.std() + 1e-8))
+
 
 def _calculate_max_drawdown(value_over_time, duration=7 * 24 * 60):
     """Calculate worst maximum drawdown across non-overlapping chunks.
@@ -743,6 +784,10 @@ def _calculate_return_value(
         "daily_sharpe": lambda: jnp.sqrt(365)
         * (daily_returns.mean() / daily_returns.std()),
         "daily_log_sharpe": lambda: _daily_log_sharpe(value_over_time),
+        "daily_log_sharpe_excess": lambda: _daily_log_sharpe_excess(
+            value_over_time,
+            jnp.sum(stop_gradient(initial_reserves) * local_prices, axis=-1),
+        ),
         "returns": lambda: value_over_time[-1] / value_over_time[0] - 1.0,
         "annualised_returns": lambda: (
             (value_over_time[-1] / value_over_time[0])

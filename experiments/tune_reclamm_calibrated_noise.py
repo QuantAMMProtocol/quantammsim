@@ -61,7 +61,11 @@ PARAMETER_CONFIG = {
     "shift_exponent": {"low": 1e-5, "high": 125.0, "log_scale": True, "scalar": True},
 }
 
-OBJECTIVES = ["daily_log_sharpe", "returns_over_hodl", "fee_revenue_over_value"]
+OBJECTIVES = [
+    "daily_log_sharpe", "daily_log_sharpe_excess",
+    "returns_over_hodl", "fee_revenue_over_value",
+    "calmar", "sterling", "weekly_rovar",
+]
 
 
 def _build_market_linear_arrays(args):
