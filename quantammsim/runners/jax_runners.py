@@ -1419,7 +1419,14 @@ def _train_on_historic_data_impl(
                     )
                     train_objectives.append(train_value)
 
-                mean_train_value = jnp.sum(jnp.array(train_objectives)) / len(train_objectives)
+                _train_arr = jnp.array(train_objectives)
+                _robust_temp = run_fingerprint.get("optimisation_settings", {}).get(
+                    "robust_temperature", None)
+                if _robust_temp is not None:
+                    _weights = jax.nn.softmax(-_train_arr / _robust_temp)
+                    mean_train_value = jnp.sum(_weights * _train_arr)
+                else:
+                    mean_train_value = jnp.mean(_train_arr)
                 train_value = _calculate_return_value(
                     run_fingerprint["return_val"],
                     train_outputs["reserves"],

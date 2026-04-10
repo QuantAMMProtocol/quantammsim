@@ -168,11 +168,15 @@ def _build_mm_observed_arrays(args):
 
 def _build_opt_settings(args):
     """Build optimisation_settings for optuna, bfgs, or cma_es."""
+    robust = ({"robust_temperature": args.robust_temperature}
+              if args.robust_temperature is not None else {})
+
     if args.method == "bfgs":
         return {
             "method": "bfgs",
             "n_parameter_sets": args.n_parameter_sets,
             **({"val_fraction": args.val_fraction} if args.val_fraction is not None else {}),
+            **robust,
             "bfgs_settings": {
                 "maxiter": args.bfgs_maxiter,
                 "tol": args.bfgs_tol,
@@ -185,6 +189,7 @@ def _build_opt_settings(args):
             "method": "cma_es",
             "n_parameter_sets": args.n_parameter_sets,
             **({"val_fraction": args.val_fraction} if args.val_fraction is not None else {}),
+            **robust,
             "cma_es_settings": {
                 "population_size": args.cma_pop_size,
                 "n_generations": args.cma_generations,
@@ -199,6 +204,7 @@ def _build_opt_settings(args):
             "method": "optuna",
             "n_parameter_sets": 1,
             **({"val_fraction": args.val_fraction} if args.val_fraction is not None else {}),
+            **robust,
             "optuna_settings": {
                 "make_scalar": True,
                 "expand_around": False,
@@ -345,6 +351,9 @@ def main():
     parser.add_argument("--bout-offset", type=int, default=None)
     parser.add_argument("--val-fraction", type=float, default=None)
     parser.add_argument("--overfitting-penalty", type=float, default=None)
+    parser.add_argument("--robust-temperature", type=float, default=None,
+                        help="Robust aggregation temperature (lower=more robust)."
+                             " None=standard mean. Try 0.5-2.0.")
     parser.add_argument("--output", type=str, default=None,
                         help="Save results to JSON file")
     args = parser.parse_args()
