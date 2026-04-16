@@ -403,6 +403,7 @@ class ReClammPool(AbstractPool):
                 dow_cos_array=noise_arrays["dow_cos"],
                 noise_base_array=noise_arrays["noise_base"],
                 noise_tvl_coeff_array=noise_arrays["noise_tvl_coeff"],
+                competitor_tvl_array=noise_arrays["competitor_tvl"],
             )
         return jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape)
 
@@ -462,6 +463,7 @@ class ReClammPool(AbstractPool):
                 dow_cos_array=noise_arrays["dow_cos"],
                 noise_base_array=noise_arrays["noise_base"],
                 noise_tvl_coeff_array=noise_arrays["noise_tvl_coeff"],
+                competitor_tvl_array=noise_arrays["competitor_tvl"],
             )
         return (
             jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape),
@@ -531,6 +533,7 @@ class ReClammPool(AbstractPool):
             dow_cos_array=noise_arrays["dow_cos"],
             noise_base_array=noise_arrays["noise_base"],
             noise_tvl_coeff_array=noise_arrays["noise_tvl_coeff"],
+            competitor_tvl_array=noise_arrays["competitor_tvl"],
         )
 
     @partial(jit, static_argnums=(2,))
@@ -643,6 +646,7 @@ class ReClammPool(AbstractPool):
             dow_cos_array=noise_arrays["dow_cos"],
             noise_base_array=noise_arrays["noise_base"],
             noise_tvl_coeff_array=noise_arrays["noise_tvl_coeff"],
+            competitor_tvl_array=noise_arrays["competitor_tvl"],
         )
 
     def init_base_parameters(
