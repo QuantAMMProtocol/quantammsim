@@ -72,6 +72,52 @@ def _resolve_dynamic_inputs(dynamic_inputs, static_dict):
     return dynamic_inputs, dynamic_input_flags
 
 
+def _slice_dynamic_input_leaf(values, start_idx, length):
+    """Slice a window from a dynamic-input leaf unless it is singleton."""
+    if values is None:
+        return None
+    values = jnp.asarray(values)
+    if values.ndim == 0 or values.shape[0] <= 1:
+        return values
+    slice_sizes = (length,) + values.shape[1:]
+    start = (start_idx,) + (0,) * (values.ndim - 1)
+    return dynamic_slice(values, start, slice_sizes)
+
+
+def _slice_dynamic_inputs(dynamic_inputs, start_index, static_dict):
+    """Align full-period dynamic inputs to the active simulation window."""
+    if dynamic_inputs is None:
+        return None
+
+    bout_length = static_dict["bout_length"]
+    arb_frequency = static_dict.get("arb_frequency", 1)
+    window_len = bout_length - 1
+    minute_start = start_index[0] - static_dict.get("dynamic_inputs_offset", 0)
+
+    def _slice_minute_leaf(values):
+        sliced = _slice_dynamic_input_leaf(values, minute_start, window_len)
+        if sliced is None or arb_frequency == 1:
+            return sliced
+        return sliced[::arb_frequency]
+
+    schedule_len = window_len if arb_frequency == 1 else (window_len + arb_frequency - 1) // arb_frequency
+    schedule_start = minute_start if arb_frequency == 1 else minute_start // arb_frequency
+
+    return DynamicInputArrays(
+        trades=_slice_minute_leaf(dynamic_inputs.trades),
+        fees=_slice_minute_leaf(dynamic_inputs.fees),
+        gas_cost=_slice_minute_leaf(dynamic_inputs.gas_cost),
+        arb_fees=_slice_minute_leaf(dynamic_inputs.arb_fees),
+        lp_supply=_slice_minute_leaf(dynamic_inputs.lp_supply),
+        reclamm_price_ratio_updates=_slice_dynamic_input_leaf(
+            dynamic_inputs.reclamm_price_ratio_updates,
+            schedule_start,
+            schedule_len,
+        ),
+        oracle_prices=_slice_minute_leaf(dynamic_inputs.oracle_prices),
+    )
+
+
 def _apply_price_noise(prices, sigma, seed_int):
     """Apply multiplicative log-normal noise to prices.
 
@@ -1034,6 +1080,8 @@ def forward_pass(
     dynamic_inputs, dynamic_input_flags = _resolve_dynamic_inputs(
         dynamic_inputs, static_dict
     )
+    if dynamic_input_flags["use_dynamic_inputs"]:
+        dynamic_inputs = _slice_dynamic_inputs(dynamic_inputs, start_index, static_dict)
 
     fee_revenue = None
     if dynamic_input_flags["use_dynamic_inputs"]:

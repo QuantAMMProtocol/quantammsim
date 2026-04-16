@@ -54,6 +54,7 @@ from quantammsim.core_simulator.forward_pass import (
     _calculate_return_value,
 )
 from quantammsim.core_simulator.dynamic_inputs import (
+    DynamicInputArrays,
     DynamicInputFrames,
     materialize_dynamic_inputs,
 )
@@ -126,6 +127,52 @@ import jax.numpy as jnp
 # with matching shapes.
 
 _scan_infra_cache = {}
+
+
+def _concat_dynamic_input_arrays(
+    train_dynamic_inputs: DynamicInputArrays,
+    test_dynamic_inputs=None,
+):
+    """Concatenate train/test dynamic-input bundles for continuous evaluation."""
+    if train_dynamic_inputs is None:
+        return None
+    if test_dynamic_inputs is None:
+        return train_dynamic_inputs
+
+    def _concat_leaf(train_leaf, test_leaf):
+        if train_leaf is None:
+            return test_leaf
+        if test_leaf is None:
+            return train_leaf
+        if hasattr(train_leaf, "shape") and hasattr(test_leaf, "shape"):
+            if train_leaf.shape[0] <= 1 and test_leaf.shape[0] <= 1:
+                return train_leaf
+            if train_leaf.shape[0] <= 1:
+                return test_leaf
+            if test_leaf.shape[0] <= 1:
+                return train_leaf
+        return jnp.concatenate((train_leaf, test_leaf), axis=0)
+
+    return DynamicInputArrays(
+        trades=_concat_leaf(train_dynamic_inputs.trades, test_dynamic_inputs.trades),
+        fees=_concat_leaf(train_dynamic_inputs.fees, test_dynamic_inputs.fees),
+        gas_cost=_concat_leaf(
+            train_dynamic_inputs.gas_cost, test_dynamic_inputs.gas_cost
+        ),
+        arb_fees=_concat_leaf(
+            train_dynamic_inputs.arb_fees, test_dynamic_inputs.arb_fees
+        ),
+        lp_supply=_concat_leaf(
+            train_dynamic_inputs.lp_supply, test_dynamic_inputs.lp_supply
+        ),
+        reclamm_price_ratio_updates=_concat_leaf(
+            train_dynamic_inputs.reclamm_price_ratio_updates,
+            test_dynamic_inputs.reclamm_price_ratio_updates,
+        ),
+        oracle_prices=_concat_leaf(
+            train_dynamic_inputs.oracle_prices, test_dynamic_inputs.oracle_prices
+        ),
+    )
 
 
 def _scan_config_key(run_fingerprint, chunk_size, original_bout_length, bout_length_test):
@@ -329,6 +376,7 @@ def train_on_historic_data(
     iterations_per_print=1,
     force_init=False,
     price_data=None,
+    dynamic_input_frames: DynamicInputFrames = None,
     verbose=True,
     run_location=None,
     return_training_metadata=False,
@@ -374,6 +422,10 @@ def train_on_historic_data(
     price_data : array-like or DataFrame, optional
         Pre-loaded price data.  When None, data is loaded from parquet
         files based on ``run_fingerprint`` date/token settings.
+    dynamic_input_frames : DynamicInputFrames, optional
+        Optional minute-level dynamic input bundle. This is most useful
+        for HyperSurge oracle prices during training; the runner windows
+        the arrays alongside price windows.
     verbose : bool, optional
         Print detailed progress information (default True).
     run_location : str, optional
@@ -425,7 +477,7 @@ def train_on_historic_data(
     try:
         return _train_on_historic_data_impl(
             run_fingerprint, root, iterations_per_print, force_init,
-            price_data, verbose, run_location, return_training_metadata,
+            price_data, dynamic_input_frames, verbose, run_location, return_training_metadata,
             warm_start_params, warm_start_weights,
         )
     finally:
@@ -434,7 +486,7 @@ def train_on_historic_data(
 
 def _train_on_historic_data_impl(
     run_fingerprint, root, iterations_per_print, force_init,
-    price_data, verbose, run_location, return_training_metadata,
+    price_data, dynamic_input_frames, verbose, run_location, return_training_metadata,
     warm_start_params, warm_start_weights,
 ):
     if verbose:
@@ -472,6 +524,26 @@ def _train_on_historic_data_impl(
         do_test_period=True,
     )
     max_memory_days = data_dict["max_memory_days"]
+
+    dynamic_inputs_dict = prepare_dynamic_inputs(
+        run_fingerprint,
+        dynamic_input_frames=dynamic_input_frames,
+        do_test_period=True,
+    )
+    dynamic_input_flags = dynamic_inputs_dict["dynamic_input_flags"]
+    train_dynamic_inputs = (
+        dynamic_inputs_dict["train_dynamic_inputs"]
+        if dynamic_input_flags["use_dynamic_inputs"]
+        else None
+    )
+    continuous_dynamic_inputs = (
+        _concat_dynamic_input_arrays(
+            train_dynamic_inputs,
+            dynamic_inputs_dict.get("test_dynamic_inputs"),
+        )
+        if dynamic_input_flags["use_dynamic_inputs"]
+        else None
+    )
 
     # Validation holdout setup
     # If val_fraction > 0, carve out validation window from end of training
@@ -683,22 +755,16 @@ def _train_on_historic_data_impl(
         overrides={
             "n_assets": n_assets,
             "training_data_kind": run_fingerprint["optimisation_settings"]["training_data_kind"],
-            "do_trades": False,
-            "dynamic_input_flags": {
-                "use_dynamic_inputs": False,
-                "has_trades": False,
-                "has_dynamic_fees": False,
-                "has_dynamic_gas_cost": False,
-                "has_dynamic_arb_fees": False,
-                "has_lp_supply": False,
-                "has_reclamm_price_ratio_updates": False,
-            },
+            "do_trades": dynamic_input_flags["has_trades"],
+            "dynamic_input_flags": dynamic_input_flags,
+            "dynamic_inputs_offset": data_dict["start_idx"],
         },
     )
 
     partial_training_step = Partial(
         forward_pass,
         prices=data_dict["prices"],
+        dynamic_inputs=train_dynamic_inputs,
         static_dict=Hashabledict(base_static_dict),
         pool=pool,
     )
@@ -714,7 +780,7 @@ def _train_on_historic_data_impl(
     continuous_static_dict["bout_length"] = original_bout_length + data_dict["bout_length_test"]
     partial_forward_pass_nograd_batch_continuous = Partial(
         forward_pass_nograd,
-        dynamic_inputs=None,
+        dynamic_inputs=continuous_dynamic_inputs,
         static_dict=Hashabledict(continuous_static_dict),
         pool=pool,
     )
@@ -854,13 +920,15 @@ def _train_on_historic_data_impl(
             run_fingerprint, chunk_size, original_bout_length, _bout_length_test,
         )
 
-        if config_key in _scan_infra_cache:
+        use_scan_cache = not dynamic_input_flags["use_dynamic_inputs"]
+
+        if use_scan_cache and config_key in _scan_infra_cache:
             _run_scan_chunk, scan_body, _run_scan_step = _scan_infra_cache[config_key]
         else:
             # Build scan-compatible update (prices as explicit arg, not closure)
             partial_step_no_prices = Partial(
                 forward_pass,
-                dynamic_inputs=None,
+                dynamic_inputs=train_dynamic_inputs,
                 static_dict=Hashabledict(base_static_dict),
                 pool=pool,
             )
@@ -900,7 +968,12 @@ def _train_on_historic_data_impl(
                 swa_freq=swa_freq,
                 n_parameter_sets=n_parameter_sets,
             )
-            _scan_infra_cache[config_key] = (_run_scan_chunk, scan_body, _run_scan_step)
+            if use_scan_cache:
+                _scan_infra_cache[config_key] = (
+                    _run_scan_chunk,
+                    scan_body,
+                    _run_scan_step,
+                )
 
         # ── Initialize carry (prices & nan_bank in carry, not closures) ──
         carry = {
@@ -2654,6 +2727,7 @@ def do_run_on_historic_data(
             "gas_cost": gas_cost if gas_cost is not None else run_fingerprint["gas_cost"],
             "do_trades": dynamic_inputs_dict["dynamic_input_flags"]["has_trades"],
             "dynamic_input_flags": dynamic_inputs_dict["dynamic_input_flags"],
+            "dynamic_inputs_offset": data_dict["start_idx"],
             # Include date strings for run-time use
             "startDateString": run_fingerprint["startDateString"],
             "endDateString": run_fingerprint["endDateString"],
@@ -2677,6 +2751,9 @@ def do_run_on_historic_data(
         reserves_values_test_static_dict = base_static_dict.copy()
         reserves_values_test_static_dict["return_val"] = "reserves_and_values"
         reserves_values_test_static_dict["bout_length"] = data_dict["bout_length_test"]
+        reserves_values_test_static_dict["dynamic_inputs_offset"] = data_dict[
+            "start_idx_test"
+        ]
         partial_forward_pass_nograd_batch_reserves_values_test = jit(
             Partial(
                 forward_pass_nograd,
@@ -2890,6 +2967,7 @@ def do_run_on_historic_data_with_provided_coarse_weights(
             "gas_cost": gas_cost if gas_cost is not None else run_fingerprint["gas_cost"],
             "do_trades": dynamic_inputs_dict["dynamic_input_flags"]["has_trades"],
             "dynamic_input_flags": dynamic_inputs_dict["dynamic_input_flags"],
+            "dynamic_inputs_offset": data_dict["start_idx"],
             # Include date strings for run-time use
             "startDateString": run_fingerprint["startDateString"],
             "endDateString": run_fingerprint["endDateString"],

@@ -21,6 +21,7 @@ from quantammsim.pools.hodl_pool import HODLPool
 from quantammsim.pools.FM_AMM.cow_pool import CowPool
 from quantammsim.pools.ECLP.gyroscope import GyroscopePool
 from quantammsim.pools.reCLAMM.reclamm import ReClammPool
+from quantammsim.pools.reCLAMM.reclamm_hypersurge import ReClammHyperSurgePool
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.hooks.versus_rebalancing import (
     CalculateLossVersusRebalancing,
@@ -150,6 +151,7 @@ def create_pool(rule):
         - ``"hodl"`` : Pure buy-and-hold (no rebalancing) pool.
         - ``"cow"`` : CoW (Coincidence of Wants) AMM pool.
         - ``"gyroscope"`` : Gyroscope E-CLP pool.
+        - ``"reclamm_hypersurge"`` : reCLAMM pool with HyperSurge dynamic fees.
 
         Available hook prefixes (prepended with ``__`` separator):
 
@@ -235,6 +237,8 @@ def create_pool(rule):
         base_pool = GyroscopePool()
     elif base_rule == "reclamm":
         base_pool = ReClammPool()
+    elif base_rule in ("reclamm_hypersurge", "hypersurge_reclamm"):
+        base_pool = ReClammHyperSurgePool()
     else:
         raise NotImplementedError(f"Unknown base pool type: {base_rule}")
 
