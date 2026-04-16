@@ -13,83 +13,21 @@ from quantammsim.pools.G3M.optimal_n_pool_arb import (
     precalc_shared_values_for_all_signatures,
     parallelised_optimal_trade_sifter,
 )
+from quantammsim.pools.hypersurge_utils import (
+    _EPS,
+    broadcast_scan_vector as _broadcast_scan_vector,
+    fee_to_gamma as _fee_to_gamma,
+    max_pair_deviation as _max_pair_deviation,
+    oracle_pair_is_valid,
+    oracle_vector_is_valid,
+    pair_deviation as _pair_deviation,
+    ramp_fee as _ramp_fee,
+    safe_positive as _safe_positive,
+)
 from quantammsim.pools.noise_trades import (
     calculate_reserves_after_noise_trade,
     reclamm_market_linear_noise_volume,
 )
-
-
-_EPS = 1e-18
-_MAX_FEE = 0.999999
-
-
-def _safe_positive(values):
-    values = jnp.asarray(values)
-    values = jnp.where(jnp.isfinite(values), values, 1.0)
-    return jnp.maximum(values, _EPS)
-
-
-def _fee_to_gamma(fee):
-    return jnp.maximum(1.0 - jnp.clip(fee, 0.0, _MAX_FEE), _EPS)
-
-
-def _pair_pool_price(reserves, weights, token_in, token_out):
-    """Pool spot amount-out-per-amount-in for a weighted-pool token pair."""
-    token_in = jnp.int32(token_in)
-    token_out = jnp.int32(token_out)
-    reserves = _safe_positive(reserves)
-    weights = _safe_positive(weights)
-    numerator = reserves[token_out] * weights[token_in]
-    denominator = reserves[token_in] * weights[token_out]
-    return numerator / jnp.maximum(denominator, _EPS)
-
-
-def _pair_oracle_price(oracle_prices, token_in, token_out):
-    """External amount-out-per-amount-in, assuming common-numeraire prices."""
-    token_in = jnp.int32(token_in)
-    token_out = jnp.int32(token_out)
-    oracle_prices = _safe_positive(oracle_prices)
-    return oracle_prices[token_in] / jnp.maximum(oracle_prices[token_out], _EPS)
-
-
-def _pair_deviation(reserves, weights, oracle_prices, token_in, token_out):
-    pool_price = _pair_pool_price(reserves, weights, token_in, token_out)
-    oracle_price = _pair_oracle_price(oracle_prices, token_in, token_out)
-    ratio = pool_price / jnp.maximum(oracle_price, _EPS)
-    ratio = jnp.where(jnp.isfinite(ratio), ratio, 1.0)
-    return jnp.abs(ratio - 1.0)
-
-
-def _max_pair_deviation(reserves, weights, oracle_prices):
-    reserves = _safe_positive(reserves)
-    weights = _safe_positive(weights)
-    oracle_prices = _safe_positive(oracle_prices)
-
-    pool_prices = (reserves[None, :] * weights[:, None]) / jnp.maximum(
-        reserves[:, None] * weights[None, :],
-        _EPS,
-    )
-    oracle_pair_prices = oracle_prices[:, None] / jnp.maximum(
-        oracle_prices[None, :],
-        _EPS,
-    )
-    ratios = pool_prices / jnp.maximum(oracle_pair_prices, _EPS)
-    ratios = jnp.where(jnp.isfinite(ratios), ratios, 1.0)
-    deviations = jnp.abs(ratios - 1.0)
-    off_diagonal = ~jnp.eye(reserves.shape[0], dtype=bool)
-    return jnp.max(jnp.where(off_diagonal, deviations, 0.0))
-
-
-def _ramp_fee(base_fee, max_fee, threshold, cap, deviation):
-    max_fee = jnp.maximum(max_fee, base_fee)
-    threshold = jnp.maximum(threshold, 0.0)
-    cap = jnp.maximum(cap, threshold + _EPS)
-    span = jnp.maximum(cap - threshold, _EPS)
-    ramp = jnp.clip((deviation - threshold) / span, 0.0, 1.0)
-    fee = base_fee + (max_fee - base_fee) * ramp
-    fee = jnp.where(deviation <= threshold, base_fee, fee)
-    return jnp.clip(fee, 0.0, _MAX_FEE)
-
 
 def _hypersurge_fee_for_trade(
     reserves,
@@ -102,6 +40,7 @@ def _hypersurge_fee_for_trade(
     hypersurge_params,
 ):
     """Select arb/noise fee params from whether a candidate trade worsens peg deviation."""
+    pair_has_oracle = oracle_pair_is_valid(oracle_prices, token_in, token_out)
     candidate_reserves = _safe_positive(reserves + candidate_trade)
     dev_before = _pair_deviation(reserves, weights, oracle_prices, token_in, token_out)
     dev_after = _pair_deviation(
@@ -128,18 +67,19 @@ def _hypersurge_fee_for_trade(
         dev_after,
     )
     fee = jnp.where(worsens, noise_fee, arb_fee)
-    return jnp.where(trade_active, fee, base_fee)
+    return jnp.where(jnp.logical_and(trade_active, pair_has_oracle), fee, base_fee)
 
 
 def _hypersurge_noise_fee(reserves, weights, oracle_prices, base_fee, hypersurge_params):
     deviation = _max_pair_deviation(reserves, weights, oracle_prices)
-    return _ramp_fee(
+    fee = _ramp_fee(
         base_fee,
         hypersurge_params[3],
         hypersurge_params[4],
         hypersurge_params[5],
         deviation,
     )
+    return jnp.where(oracle_vector_is_valid(oracle_prices), fee, base_fee)
 
 
 def _zero_fee_optimal_trade(reserves, weights, prices):
@@ -198,15 +138,6 @@ def _optimal_arb_trade_with_gamma(
         n,
         -1e-15,
     )
-
-
-def _broadcast_scan_vector(values, scan_len):
-    values = jnp.asarray(values)
-    if values.ndim == 0:
-        values = values.reshape((1,))
-    values = jnp.ravel(values)
-    return jnp.where(values.size == 1, jnp.full((scan_len,), values[0]), values)
-
 
 def _broadcast_oracle_prices(oracle_prices, prices):
     oracle_prices = jnp.asarray(oracle_prices)

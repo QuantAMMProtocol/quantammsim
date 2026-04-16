@@ -8,6 +8,11 @@ from jax import jit, tree_util
 from jax.lax import dynamic_slice
 
 from quantammsim.core_simulator.dynamic_inputs import materialize_dynamic_inputs
+from quantammsim.pools.hypersurge_utils import (
+    HYPERSURGE_PARAM_KEYS,
+    hypersurge_params_from_params,
+    run_fingerprint_hypersurge_defaults,
+)
 from quantammsim.pools.G3M.balancer.balancer import BalancerPool
 from quantammsim.pools.G3M.balancer.hypersurge_balancer_reserves import (
     _jax_calc_hypersurge_balancer_reserves,
@@ -30,112 +35,15 @@ def _prepare_dynamic_array(arr, start_index, bout_length, arb_frequency, max_len
     return sliced
 
 
-def _coalesce(value, default):
-    return default if value is None else value
-
-
-HYPERSURGE_PARAM_KEYS = (
-    "hypersurge_arb_max_fee",
-    "hypersurge_arb_threshold",
-    "hypersurge_arb_cap_deviation",
-    "hypersurge_noise_max_fee",
-    "hypersurge_noise_threshold",
-    "hypersurge_noise_cap_deviation",
-)
-
-
 class HyperSurgeBalancerPool(BalancerPool):
     """Balancer weighted pool with HyperSurge-style state-dependent swap fees."""
 
     @staticmethod
     def _run_fingerprint_hypersurge_defaults(run_fingerprint: Dict[str, Any]):
-        base_fee = run_fingerprint.get("fees", 0.0)
-        if isinstance(base_fee, (list, tuple)):
-            base_fee = base_fee[0]
-
-        raw_params = run_fingerprint.get("hypersurge_params")
-        if raw_params is not None:
-            if isinstance(raw_params, dict):
-                shared_max = raw_params.get("max_surge_fee", base_fee)
-                shared_threshold = raw_params.get("threshold", 0.0)
-                shared_cap = raw_params.get("cap_deviation", 1.0)
-                return {
-                    "hypersurge_arb_max_fee": raw_params.get(
-                        "arb_max_fee", shared_max
-                    ),
-                    "hypersurge_arb_threshold": raw_params.get(
-                        "arb_threshold", shared_threshold
-                    ),
-                    "hypersurge_arb_cap_deviation": raw_params.get(
-                        "arb_cap_deviation", shared_cap
-                    ),
-                    "hypersurge_noise_max_fee": raw_params.get(
-                        "noise_max_fee", shared_max
-                    ),
-                    "hypersurge_noise_threshold": raw_params.get(
-                        "noise_threshold", shared_threshold
-                    ),
-                    "hypersurge_noise_cap_deviation": raw_params.get(
-                        "noise_cap_deviation", shared_cap
-                    ),
-                }
-
-            raw_params = np.asarray(raw_params, dtype=np.float64).reshape(-1)
-            if raw_params.size != len(HYPERSURGE_PARAM_KEYS):
-                raise ValueError(
-                    "hypersurge_params must contain exactly six values: "
-                    + ", ".join(HYPERSURGE_PARAM_KEYS)
-                )
-            return dict(zip(HYPERSURGE_PARAM_KEYS, raw_params))
-
-        shared_max = _coalesce(
-            run_fingerprint.get("hypersurge_max_surge_fee"),
-            _coalesce(run_fingerprint.get("hypersurge_max_fee"), base_fee),
-        )
-        shared_threshold = _coalesce(
-            run_fingerprint.get("hypersurge_threshold"),
-            0.0,
-        )
-        shared_cap = _coalesce(
-            run_fingerprint.get("hypersurge_cap_deviation"),
-            1.0,
-        )
-        return {
-            "hypersurge_arb_max_fee": _coalesce(
-                run_fingerprint.get("hypersurge_arb_max_fee"), shared_max
-            ),
-            "hypersurge_arb_threshold": _coalesce(
-                run_fingerprint.get("hypersurge_arb_threshold"), shared_threshold
-            ),
-            "hypersurge_arb_cap_deviation": _coalesce(
-                run_fingerprint.get("hypersurge_arb_cap_deviation"), shared_cap
-            ),
-            "hypersurge_noise_max_fee": _coalesce(
-                run_fingerprint.get("hypersurge_noise_max_fee"), shared_max
-            ),
-            "hypersurge_noise_threshold": _coalesce(
-                run_fingerprint.get("hypersurge_noise_threshold"), shared_threshold
-            ),
-            "hypersurge_noise_cap_deviation": _coalesce(
-                run_fingerprint.get("hypersurge_noise_cap_deviation"), shared_cap
-            ),
-        }
+        return run_fingerprint_hypersurge_defaults(run_fingerprint)
 
     def _hypersurge_params(self, params: Dict[str, Any], run_fingerprint: Dict[str, Any]):
-        if "hypersurge_params" in params:
-            return jnp.ravel(params["hypersurge_params"])
-
-        if all(key in params for key in HYPERSURGE_PARAM_KEYS):
-            return jnp.asarray(
-                [jnp.squeeze(params[key]) for key in HYPERSURGE_PARAM_KEYS],
-                dtype=jnp.float64,
-            )
-
-        defaults = self._run_fingerprint_hypersurge_defaults(run_fingerprint)
-        return jnp.asarray(
-            [defaults[key] for key in HYPERSURGE_PARAM_KEYS],
-            dtype=jnp.float64,
-        )
+        return hypersurge_params_from_params(params, run_fingerprint)
 
     def _price_windows(
         self,
