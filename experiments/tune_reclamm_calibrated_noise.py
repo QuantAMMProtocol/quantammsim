@@ -114,8 +114,56 @@ def _build_market_linear_arrays(args):
     return arrays_path, max(1, round(learned_cadence))
 
 
+def _build_mm_observed_arrays(args):
+    """Precompute noise arrays from the MM model + DeFi Llama competitor TVL."""
+    from quantammsim.calibration.noise_model_arrays import (
+        build_mm_simulator_arrays, load_artifact, _find_pool_index,
+    )
+
+    start = args.start_date.split(" ")[0]
+    end = args.end_test_date.split(" ")[0]
+
+    print(f"  Building mm_observed noise arrays for {POOL_ID}...")
+    print(f"  Date range: {start} → {end}")
+    arrays = build_mm_simulator_arrays(
+        token_a="AAVE",
+        token_b="ETH",
+        start_date=start,
+        end_date=end,
+        mm_artifact_dir=args.artifact_dir,
+        competitor_tvl_path=args.competitor_tvl_path,
+        pool_id=POOL_ID,
+    )
+    print(f"  {arrays['n_days']} days, {arrays['n_minutes']} minutes")
+    print(f"  noise_base range: [{arrays['noise_base'].min():.2f},"
+          f" {arrays['noise_base'].max():.2f}]")
+    print(f"  competitor_tvl range: [${np.exp(np.log(arrays['competitor_tvl'].max())):.0f}]")
+
+    # Save arrays to disk
+    import os
+    cache_dir = os.path.join(args.artifact_dir, "_sim_arrays")
+    os.makedirs(cache_dir, exist_ok=True)
+    arrays_path = os.path.join(cache_dir, f"{POOL_ID}_{start}_{end}_mm.npz")
+    np.savez(arrays_path,
+             noise_base=arrays["noise_base"],
+             competitor_tvl=arrays["competitor_tvl"])
+    print(f"  Saved arrays: {arrays_path}")
+
+    # Get cadence from MM model artifact
+    art, meta = load_artifact(args.artifact_dir)
+    pool_idx = _find_pool_index(POOL_ID, meta["pool_ids"])
+    if pool_idx >= 0 and "log_cadence" in art:
+        learned_cadence = float(np.exp(art["log_cadence"][pool_idx]))
+        print(f"  Learned cadence: {learned_cadence:.1f} min")
+    else:
+        learned_cadence = 5.0
+        print(f"  Using default cadence: {learned_cadence}")
+
+    return arrays_path, max(1, round(learned_cadence))
+
+
 def _build_opt_settings(args):
-    """Build optimisation_settings for either optuna or bfgs."""
+    """Build optimisation_settings for optuna, bfgs, or cma_es."""
     if args.method == "bfgs":
         return {
             "method": "bfgs",
@@ -126,6 +174,20 @@ def _build_opt_settings(args):
                 "tol": args.bfgs_tol,
                 "n_evaluation_points": args.bfgs_eval_points,
                 "compute_dtype": "float64",
+            },
+        }
+    elif args.method == "cma_es":
+        return {
+            "method": "cma_es",
+            "n_parameter_sets": args.n_parameter_sets,
+            **({"val_fraction": args.val_fraction} if args.val_fraction is not None else {}),
+            "cma_es_settings": {
+                "population_size": args.cma_pop_size,
+                "n_generations": args.cma_generations,
+                "sigma0": args.cma_sigma0,
+                "tol": 1e-8,
+                "n_evaluation_points": args.cma_eval_points,
+                "compute_dtype": "float32",
             },
         }
     else:
@@ -141,14 +203,22 @@ def _build_opt_settings(args):
                 "parameter_config": PARAMETER_CONFIG,
                 **({"overfitting_penalty": args.overfitting_penalty}
                    if args.overfitting_penalty is not None else {}),
+                **({"min_train_returns_over_hodl": args.min_train_ret}
+                   if args.min_train_ret is not None else {}),
             },
         }
 
 
 def build_fingerprint(objective, args, noise_arrays_path=None, arb_freq=None):
     """Build run fingerprint with calibrated noise model."""
-    if args.noise_model == "market_linear" and noise_arrays_path is not None:
-        # Load tvl standardization stats from the saved arrays
+    if args.noise_model == "mm_observed" and noise_arrays_path is not None:
+        noise_block = {
+            "noise_trader_ratio": 0.0,
+            "noise_model": "mm_observed",
+            "noise_arrays_path": noise_arrays_path,
+        }
+        freq = arb_freq or 5
+    elif args.noise_model == "market_linear" and noise_arrays_path is not None:
         _arr = np.load(noise_arrays_path)
         noise_block = {
             "noise_trader_ratio": 0.0,
@@ -222,7 +292,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Tune reClAMM params with calibrated 8-covariate noise model"
     )
-    parser.add_argument("--method", default="optuna", choices=["optuna", "bfgs"],
+    parser.add_argument("--method", default="optuna",
+                        choices=["optuna", "bfgs", "cma_es"],
                         help="Optimisation method")
     parser.add_argument("--n-trials", type=int, default=50,
                         help="Optuna trials (ignored for bfgs)")
@@ -232,12 +303,24 @@ def main():
     parser.add_argument("--bfgs-tol", type=float, default=1e-6)
     parser.add_argument("--bfgs-eval-points", type=int, default=20,
                         help="Number of evaluation points for bfgs")
+    # CMA-ES
+    parser.add_argument("--cma-generations", type=int, default=300)
+    parser.add_argument("--cma-sigma0", type=float, default=0.5,
+                        help="Initial step size for CMA-ES")
+    parser.add_argument("--cma-pop-size", type=int, default=None,
+                        help="Population size (None = auto)")
+    parser.add_argument("--cma-eval-points", type=int, default=20)
+    parser.add_argument("--min-train-ret", type=float, default=-0.5,
+                        help="Reject trials with IS returns_over_hodl below this")
     parser.add_argument("--noise-model", default="market_linear",
-                        choices=["calibrated", "market_linear"],
+                        choices=["calibrated", "market_linear", "mm_observed"],
                         help="Noise model variant")
     parser.add_argument("--artifact-dir",
                         default="results/linear_market_noise",
-                        help="Artifact dir for market_linear model")
+                        help="Artifact dir for market_linear or mm_observed model")
+    parser.add_argument("--competitor-tvl-path",
+                        default="results/competitor_tvl/competitor_tvl.npz",
+                        help="Path to competitor TVL data (mm_observed only)")
     parser.add_argument("--initial-pool-value", type=float, default=20_000_000.0,
                         help="Initial pool TVL in USD (default: 20M)")
     parser.add_argument("--fees", type=float, default=0.0025,
@@ -267,11 +350,13 @@ def main():
     else:
         objectives = [args.objective]
 
-    # Precompute noise arrays once (if using market_linear)
+    # Precompute noise arrays once
     noise_arrays_path = None
     arb_freq = None
     if args.noise_model == "market_linear":
         noise_arrays_path, arb_freq = _build_market_linear_arrays(args)
+    elif args.noise_model == "mm_observed":
+        noise_arrays_path, arb_freq = _build_mm_observed_arrays(args)
 
     all_results = {}
     for obj in objectives:

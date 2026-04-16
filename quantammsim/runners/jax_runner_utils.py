@@ -675,6 +675,10 @@ _TRAINING_ONLY_FIELDS = frozenset({
     "initial_raw_width",
     "initial_raw_exponents",
     "initial_pre_exp_scaling",
+    # Noise model arrays — loaded from path at runtime, not hashable
+    "noise_base_array",
+    "noise_tvl_coeff_array",
+    "competitor_tvl_array",
 })
 
 

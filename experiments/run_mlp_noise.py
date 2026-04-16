@@ -257,20 +257,21 @@ def run_optuna(data, n_trials):
 
     def objective(trial):
         # Architecture
-        n_layers = trial.suggest_int("n_layers", 1, 5)
-        first_hidden = trial.suggest_categorical("first_hidden", [8, 16, 32, 64])
+        n_layers = trial.suggest_int("n_layers", 1, 7)
+        first_hidden = trial.suggest_categorical("first_hidden", [8, 16, 32, 64, 128, 256])
         # Bottleneck: each layer is half the previous (min 2)
+        bottleneck_ratio = trial.suggest_categorical("bottleneck_ratio", [0.5, 0.75, 1.0])
         hidden = []
         h = first_hidden
         for _ in range(n_layers):
             hidden.append(h)
-            h = max(h // 2, 2)
+            h = max(int(h * bottleneck_ratio), 2)
 
         # Training
-        lr = trial.suggest_float("lr", 1e-4, 1e-2, log=True)
-        l2_alpha = trial.suggest_float("l2_alpha", 1e-5, 1e-1, log=True)
+        lr = trial.suggest_float("lr", 1e-4, 5e-2, log=True)
+        l2_alpha = trial.suggest_float("l2_alpha", 1e-5, 5e-1, log=True)
         huber_delta = trial.suggest_categorical("huber_delta", [0.5, 1.0, 1.5, 2.0])
-        n_epochs = trial.suggest_categorical("n_epochs", [2000, 5000, 10000])
+        n_epochs = trial.suggest_categorical("n_epochs", [2000, 5000, 10000, 20000])
         use_cosine = trial.suggest_categorical("use_cosine", [True, False])
         per_pool = trial.suggest_categorical("per_pool", [True, False])
 
@@ -341,6 +342,33 @@ def run_optuna(data, n_trials):
               f"  {'per_pool' if per_pool else 'shared'}"
               f"  lr={lr:.1e} l2={l2_alpha:.1e}"
               f"  hub={huber_delta} ep={n_epochs}")
+
+        # Save every trial's model
+        trial_dir = os.path.join("results", "mlp_noise", "trials", f"trial_{trial.number:04d}")
+        os.makedirs(trial_dir, exist_ok=True)
+        save_dict = {k: np.array(v) for k, v in params.items()}
+        save_dict["x_mean"] = data.get("x_mean", np.zeros(n_feat))
+        save_dict["x_std"] = data.get("x_std", np.ones(n_feat))
+        np.savez(os.path.join(trial_dir, "model.npz"), **save_dict)
+        import json as _json
+        _meta = {
+            "pool_ids": data["pool_ids"],
+            "feat_names": data["feat_names"],
+            "n_feat": n_feat,
+            "hidden": hidden,
+            "per_pool": per_pool,
+            "eval_r2": med_r2,
+            "hparams": {
+                "hidden": hidden, "lr": lr, "l2_alpha": l2_alpha,
+                "huber_delta": huber_delta, "n_epochs": n_epochs,
+                "use_cosine": use_cosine, "per_pool": per_pool,
+                "bottleneck_ratio": bottleneck_ratio,
+                "first_hidden": first_hidden, "n_layers": n_layers,
+            },
+        }
+        with open(os.path.join(trial_dir, "meta.json"), "w") as _f:
+            _json.dump(_meta, _f, indent=2)
+
         return med_r2
 
     study = optuna.create_study(direction="maximize")
@@ -365,12 +393,54 @@ def run_optuna(data, n_trials):
             arch = []
             for _ in range(n_l):
                 arch.append(h)
-                h = max(h // 2, 2)
+                h = max(int(h * t.params.get("bottleneck_ratio", 0.5)), 2)
             print(f"    #{t.number}: eval={t.value:.4f}"
                   f"  arch={arch}"
                   f"  ep={t.params['n_epochs']}"
                   f"  {'cos' if t.params['use_cosine'] else 'cst'}"
                   f"  {'pp' if t.params['per_pool'] else 'sh'}")
+
+    # Copy best trial to top-level artifact
+    best_trial = study.best_trial
+    best_trial_dir = os.path.join("results", "mlp_noise", "trials",
+                                  f"trial_{best_trial.number:04d}")
+    save_dir = "results/mlp_noise"
+    if os.path.exists(os.path.join(best_trial_dir, "model.npz")):
+        import shutil
+        shutil.copy2(os.path.join(best_trial_dir, "model.npz"),
+                     os.path.join(save_dir, "model.npz"))
+        shutil.copy2(os.path.join(best_trial_dir, "meta.json"),
+                     os.path.join(save_dir, "meta.json"))
+        print(f"\n  Copied best trial ({best_trial.number}) to: {save_dir}")
+
+        # TVL response check on best model
+        import json as _json
+        art = dict(np.load(os.path.join(save_dir, "model.npz"), allow_pickle=True))
+        with open(os.path.join(save_dir, "meta.json")) as _f:
+            meta = _json.load(_f)
+        best_params = {k: jnp.array(art[k]) for k in art
+                       if k.startswith("W") or k.startswith("b")
+                       or k == "log_cadence" or k == "pool_bias"}
+        per_pool = meta.get("per_pool", False)
+        pool_idx_probe = jnp.array([0]) if per_pool else None
+
+        print(f"\n  TVL Response Check (best model, trial {best_trial.number}):")
+        x_probe = np.zeros((1, n_feat), dtype=np.float32)
+        x_probe[0, 0] = 1.0
+        x_probe[0, 4] = 10.5  # typical btc_log_price
+        prev_noise = None
+        for tvl in [1e4, 1e5, 5e5, 1e6, 5e6, 1e7, 5e7, 1e8, 5e8]:
+            x_probe[0, 1] = np.log(tvl)
+            out = np.array(forward_mlp(best_params, jnp.array(x_probe),
+                                       pool_idx_probe))
+            noise = np.exp(out[0])
+            if prev_noise is not None and prev_noise > 0:
+                ratio = noise / prev_noise
+                print(f"    TVL=${tvl:>11,.0f}  noise=${noise:>12,.0f}/day"
+                      f"  ({ratio:.2f}x prev)")
+            else:
+                print(f"    TVL=${tvl:>11,.0f}  noise=${noise:>12,.0f}/day")
+            prev_noise = noise
 
     return study
 
@@ -395,6 +465,8 @@ def main():
                         help="Append static pool attributes to input")
     parser.add_argument("--no-split", action="store_true",
                         help="Train on all data")
+    parser.add_argument("--save-artifact", default=None,
+                        help="Save model to this directory")
     args = parser.parse_args()
 
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
@@ -514,6 +586,37 @@ def main():
     print(f"    Linear (no cross-pool): median R² ≈ 0.48")
     print(f"    Linear (with cross-pool): median R² ≈ 0.53")
     print(f"    Per-pool linear: median R² ≈ 0.61")
+
+    # Save artifact
+    if args.save_artifact:
+        import json
+        os.makedirs(args.save_artifact, exist_ok=True)
+        # Save params as npz
+        save_dict = {k: np.array(v) for k, v in params.items()}
+        save_dict["x_mean"] = data["x_mean"] if "x_mean" in data else np.zeros(n_feat)
+        save_dict["x_std"] = data["x_std"] if "x_std" in data else np.ones(n_feat)
+        np.savez(os.path.join(args.save_artifact, "model.npz"), **save_dict)
+        # Save meta
+        meta = {
+            "pool_ids": data["pool_ids"],
+            "feat_names": data["feat_names"],
+            "n_feat": n_feat,
+            "hidden": args.hidden,
+            "per_pool": args.per_pool,
+            "hparams": {
+                "hidden": args.hidden,
+                "lr": args.lr,
+                "l2_alpha": args.l2_alpha,
+                "huber_delta": args.huber_delta,
+                "epochs": args.epochs,
+                "trend_windows": args.trend_windows,
+                "use_cosine": args.cosine,
+                "per_pool": args.per_pool,
+            },
+        }
+        with open(os.path.join(args.save_artifact, "meta.json"), "w") as f:
+            json.dump(meta, f, indent=2)
+        print(f"\n  Saved artifact to: {args.save_artifact}")
 
 
 if __name__ == "__main__":

@@ -395,9 +395,54 @@ def reclamm_market_linear_noise_volume(
         Per-minute noise volume (USD), floored at zero.
     """
     log_tvl = jnp.log(jnp.maximum(effective_value_usd, 1.0))
-    standardized_log_tvl = (log_tvl - tvl_mean) / tvl_std
+    # Clamp standardized TVL to training range [-3, +3] std to prevent
+    # extreme concentration from wireheading the noise model
+    standardized_log_tvl = jnp.clip(
+        (log_tvl - tvl_mean) / tvl_std, -3.0, 3.0)
     log_daily_noise = noise_base + noise_tvl_coeff * standardized_log_tvl
     daily_noise = jnp.exp(log_daily_noise)
+    return jnp.maximum(0.0, daily_noise / 1440.0)
+
+
+@jit
+def reclamm_mm_observed_noise_volume(
+    effective_value_usd,
+    noise_base,
+    competitor_tvl,
+):
+    """Michaelis-Menten noise model with observed competitor TVL as K.
+
+    Derived from optimal routing (Diamandis et al. 2023)::
+
+        V_noise = exp(base_t) * TVL / (K_t + TVL)
+
+    where K_t is observed total competitor liquidity (direct + multi-hop
+    network conductance) from DeFi Llama, and base_t absorbs per-pool
+    intercept + market feature effects.
+
+    The MM form guarantees:
+    - Elasticity ≈ 1 at low TVL (TVL << K)
+    - Structural saturation at high TVL (V_noise → exp(base_t))
+    - No wireheading: V_noise is bounded regardless of concentration
+
+    Parameters
+    ----------
+    effective_value_usd : float
+        Effective TVL in USD: (Ra+Va)*pA + (Rb+Vb)*pB.
+    noise_base : float
+        Precomputed log(V_max_daily) = alpha_i + gamma_i @ x_market_t.
+    competitor_tvl : float
+        Observed competitor TVL (K) for this step, from DeFi Llama
+        network conductance model.
+
+    Returns
+    -------
+    float
+        Per-minute noise volume (USD), floored at zero.
+    """
+    tvl = jnp.maximum(effective_value_usd, 1.0)
+    K = jnp.maximum(competitor_tvl, 1.0)
+    daily_noise = jnp.exp(noise_base) * tvl / (K + tvl)
     return jnp.maximum(0.0, daily_noise / 1440.0)
 
 

@@ -1456,6 +1456,17 @@ def _train_on_historic_data_impl(
                     initial_reserves=train_outputs["reserves"][0],
                 )
 
+                # Reject catastrophic in-sample configurations
+                min_train_ret_over_hodl = run_fingerprint["optimisation_settings"][
+                    "optuna_settings"].get("min_train_returns_over_hodl", None)
+                if min_train_ret_over_hodl is not None:
+                    if float(train_returns_over_hodl) < min_train_ret_over_hodl:
+                        optuna_manager.logger.info(
+                            f"Training {trial.number}, REJECTED:"
+                            f" ret_over_hodl={train_returns_over_hodl:.4f}"
+                            f" < {min_train_ret_over_hodl}")
+                        return float("-inf")
+
                 # Test period evaluation using continuous forward pass
                 # This ensures test metrics reflect continuous simulation from training
                 continuous_outputs = partial_forward_pass_continuous_optuna(
