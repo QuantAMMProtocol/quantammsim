@@ -25,7 +25,6 @@ dependencies = [
     "dask",
     "Historic-Crypto",
     "binance_historical_data",
-    "gdown",
     "bidask",
     "optax",
     "jsonpickle",
