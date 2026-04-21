@@ -43,6 +43,19 @@ from quantammsim.pools.noise_trades import (
 # Reference balance for initialisation (matches Solidity _INITIALIZATION_MAX_BALANCE_A)
 _INITIALIZATION_MAX_BALANCE_A = 1e6
 
+# MONKEY PATCH — blessed-arb experiment:
+# If True, arb trades execute zero-fee (internal gamma = 1) and the
+# arbitrageur returns their LVR back to the pool (minus gas + external cost).
+# Set via set_blessed_arb() before constructing scan closures. Cache must be
+# cleared between toggled values (jax.clear_caches()) because the global is
+# captured at Partial-construction time.
+_BLESSED_ARB = False
+
+
+def set_blessed_arb(enabled: bool) -> None:
+    global _BLESSED_ARB
+    _BLESSED_ARB = bool(enabled)
+
 # Virtual balance decay is capped at 30 days to prevent overflow
 _MAX_DECAY_DURATION_SECONDS = 30 * 86400
 
@@ -961,7 +974,11 @@ def _reclamm_scan_step_with_fees_and_revenue(
         0,
     )
 
-    optimal_arb_trade = jnp.where(fees_are_being_charged, fee_trade, zero_fee_trade)
+    # Blessed-arb monkey patch: zero-fee trade regardless of pool fee setting.
+    if _BLESSED_ARB:
+        optimal_arb_trade = zero_fee_trade
+    else:
+        optimal_arb_trade = jnp.where(fees_are_being_charged, fee_trade, zero_fee_trade)
 
     # Check profitability for arb
     profit_to_arb = -(optimal_arb_trade * prices).sum() - arb_thresh
@@ -976,6 +993,7 @@ def _reclamm_scan_step_with_fees_and_revenue(
     # --- Noise model dispatch ---
     # noise_model is a concrete Python string (passed via Partial as static
     # aux_data), so if/elif branches resolve at trace time.
+    noise_fee_income = jnp.asarray(0.0, dtype=prices.dtype)
     if noise_model == "ratio":
         noisy_reserves = calculate_reserves_after_noise_trade(
             applied_trade, jnp.array([Ra_new, Rb_new]), prices,
@@ -1011,7 +1029,8 @@ def _reclamm_scan_step_with_fees_and_revenue(
         # effective reserves (Ra+Va, Rb+Vb) by the same factor, then
         # subtract back the fixed virtual reserves.
         minutes_per_step = seconds_per_step / 60.0
-        noise_fee_income = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_total = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_income = noise_fee_total * (1.0 - protocol_fee_split)
         scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
         Ra_new = (Ra_new + Va) * scale - Va
         Rb_new = (Rb_new + Vb) * scale - Vb
@@ -1029,7 +1048,8 @@ def _reclamm_scan_step_with_fees_and_revenue(
         )
 
         minutes_per_step = seconds_per_step / 60.0
-        noise_fee_income = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_total = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_income = noise_fee_total * (1.0 - protocol_fee_split)
         scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
         Ra_new = (Ra_new + Va) * scale - Va
         Rb_new = (Rb_new + Vb) * scale - Vb
@@ -1046,7 +1066,8 @@ def _reclamm_scan_step_with_fees_and_revenue(
         )
 
         minutes_per_step = seconds_per_step / 60.0
-        noise_fee_income = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_total = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_income = noise_fee_total * (1.0 - protocol_fee_split)
         scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
         Ra_new = (Ra_new + Va) * scale - Va
         Rb_new = (Rb_new + Vb) * scale - Vb
@@ -1059,8 +1080,18 @@ def _reclamm_scan_step_with_fees_and_revenue(
             effective_value, noise_base, competitor_tvl,
         )
 
+        # In-range gate: noise traders only route here if the pool is
+        # in range (post-arb, post-recentering state). Hard-indicator
+        # limit of the routing-with-misquote convex program.
+        centeredness_post, _ = compute_centeredness(Ra_new, Rb_new, Va, Vb)
+        in_range_gate = (centeredness_post >= centeredness_margin).astype(
+            noise_vol.dtype
+        )
+        noise_vol = noise_vol * in_range_gate
+
         minutes_per_step = seconds_per_step / 60.0
-        noise_fee_income = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_total = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_income = noise_fee_total * (1.0 - protocol_fee_split)
         scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
         Ra_new = (Ra_new + Va) * scale - Va
         Rb_new = (Rb_new + Vb) * scale - Vb
@@ -1091,17 +1122,33 @@ def _reclamm_scan_step_with_fees_and_revenue(
     Rb_new = jnp.where(clamp_a, Rb + edge_a[1], jnp.where(clamp_b, Rb + edge_b[1], Rb_new))
 
     # Protocol fee: divert protocol_fee_split of inbound swap fees from LP reserves.
-    # Computed on the final trade (normal arb or edge trade).
+    # Computed on the final trade (normal arb or edge trade). Blessed arb pays
+    # no swap fee, so fee_rate collapses to 0 in that mode.
     final_trade = jnp.array([Ra_new - Ra, Rb_new - Rb])
-    fee_rate = 1.0 - gamma
+    fee_rate = 0.0 if _BLESSED_ARB else (1.0 - gamma)
     inbound = jnp.maximum(final_trade, 0.0)
     protocol_fee = inbound * fee_rate * protocol_fee_split
     Ra_new = Ra_new - protocol_fee[0]
     Rb_new = Rb_new - protocol_fee[1]
 
-    # LP fee revenue: total fee income minus protocol's share, in USD.
+    # LP fee revenue: arb swap fees (zero under blessed) + noise-trader fees
+    # (unchanged; noise traders still pay the pool's fee rate).
     lp_fee_income = inbound * fee_rate * (1.0 - protocol_fee_split)
-    lp_fee_revenue_usd = (lp_fee_income * prices).sum()
+    lp_fee_revenue_usd = (lp_fee_income * prices).sum() + noise_fee_income
+
+    # Blessed-arb LVR return: arb returns gross profit minus gas + external cost
+    # to the pool, scaled across effective reserves to preserve quoted price.
+    if _BLESSED_ARB:
+        arb_profit_usd = -(applied_trade * prices).sum()
+        external_cost_applied = 0.5 * arb_fees * (jnp.abs(applied_trade) * prices).sum()
+        returned_profit = jnp.maximum(
+            arb_profit_usd - arb_thresh - external_cost_applied, 0.0
+        )
+        eff_val = (Ra_new + Va) * prices[0] + (Rb_new + Vb) * prices[1]
+        scale_lvr = 1.0 + returned_profit / jnp.maximum(eff_val, 1e-8)
+        Ra_new = (Ra_new + Va) * scale_lvr - Va
+        Rb_new = (Rb_new + Vb) * scale_lvr - Vb
+        lp_fee_revenue_usd = lp_fee_revenue_usd + returned_profit
 
     new_reserves = jnp.array([Ra_new, Rb_new])
     return [
