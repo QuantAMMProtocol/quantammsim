@@ -599,6 +599,19 @@ class MeanReversionChannelPool(MomentumPool):
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
 
+    def _to_contract_params_specific(self, params, run_fingerprint, memory_days):
+        """Mean-reversion-channel SC-form extras: exponents, pre_exp_scaling, amplitude, width.
+
+        Note: exponents here are NOT clipped to ≥1 (unlike power_channel); the
+        forward math in this pool uses the raw squareplus-transformed value.
+        """
+        return {
+            "exponents":       self._contract_exponents(params),
+            "pre_exp_scaling": self._contract_pre_exp_scaling(params),
+            "amplitude":       self._contract_amplitude(params, memory_days),
+            "width":           self._contract_width(params),
+        }
+
     @classmethod
     def _process_specific_parameters(cls, update_rule_parameters, run_fingerprint):
         """Process mean reversion channel specific parameters."""

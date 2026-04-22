@@ -32,7 +32,14 @@ from quantammsim.pools.G3M.quantamm.weight_calculations.non_linear_interpolation
     _jax_calc_approx_optimal_interpolation_block,
 )
 from quantammsim.core_simulator.param_utils import make_vmap_in_axes_dict
-from quantammsim.core_simulator.param_utils import memory_days_to_lamb
+from quantammsim.core_simulator.param_utils import (
+    memory_days_to_lamb,
+    calc_lamb,
+    lamb_to_memory_days_clipped,
+)
+from quantammsim.pools.G3M.quantamm.update_rule_estimators.estimator_primitives import (
+    squareplus,
+)
 import numpy as np
 
 from typing import Dict, Any, Optional
@@ -1507,6 +1514,127 @@ class TFMMBasePool(AbstractPool):
             Processed pool-specific parameters if any,
             None if no specific parameters needed
         """
+        return None
+
+    # ------------------------------------------------------------------
+    # Internal (optimisation) params → smart-contract form
+    # ------------------------------------------------------------------
+    # The pool implementations support multiple param conventions with a
+    # preference order (e.g. sp_k > log_k for momentum sensitivity, sp_amplitude
+    # > log_amplitude for MRC amplitude). The base class implements the shared
+    # derivations (memory_days, k_per_day, k, initial_weights) plus helper
+    # decoders for the per-asset transforms. Subclasses override
+    # ``_to_contract_params_specific`` to add their own terms.
+    def to_contract_params(self, params, run_fingerprint):
+        """Convert internal (optimisation-form) params to smart-contract form.
+
+        Mirrors the forward math used inside each pool's rule-evaluation path,
+        producing a dict of the "post-transform" values that a human reviewer
+        or an on-chain ingestion pipeline would consume directly. Keys whose
+        source params weren't present in the input are omitted.
+
+        Common output keys (any pool):
+            memory_days      — user-facing memory window (days)
+            k_per_day        — gradient sensitivity per day
+            k                — k_per_day × memory_days (absolute coefficient)
+            initial_weights  — softmax of initial_weights_logits
+
+        Pool-specific extras (added by subclasses):
+            exponents, pre_exp_scaling, amplitude, width
+
+        Parameters
+        ----------
+        params : Dict[str, Any]
+            Trained params in internal optimisation space.
+        run_fingerprint : Dict[str, Any]
+            Must contain ``chunk_period`` and ``max_memory_days``.
+
+        Returns
+        -------
+        Dict[str, jnp.ndarray]
+            SC-ready parameter values. JAX arrays; caller can ``.tolist()`` for
+            serialisation.
+        """
+        chunk_period = run_fingerprint["chunk_period"]
+        max_memory_days = run_fingerprint.get("max_memory_days", 365)
+
+        lamb = calc_lamb(params)
+        memory_days = lamb_to_memory_days_clipped(lamb, chunk_period, max_memory_days)
+
+        out = {"memory_days": memory_days}
+
+        k_per_day = self._contract_k_per_day(params)
+        if k_per_day is not None:
+            out["k_per_day"] = k_per_day
+            out["k"] = k_per_day * memory_days
+
+        if "initial_weights_logits" in params:
+            logits = params["initial_weights_logits"]
+            out["initial_weights"] = jnp.exp(logits) / jnp.sum(jnp.exp(logits))
+
+        out.update(self._to_contract_params_specific(params, run_fingerprint, memory_days))
+
+        return {k: v for k, v in out.items() if v is not None}
+
+    def _to_contract_params_specific(self, params, run_fingerprint, memory_days):
+        """Override in subclasses to add pool-specific contract params.
+
+        Should return a dict of ``{name: value}`` pairs. Return ``{}`` (default)
+        when the pool needs no extras beyond the common base output.
+        """
+        return {}
+
+    # ---- param-transform helpers (used by _to_contract_params_specific) ----
+
+    @staticmethod
+    def _contract_k_per_day(params):
+        """Decode k_per_day from sp_k (squareplus, preferred) or log_k (2^x)."""
+        if "sp_k" in params:
+            return squareplus(params["sp_k"])
+        if "log_k" in params:
+            return 2.0 ** params["log_k"]
+        return None
+
+    @staticmethod
+    def _contract_exponents(params, clip_min=None):
+        """Decode exponents from sp_exponents or raw_exponents (both squareplus)."""
+        if "sp_exponents" in params:
+            v = squareplus(params["sp_exponents"])
+        elif "raw_exponents" in params:
+            v = squareplus(params["raw_exponents"])
+        else:
+            return None
+        return jnp.clip(v, min=clip_min) if clip_min is not None else v
+
+    @staticmethod
+    def _contract_pre_exp_scaling(params):
+        """Decode pre_exp_scaling from sp_* (squareplus), logit_* (sigmoid), or raw_* (2^x)."""
+        if "sp_pre_exp_scaling" in params:
+            return squareplus(params["sp_pre_exp_scaling"])
+        if "logit_pre_exp_scaling" in params:
+            x = params["logit_pre_exp_scaling"]
+            return jnp.exp(x) / (1.0 + jnp.exp(x))
+        if "raw_pre_exp_scaling" in params:
+            return 2.0 ** params["raw_pre_exp_scaling"]
+        return None
+
+    @staticmethod
+    def _contract_width(params):
+        """Decode width from sp_width (squareplus) or raw_width (2^x)."""
+        if "sp_width" in params:
+            return squareplus(params["sp_width"])
+        if "raw_width" in params:
+            return 2.0 ** params["raw_width"]
+        return None
+
+    @staticmethod
+    def _contract_amplitude(params, memory_days):
+        """Decode amplitude from sp_amplitude (squareplus) or log_amplitude (2^x),
+        then multiply by memory_days to match the forward-math convention."""
+        if "sp_amplitude" in params:
+            return squareplus(params["sp_amplitude"]) * memory_days
+        if "log_amplitude" in params:
+            return (2.0 ** params["log_amplitude"]) * memory_days
         return None
 
     @partial(jit, static_argnums=(2, 5))

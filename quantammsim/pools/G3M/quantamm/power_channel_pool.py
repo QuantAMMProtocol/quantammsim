@@ -508,6 +508,13 @@ class PowerChannelPool(MomentumPool):
         params = self.add_noise(params, noise, n_parameter_sets)
         return params
 
+    def _to_contract_params_specific(self, params, run_fingerprint, memory_days):
+        """Power channel SC-form extras: exponents (clipped ≥1) and pre_exp_scaling."""
+        return {
+            "exponents": self._contract_exponents(params, clip_min=1.0),
+            "pre_exp_scaling": self._contract_pre_exp_scaling(params),
+        }
+
     @classmethod
     def _process_specific_parameters(cls, update_rule_parameters, run_fingerprint):
         """Process power channel specific parameters."""
