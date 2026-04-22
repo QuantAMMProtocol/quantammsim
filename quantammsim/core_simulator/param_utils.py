@@ -1531,8 +1531,14 @@ def retrieve_best(data_location, load_method, re_calc_hess, min_alt_obj=0.0, ret
         params_list[-1].pop("local_learning_rate")
         params_list[-1].pop("iterations_since_improvement")
         for key in params_list[-1].keys():
-            if key != "subsidary_params":
-                params_list[-1][key] = params_list[-1][key][context]
+            if key == "subsidary_params":
+                continue
+            v = params_list[-1][key]
+            # Only index array-like per-parameter-set values. Scalar metadata
+            # (objective, train_objective, sharpe, etc.) lives inline and is
+            # passed through unchanged.
+            if hasattr(v, "shape") and getattr(v, "ndim", 0) >= 1:
+                params_list[-1][key] = v[context]
     if return_as_iterables:
         return params_list, steps
     else:
