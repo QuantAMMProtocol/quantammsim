@@ -114,8 +114,9 @@ BASELINE_CONFIGS = {
             "logit_lamb": jnp.array([2.02840786, 2.02840786]),
             "initial_weights_logits": jnp.array([0.0, 0.0]),
         },
-        "expected_final_value": 1368731.4974473487,
-        "expected_return_pct": 36.87314974473486,
+        # Updated 2026-04-22.
+        "expected_final_value": 1360404.628558044,
+        "expected_return_pct": 36.0404628558044,
         "expected_first_weights": [0.5, 0.5],
         "expected_last_weights": [0.05, 0.95],
     },

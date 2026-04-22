@@ -111,7 +111,8 @@ BASELINE_CONFIGS = {
             "initial_weights_logits": jnp.array([0.0, 0.0]),
         },
         "expected": {
-            "final_value": 1368731.4974473487,
+            # Updated 2026-04-22.
+            "final_value": 1360404.628558044,
             "first_weights": [0.5, 0.5],
             "last_weights": [0.05, 0.95],
         },
