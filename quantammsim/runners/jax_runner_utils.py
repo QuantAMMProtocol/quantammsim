@@ -106,21 +106,15 @@ def create_trial_params(
         param_length = value.shape[1]
 
         config = param_config.get(key, {})
-        # Set defaults while preserving any existing config
-        if expand_around:
-            default_config = {
-                    "low": 0.1,
-                    "high": 0.1,
-                    "log_scale": False,
-                    "scalar": False
-                }
-        else:
-            default_config = {
-                "low": -10.0,
-                "high": 10.0,
-                "log_scale": False,
-                "scalar": False
-            }
+        # Default absolute bounds. config.low / config.high are ALWAYS treated
+        # as absolute bounds; expand_around narrows the sampled window around
+        # the current parameter value while staying inside these bounds.
+        default_config = {
+            "low": -10.0,
+            "high": 10.0,
+            "log_scale": False,
+            "scalar": False,
+        }
         config = {**default_config, **config}
         # Handle logit_delta_lamb parameters
         if key.startswith("logit_delta_lamb") and not run_fingerprint.get(
@@ -137,31 +131,37 @@ def create_trial_params(
             trial_params[key] = value
             continue
 
+        abs_low = config["low"]
+        abs_high = config["high"]
+
         # Handle scalar vs vector parameters
         if config["scalar"]:
             # Create single value and repeat
             param_value = trial.suggest_float(
                 key,  # Use key directly for scalar params
-                config["low"],
-                config["high"],
+                abs_low,
+                abs_high,
                 log=config["log_scale"],
             )
             trial_params[key] = jnp.full(param_length, param_value)
         else:
-            # Create array of different values
+            # Per-asset sampling. With expand_around=True the per-asset window
+            # is a symmetric band of width (abs_high - abs_low) centred on the
+            # current parameter value (clamped into the absolute bounds first
+            # so val outside [abs_low, abs_high] still yields a valid window).
+            # This bias-toward-current-value semantic is useful for local
+            # refinement while guaranteeing samples stay within the declared
+            # absolute range. With expand_around=False, the full absolute
+            # range is used unchanged.
             trial_params[key] = jnp.array(
                 [
                     trial.suggest_float(
                         f"{key}_{i}",
-                        (
-                            config["low"]
-                            if not expand_around
-                            else float(params[key][0][i]) - config["low"]
-                        ),
-                        (
-                            config["high"]
-                            if not expand_around
-                            else float(params[key][0][i]) + config["high"]
+                        *_bounds_for_trial(
+                            float(params[key][0][i]),
+                            abs_low,
+                            abs_high,
+                            expand_around,
                         ),
                         log=config["log_scale"],
                     )
@@ -169,6 +169,23 @@ def create_trial_params(
                 ]
             )
     return trial_params
+
+
+def _bounds_for_trial(val: float, abs_low: float, abs_high: float, expand_around: bool):
+    """Compute (low, high) for optuna's ``suggest_float`` given absolute bounds.
+
+    When ``expand_around`` is False, returns ``(abs_low, abs_high)`` unchanged.
+
+    When True, returns a symmetric window of width ``abs_high - abs_low``
+    centred on ``val`` (with ``val`` first clamped into the absolute range),
+    intersected with ``[abs_low, abs_high]``. The result always satisfies
+    ``low < high`` as long as ``abs_low < abs_high``.
+    """
+    if not expand_around:
+        return abs_low, abs_high
+    half = abs(abs_high - abs_low) / 2.0
+    val_clamped = min(max(val, abs_low), abs_high)
+    return max(val_clamped - half, abs_low), min(val_clamped + half, abs_high)
 
 def generate_evaluation_points(
     start_idx, end_idx, bout_length, n_points, min_spacing, random_key=0
