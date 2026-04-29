@@ -33,7 +33,7 @@ def expand_daily_to_minute_data(daily_data, scale="ms"):
     minute_data.rename(columns={"index": "datetime"}, inplace=True)
 
     # Convert 'datetime' back to unix timestamp
-    minute_data["unix"] = minute_data["datetime"].astype(np.int64) // 10**6
+    minute_data["unix"] = minute_data["datetime"].dt.as_unit("ms").astype(np.int64)
 
     return minute_data
 

@@ -49,7 +49,7 @@ def process_st0x_timestamps(df):
     ) + timedelta(hours=3)
 
     # Convert timestamp to unix milliseconds
-    processed_df["unix"] = processed_df["timestamp"].astype(np.int64) // 10**6
+    processed_df["unix"] = processed_df["timestamp"].dt.as_unit("ms").astype(np.int64)
 
     # Set unix as index and sort
     processed_df.set_index("unix", inplace=True)
@@ -76,7 +76,7 @@ def forward_fill_st0x_data(df, token):
         end=pd.to_datetime(df.index.max(), unit="ms"),
         freq="1min",
     )
-    full_index = full_index.astype(np.int64) // 10**6
+    full_index = full_index.as_unit("ms").astype(np.int64)
 
     # Reindex with the complete minute-level index
     df = df.reindex(full_index)

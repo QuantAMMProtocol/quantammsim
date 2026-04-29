@@ -392,14 +392,11 @@ def update_historic_data_old(token, root):
     concat_csv["unix"] = concat_csv.index
     # Reindex on minute unix
     # Create a new DataFrame with unix index and minute rows between csvData min and max
-    new_index = (
-        pd.date_range(
-            start=pd.to_datetime(csvData.index.min(), unit="ms"),
-            end=pd.to_datetime(csvData.index.max(), unit="ms"),
-            freq="T",
-        ).astype(int)
-        // 10**6
-    )
+    new_index = pd.date_range(
+        start=pd.to_datetime(csvData.index.min(), unit="ms"),
+        end=pd.to_datetime(csvData.index.max(), unit="ms"),
+        freq="T",
+    ).as_unit("ms").astype(np.int64)
 
     new_csvData = pd.DataFrame(index=new_index)
     new_csvData.index.name = "unix"
@@ -555,21 +552,17 @@ def update_historic_data_old(token, root):
             start=pd.to_datetime(hourly_data.index.min(), unit="ms"),
             end=pd.to_datetime(hourly_data.index.max(), unit="ms"),
             freq="H",
-        ).astype(int)
-        // 10**6
+        ).as_unit("ms").astype(np.int64)
     )
     hourly_data["unix"] = hourly_data.index
     hourly_data["close"] = hourly_data["close"].interpolate(method="linear")
 
     # Create a new DataFrame with minute level data
-    minute_index = (
-        pd.date_range(
-            start=pd.to_datetime(hourly_data.index.min(), unit="ms"),
-            end=pd.to_datetime(hourly_data.index.max(), unit="ms"),
-            freq="T",
-        ).astype(int)
-        // 10**6
-    )
+    minute_index = pd.date_range(
+        start=pd.to_datetime(hourly_data.index.min(), unit="ms"),
+        end=pd.to_datetime(hourly_data.index.max(), unit="ms"),
+        freq="T",
+    ).as_unit("ms").astype(np.int64)
     minute_data = pd.DataFrame(index=minute_index)
     minute_data.index.name = "unix"
     minute_data["unix"] = minute_data.index
@@ -987,7 +980,7 @@ def update_historic_data(token, root):
     agg_dict = {k: v for k, v in agg_dict.items() if k in concated_df_hourly.columns}
 
     # Perform resampling
-    hourly_data = concated_df_hourly.resample("1H").agg(agg_dict).reset_index()
+    hourly_data = concated_df_hourly.resample("1h").agg(agg_dict).reset_index()
 
     # Save hourly data
     hourly_data.to_csv(hourlyPath, index=False)
