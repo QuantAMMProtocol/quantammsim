@@ -1131,10 +1131,11 @@ def _reclamm_scan_step_with_fees_and_revenue(
     Ra_new = Ra_new - protocol_fee[0]
     Rb_new = Rb_new - protocol_fee[1]
 
-    # LP fee revenue: arb swap fees (zero under blessed) + noise-trader fees
-    # (unchanged; noise traders still pay the pool's fee rate).
-    lp_fee_income = inbound * fee_rate * (1.0 - protocol_fee_split)
-    lp_fee_revenue_usd = (lp_fee_income * prices).sum() + noise_fee_income
+    # LP fee revenue: noise-trader fees only.
+    # Arb fee income is excluded — arb trades are net-negative for LPs
+    # (IL exceeds the fee collected), so reporting arb fees as "revenue"
+    # is misleading.
+    lp_fee_revenue_usd = noise_fee_income
 
     # Blessed-arb LVR return: arb returns gross profit minus gas + external cost
     # to the pool, scaled across effective reserves to preserve quoted price.
