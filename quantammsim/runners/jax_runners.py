@@ -2290,10 +2290,43 @@ def _train_on_historic_data_impl(
         # Standalone jitted version kept for any verbose/diagnostic use
         eval_population = jit(eval_fn_raw)
 
+        # Build box constraints from parameter_config (if available)
+        param_config = run_fingerprint.get("optimisation_settings", {}).get(
+            "optuna_settings", {}
+        ).get("parameter_config", {})
+        if param_config:
+            # Construct lower/upper bound pytrees matching params_single structure
+            lb_dict = {}
+            ub_dict = {}
+            for k, v in params_single.items():
+                if k == "subsidary_params":
+                    continue
+                cfg = param_config.get(k)
+                if cfg is not None:
+                    lo = jnp.full_like(jnp.asarray(v, dtype=flat_x0_template.dtype), cfg["low"])
+                    hi = jnp.full_like(jnp.asarray(v, dtype=flat_x0_template.dtype), cfg["high"])
+                else:
+                    lo = jnp.full_like(jnp.asarray(v, dtype=flat_x0_template.dtype), -1e30)
+                    hi = jnp.full_like(jnp.asarray(v, dtype=flat_x0_template.dtype), 1e30)
+                lb_dict[k] = lo
+                ub_dict[k] = hi
+            lb_dict["subsidary_params"] = params_single.get("subsidary_params", [])
+            ub_dict["subsidary_params"] = params_single.get("subsidary_params", [])
+            flat_lb, _ = ravel_pytree(lb_dict)
+            flat_ub, _ = ravel_pytree(ub_dict)
+            if verbose:
+                print(f"[CMA-ES] Box constraints: {n_flat} dims bounded")
+        else:
+            flat_lb = None
+            flat_ub = None
+
         @jit
         def _run_one_restart(flat_x0, rng_key):
             state = init_cmaes(flat_x0, sigma0)
-            return run_cmaes(state, rng_key, eval_fn_raw, cma_params, n_generations, tol)
+            return run_cmaes(
+                state, rng_key, eval_fn_raw, cma_params, n_generations, tol,
+                lower_bounds=flat_lb, upper_bounds=flat_ub,
+            )
 
         # Keep initial params for saving
         initial_params = deepcopy(params)
