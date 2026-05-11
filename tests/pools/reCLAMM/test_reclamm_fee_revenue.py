@@ -49,6 +49,18 @@ def _init_pool(initial_pool_value=1_000_000.0, price_a=2500.0, price_b=1.0,
     return reserves, Va, Vb
 
 
+def _mm_observed_noise_kwargs(prices, noise_base=13.8, competitor_tvl=1e7):
+    # lp_fee_revenue_usd is noise-only by design, so arb-only configs report 0.
+    # mm_observed is the simplest noise model to wire (two constants vs. e.g.
+    # tsoukalas which needs volatility + noise_params).
+    n = prices.shape[0]
+    return {
+        "noise_model": "mm_observed",
+        "noise_base_array": jnp.full(n, noise_base),
+        "competitor_tvl_array": jnp.full(n, competitor_tvl),
+    }
+
+
 class TestFeeRevenueShape:
     """_jax_calc_reclamm_reserves_and_fee_revenue_with_fees returns correct shapes."""
 
@@ -112,6 +124,7 @@ class TestFeeRevenuePositiveOnPriceJump:
             arb_thresh=0.0,
             arb_fees=0.0,
             all_sig_variations=ALL_SIG_VARIATIONS_2,
+            **_mm_observed_noise_kwargs(prices),
         )
         assert float(fee_revenue.sum()) > 0, (
             f"Expected positive total fee revenue on trending prices, got {float(fee_revenue.sum())}"
@@ -136,6 +149,7 @@ class TestHigherFeesMoreRevenue:
             arb_thresh=0.0,
             arb_fees=0.0,
             all_sig_variations=ALL_SIG_VARIATIONS_2,
+            **_mm_observed_noise_kwargs(prices),
         )
 
         _, fee_revenue_high = _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
@@ -147,6 +161,7 @@ class TestHigherFeesMoreRevenue:
             arb_thresh=0.0,
             arb_fees=0.0,
             all_sig_variations=ALL_SIG_VARIATIONS_2,
+            **_mm_observed_noise_kwargs(prices),
         )
 
         assert float(fee_revenue_high.sum()) > float(fee_revenue_low.sum()), (
@@ -173,6 +188,7 @@ class TestProtocolSplitReducesLpRevenue:
             arb_fees=0.0,
             all_sig_variations=ALL_SIG_VARIATIONS_2,
             protocol_fee_split=0.0,
+            **_mm_observed_noise_kwargs(prices),
         )
 
         _, fee_revenue_half_split = _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
@@ -185,6 +201,7 @@ class TestProtocolSplitReducesLpRevenue:
             arb_fees=0.0,
             all_sig_variations=ALL_SIG_VARIATIONS_2,
             protocol_fee_split=0.5,
+            **_mm_observed_noise_kwargs(prices),
         )
 
         total_no_split = float(fee_revenue_no_split.sum())
@@ -256,6 +273,7 @@ class TestDynamicInputsFeeRevenue:
             arb_thresh=arb_thresh,
             arb_fees=arb_fees,
             all_sig_variations=ALL_SIG_VARIATIONS_2,
+            **_mm_observed_noise_kwargs(prices),
         )
 
         assert result_reserves.shape == (n_steps, 2)
