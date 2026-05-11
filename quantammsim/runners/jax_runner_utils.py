@@ -1508,6 +1508,11 @@ def prepare_dynamic_inputs(
         if lp_supply_df is not None
         else None
     )
+    # Subsample to match arb_frequency so materialize_dynamic_inputs sees
+    # the same scan_len that the pool's scan loop uses.
+    arb_freq = run_fingerprint.get("arb_frequency", 1)
+    if lp_supply_array is not None and arb_freq > 1:
+        lp_supply_array = lp_supply_array[::arb_freq]
     if do_test_period:
         test_lp_supply_array = (
             raw_fee_like_amounts_to_fee_like_array(
@@ -1520,6 +1525,8 @@ def prepare_dynamic_inputs(
             if lp_supply_df is not None
             else None
         )
+        if test_lp_supply_array is not None and arb_freq > 1:
+            test_lp_supply_array = test_lp_supply_array[::arb_freq]
 
     reclamm_price_ratio_updates_array = (
         _normalize_reclamm_price_ratio_updates_for_window(
