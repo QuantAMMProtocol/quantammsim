@@ -163,24 +163,39 @@ def plot_results(configs, time_series, hodl_values, ref_config, args):
     """Two-panel plot: value-over-time + cumulative fee revenue."""
     train_end_str = ref_config["endDateString"]
     train_end_dt = datetime.strptime(train_end_str, "%Y-%m-%d %H:%M:%S")
+    start_dt = datetime.strptime(ref_config["startDateString"], "%Y-%m-%d %H:%M:%S")
 
     first_out = next(iter(time_series.values()))
     n_minutes = len(first_out["value"])
-    dates = pd.date_range(
-        start=datetime.strptime(ref_config["startDateString"], "%Y-%m-%d %H:%M:%S"),
-        periods=n_minutes, freq="1min",
-    )
+    dates = pd.date_range(start=start_dt, periods=n_minutes, freq="1min")
     step = 1440
     dates_daily = dates[::step]
+
+    # Detect normalised data (values near 1.0 vs millions)
+    normalised = ref_config.get("normalised", False)
+    if not normalised:
+        first_val = np.array(first_out["value"][0])
+        normalised = first_val < 100  # heuristic: normalised data starts near 1.0
+
+    val_scale = 1.0 if normalised else 1e-6
+    val_ylabel = "Normalised Value" if normalised else "Pool Value ($M USD)"
+    fee_scale = 1.0 if normalised else 1e-3
+    fee_ylabel = ("Cum. Fee Revenue (fraction of TVL)" if normalised
+                  else "Cumulative Fee Revenue ($K)")
 
     has_fee_revenue = any(
         "fee_revenue" in time_series[n] and time_series[n]["fee_revenue"] is not None
         for n in time_series
     )
-    n_panels = 2 if has_fee_revenue else 1
+    has_reserves = any(
+        "reserves" in time_series[n] and "prices" in time_series[n]
+        for n in time_series
+    )
+    n_panels = 1 + int(has_fee_revenue) + int(has_reserves)
+    ratios = [3] + [1.5] * (n_panels - 1)
     fig, axes = plt.subplots(
-        n_panels, 1, figsize=(14, 5 * n_panels),
-        sharex=True, gridspec_kw={"height_ratios": [3, 1] if n_panels == 2 else [1]},
+        n_panels, 1, figsize=(14, 3.5 + 3 * n_panels),
+        sharex=True, gridspec_kw={"height_ratios": ratios, "hspace": 0.3},
     )
     if n_panels == 1:
         axes = [axes]
@@ -189,7 +204,7 @@ def plot_results(configs, time_series, hodl_values, ref_config, args):
     # ── Panel 1: Value over time ──────────────────────────────────────
     for name, meta, ci in _plot_order(configs):
         out = time_series[name]
-        vals = np.array(out["value"][::step]) / 1e6
+        vals = np.array(out["value"][::step]) * val_scale
         label = f"{name}"
         if "test_objective" in meta:
             obj_name = meta.get("obj_name", "objective")
@@ -200,22 +215,24 @@ def plot_results(configs, time_series, hodl_values, ref_config, args):
                     color=COLORS[ci % len(COLORS)], label=label,
                     zorder=3 if is_optimized else 2)
 
-    hodl_daily = hodl_values[::step] / 1e6
+    hodl_daily = hodl_values[::step] * val_scale
     ax_val.plot(dates_daily[:len(hodl_daily)], hodl_daily, linewidth=2,
                 color="white", alpha=0.7, linestyle="--", label="HODL")
 
-    ax_val.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5, linewidth=1.5)
-    ylims = ax_val.get_ylim()
-    ax_val.text(train_end_dt - pd.Timedelta(days=5), ylims[1] * 0.97, "Train",
-                color="white", alpha=0.6, fontsize=11, ha="right", va="top")
-    ax_val.text(train_end_dt + pd.Timedelta(days=5), ylims[1] * 0.97, "Test",
-                color="white", alpha=0.6, fontsize=11, ha="left", va="top")
+    if train_end_dt > start_dt and train_end_dt < dates[-1]:
+        ax_val.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5, linewidth=1.5)
+        ylims = ax_val.get_ylim()
+        ax_val.text(train_end_dt - pd.Timedelta(days=5), ylims[1] * 0.97, "Train",
+                    color="white", alpha=0.6, fontsize=11, ha="right", va="top")
+        ax_val.text(train_end_dt + pd.Timedelta(days=5), ylims[1] * 0.97, "Test",
+                    color="white", alpha=0.6, fontsize=11, ha="left", va="top")
 
     _style_axis(ax_val)
-    ax_val.set_ylabel("Pool Value ($M USD)", color=TEXT_COLOR, fontsize=12)
+    ax_val.set_ylabel(val_ylabel, color=TEXT_COLOR, fontsize=12)
     tokens_str = "/".join(ref_config["tokens"])
+    date_range_str = f"{start_dt.strftime('%b %Y')} — {dates[-1].strftime('%b %Y')}"
     ax_val.set_title(
-        f"reClAMM Optuna Comparison — {tokens_str}",
+        f"reCLAMM {tokens_str} — {date_range_str}",
         color=TEXT_COLOR, fontsize=13, pad=15,
     )
     ax_val.legend(loc="upper left", fontsize=8, facecolor=BG,
@@ -230,20 +247,60 @@ def plot_results(configs, time_series, hodl_values, ref_config, args):
             if fr is None:
                 continue
             fr = np.array(fr)
-            cumfee = np.cumsum(fr)[::step] / 1e3
+            cumfee = np.cumsum(fr)[::step] * fee_scale
             is_optimized = "On-Chain" not in name
             ax_fee.plot(dates_daily[:len(cumfee)], cumfee,
                         linewidth=2.5 if is_optimized else 1.8,
                         color=COLORS[ci % len(COLORS)], label=name,
                         zorder=3 if is_optimized else 2)
 
-        ax_fee.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5, linewidth=1.5)
+        if train_end_dt > start_dt and train_end_dt < dates[-1]:
+            ax_fee.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5, linewidth=1.5)
         _style_axis(ax_fee)
-        ax_fee.set_ylabel("Cumulative Fee Revenue ($K)", color=TEXT_COLOR, fontsize=12)
-        ax_fee.set_xlabel("Date", color=TEXT_COLOR, fontsize=12)
+        ax_fee.set_ylabel(fee_ylabel, color=TEXT_COLOR, fontsize=12)
         ax_fee.legend(loc="upper left", fontsize=8, facecolor=BG,
                       edgecolor=TEXT_COLOR, labelcolor=TEXT_COLOR)
-    else:
+
+    # ── Panel 3: Cumulative volume ───────────────────────────────────
+    if has_reserves:
+        ax_idx = 1 + int(has_fee_revenue)
+        ax_vol = axes[ax_idx]
+        vol_ylabel = ("Cum. Volume (multiple of TVL)" if normalised
+                      else "Cum. Volume ($M)")
+        for name, _meta, ci in _plot_order(configs):
+            out = time_series[name]
+            res = np.array(out.get("reserves"))
+            pri = np.array(out.get("prices"))
+            if res is None or pri is None:
+                continue
+            # Volume ≈ 0.5 * sum(|Δreserves| * prices) per step
+            delta_r = np.diff(res, axis=0)
+            step_vol = 0.5 * np.sum(np.abs(delta_r) * pri[1:], axis=1)
+            cum_vol = np.cumsum(step_vol)
+            # Normalise: by initial TVL if normalised mode, else to $M
+            if normalised:
+                init_tvl = out.get("initial_tvl", 1.0)
+                vol_scale = 1.0 / max(init_tvl, 1.0)
+            else:
+                vol_scale = 1e-6
+            # Pad to match dates_daily length
+            cum_vol_full = np.zeros(len(res))
+            cum_vol_full[1:] = cum_vol
+            cum_vol_daily = cum_vol_full[::step] * vol_scale
+            is_optimized = "On-Chain" not in name
+            ax_vol.plot(dates_daily[:len(cum_vol_daily)], cum_vol_daily,
+                        linewidth=2.5 if is_optimized else 1.8,
+                        color=COLORS[ci % len(COLORS)], label=name,
+                        zorder=3 if is_optimized else 2)
+
+        if train_end_dt > start_dt and train_end_dt < dates[-1]:
+            ax_vol.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5, linewidth=1.5)
+        _style_axis(ax_vol)
+        ax_vol.set_ylabel(vol_ylabel, color=TEXT_COLOR, fontsize=12)
+        ax_vol.set_xlabel("Date", color=TEXT_COLOR, fontsize=12)
+        ax_vol.legend(loc="upper left", fontsize=8, facecolor=BG,
+                      edgecolor=TEXT_COLOR, labelcolor=TEXT_COLOR)
+    elif not has_fee_revenue:
         ax_val.set_xlabel("Date", color=TEXT_COLOR, fontsize=12)
 
     fig.patch.set_facecolor(BG)
@@ -339,16 +396,18 @@ def plot_weights(configs, time_series, ref_config, args):
                 zorder=3 if is_optimized else 2)
 
     ax.axhline(0.5, color="white", linestyle="--", alpha=0.3, linewidth=1)
-    ax.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5, linewidth=1.5)
-    ylims = ax.get_ylim()
-    ax.text(train_end_dt - pd.Timedelta(days=5), ylims[1] * 0.97, "Train",
-            color="white", alpha=0.6, fontsize=11, ha="right", va="top")
-    ax.text(train_end_dt + pd.Timedelta(days=5), ylims[1] * 0.97, "Test",
-            color="white", alpha=0.6, fontsize=11, ha="left", va="top")
+    if train_end_dt > start_dt and train_end_dt < dates[-1]:
+        ax.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5, linewidth=1.5)
+        ylims = ax.get_ylim()
+        ax.text(train_end_dt - pd.Timedelta(days=5), ylims[1] * 0.97, "Train",
+                color="white", alpha=0.6, fontsize=11, ha="right", va="top")
+        ax.text(train_end_dt + pd.Timedelta(days=5), ylims[1] * 0.97, "Test",
+                color="white", alpha=0.6, fontsize=11, ha="left", va="top")
 
     _style_axis(ax)
     tokens_str = "/".join(ref_config["tokens"])
-    ax.set_title(f"Effective {token_name} Weight — {tokens_str}",
+    date_range_str = f"{start_dt.strftime('%b %Y')} — {dates[-1].strftime('%b %Y')}"
+    ax.set_title(f"Effective {token_name} Weight — reCLAMM {tokens_str} — {date_range_str}",
                  color=TEXT_COLOR, fontsize=13, pad=15)
     ax.set_ylabel(f"{token_name} weight (value fraction)", color=TEXT_COLOR, fontsize=12)
     ax.set_xlabel("Date", color=TEXT_COLOR, fontsize=12)

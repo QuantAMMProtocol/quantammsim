@@ -171,8 +171,19 @@ def build_daily_features_from_binance(
             x_base[k, col] = val
             col += 1
 
-    # Standardize base features
-    x_base = ((x_base - x_mean[:x_base_cols]) / x_std[:x_base_cols]).astype(np.float32)
+    # Selective standardization — must match build_data() in run_linear_market_noise.py.
+    # Only realized vols and cross-pool volumes are standardized; everything else is raw.
+    for i, name in enumerate(feat_names[:x_base_cols]):
+        if i >= len(x_mean):
+            break
+        if "realized_vol" in name or "pair_realized" in name:
+            x_base[:, i] = (x_base[:, i] - x_mean[i]) / max(float(x_std[i]), 0.01)
+        elif name.startswith("xobs_") and name != "xobs_0":
+            parts = name.split("_")
+            if len(parts) >= 2 and parts[1].isdigit() and int(parts[1]) >= 4:
+                x_base[:, i] = (x_base[:, i] - x_mean[i]) / max(float(x_std[i]), 1e-6)
+        # else: leave untouched (intercept, log_price, dow, returns, trends, vol_zscore)
+    x_base = x_base.astype(np.float32)
 
     # Interaction terms
     base_feat_names = feat_names[:x_base_cols]
@@ -290,4 +301,197 @@ def build_simulator_arrays(
         "n_minutes": n_minutes,
         "coeffs": coeffs,
         "tvl_col": tvl_col,
+    }
+
+
+def build_mm_simulator_arrays(
+    token_a: str,
+    token_b: str,
+    start_date: str,
+    end_date: str,
+    mm_artifact_dir: str = "results/mm_noise",
+    competitor_tvl_path: str = "results/competitor_tvl/competitor_tvl.npz",
+    pool_id: Optional[str] = None,
+) -> Dict:
+    """Build noise_base and competitor_tvl arrays for the MM simulator.
+
+    The MM noise model evaluates::
+
+        V_noise = exp(noise_base_t) * TVL / (K_t + TVL)
+
+    where noise_base_t = alpha_i + gamma_i @ x_market_t absorbs all
+    non-TVL terms, and K_t = competitor_tvl_t is observed from DeFi
+    Llama (network conductance model: direct + multi-hop).
+
+    Builds the 18 market features directly from Binance data using the
+    same helper functions as the calibration pipeline. Standardization
+    follows the same selective rules as build_data(): only realized_vol
+    features are centered/scaled, everything else is left raw.
+    """
+    from quantammsim.calibration.market_features import (
+        build_btc_daily_features,
+        build_token_daily_features,
+        _compute_pair_volatility,
+        TOKEN_MAP,
+    )
+
+    art, meta = load_artifact(mm_artifact_dir)
+    pool_ids = meta["pool_ids"]
+    market_names = meta["market_names"]
+    n_market = meta["n_market_feat"]
+    per_pool_gamma = meta.get("per_pool_gamma", False)
+
+    pool_idx = -1
+    if pool_id is not None:
+        pool_idx = _find_pool_index(pool_id, pool_ids)
+
+    log_alpha = art["log_alpha"]
+    gamma = art["gamma"]
+
+    if pool_idx >= 0:
+        alpha_i = float(log_alpha[pool_idx])
+        gamma_i = gamma[pool_idx] if per_pool_gamma else gamma
+        print(f"  MM model: pool idx {pool_idx}, alpha={alpha_i:.3f}")
+    else:
+        alpha_i = float(np.median(log_alpha))
+        gamma_i = np.median(gamma, axis=0) if per_pool_gamma else gamma
+        print(f"  MM model: pool not found, using median alpha={alpha_i:.3f}")
+
+    # Build daily market features from Binance (same helpers as calibration)
+    start_ts = pd.Timestamp(start_date)
+    end_ts = pd.Timestamp(end_date)
+    date_range = pd.date_range(start_ts, end_ts, freq="D")
+    n_days = len(date_range)
+
+    mapped_a = TOKEN_MAP.get(token_a, token_a)
+    mapped_b = TOKEN_MAP.get(token_b, token_b)
+    btc_feat = build_btc_daily_features([7])
+    feat_a = build_token_daily_features(mapped_a, [7])
+    feat_b = build_token_daily_features(mapped_b, [7])
+    pair_vol = _compute_pair_volatility(mapped_a, mapped_b)
+
+    print(f"  Building features from Binance: {token_a}/{token_b},"
+          f" {start_date} → {end_date}")
+
+    x_market = np.zeros((n_days, n_market), dtype=np.float64)
+    for k, day in enumerate(date_range):
+        day_norm = day.normalize()
+        for mi, mname in enumerate(market_names):
+            val = 0.0
+            if mname == "xobs_0":
+                val = 1.0
+            elif mname == "xobs_2":
+                val = np.sin(2 * np.pi * day.weekday() / 7)
+            elif mname == "xobs_3":
+                val = np.cos(2 * np.pi * day.weekday() / 7)
+            elif mname.startswith("btc_") and btc_feat is not None:
+                if day_norm in btc_feat.index and mname in btc_feat.columns:
+                    v = btc_feat.loc[day_norm, mname]
+                    if np.isfinite(v):
+                        val = v
+            elif mname.startswith("tok_a_") and feat_a is not None:
+                acol = mname[6:]
+                if day_norm in feat_a.index and acol in feat_a.columns:
+                    v = feat_a.loc[day_norm, acol]
+                    if np.isfinite(v):
+                        val = v
+            elif mname.startswith("tok_b_") and feat_b is not None:
+                bcol = mname[6:]
+                if day_norm in feat_b.index and bcol in feat_b.columns:
+                    v = feat_b.loc[day_norm, bcol]
+                    if np.isfinite(v):
+                        val = v
+            elif mname == "pair_realized_vol_7d" and pair_vol is not None:
+                if day_norm in pair_vol.index:
+                    v = pair_vol.loc[day_norm, "pair_realized_vol_7d"]
+                    if np.isfinite(v):
+                        val = v
+            x_market[k, mi] = val
+
+    # Selective standardization: only realized_vol features get centered/scaled.
+    # Must use the TRAINING panel's stats (saved in model.npz as x_mean/x_std
+    # in the 22-feature linear space). Map to the 18 MM features by removing
+    # the TVL column (index 1) and 3 TVL-interaction columns (indices 19-21).
+    x_mean_22 = art.get("x_mean")
+    x_std_22 = art.get("x_std")
+    if x_mean_22 is not None and x_std_22 is not None and len(x_mean_22) == 22:
+        keep_22_to_18 = [i for i in range(22) if i not in {1, 19, 20, 21}]
+        x_mean_18 = x_mean_22[keep_22_to_18]
+        x_std_18 = x_std_22[keep_22_to_18]
+        for mi, mname in enumerate(market_names):
+            if x_mean_18[mi] != 0 or x_std_18[mi] != 1:
+                x_market[:, mi] = (x_market[:, mi] - x_mean_18[mi]) / max(x_std_18[mi], 0.01)
+    else:
+        # Fallback: compute local stats (less accurate but won't crash)
+        print("  WARNING: training stats not found, using local standardization")
+        for mi, mname in enumerate(market_names):
+            if ("realized_vol" in mname or "pair_realized" in mname) and "\u00d7" not in mname:
+                col_mean = float(np.mean(x_market[:, mi]))
+                col_std = max(float(np.std(x_market[:, mi])), 0.01)
+                x_market[:, mi] = (x_market[:, mi] - col_mean) / col_std
+
+    # Interaction terms
+    name_to_col = {n: i for i, n in enumerate(market_names)}
+    for mi, mname in enumerate(market_names):
+        if "\u00d7" in mname:
+            parts = mname.split("\u00d7")
+            if parts[0] in name_to_col and parts[1] in name_to_col:
+                x_market[:, mi] = (x_market[:, name_to_col[parts[0]]] *
+                                   x_market[:, name_to_col[parts[1]]])
+
+    # Compute noise_base = alpha_i + gamma_i @ x_market
+    noise_base_daily = alpha_i + x_market @ gamma_i
+
+    # Load competitor TVL (K)
+    print(f"  Loading competitor TVL from {competitor_tvl_path}")
+    comp_data = np.load(competitor_tvl_path, allow_pickle=True)
+    comp_pool_ids = list(comp_data["pool_ids"])
+    comp_dates = list(comp_data["date_list"])
+    k_eff = comp_data["k_eff"]
+
+    # Find pool in competitor data
+    comp_pool_idx = -1
+    if pool_id is not None:
+        comp_pool_idx = _find_pool_index(pool_id, comp_pool_ids)
+
+    if comp_pool_idx < 0:
+        print(f"  WARNING: pool not in competitor TVL data, using K=$10M")
+        K_daily = np.full(n_days, 10e6, dtype=np.float64)
+    else:
+        # Build date index for competitor data
+        comp_date_to_idx = {}
+        for ci, d in enumerate(comp_dates):
+            comp_date_to_idx[str(d)[:10]] = ci
+
+        K_daily = np.full(n_days, np.nan, dtype=np.float64)
+        for k, day in enumerate(date_range):
+            ds = str(pd.Timestamp(day))[:10]
+            if ds in comp_date_to_idx:
+                ci = comp_date_to_idx[ds]
+                val = k_eff[ci, comp_pool_idx]
+                if np.isfinite(val) and val > 0:
+                    K_daily[k] = val
+
+        # Forward-fill / back-fill
+        s = pd.Series(K_daily).ffill().bfill()
+        K_daily = s.values.astype(np.float64)
+
+        # Floor
+        K_daily = np.maximum(K_daily, 1.0)
+        med_K = np.median(K_daily[np.isfinite(K_daily)])
+        print(f"  K (competitor TVL): median=${med_K:,.0f},"
+              f" range=[${K_daily.min():,.0f}, ${K_daily.max():,.0f}]")
+
+    # Expand to minute resolution
+    n_minutes = n_days * 1440
+    noise_base = np.repeat(noise_base_daily, 1440)
+    competitor_tvl_array = np.repeat(K_daily, 1440)
+
+    return {
+        "noise_base": noise_base,
+        "competitor_tvl": competitor_tvl_array,
+        "dates": date_range,
+        "pool_index": pool_idx,
+        "n_days": n_days,
+        "n_minutes": n_minutes,
     }

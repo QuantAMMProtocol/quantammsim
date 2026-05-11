@@ -466,11 +466,14 @@ def multi_period_sgd_training(
     opt_state = optimizer.init(params)
 
     # Use existing factory - it handles batching, gradients, optimizer application
+    robust_temp = run_fingerprint["optimisation_settings"].get(
+        "robust_temperature", None)
     update_fn = update_from_partial_training_step_factory_with_optax(
         partial_training_step,
         optimizer,
         run_fingerprint["optimisation_settings"]["train_on_hessian_trace"],
         Partial(partial_training_step, start_index=(data_dict["start_idx"], 0)),
+        robust_temperature=robust_temp,
     )
 
     # Training loop

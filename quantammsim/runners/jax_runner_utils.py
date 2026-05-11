@@ -675,6 +675,10 @@ _TRAINING_ONLY_FIELDS = frozenset({
     "initial_raw_width",
     "initial_raw_exponents",
     "initial_pre_exp_scaling",
+    # Noise model arrays — loaded from path at runtime, not hashable
+    "noise_base_array",
+    "noise_tvl_coeff_array",
+    "competitor_tvl_array",
 })
 
 
@@ -1516,6 +1520,29 @@ def prepare_dynamic_inputs(
             if lp_supply_df is not None
             else None
         )
+
+    # Subsample minute-resolution dynamic inputs to match arb_frequency so
+    # materialize_dynamic_inputs sees the same scan_len the pool's scan loop
+    # uses (scan_len = (bout_length - 1) // arb_frequency).
+    arb_freq = run_fingerprint.get("arb_frequency", 1)
+    if arb_freq > 1:
+        if fees_array is not None:
+            fees_array = fees_array[::arb_freq]
+        if gas_cost_array is not None:
+            gas_cost_array = gas_cost_array[::arb_freq]
+        if arb_fees_array is not None:
+            arb_fees_array = arb_fees_array[::arb_freq]
+        if lp_supply_array is not None:
+            lp_supply_array = lp_supply_array[::arb_freq]
+        if do_test_period:
+            if test_fees_array is not None:
+                test_fees_array = test_fees_array[::arb_freq]
+            if test_gas_cost_array is not None:
+                test_gas_cost_array = test_gas_cost_array[::arb_freq]
+            if test_arb_fees_array is not None:
+                test_arb_fees_array = test_arb_fees_array[::arb_freq]
+            if test_lp_supply_array is not None:
+                test_lp_supply_array = test_lp_supply_array[::arb_freq]
 
     reclamm_price_ratio_updates_array = (
         _normalize_reclamm_price_ratio_updates_for_window(

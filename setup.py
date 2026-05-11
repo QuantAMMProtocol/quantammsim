@@ -21,7 +21,6 @@ setup(
         "plotly",
         "bidask",
         "Historic-Crypto",
-        "gdown",
         "binance_historical_data",
         "dask",
         "jsonpickle",

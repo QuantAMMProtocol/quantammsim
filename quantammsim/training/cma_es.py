@@ -288,6 +288,8 @@ def run_cmaes(
     params: dict,
     n_generations: int,
     tol: float = 1e-8,
+    lower_bounds: jnp.ndarray = None,
+    upper_bounds: jnp.ndarray = None,
 ) -> CMAESState:
     """Run CMA-ES via ``lax.while_loop``.  JIT-compatible.
 
@@ -308,6 +310,10 @@ def run_cmaes(
         Maximum number of generations.
     tol : float
         Convergence tolerance passed to :func:`_should_stop_jax`.
+    lower_bounds : jax.Array, optional
+        Per-dimension lower bounds, shape ``(n,)``. None = unbounded.
+    upper_bounds : jax.Array, optional
+        Per-dimension upper bounds, shape ``(n,)``. None = unbounded.
 
     Returns
     -------
@@ -315,6 +321,7 @@ def run_cmaes(
         Final state after convergence or ``n_generations``.
     """
     lam = params["lam"]
+    use_bounds = lower_bounds is not None and upper_bounds is not None
 
     def cond_fn(carry):
         state, _key = carry
@@ -324,6 +331,8 @@ def run_cmaes(
         state, key = carry
         key, subkey = random.split(key)
         pop = ask(state, subkey, lam)
+        if use_bounds:
+            pop = jnp.clip(pop, lower_bounds, upper_bounds)
         fitness = eval_fn(pop)
         state = tell(state, pop, fitness, params)
         return (state, key)

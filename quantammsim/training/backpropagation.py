@@ -49,6 +49,7 @@ else:
 # jax.set_cpu_device_count(n)
 # print(devices("cpu"))
 
+import jax
 import jax.numpy as jnp
 from jax import grad, value_and_grad, jit, vmap
 from jax.tree_util import tree_map
@@ -168,6 +169,45 @@ def batched_objective_factory(batched_partial_training_step):
         return jnp.mean(output)
 
     return batched_objective
+
+
+def batched_robust_objective_factory(batched_partial_training_step, temperature=1.0):
+    """Creates an objective with distributionally robust aggregation.
+
+    Instead of ``mean(outputs)``, uses a softmin-weighted average that
+    up-weights bad windows and down-weights good ones::
+
+        weights = softmax(-outputs / temperature)
+        objective = sum(weights * outputs)
+
+    At ``temperature → ∞``: recovers the mean (standard behavior).
+    At ``temperature → 0``: recovers the min (pure worst-case).
+
+    This encourages the optimizer to spend gradient budget on surviving
+    crashes rather than squeezing marginal gains in calm periods.
+
+    Parameters
+    ----------
+    batched_partial_training_step : callable
+        A vectorized function that processes batches of inputs.
+    temperature : float
+        Controls robustness. Lower = more robust / pessimistic.
+        Recommended range: 0.1 (very robust) to 10.0 (near mean).
+        Default 1.0 is a moderate robustness level.
+
+    Returns
+    -------
+    callable
+        JIT-compiled robust objective function.
+    """
+
+    @jit
+    def batched_robust_objective(params, start_indexes):
+        output = batched_partial_training_step(params, start_indexes)
+        weights = jax.nn.softmax(-output / temperature)
+        return jnp.sum(weights * output)
+
+    return batched_robust_objective
 
 
 def batched_objective_with_hessian_factory(
@@ -326,6 +366,7 @@ def update_from_partial_training_step_factory(
     partial_training_step,
     train_on_hessian_trace=False,
     partial_fixed_training_step=None,
+    robust_temperature=None,
 ):
     """Creates a complete update function from a partial training step.
 
@@ -342,6 +383,11 @@ def update_from_partial_training_step_factory(
     partial_fixed_training_step : callable, optional
         The function used to compute Hessian trace when train_on_hessian_trace is True.
         Required if train_on_hessian_trace is True.
+    robust_temperature : float, optional
+        If set, uses distributionally robust aggregation (softmin-weighted
+        average) instead of mean over training windows. Lower values are
+        more robust / pessimistic. Recommended range: 0.1–10.0.
+        None (default) uses standard mean aggregation.
 
     Returns
     -------
@@ -358,6 +404,10 @@ def update_from_partial_training_step_factory(
             batched_partial_training_step, partial_fixed_training_step
         )
         update = update_with_hessian_factory(batched_objective_with_hessian)
+    elif robust_temperature is not None:
+        batched_objective = batched_robust_objective_factory(
+            batched_partial_training_step, temperature=robust_temperature)
+        update = update_factory(batched_objective)
     else:
         batched_objective = batched_objective_factory(batched_partial_training_step)
         update = update_factory(batched_objective)
@@ -522,6 +572,7 @@ def update_from_partial_training_step_factory_with_optax(
     optimizer,
     train_on_hessian_trace=False,
     partial_fixed_training_step=None,
+    robust_temperature=None,
 ):
     """Creates a complete update function from a partial training step using optax optimizer.
 
@@ -539,6 +590,9 @@ def update_from_partial_training_step_factory_with_optax(
     partial_fixed_training_step : callable, optional
         The function used to compute Hessian trace when train_on_hessian_trace is True.
         Required if train_on_hessian_trace is True.
+    robust_temperature : float, optional
+        If set, uses distributionally robust aggregation (softmin-weighted
+        average) instead of mean. See ``batched_robust_objective_factory``.
 
     Returns
     -------
@@ -555,6 +609,10 @@ def update_from_partial_training_step_factory_with_optax(
             batched_partial_training_step, partial_fixed_training_step
         )
         update = update_with_hessian_factory_with_optax(batched_objective_with_hessian, optimizer)
+    elif robust_temperature is not None:
+        batched_objective = batched_robust_objective_factory(
+            batched_partial_training_step, temperature=robust_temperature)
+        update = update_factory_with_optax(batched_objective, optimizer)
     else:
         batched_objective = batched_objective_factory(batched_partial_training_step)
         update = update_factory_with_optax(batched_objective, optimizer)

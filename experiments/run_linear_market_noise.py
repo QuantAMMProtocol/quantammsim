@@ -144,12 +144,43 @@ def build_data(matched_clean, option_c_clean, trend_windows=(7, 14, 30),
     x_base = np.concatenate([x_obs, x_market], axis=1).astype(np.float32)
     base_names = [f"xobs_{i}" for i in range(k_obs)] + market_names
 
-    # Standardize (except intercept column 0)
-    x_mean = np.mean(x_base, axis=0)
-    x_std = np.std(x_base, axis=0)
-    x_std[x_std < 1e-6] = 1.0
-    x_mean[0] = 0.0  # don't center intercept
-    x_std[0] = 1.0
+    # Feature-appropriate scaling:
+    # - intercept: untouched
+    # - log_tvl, btc_log_price: raw log scale (absolute level carries info)
+    # - dow_sin/cos: already [-1,1], no scaling
+    # - returns, trends, vol_zscore: already comparable, no scaling
+    # - realized_vol, pair_vol: small positive, light centering
+    # - cross-pool volumes: z-score (different scales across pool groups)
+    x_mean = np.zeros(x_base.shape[1], dtype=np.float32)
+    x_std = np.ones(x_base.shape[1], dtype=np.float32)
+
+    for i, name in enumerate(base_names):
+        if name == "xobs_0":
+            # Intercept: leave as-is
+            pass
+        elif name in ("xobs_1", "btc_log_price"):
+            # Log levels: leave in raw log scale (range ~10-20)
+            pass
+        elif name in ("xobs_2", "xobs_3"):
+            # dow_sin, dow_cos: already [-1,1]
+            pass
+        elif "volume_zscore" in name:
+            # Already z-scored by construction
+            pass
+        elif "log_return" in name or "trend_" in name:
+            # Returns and trends: small, centered around 0, comparable
+            pass
+        elif "realized_vol" in name or "pair_realized" in name:
+            # Volatilities: small positive, center but don't squeeze
+            x_mean[i] = float(np.mean(x_base[:, i]))
+            # Use std but don't over-compress — floor at 0.01
+            x_std[i] = max(float(np.std(x_base[:, i])), 0.01)
+        elif name.startswith("xobs_") and int(name.split("_")[1]) >= 4:
+            # Cross-pool volumes (xobs_4,5,6): z-score (different scales)
+            x_mean[i] = float(np.mean(x_base[:, i]))
+            x_std[i] = max(float(np.std(x_base[:, i])), 1e-6)
+        # else: leave untouched
+
     x_base = ((x_base - x_mean) / x_std).astype(np.float32)
 
     # Interaction terms (products of standardized features)

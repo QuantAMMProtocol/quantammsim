@@ -266,10 +266,32 @@ class ReClammPool(AbstractPool):
           - "tsoukalas_*"/"loglinear": {"volatility": array}
           - "calibrated": {"volatility": array, "dow_sin": array, "dow_cos": array}
           - "market_linear": {"noise_base": array, "noise_tvl_coeff": array}
+          - "mm_observed": {"noise_base": array, "competitor_tvl": array}
         """
         noise_model = run_fingerprint.get("noise_model", "ratio")
         result = {"volatility": None, "dow_sin": None, "dow_cos": None,
-                  "noise_base": None, "noise_tvl_coeff": None}
+                  "noise_base": None, "noise_tvl_coeff": None,
+                  "competitor_tvl": None}
+
+        if noise_model == "mm_observed":
+            # MM model with observed competitor TVL as K
+            nb = run_fingerprint.get("noise_base_array")
+            ct = run_fingerprint.get("competitor_tvl_array")
+            if nb is None and "noise_arrays_path" in run_fingerprint:
+                path = run_fingerprint["noise_arrays_path"]
+                if not hasattr(self, "_mm_observed_cache") or self._mm_observed_cache[0] != path:
+                    arrays = np.load(path)
+                    self._mm_observed_cache = (
+                        path, arrays["noise_base"], arrays["competitor_tvl"])
+                nb = self._mm_observed_cache[1]
+                ct = self._mm_observed_cache[2]
+            if nb is not None:
+                result["noise_base"] = _prepare_dynamic_array(
+                    jnp.array(nb), start_index, bout_length, arb_freq, max_len)
+            if ct is not None:
+                result["competitor_tvl"] = _prepare_dynamic_array(
+                    jnp.array(ct), start_index, bout_length, arb_freq, max_len)
+            return result
 
         if noise_model == "market_linear":
             # Load precomputed arrays from path (cached on instance) or direct.
@@ -381,6 +403,7 @@ class ReClammPool(AbstractPool):
                 dow_cos_array=noise_arrays["dow_cos"],
                 noise_base_array=noise_arrays["noise_base"],
                 noise_tvl_coeff_array=noise_arrays["noise_tvl_coeff"],
+                competitor_tvl_array=noise_arrays["competitor_tvl"],
             )
         return jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape)
 
@@ -440,6 +463,7 @@ class ReClammPool(AbstractPool):
                 dow_cos_array=noise_arrays["dow_cos"],
                 noise_base_array=noise_arrays["noise_base"],
                 noise_tvl_coeff_array=noise_arrays["noise_tvl_coeff"],
+                competitor_tvl_array=noise_arrays["competitor_tvl"],
             )
         return (
             jnp.broadcast_to(s.initial_reserves, s.arb_prices.shape),
@@ -509,6 +533,7 @@ class ReClammPool(AbstractPool):
             dow_cos_array=noise_arrays["dow_cos"],
             noise_base_array=noise_arrays["noise_base"],
             noise_tvl_coeff_array=noise_arrays["noise_tvl_coeff"],
+            competitor_tvl_array=noise_arrays["competitor_tvl"],
         )
 
     @partial(jit, static_argnums=(2,))

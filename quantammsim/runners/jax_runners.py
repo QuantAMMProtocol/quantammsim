@@ -1419,7 +1419,14 @@ def _train_on_historic_data_impl(
                     )
                     train_objectives.append(train_value)
 
-                mean_train_value = jnp.sum(jnp.array(train_objectives)) / len(train_objectives)
+                _train_arr = jnp.array(train_objectives)
+                _robust_temp = run_fingerprint.get("optimisation_settings", {}).get(
+                    "robust_temperature", None)
+                if _robust_temp is not None:
+                    _weights = jax.nn.softmax(-_train_arr / _robust_temp)
+                    mean_train_value = jnp.sum(_weights * _train_arr)
+                else:
+                    mean_train_value = jnp.mean(_train_arr)
                 train_value = _calculate_return_value(
                     run_fingerprint["return_val"],
                     train_outputs["reserves"],
@@ -1455,6 +1462,17 @@ def _train_on_historic_data_impl(
                     train_outputs["value"],
                     initial_reserves=train_outputs["reserves"][0],
                 )
+
+                # Reject catastrophic in-sample configurations
+                min_train_ret_over_hodl = run_fingerprint["optimisation_settings"][
+                    "optuna_settings"].get("min_train_returns_over_hodl", None)
+                if min_train_ret_over_hodl is not None:
+                    if float(train_returns_over_hodl) < min_train_ret_over_hodl:
+                        optuna_manager.logger.info(
+                            f"Training {trial.number}, REJECTED:"
+                            f" ret_over_hodl={train_returns_over_hodl:.4f}"
+                            f" < {min_train_ret_over_hodl}")
+                        return float("-inf")
 
                 # Test period evaluation using continuous forward pass
                 # This ensures test metrics reflect continuous simulation from training
@@ -2272,10 +2290,43 @@ def _train_on_historic_data_impl(
         # Standalone jitted version kept for any verbose/diagnostic use
         eval_population = jit(eval_fn_raw)
 
+        # Build box constraints from parameter_config (if available)
+        param_config = run_fingerprint.get("optimisation_settings", {}).get(
+            "optuna_settings", {}
+        ).get("parameter_config", {})
+        if param_config:
+            # Construct lower/upper bound pytrees matching params_single structure
+            lb_dict = {}
+            ub_dict = {}
+            for k, v in params_single.items():
+                if k == "subsidary_params":
+                    continue
+                cfg = param_config.get(k)
+                if cfg is not None:
+                    lo = jnp.full_like(jnp.asarray(v, dtype=flat_x0_template.dtype), cfg["low"])
+                    hi = jnp.full_like(jnp.asarray(v, dtype=flat_x0_template.dtype), cfg["high"])
+                else:
+                    lo = jnp.full_like(jnp.asarray(v, dtype=flat_x0_template.dtype), -1e30)
+                    hi = jnp.full_like(jnp.asarray(v, dtype=flat_x0_template.dtype), 1e30)
+                lb_dict[k] = lo
+                ub_dict[k] = hi
+            lb_dict["subsidary_params"] = params_single.get("subsidary_params", [])
+            ub_dict["subsidary_params"] = params_single.get("subsidary_params", [])
+            flat_lb, _ = ravel_pytree(lb_dict)
+            flat_ub, _ = ravel_pytree(ub_dict)
+            if verbose:
+                print(f"[CMA-ES] Box constraints: {n_flat} dims bounded")
+        else:
+            flat_lb = None
+            flat_ub = None
+
         @jit
         def _run_one_restart(flat_x0, rng_key):
             state = init_cmaes(flat_x0, sigma0)
-            return run_cmaes(state, rng_key, eval_fn_raw, cma_params, n_generations, tol)
+            return run_cmaes(
+                state, rng_key, eval_fn_raw, cma_params, n_generations, tol,
+                lower_bounds=flat_lb, upper_bounds=flat_ub,
+            )
 
         # Keep initial params for saving
         initial_params = deepcopy(params)
