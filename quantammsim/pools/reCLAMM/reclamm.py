@@ -478,7 +478,7 @@ class ReClammPool(AbstractPool):
         if noise_params is not None and type(noise_params) is not dict:
             noise_params = dict(noise_params)
 
-        arb_vol, dow_sin, dow_cos = self._prepare_noise_arrays(
+        noise_arrays = self._prepare_noise_arrays(
             prices, run_fingerprint, start_index,
             bout_length, run_fingerprint["arb_frequency"], max_len,
         )
@@ -503,9 +503,12 @@ class ReClammPool(AbstractPool):
             lp_supply_array=materialized_inputs.lp_supply,
             noise_model=noise_model,
             noise_params=noise_params,
-            volatility_array=arb_vol,
-            dow_sin_array=dow_sin,
-            dow_cos_array=dow_cos,
+            volatility_array=noise_arrays.get("volatility"),
+            dow_sin_array=noise_arrays.get("dow_sin"),
+            dow_cos_array=noise_arrays.get("dow_cos"),
+            noise_base_array=noise_arrays.get("noise_base"),
+            noise_tvl_coeff_array=noise_arrays.get("noise_tvl_coeff"),
+            competitor_tvl_array=noise_arrays.get("competitor_tvl"),
         )
 
     @partial(jit, static_argnums=(2,))
