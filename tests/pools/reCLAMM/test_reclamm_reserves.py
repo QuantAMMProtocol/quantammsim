@@ -275,6 +275,7 @@ class TestPoolIntegration:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -317,6 +318,7 @@ class TestPoolIntegration:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -356,6 +358,7 @@ class TestPoolIntegration:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -488,6 +491,7 @@ class TestConstantArcLengthScan:
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
             "reclamm_interpolation_method": "constant_arc_length",
             "reclamm_arc_length_speed": None,  # auto-calibrate
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -693,6 +697,7 @@ class TestReClammTrainable:
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
             "reclamm_interpolation_method": "constant_arc_length",
             "reclamm_learn_arc_length_speed": True,
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -924,6 +929,7 @@ class TestNoiseTraderRatio:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         }
 
         fp_no_noise = Hashabledict({**base_fp, "noise_trader_ratio": 0.0})
@@ -1286,6 +1292,7 @@ class TestLpSupply:
             "tokens": ("ETH", "USDC"),
             "numeraire": "USDC",
             "all_sig_variations": tuple(map(tuple, [[1, -1], [-1, 1]])),
+            "ste_temperature": 10.0,
         })
 
         start_index = jnp.array([0, 0])
@@ -1327,11 +1334,18 @@ class TestLpSupply:
         )
 
     def test_lp_supply_with_fee_revenue(self):
-        """Doubling LP supply → fee revenue increases (bigger pool → bigger arb trades)."""
+        """Doubling LP supply → fee revenue increases (bigger pool → bigger noise trades)."""
         reserves, Va, Vb = _init_pool()
         n_steps = 40
         half = n_steps // 2
         prices = _make_trending_prices(2500.0, 3500.0, 1.0, n_steps)
+        # lp_fee_revenue_usd is noise-only; configure mm_observed with a large
+        # K so noise volume scales ~linearly with pool TVL.
+        noise_kwargs = {
+            "noise_model": "mm_observed",
+            "noise_base_array": jnp.full(n_steps, 13.8),
+            "competitor_tvl_array": jnp.full(n_steps, 1e10),
+        }
 
         # Baseline: no supply change
         _, rev_base = _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
@@ -1343,6 +1357,7 @@ class TestLpSupply:
             arb_thresh=0.0,
             arb_fees=0.0,
             all_sig_variations=ALL_SIG_VARIATIONS_2,
+            **noise_kwargs,
         )
 
         # Supply doubles halfway
@@ -1357,6 +1372,7 @@ class TestLpSupply:
             arb_fees=0.0,
             all_sig_variations=ALL_SIG_VARIATIONS_2,
             lp_supply_array=lp_supply,
+            **noise_kwargs,
         )
 
         # After doubling, fee revenue per step should be larger
@@ -1421,4 +1437,3 @@ class TestLpSupply:
         assert lp_val > base_val, (
             f"Doubled LP supply should increase final value: {lp_val} <= {base_val}"
         )
-
