@@ -27,41 +27,134 @@ import jax.numpy as jnp
 from quantammsim.runners.jax_runners import do_run_on_historic_data
 
 
-SWEEP_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "results", "sweep",
-)
-OUTPUT_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "results", "sweep", "plots",
-)
+_RESULTS_ROOT = os.path.dirname(os.path.dirname(__file__))
 
-# Period definitions: (start, train_end, default_test_end)
-# --end-test-date overrides default_test_end for all periods
-PERIODS = {
-    "bull_2023":    ("2023-06-01", "2024-06-01", "2026-03-01"),
-    "default_2024": ("2024-06-01", "2025-06-01", "2026-03-01"),
-    "recent_2025":  ("2025-01-01", "2025-09-01", "2026-03-01"),
+# ── Pool configurations ─────────────────────────────────────────────────
+POOL_CONFIGS = {
+    "aave_eth": {
+        "sweep_dir": os.path.join(_RESULTS_ROOT, "results", "sweep"),
+        "output_dir": os.path.join(_RESULTS_ROOT, "results", "sweep", "plots"),
+        "periods": {
+            "bull_2023":    ("2023-06-01", "2024-06-01", "2026-03-01"),
+            "default_2024": ("2024-06-01", "2025-06-01", "2026-03-01"),
+            "recent_2025":  ("2025-01-01", "2025-09-01", "2026-03-01"),
+            "long_2021":    ("2021-06-01", "2025-01-01", "2026-03-01"),
+        },
+        "base_fp": {
+            "rule": "reclamm",
+            "tokens": ["AAVE", "ETH"],
+            "do_arb": True,
+            "arb_frequency": 4,
+            "fees": 0.0025,
+            "gas_cost": 1.0,
+            "arb_fees": 0.0,
+            "protocol_fee_split": 0.25,
+            "noise_trader_ratio": 0.0,
+            "noise_model": "mm_observed",
+            "noise_arrays_path": "results/mm_noise/_sim_arrays/"
+                                 "0x9d1fcf346ea1b0_2024-06-01_2026-03-01_mm.npz",
+            "reclamm_interpolation_method": "geometric",
+            "reclamm_centeredness_scaling": False,
+            "reclamm_learn_arc_length_speed": False,
+            "reclamm_use_shift_exponent": True,
+            "initial_pool_value": 20_000_000.0,
+        },
+        "onchain_configs": {
+            "OnChain-launch": {
+                "price_ratio": 1.5, "centeredness_margin": 0.5,
+                "shift_exponent": 0.1,
+            },
+            "OnChain-current": {
+                "price_ratio": 4.0, "centeredness_margin": 0.1,
+                "shift_exponent": 0.001,
+            },
+        },
+        "noise_builder": {
+            "token_a": "AAVE", "token_b": "ETH",
+            "pool_id": "0x9d1fcf346ea1b0",
+        },
+    },
+    "cow_eth_mainnet": {
+        "sweep_dir": os.path.join(_RESULTS_ROOT, "results", "cow_sweep"),
+        "output_dir": os.path.join(_RESULTS_ROOT, "results", "cow_sweep", "plots"),
+        "periods": {
+            "default_mainnet": ("2025-01-01", "2025-10-01", "2026-04-01"),
+            "recent_mainnet":  ("2025-04-01", "2025-12-01", "2026-04-01"),
+        },
+        "base_fp": {
+            "rule": "reclamm",
+            "tokens": ["COW", "ETH"],
+            "do_arb": True,
+            "arb_frequency": 3,
+            "fees": 0.003,
+            "gas_cost": 3.0,
+            "arb_fees": 0.0,
+            "protocol_fee_split": 0.25,
+            "noise_trader_ratio": 0.0,
+            "noise_model": "mm_observed",
+            "noise_arrays_path": "",  # built dynamically
+            "reclamm_interpolation_method": "geometric",
+            "reclamm_centeredness_scaling": False,
+            "reclamm_learn_arc_length_speed": False,
+            "reclamm_use_shift_exponent": True,
+            "initial_pool_value": 600_000.0,
+        },
+        "onchain_configs": {
+            "OnChain-mainnet": {
+                "price_ratio": 2.02, "centeredness_margin": 0.5,
+                "shift_exponent": 0.1,
+            },
+        },
+        "noise_builder": {
+            "token_a": "COW", "token_b": "ETH",
+            "pool_id": "0xd321300ef77067",
+        },
+        "fname_suffix": "_mainnet",
+    },
+    "cow_eth_base": {
+        "sweep_dir": os.path.join(_RESULTS_ROOT, "results", "cow_sweep"),
+        "output_dir": os.path.join(_RESULTS_ROOT, "results", "cow_sweep", "plots"),
+        "periods": {
+            "default_base": ("2025-01-01", "2025-10-01", "2026-04-01"),
+            "recent_base":  ("2025-04-01", "2025-12-01", "2026-04-01"),
+        },
+        "base_fp": {
+            "rule": "reclamm",
+            "tokens": ["COW", "ETH"],
+            "do_arb": True,
+            "arb_frequency": 3,
+            "fees": 0.003,
+            "gas_cost": 0.01,
+            "arb_fees": 0.0,
+            "protocol_fee_split": 0.25,
+            "noise_trader_ratio": 0.0,
+            "noise_model": "mm_observed",
+            "noise_arrays_path": "",
+            "reclamm_interpolation_method": "geometric",
+            "reclamm_centeredness_scaling": False,
+            "reclamm_learn_arc_length_speed": False,
+            "reclamm_use_shift_exponent": True,
+            "initial_pool_value": 500_000.0,
+        },
+        "onchain_configs": {
+            "OnChain-base": {
+                "price_ratio": 3.30, "centeredness_margin": 0.5,
+                "shift_exponent": 0.1,
+            },
+        },
+        "noise_builder": {
+            "token_a": "COW", "token_b": "ETH",
+            "pool_id": "0xff028c1ec4559d",
+        },
+        "fname_suffix": "_base",
+    },
 }
 
-# Base fingerprint for reClAMM AAVE/ETH with MM noise
-BASE_FP = {
-    "rule": "reclamm",
-    "tokens": ["AAVE", "ETH"],
-    "do_arb": True,
-    "arb_frequency": 4,
-    "fees": 0.0025,
-    "gas_cost": 1.0,
-    "arb_fees": 0.0,
-    "protocol_fee_split": 0.25,
-    "noise_trader_ratio": 0.0,
-    "noise_model": "mm_observed",
-    "noise_arrays_path": "results/mm_noise/_sim_arrays/"
-                         "0x9d1fcf346ea1b0_2024-06-01_2026-03-01_mm.npz",
-    "reclamm_interpolation_method": "geometric",
-    "reclamm_centeredness_scaling": False,
-    "reclamm_learn_arc_length_speed": False,
-    "reclamm_use_shift_exponent": True,
-    "initial_pool_value": 20_000_000.0,
-}
+# Active config — set by --pool arg in main()
+SWEEP_DIR = POOL_CONFIGS["aave_eth"]["sweep_dir"]
+OUTPUT_DIR = POOL_CONFIGS["aave_eth"]["output_dir"]
+PERIODS = POOL_CONFIGS["aave_eth"]["periods"]
+BASE_FP = POOL_CONFIGS["aave_eth"]["base_fp"]
 
 OBJ_SHORT = {
     "daily_log_sharpe": "sharpe",
@@ -73,26 +166,62 @@ OBJ_SHORT = {
     "weekly_rovar": "rovar",
 }
 
+
+def _short_label(obj_name):
+    """Convert obj_name (possibly with robust/penalty suffix) to short label."""
+    for full, short in OBJ_SHORT.items():
+        if obj_name.startswith(full):
+            suffix = obj_name[len(full):]
+            if suffix:
+                suffix = suffix.replace("_robust", " r")
+                suffix = suffix.replace("_penalty", " p")
+            return f"{short}{suffix}"
+    return obj_name
+
 BG = "#162536"
 TEXT_COLOR = "#E6CE97"
 COLORS = [
     "#3498db", "#2ecc71", "#e74c3c", "#f39c12", "#9b59b6",
     "#1abc9c", "#e67e22", "#2980b9", "#c0392b", "#8e44ad",
+    "#27ae60", "#d35400", "#16a085", "#f1c40f", "#7f8c8d",
+    "#e74c3c", "#3498db", "#2ecc71", "#f39c12", "#9b59b6",
+    "#1abc9c", "#e67e22", "#2980b9", "#c0392b", "#8e44ad",
 ]
 
 
+ALLOWED_ROBUST = {""}
+ALLOWED_PENALTY = {"", "5.0"}
+
+
+def _parse_variant(obj_name):
+    """Extract (base_obj, robust, penalty) from an obj_name like 'calmar_robust0.5_penalty5.0'."""
+    robust = ""
+    penalty = ""
+    rest = obj_name
+    m = re.search(r"_robust([\d.]+)", rest)
+    if m:
+        robust = m.group(1)
+        rest = rest[:m.start()] + rest[m.end():]
+    m = re.search(r"_penalty([\d.]+)", rest)
+    if m:
+        penalty = m.group(1)
+        rest = rest[:m.start()] + rest[m.end():]
+    return rest, robust, penalty
+
+
 def load_sweep_results():
-    """Load all sweep result JSONs, grouped by period."""
-    results = {}  # period -> [(obj_name, params)]
+    """Load sweep result JSONs matching current sweep config, grouped by period."""
+    results = {}
     for path in sorted(glob.glob(os.path.join(SWEEP_DIR, "*.json"))):
         fname = os.path.basename(path).replace(".json", "")
-        # Parse: {objective}_{period_name}
         for period_name in PERIODS:
             if fname.endswith(f"_{period_name}"):
                 obj_name = fname[: -(len(period_name) + 1)]
+                _, robust, penalty = _parse_variant(obj_name)
+                if robust not in ALLOWED_ROBUST or penalty not in ALLOWED_PENALTY:
+                    break
                 with open(path) as f:
                     data = json.load(f)
-                # Extract params from the first (only) objective key
                 if isinstance(data, dict):
                     params_raw = list(data.values())[0]
                     if isinstance(params_raw, dict):
@@ -111,6 +240,10 @@ def load_sweep_results():
 _arrays_cache = {}
 
 
+_active_noise_builder = POOL_CONFIGS["aave_eth"]["noise_builder"]
+_active_onchain_configs = POOL_CONFIGS["aave_eth"]["onchain_configs"]
+
+
 def _get_noise_arrays_path(start_date, end_date):
     """Build or retrieve MM noise arrays for this date range."""
     key = (start_date, end_date)
@@ -119,22 +252,23 @@ def _get_noise_arrays_path(start_date, end_date):
 
     from quantammsim.calibration.noise_model_arrays import build_mm_simulator_arrays
 
+    nb = _active_noise_builder
     cache_dir = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),
         "results", "mm_noise", "_sim_arrays")
     os.makedirs(cache_dir, exist_ok=True)
     arrays_path = os.path.join(
-        cache_dir, f"0x9d1fcf346ea1b0_{start_date}_{end_date}_mm.npz")
+        cache_dir, f"{nb['pool_id']}_{start_date}_{end_date}_mm.npz")
 
     if not os.path.exists(arrays_path):
-        print(f"\n    Building noise arrays for {start_date}→{end_date}...",
+        print(f"\n    Building noise arrays for {nb['pool_id']} {start_date}→{end_date}...",
               end=" ", flush=True)
         arrays = build_mm_simulator_arrays(
-            token_a="AAVE", token_b="ETH",
+            token_a=nb["token_a"], token_b=nb["token_b"],
             start_date=start_date, end_date=end_date,
             mm_artifact_dir="results/mm_noise",
             competitor_tvl_path="results/competitor_tvl/competitor_tvl.npz",
-            pool_id="0x9d1fcf346ea1b0",
+            pool_id=nb["pool_id"],
         )
         np.savez(arrays_path,
                  noise_base=arrays["noise_base"],
@@ -169,7 +303,7 @@ def _style_axis(ax):
     ax.grid(True, alpha=0.15, color=TEXT_COLOR)
 
 
-def plot_period(period_name, obj_results, end_test_date, output_dir):
+def plot_period(period_name, obj_results, end_test_date, output_dir, top_n=None):
     """Plot all objectives for one period."""
     start, train_end, default_test_end = PERIODS[period_name]
     test_end = end_test_date or default_test_end
@@ -178,24 +312,15 @@ def plot_period(period_name, obj_results, end_test_date, output_dir):
     print(f"Period: {period_name}  ({start} → {train_end} → {test_end})")
     print(f"{'='*80}")
 
-    # On-chain baselines
-    ONCHAIN_CONFIGS = {
-        "OnChain-launch": {
-            "price_ratio": 1.5, "centeredness_margin": 0.5,
-            "shift_exponent": 0.1,
-        },
-        "OnChain-current": {
-            "price_ratio": 4.0, "centeredness_margin": 0.1,
-            "shift_exponent": 0.001,
-        },
-    }
+    # On-chain baselines (from active pool config)
+    ONCHAIN_CONFIGS = _active_onchain_configs
 
     # Run all configs + baselines
     runs = {}       # label -> forward pass output
     run_params = {} # label -> pool params dict
     all_configs = (
         [(name, params) for name, params in ONCHAIN_CONFIGS.items()]
-        + [(f"{OBJ_SHORT.get(obj, obj)} (pr={p.get('price_ratio', 0):.2f})", p)
+        + [(f"{_short_label(obj)} (pr={p.get('price_ratio', 0):.2f})", p)
            for obj, p in obj_results]
     )
     for label, params in all_configs:
@@ -214,7 +339,7 @@ def plot_period(period_name, obj_results, end_test_date, output_dir):
         print("  No successful runs!")
         return
 
-    # HODL baseline
+    # HODL baseline (compute before filtering so test-period RoH is available)
     first_out = next(iter(runs.values()))
     hodl_reserves = first_out["reserves"][0]
     hodl_values = np.sum(
@@ -223,6 +348,23 @@ def plot_period(period_name, obj_results, end_test_date, output_dir):
     n_minutes = len(first_out["value"])
     start_dt = datetime.strptime(f"{start} 00:00:00", "%Y-%m-%d %H:%M:%S")
     train_end_dt = datetime.strptime(f"{train_end} 00:00:00", "%Y-%m-%d %H:%M:%S")
+    train_minutes = int((train_end_dt - start_dt).total_seconds() / 60)
+    test_start_idx = min(train_minutes, n_minutes - 1)
+
+    # Filter to top N by test-period normalised return
+    if top_n is not None and top_n < len(runs):
+        def _test_return(label):
+            vals = np.array(runs[label]["value"])
+            if test_start_idx >= len(vals) - 1:
+                return float("-inf")
+            return vals[-1] / vals[test_start_idx] - 1.0
+
+        ranked = sorted(runs.keys(), key=_test_return, reverse=True)
+        keep = set(ranked[:top_n])
+        keep.update(l for l in runs if l.startswith("OnChain"))
+        runs = {l: runs[l] for l in runs if l in keep}
+        run_params = {l: run_params[l] for l in run_params if l in keep}
+        print(f"  Filtered to top {top_n} (test-period return) + baselines ({len(runs)} configs)")
     dates = pd.date_range(start=start_dt, periods=n_minutes, freq="1min")
     step = 1440
     dates_daily = dates[::step]
@@ -248,7 +390,8 @@ def plot_period(period_name, obj_results, end_test_date, output_dir):
     ax.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5)
     _style_axis(ax)
     ax.set_ylabel("Pool Value ($M)", color=TEXT_COLOR)
-    ax.set_title(f"reClAMM AAVE/ETH — {period_name}",
+    tokens_str = "/".join(BASE_FP["tokens"])
+    ax.set_title(f"reClAMM {tokens_str} — {period_name}",
                  color=TEXT_COLOR, fontsize=14, pad=10)
     ax.legend(loc="upper left", fontsize=7, facecolor=BG,
               edgecolor=TEXT_COLOR, labelcolor=TEXT_COLOR, ncol=2)
@@ -274,14 +417,14 @@ def plot_period(period_name, obj_results, end_test_date, output_dir):
 
     fig.patch.set_facecolor(BG)
     plt.tight_layout()
-    out_path = os.path.join(output_dir, f"sweep_{period_name}_value.png")
+    top_suffix = f"_top{top_n}" if top_n else ""
+    out_path = os.path.join(output_dir, f"sweep_{period_name}_value{top_suffix}.png")
     fig.savefig(out_path, dpi=200, bbox_inches="tight", facecolor=BG)
     plt.close(fig)
     print(f"  Saved: {out_path}")
 
     # ── Plot 2: Test-only normalised value + cumulative fee revenue ──
-    train_minutes = int((train_end_dt - start_dt).total_seconds() / 60)
-    test_start = min(train_minutes, n_minutes - 1)
+    test_start = test_start_idx
 
     fig, axes = plt.subplots(2, 1, figsize=(16, 10), sharex=True,
                              gridspec_kw={"height_ratios": [3, 1]})
@@ -337,7 +480,7 @@ def plot_period(period_name, obj_results, end_test_date, output_dir):
 
     fig.patch.set_facecolor(BG)
     plt.tight_layout()
-    out_path = os.path.join(output_dir, f"sweep_{period_name}_test.png")
+    out_path = os.path.join(output_dir, f"sweep_{period_name}_test{top_suffix}.png")
     fig.savefig(out_path, dpi=200, bbox_inches="tight", facecolor=BG)
     plt.close(fig)
     print(f"  Saved: {out_path}")
@@ -361,24 +504,41 @@ def plot_period(period_name, obj_results, end_test_date, output_dir):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--pool", default="aave_eth",
+                        choices=list(POOL_CONFIGS.keys()),
+                        help="Pool config to use (default: aave_eth)")
     parser.add_argument("--end-test-date", default=None,
                         help="Override test end date for all periods")
-    parser.add_argument("--output-dir", default=OUTPUT_DIR)
+    parser.add_argument("--output-dir", default=None)
     parser.add_argument("--periods", nargs="+", default=None,
                         help="Only plot these periods (default: all)")
+    parser.add_argument("--top", type=int, default=None,
+                        help="Only plot top N configs by test-period RoH")
     args = parser.parse_args()
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    # Set active pool config
+    global SWEEP_DIR, OUTPUT_DIR, PERIODS, BASE_FP
+    global _active_noise_builder, _active_onchain_configs
+    pc = POOL_CONFIGS[args.pool]
+    SWEEP_DIR = pc["sweep_dir"]
+    OUTPUT_DIR = pc["output_dir"]
+    PERIODS = pc["periods"]
+    BASE_FP = pc["base_fp"]
+    _active_noise_builder = pc["noise_builder"]
+    _active_onchain_configs = pc["onchain_configs"]
+
+    output_dir = args.output_dir or OUTPUT_DIR
+    os.makedirs(output_dir, exist_ok=True)
 
     results = load_sweep_results()
     print(f"Loaded {sum(len(v) for v in results.values())} results"
-          f" across {len(results)} periods")
+          f" across {len(results)} periods (pool={args.pool})")
 
     for period_name in sorted(results.keys()):
         if args.periods and period_name not in args.periods:
             continue
         plot_period(period_name, results[period_name],
-                    args.end_test_date, args.output_dir)
+                    args.end_test_date, output_dir, top_n=args.top)
 
 
 if __name__ == "__main__":
