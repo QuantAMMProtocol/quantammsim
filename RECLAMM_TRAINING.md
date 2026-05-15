@@ -376,6 +376,28 @@ After this, any `run_full_sweep.sh` / `run_final_sims.py` / `run_pr_sweep.py`
 call against the new pair reads its per-pool MM parameters and per-day
 competitor TVL series instead of falling back to medians.
 
+### Adding the new pair to `run_full_sweep.sh`
+
+The sweep orchestrator iterates over a hard-coded `CONFIGS` array near the
+top of `scripts/run_full_sweep.sh`. Each row is a whitespace-separated tuple:
+
+```
+"token_a  token_b  pool_id            gas_cost  fees    tvl_label   initial_tvl"
+```
+
+For example, the existing AAVE/ETH and COW/ETH rows:
+
+```
+"AAVE  ETH  0x9d1fcf346ea1b0  1.0   0.0025  aave_1m    1000000"
+"COW   ETH  0xd321300ef77067  3.0   0.003   cow_500k   500000"
+```
+
+To sweep a new pair, append one row per TVL tier with the pool's address
+prefix, an appropriate gas cost (chain dependent) and fees, a unique
+`tvl_label`, and the starting pool value. The same change in
+`scripts/run_final_sims.py` (`PAIR_CONFIGS`) makes the new pair available to
+the final-sims selector. `--pair <name>` filters to a single pair when needed.
+
 ---
 
 ## Caveats / things to watch
