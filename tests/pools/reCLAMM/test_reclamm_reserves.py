@@ -1428,4 +1428,3 @@ class TestLpSupply:
         assert lp_val > base_val, (
             f"Doubled LP supply should increase final value: {lp_val} <= {base_val}"
         )
-

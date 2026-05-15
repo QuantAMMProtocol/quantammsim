@@ -4,6 +4,7 @@ from abc import ABC
 from jax import tree_util
 
 from quantammsim.pools.G3M.balancer.balancer import BalancerPool
+from quantammsim.pools.G3M.balancer.hypersurge_balancer import HyperSurgeBalancerPool
 from quantammsim.pools.G3M.quantamm.momentum_pool import MomentumPool
 from quantammsim.pools.G3M.quantamm.antimomentum_pool import AntiMomentumPool
 from quantammsim.pools.G3M.quantamm.power_channel_pool import PowerChannelPool
@@ -20,6 +21,7 @@ from quantammsim.pools.hodl_pool import HODLPool
 from quantammsim.pools.FM_AMM.cow_pool import CowPool
 from quantammsim.pools.ECLP.gyroscope import GyroscopePool
 from quantammsim.pools.reCLAMM.reclamm import ReClammPool
+from quantammsim.pools.reCLAMM.reclamm_hypersurge import ReClammHyperSurgePool
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.hooks.versus_rebalancing import (
     CalculateLossVersusRebalancing,
@@ -132,6 +134,7 @@ def create_pool(rule):
         Valid base pool types:
 
         - ``"balancer"`` : Standard Balancer constant-weight pool.
+        - ``"balancer_hypersurge"`` : Balancer pool with HyperSurge dynamic fees.
         - ``"momentum"`` : Momentum (trend-following) QuantAMM pool.
         - ``"anti_momentum"`` : Anti-momentum (contrarian) QuantAMM pool.
         - ``"power_channel"`` : Power-law channel QuantAMM pool.
@@ -148,6 +151,7 @@ def create_pool(rule):
         - ``"hodl"`` : Pure buy-and-hold (no rebalancing) pool.
         - ``"cow"`` : CoW (Coincidence of Wants) AMM pool.
         - ``"gyroscope"`` : Gyroscope E-CLP pool.
+        - ``"reclamm_hypersurge"`` : reCLAMM pool with HyperSurge dynamic fees.
 
         Available hook prefixes (prepended with ``__`` separator):
 
@@ -203,6 +207,8 @@ def create_pool(rule):
     # Create base pool instance
     if base_rule == "balancer":
         base_pool = BalancerPool()
+    elif base_rule in ("balancer_hypersurge", "hypersurge_balancer"):
+        base_pool = HyperSurgeBalancerPool()
     elif base_rule == "momentum":
         base_pool = MomentumPool()
     elif base_rule == "anti_momentum":
@@ -231,6 +237,8 @@ def create_pool(rule):
         base_pool = GyroscopePool()
     elif base_rule == "reclamm":
         base_pool = ReClammPool()
+    elif base_rule in ("reclamm_hypersurge", "hypersurge_reclamm"):
+        base_pool = ReClammHyperSurgePool()
     else:
         raise NotImplementedError(f"Unknown base pool type: {base_rule}")
 

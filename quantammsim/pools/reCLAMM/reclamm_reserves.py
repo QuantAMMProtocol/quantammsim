@@ -36,6 +36,9 @@ from quantammsim.pools.noise_trades import (
     reclamm_tsoukalas_sqrt_noise_volume,
     reclamm_tsoukalas_log_noise_volume,
     reclamm_loglinear_noise_volume,
+    reclamm_calibrated_noise_volume,
+    reclamm_market_linear_noise_volume,
+    reclamm_mm_observed_noise_volume,
 )
 
 # Reference balance for initialisation (matches Solidity _INITIALIZATION_MAX_BALANCE_A)
@@ -1038,10 +1041,65 @@ def _reclamm_scan_step_with_fees_and_revenue(
                 effective_value, gamma, volatility, arb_volume, _np
             )
 
-        noise_fee_income = (1.0 - gamma) * noise_vol
-        noise_scale = 1.0 + noise_fee_income / jnp.maximum(real_value, 1e-8)
-        Ra_new = Ra_new * noise_scale
-        Rb_new = Rb_new * noise_scale
+        # Scale effective reserves uniformly to preserve quoted price.
+        # For a 2-CLP: price ∝ (Ra+Va)/(Rb+Vb), so we must scale
+        # effective reserves (Ra+Va, Rb+Vb) by the same factor, then
+        # subtract back the fixed virtual reserves.
+        minutes_per_step = seconds_per_step / 60.0
+        noise_fee_income = (1.0 - gamma) * noise_vol * minutes_per_step
+        scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
+        Ra_new = (Ra_new + Va) * scale - Va
+        Rb_new = (Rb_new + Vb) * scale - Vb
+    elif noise_model == "calibrated":
+        volatility = input_list[9]
+        dow_sin = input_list[10]
+        dow_cos = input_list[11]
+        arb_volume = 0.5 * jnp.sum(jnp.abs(applied_trade) * prices)
+        effective_value = (Ra_new + Va) * prices[0] + (Rb_new + Vb) * prices[1]
+
+        _np = noise_params if noise_params is not None else {}
+        noise_vol = reclamm_calibrated_noise_volume(
+            effective_value, gamma, volatility,
+            arb_volume, dow_sin, dow_cos, _np,
+        )
+
+        minutes_per_step = seconds_per_step / 60.0
+        noise_fee_income = (1.0 - gamma) * noise_vol * minutes_per_step
+        scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
+        Ra_new = (Ra_new + Va) * scale - Va
+        Rb_new = (Rb_new + Vb) * scale - Vb
+    elif noise_model == "market_linear":
+        noise_base = input_list[9]
+        noise_tvl_coeff = input_list[10]
+        effective_value = (Ra_new + Va) * prices[0] + (Rb_new + Vb) * prices[1]
+
+        _np = noise_params if noise_params is not None else {}
+        noise_vol = reclamm_market_linear_noise_volume(
+            effective_value, noise_base, noise_tvl_coeff,
+            tvl_mean=_np.get("tvl_mean", 0.0),
+            tvl_std=_np.get("tvl_std", 1.0),
+        )
+
+        minutes_per_step = seconds_per_step / 60.0
+        noise_fee_income = (1.0 - gamma) * noise_vol * minutes_per_step
+        scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
+        Ra_new = (Ra_new + Va) * scale - Va
+        Rb_new = (Rb_new + Vb) * scale - Vb
+    elif noise_model == "mm_observed":
+        noise_base = input_list[9]
+        competitor_tvl = input_list[10]
+        effective_value = (Ra_new + Va) * prices[0] + (Rb_new + Vb) * prices[1]
+
+        noise_vol = reclamm_mm_observed_noise_volume(
+            effective_value, noise_base, competitor_tvl,
+        )
+
+        minutes_per_step = seconds_per_step / 60.0
+        noise_fee_income = (1.0 - gamma) * noise_vol * minutes_per_step
+        scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
+        Ra_new = (Ra_new + Va) * scale - Va
+        Rb_new = (Rb_new + Vb) * scale - Vb
+    # else: "arb_only" — no noise trades
 
     # Clamp-to-edge: if a real reserve would go negative, apply an
     # exact-in-given-out edge trade that drains that token to _DUST_USD
@@ -1311,6 +1369,11 @@ def _jax_calc_reclamm_reserves_with_fees(
     noise_model="ratio",
     noise_params=None,
     volatility_array=None,
+    dow_sin_array=None,
+    dow_cos_array=None,
+    noise_base_array=None,
+    noise_tvl_coeff_array=None,
+    competitor_tvl_array=None,
 ):
     """Calculate reClAMM reserves over time with fees.
 
@@ -1390,6 +1453,16 @@ def _jax_calc_reclamm_reserves_with_fees(
     ]
     if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
         scan_inputs.append(volatility_array)
+    elif noise_model == "calibrated":
+        scan_inputs.append(volatility_array)
+        scan_inputs.append(dow_sin_array)
+        scan_inputs.append(dow_cos_array)
+    elif noise_model == "market_linear":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(noise_tvl_coeff_array)
+    elif noise_model == "mm_observed":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(competitor_tvl_array)
 
     _, reserves = scan(scan_fn, carry_init, scan_inputs)
     return reserves
@@ -1420,6 +1493,11 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
     noise_model="ratio",
     noise_params=None,
     volatility_array=None,
+    dow_sin_array=None,
+    dow_cos_array=None,
+    noise_base_array=None,
+    noise_tvl_coeff_array=None,
+    competitor_tvl_array=None,
 ):
     """Calculate reClAMM reserves with time-varying fees/arb arrays."""
     if lp_supply_array is None:
@@ -1508,6 +1586,16 @@ def _jax_calc_reclamm_reserves_with_dynamic_inputs(
     ]
     if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
         scan_inputs.append(volatility_array)
+    elif noise_model == "calibrated":
+        scan_inputs.append(volatility_array)
+        scan_inputs.append(dow_sin_array)
+        scan_inputs.append(dow_cos_array)
+    elif noise_model == "market_linear":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(noise_tvl_coeff_array)
+    elif noise_model == "mm_observed":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(competitor_tvl_array)
 
     _, reserves = scan(scan_fn, carry_init, scan_inputs)
     return reserves
@@ -1652,6 +1740,11 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
     noise_model="ratio",
     noise_params=None,
     volatility_array=None,
+    dow_sin_array=None,
+    dow_cos_array=None,
+    noise_base_array=None,
+    noise_tvl_coeff_array=None,
+    competitor_tvl_array=None,
 ):
     """Calculate reClAMM reserves and LP fee revenue over time with fees.
 
@@ -1733,6 +1826,16 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_fees(
     ]
     if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
         scan_inputs.append(volatility_array)
+    elif noise_model == "calibrated":
+        scan_inputs.append(volatility_array)
+        scan_inputs.append(dow_sin_array)
+        scan_inputs.append(dow_cos_array)
+    elif noise_model == "market_linear":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(noise_tvl_coeff_array)
+    elif noise_model == "mm_observed":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(competitor_tvl_array)
 
     _, (reserves, fee_revenue) = scan(scan_fn, carry_init, scan_inputs)
     return reserves, fee_revenue
@@ -1763,6 +1866,11 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
     noise_model="ratio",
     noise_params=None,
     volatility_array=None,
+    dow_sin_array=None,
+    dow_cos_array=None,
+    noise_base_array=None,
+    noise_tvl_coeff_array=None,
+    competitor_tvl_array=None,
 ):
     """Calculate reClAMM reserves and LP fee revenue with time-varying fees/arb arrays.
 
@@ -1857,6 +1965,16 @@ def _jax_calc_reclamm_reserves_and_fee_revenue_with_dynamic_inputs(
     ]
     if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
         scan_inputs.append(volatility_array)
+    elif noise_model == "calibrated":
+        scan_inputs.append(volatility_array)
+        scan_inputs.append(dow_sin_array)
+        scan_inputs.append(dow_cos_array)
+    elif noise_model == "market_linear":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(noise_tvl_coeff_array)
+    elif noise_model == "mm_observed":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(competitor_tvl_array)
 
     _, (reserves, fee_revenue) = scan(scan_fn, carry_init, scan_inputs)
     return reserves, fee_revenue

@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """Plot reClAMM pool performance from Optuna tuning results.
 
-Reads the SGD-compatible JSON output of tune_reclamm_params.py (or any Optuna
-run), extracts the best trial's pool params, re-runs a forward pass over the
-full train+test window, and produces a value-over-time plot with on-chain
-baselines and cumulative fee revenue.
+Reads SGD-compatible JSON output(s) of tune_reclamm_params.py, extracts the
+best trial's pool params, re-runs a forward pass over the full train+test
+window, and produces a value-over-time plot with on-chain baselines and
+cumulative fee revenue.
 
 Usage:
+    # Single result
     python scripts/plot_reclamm_optuna_result.py results/run_<hash>.json
-    python scripts/plot_reclamm_optuna_result.py results/run_<hash>.json --output my_plot.png
-    python scripts/plot_reclamm_optuna_result.py results/run_<hash>.json --top-k 3
+
+    # Multiple results (comparison across objectives / noise models)
+    python scripts/plot_reclamm_optuna_result.py results/run_*.json
+
+    # Top-3 trials from each result
+    python scripts/plot_reclamm_optuna_result.py results/run_*.json --top-k 3
 """
 
 import argparse
@@ -36,11 +41,19 @@ ONCHAIN_CURRENT_PARAMS = {
 
 BG = "#162536"
 TEXT_COLOR = "#E6CE97"
+# Extended palette for multi-file comparison
 COLORS = [
-    "#3498db", "#2ecc71", "#e74c3c",  # top-k
-    "#f39c12",  # on-chain launch
-    "#9b59b6",  # on-chain current
+    "#3498db", "#2ecc71", "#e74c3c", "#f39c12", "#9b59b6",
+    "#1abc9c", "#e67e22", "#2980b9", "#c0392b", "#8e44ad",
+    "#27ae60", "#d35400", "#16a085", "#f1c40f", "#7f8c8d",
 ]
+
+# Short labels for objectives
+_OBJ_SHORT = {
+    "daily_log_sharpe": "sharpe",
+    "returns_over_hodl": "ret/hodl",
+    "fee_revenue_over_value": "fee_rev",
+}
 
 
 def _plot_order(configs):
@@ -60,9 +73,10 @@ def parse_args():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("results_json", help="Path to run_<hash>.json from Optuna")
+    p.add_argument("results_json", nargs="+",
+                    help="Path(s) to run_<hash>.json from Optuna")
     p.add_argument("--top-k", type=int, default=1,
-                   help="Plot top K trials by objective (default 1)")
+                   help="Plot top K trials per result file (default 1)")
     p.add_argument("--output", default=None,
                    help="Output PNG path (default: auto-generated)")
     p.add_argument("--no-onchain", action="store_true",
@@ -100,6 +114,18 @@ def extract_pool_params(trial, config):
     return params
 
 
+def _noise_model_label(config):
+    """Short label describing the noise model in the config."""
+    nm = config.get("noise_model", "ratio")
+    if nm != "calibrated":
+        ntr = config.get("noise_trader_ratio", 0.0)
+        return f"{nm}(ntr={ntr})"
+    nc = config.get("reclamm_noise_params", {})
+    n_coeffs = len(nc)
+    arb_freq = config.get("arb_frequency", 1)
+    return f"cal-{n_coeffs}cov(af={arb_freq})"
+
+
 def run_full_period(params, config, fees_override=None):
     """Run forward pass over the full train+test window."""
     fees = fees_override if fees_override is not None else config["fees"]
@@ -120,19 +146,28 @@ def run_full_period(params, config, fees_override=None):
         "reclamm_centeredness_scaling": config.get("reclamm_centeredness_scaling", False),
         "reclamm_learn_arc_length_speed": config.get("reclamm_learn_arc_length_speed", False),
     }
+    # Forward noise model settings
+    if "noise_model" in config:
+        fp["noise_model"] = config["noise_model"]
+    if "reclamm_noise_params" in config:
+        fp["reclamm_noise_params"] = config["reclamm_noise_params"]
+    if "noise_arrays_path" in config:
+        fp["noise_arrays_path"] = config["noise_arrays_path"]
+    if "arb_frequency" in config:
+        fp["arb_frequency"] = config["arb_frequency"]
     jax_params = {k: jnp.array(v) for k, v in params.items()}
     return do_run_on_historic_data(run_fingerprint=fp, params=jax_params)
 
 
-def plot_results(configs, time_series, hodl_values, config, args):
+def plot_results(configs, time_series, hodl_values, ref_config, args):
     """Two-panel plot: value-over-time + cumulative fee revenue."""
-    train_end_str = config["endDateString"]
+    train_end_str = ref_config["endDateString"]
     train_end_dt = datetime.strptime(train_end_str, "%Y-%m-%d %H:%M:%S")
 
     first_out = next(iter(time_series.values()))
     n_minutes = len(first_out["value"])
     dates = pd.date_range(
-        start=datetime.strptime(config["startDateString"], "%Y-%m-%d %H:%M:%S"),
+        start=datetime.strptime(ref_config["startDateString"], "%Y-%m-%d %H:%M:%S"),
         periods=n_minutes, freq="1min",
     )
     step = 1440
@@ -157,7 +192,7 @@ def plot_results(configs, time_series, hodl_values, config, args):
         vals = np.array(out["value"][::step]) / 1e6
         label = f"{name}"
         if "test_objective" in meta:
-            obj_name = config.get("return_val", "objective")
+            obj_name = meta.get("obj_name", "objective")
             label += f" (OOS {obj_name}={meta['test_objective']:.4f})"
         is_optimized = "On-Chain" not in name
         ax_val.plot(dates_daily[:len(vals)], vals,
@@ -171,21 +206,19 @@ def plot_results(configs, time_series, hodl_values, config, args):
 
     ax_val.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5, linewidth=1.5)
     ylims = ax_val.get_ylim()
-    ax_val.text(train_end_dt - pd.Timedelta(days=10), ylims[1] * 0.97, "Train",
+    ax_val.text(train_end_dt - pd.Timedelta(days=5), ylims[1] * 0.97, "Train",
                 color="white", alpha=0.6, fontsize=11, ha="right", va="top")
-    ax_val.text(train_end_dt + pd.Timedelta(days=10), ylims[1] * 0.97, "Test",
+    ax_val.text(train_end_dt + pd.Timedelta(days=5), ylims[1] * 0.97, "Test",
                 color="white", alpha=0.6, fontsize=11, ha="left", va="top")
 
     _style_axis(ax_val)
     ax_val.set_ylabel("Pool Value ($M USD)", color=TEXT_COLOR, fontsize=12)
-    tokens_str = "/".join(config["tokens"])
-    obj_name = config.get("return_val", "objective")
-    ntr = config.get("noise_trader_ratio", 0.0)
+    tokens_str = "/".join(ref_config["tokens"])
     ax_val.set_title(
-        f"reClAMM Optuna-Optimized ({obj_name}, noise={ntr}) — {tokens_str}",
+        f"reClAMM Optuna Comparison — {tokens_str}",
         color=TEXT_COLOR, fontsize=13, pad=15,
     )
-    ax_val.legend(loc="upper left", fontsize=9, facecolor=BG,
+    ax_val.legend(loc="upper left", fontsize=8, facecolor=BG,
                   edgecolor=TEXT_COLOR, labelcolor=TEXT_COLOR)
 
     # ── Panel 2: Cumulative fee revenue ───────────────────────────────
@@ -208,7 +241,7 @@ def plot_results(configs, time_series, hodl_values, config, args):
         _style_axis(ax_fee)
         ax_fee.set_ylabel("Cumulative Fee Revenue ($K)", color=TEXT_COLOR, fontsize=12)
         ax_fee.set_xlabel("Date", color=TEXT_COLOR, fontsize=12)
-        ax_fee.legend(loc="upper left", fontsize=9, facecolor=BG,
+        ax_fee.legend(loc="upper left", fontsize=8, facecolor=BG,
                       edgecolor=TEXT_COLOR, labelcolor=TEXT_COLOR)
     else:
         ax_val.set_xlabel("Date", color=TEXT_COLOR, fontsize=12)
@@ -222,11 +255,11 @@ def plot_results(configs, time_series, hodl_values, config, args):
     plt.close()
 
 
-def plot_test_only(configs, time_series, hodl_values, config, args):
+def plot_test_only(configs, time_series, hodl_values, ref_config, args):
     """Test-period plot with all curves normalised to start at 1.0."""
-    train_end_str = config["endDateString"]
+    train_end_str = ref_config["endDateString"]
     train_end_dt = datetime.strptime(train_end_str, "%Y-%m-%d %H:%M:%S")
-    start_dt = datetime.strptime(config["startDateString"], "%Y-%m-%d %H:%M:%S")
+    start_dt = datetime.strptime(ref_config["startDateString"], "%Y-%m-%d %H:%M:%S")
 
     first_out = next(iter(time_series.values()))
     n_minutes = len(first_out["value"])
@@ -262,14 +295,12 @@ def plot_test_only(configs, time_series, hodl_values, config, args):
 
     ax.axhline(1.0, color="white", linestyle=":", alpha=0.3, linewidth=1)
     _style_axis(ax)
-    tokens_str = "/".join(config["tokens"])
-    obj_name = config.get("return_val", "objective")
-    ntr = config.get("noise_trader_ratio", 0.0)
-    ax.set_title(f"Test Period Only (normalised) — {obj_name}, noise={ntr} — {tokens_str}",
+    tokens_str = "/".join(ref_config["tokens"])
+    ax.set_title(f"Test Period Only (normalised) — {tokens_str}",
                  color=TEXT_COLOR, fontsize=13, pad=15)
     ax.set_ylabel("Normalised Value", color=TEXT_COLOR, fontsize=12)
     ax.set_xlabel("Date", color=TEXT_COLOR, fontsize=12)
-    ax.legend(loc="best", fontsize=9, facecolor=BG,
+    ax.legend(loc="best", fontsize=8, facecolor=BG,
               edgecolor=TEXT_COLOR, labelcolor=TEXT_COLOR)
 
     fig.patch.set_facecolor(BG)
@@ -281,10 +312,10 @@ def plot_test_only(configs, time_series, hodl_values, config, args):
     plt.close()
 
 
-def plot_weights(configs, time_series, config, args):
+def plot_weights(configs, time_series, ref_config, args):
     """Effective weight (value fraction) of token 0 over time."""
-    start_dt = datetime.strptime(config["startDateString"], "%Y-%m-%d %H:%M:%S")
-    train_end_dt = datetime.strptime(config["endDateString"], "%Y-%m-%d %H:%M:%S")
+    start_dt = datetime.strptime(ref_config["startDateString"], "%Y-%m-%d %H:%M:%S")
+    train_end_dt = datetime.strptime(ref_config["endDateString"], "%Y-%m-%d %H:%M:%S")
 
     first_out = next(iter(time_series.values()))
     n_minutes = len(first_out["value"])
@@ -292,7 +323,7 @@ def plot_weights(configs, time_series, config, args):
     step = 1440
     dates_daily = dates[::step]
 
-    token_name = config["tokens"][0]
+    token_name = ref_config["tokens"][0]
 
     fig, ax = plt.subplots(1, 1, figsize=(14, 5))
 
@@ -310,18 +341,18 @@ def plot_weights(configs, time_series, config, args):
     ax.axhline(0.5, color="white", linestyle="--", alpha=0.3, linewidth=1)
     ax.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5, linewidth=1.5)
     ylims = ax.get_ylim()
-    ax.text(train_end_dt - pd.Timedelta(days=10), ylims[1] * 0.97, "Train",
+    ax.text(train_end_dt - pd.Timedelta(days=5), ylims[1] * 0.97, "Train",
             color="white", alpha=0.6, fontsize=11, ha="right", va="top")
-    ax.text(train_end_dt + pd.Timedelta(days=10), ylims[1] * 0.97, "Test",
+    ax.text(train_end_dt + pd.Timedelta(days=5), ylims[1] * 0.97, "Test",
             color="white", alpha=0.6, fontsize=11, ha="left", va="top")
 
     _style_axis(ax)
-    tokens_str = "/".join(config["tokens"])
+    tokens_str = "/".join(ref_config["tokens"])
     ax.set_title(f"Effective {token_name} Weight — {tokens_str}",
                  color=TEXT_COLOR, fontsize=13, pad=15)
     ax.set_ylabel(f"{token_name} weight (value fraction)", color=TEXT_COLOR, fontsize=12)
     ax.set_xlabel("Date", color=TEXT_COLOR, fontsize=12)
-    ax.legend(loc="best", fontsize=9, facecolor=BG,
+    ax.legend(loc="best", fontsize=8, facecolor=BG,
               edgecolor=TEXT_COLOR, labelcolor=TEXT_COLOR)
 
     fig.patch.set_facecolor(BG)
@@ -346,60 +377,79 @@ def _style_axis(ax):
 
 def main():
     args = parse_args()
-    config, trials = load_results(args.results_json)
-    if args.end_test_date:
-        config["endTestDateString"] = args.end_test_date
-    if args.noise_trader_ratio is not None:
-        config["noise_trader_ratio"] = args.noise_trader_ratio
-    tokens = config["tokens"]
-    obj_name = config.get("return_val", "objective")
 
-    # Sort trials by penalised objective
-    trials_sorted = sorted(trials, key=lambda t: t.get("objective", 0), reverse=True)
-    top_trials = trials_sorted[:args.top_k]
+    # ── Load all result files ─────────────────────────────────────────
+    all_loaded = []
+    for path in args.results_json:
+        config, trials = load_results(path)
+        if args.end_test_date:
+            config["endTestDateString"] = args.end_test_date
+        if args.noise_trader_ratio is not None:
+            config["noise_trader_ratio"] = args.noise_trader_ratio
+        all_loaded.append((path, config, trials))
 
-    print("=" * 80)
-    print(f"reClAMM Optuna Result Plotter  —  objective: {obj_name}")
-    print("=" * 80)
-    print(f"  Results:  {args.results_json}")
+    # Use first file's config as reference for dates/tokens
+    ref_config = all_loaded[0][1]
+    tokens = ref_config["tokens"]
+
+    print("=" * 100)
+    print(f"reClAMM Optuna Result Plotter  —  {len(all_loaded)} result file(s)")
+    print("=" * 100)
     print(f"  Tokens:   {'/'.join(tokens)}")
-    print(f"  Train:    {config['startDateString']} → {config['endDateString']}")
-    print(f"  Test:     {config['endDateString']} → {config['endTestDateString']}")
-    print(f"  Fees:     {config['fees']},  Gas: {config.get('gas_cost', 1.0)}")
-    print(f"  Trials:   {len(trials)} total, plotting top {len(top_trials)}")
+    print(f"  Train:    {ref_config['startDateString']} → {ref_config['endDateString']}")
+    print(f"  Test:     {ref_config['endDateString']} → {ref_config['endTestDateString']}")
 
+    # ── Build configs dict from all files ─────────────────────────────
     configs = {}
-    for i, trial in enumerate(top_trials):
-        params = extract_pool_params(trial, config)
-        name = f"#{trial.get('optuna_trial_number', i)} (rank {i+1})"
-        configs[name] = {
-            "params": params,
-            "objective": trial.get("objective", 0),
-            "train_objective": trial.get("train_objective", 0),
-            "test_objective": trial.get("test_objective", 0),
-            "train_sharpe": trial.get("train_sharpe", 0),
-            "validation_sharpe": trial.get("validation_sharpe", 0),
-        }
-        print(f"\n  {name}:")
-        print(f"    {obj_name}: train={trial.get('train_objective', 0):.4f}  "
-              f"test={trial.get('test_objective', 0):.4f}  "
-              f"penalised={trial.get('objective', 0):.4f}")
-        print(f"    sharpe: train={trial.get('train_sharpe', 0):+.4f}  "
-              f"val={trial.get('validation_sharpe', 0):+.4f}")
-        for k, v in params.items():
-            print(f"    {k}: {v:.6g}")
+    for path, config, trials in all_loaded:
+        obj_name = config.get("return_val", "objective")
+        obj_short = _OBJ_SHORT.get(obj_name, obj_name)
+        noise_label = _noise_model_label(config)
+
+        trials_sorted = sorted(trials, key=lambda t: t.get("objective", 0), reverse=True)
+        top_trials = trials_sorted[:args.top_k]
+
+        for i, trial in enumerate(top_trials):
+            params = extract_pool_params(trial, config)
+            rank_suffix = f" r{i+1}" if args.top_k > 1 else ""
+            name = f"{obj_short} {noise_label}{rank_suffix}"
+            configs[name] = {
+                "params": params,
+                "config": config,  # per-file config for noise model
+                "objective": trial.get("objective", 0),
+                "train_objective": trial.get("train_objective", 0),
+                "test_objective": trial.get("test_objective", 0),
+                "train_sharpe": trial.get("train_sharpe", 0),
+                "validation_sharpe": trial.get("validation_sharpe", 0),
+                "obj_name": obj_name,
+            }
+            print(f"\n  {name}:")
+            print(f"    {obj_name}: train={trial.get('train_objective', 0):.4f}  "
+                  f"test={trial.get('test_objective', 0):.4f}  "
+                  f"penalised={trial.get('objective', 0):.4f}")
+            print(f"    sharpe: train={trial.get('train_sharpe', 0):+.4f}  "
+                  f"val={trial.get('validation_sharpe', 0):+.4f}")
+            for k, v in params.items():
+                print(f"    {k}: {v:.6g}")
 
     if not args.no_onchain:
-        configs["On-Chain (launch)"] = {"params": dict(ONCHAIN_LAUNCH_PARAMS)}
-        configs["On-Chain (current)"] = {"params": dict(ONCHAIN_CURRENT_PARAMS)}
+        configs["On-Chain (launch)"] = {
+            "params": dict(ONCHAIN_LAUNCH_PARAMS),
+            "config": ref_config,
+        }
+        configs["On-Chain (current)"] = {
+            "params": dict(ONCHAIN_CURRENT_PARAMS),
+            "config": ref_config,
+        }
 
     # ── Full-period runs ──────────────────────────────────────────────
-    print(f"\n--- Running full-period simulations ({config['startDateString']} → "
-          f"{config['endTestDateString']}) ---")
+    print(f"\n--- Running full-period simulations ({ref_config['startDateString']} → "
+          f"{ref_config['endTestDateString']}) ---")
     time_series = {}
     for name, cfg in configs.items():
         print(f"  {name}...", end=" ", flush=True)
-        out = run_full_period(cfg["params"], config)
+        run_config = cfg.get("config", ref_config)
+        out = run_full_period(cfg["params"], run_config)
         time_series[name] = out
         fv = float(out["final_value"])
         fr = out.get("fee_revenue")
@@ -415,28 +465,29 @@ def main():
     )
 
     # ── Plots ─────────────────────────────────────────────────────────
-    plot_results(configs, time_series, hodl_values, config, args)
-    plot_test_only(configs, time_series, hodl_values, config, args)
-    plot_weights(configs, time_series, config, args)
+    plot_results(configs, time_series, hodl_values, ref_config, args)
+    plot_test_only(configs, time_series, hodl_values, ref_config, args)
+    plot_weights(configs, time_series, ref_config, args)
 
     # ── Summary table ─────────────────────────────────────────────────
-    print(f"\n{'=' * 120}")
-    print(f"SUMMARY  —  {'/'.join(tokens)}  —  {obj_name}")
-    print(f"{'=' * 120}")
-    hdr = (f"{'Config':<28s} {'Train '+obj_name:>20s} {'Test '+obj_name:>20s} "
+    print(f"\n{'=' * 130}")
+    print(f"SUMMARY  —  {'/'.join(tokens)}")
+    print(f"{'=' * 130}")
+    hdr = (f"{'Config':<35s} {'Objective':>12s} {'Train':>10s} {'Test':>10s} "
            f"{'Train SR':>10s} {'Val SR':>10s} "
            f"{'PR':>7s} {'Margin':>7s} {'ShiftExp':>10s} {'Full RoH':>10s}")
     print(hdr)
-    print("-" * 120)
+    print("-" * 130)
 
     for name, cfg in configs.items():
         cp = cfg["params"]
         fv = float(time_series[name]["final_value"])
         full_roh = fv / float(hodl_values[-1]) - 1
         print(
-            f"{name:<28s} "
-            f"{cfg.get('train_objective', float('nan')):>20.4f} "
-            f"{cfg.get('test_objective', float('nan')):>20.4f} "
+            f"{name:<35s} "
+            f"{cfg.get('obj_name', ''):>12s} "
+            f"{cfg.get('train_objective', float('nan')):>10.4f} "
+            f"{cfg.get('test_objective', float('nan')):>10.4f} "
             f"{cfg.get('train_sharpe', float('nan')):>+10.4f} "
             f"{cfg.get('validation_sharpe', float('nan')):>+10.4f} "
             f"{cp.get('price_ratio', float('nan')):>7.3f} "
@@ -444,7 +495,7 @@ def main():
             f"{cp.get('shift_exponent', float('nan')):>10.4g} "
             f"{full_roh * 100:>+9.2f}%"
         )
-    print("=" * 120)
+    print("=" * 130)
 
 
 if __name__ == "__main__":

@@ -215,8 +215,11 @@ def load_panel_and_match(train_days):
     if "tvl" not in panel.columns and "log_tvl" in panel.columns:
         panel["tvl"] = np.exp(panel["log_tvl"])
 
-    cutoff = panel["obs_date"].max() - pd.Timedelta(days=train_days)
-    panel = panel[panel["obs_date"] >= cutoff].copy()
+    if train_days > 0:
+        cutoff = panel["obs_date"].max() - pd.Timedelta(days=train_days)
+        panel = panel[panel["obs_date"] >= cutoff].copy()
+    else:
+        panel = panel.copy()  # no date filter — use all data
 
     binance_tokens = _get_binance_tokens()
     pools_meta = load_pools_metadata()
@@ -342,6 +345,7 @@ def run_arb_sim(tokens, fee, initial_tvl, start, end, cadence, gas_cost,
         "arb_frequency": int(cadence),
         "chunk_period": 1440,
         "weight_interpolation_period": 1440,
+        "max_memory_days": 0,
     }
 
     if pool_type == "RECLAMM" and reclamm_params is not None:
@@ -363,7 +367,7 @@ def run_arb_sim(tokens, fee, initial_tvl, start, end, cadence, gas_cost,
 
     result = do_run_on_historic_data(
         fp, params, lp_supply_df=lp_supply_df, verbose=False,
-        price_data=price_data,
+        price_data=price_data, preslice_burnin=False,
     )
 
     reserves = np.array(result["reserves"])
@@ -405,6 +409,9 @@ def _run_cadence_sweep(pool_info, cadence, gas_costs):
     reclamm_params = pool_info.get("reclamm_params")
 
     price_data = pool_info.get("price_data")
+    if price_data is None:
+        sorted_tokens = sorted(tokens)
+        price_data = get_historic_parquet_data(sorted_tokens, ["close"])
 
     daily_rows = []
     summary_rows = []
@@ -527,10 +534,51 @@ def main():
     print(f"Found {len(pools)} matchable 2-token pools\n")
 
     for p in pools:
-        lp_df, tvl = build_lp_supply_df(p["panel_data"])
+        # Preload price data to determine actual date coverage
+        sorted_tokens = sorted(p["tokens"])
+        price_data = get_historic_parquet_data(sorted_tokens, ["close"])
+        p["price_data"] = price_data
+
+        if len(price_data) == 0:
+            p["panel_data"] = p["panel_data"].iloc[:0]  # empty
+            p["lp_supply_df"] = None
+            p["initial_tvl"] = 0.0
+            p["start"], p["end"] = "2000-01-01", "2000-01-01"
+            continue
+
+        # Clip panel to price data's actual date range
+        price_dates = pd.to_datetime(price_data.index, unit="ms")
+        price_start = price_dates.min().normalize()
+        price_end = price_dates.max().normalize()
+        panel_data = p["panel_data"]
+        panel_data = panel_data[
+            (panel_data["obs_date"] >= price_start)
+            & (panel_data["obs_date"] <= price_end)
+        ].copy()
+        p["panel_data"] = panel_data
+
+        lp_df, tvl = build_lp_supply_df(panel_data)
         p["lp_supply_df"] = lp_df
         p["initial_tvl"] = tvl
-        p["start"], p["end"] = get_date_range(p["panel_data"])
+
+        # Start/end must be midnight timestamps that exist in the price data.
+        # start_and_end_calcs does an exact unix match and assumes alignment.
+        # If the price data starts mid-day (e.g. COW at noon), advance to
+        # the next midnight so the sim has a clean day boundary.
+        if len(panel_data) > 0:
+            first_midnight = (price_dates.min() + pd.Timedelta(days=1)).normalize()
+            last_midnight = price_dates.max().normalize()
+            first_midnight_ms = int(first_midnight.timestamp() * 1000)
+            last_midnight_ms = int(last_midnight.timestamp() * 1000)
+            # Verify these timestamps exist in the price data
+            if first_midnight_ms in price_data.index and last_midnight_ms in price_data.index:
+                p["start"] = first_midnight.strftime("%Y-%m-%d %H:%M:%S")
+                p["end"] = last_midnight.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                # Fallback: use panel dates (works when price data covers full range)
+                p["start"], p["end"] = get_date_range(panel_data)
+        else:
+            p["start"], p["end"] = "2000-01-01", "2000-01-01"
 
     pools = [p for p in pools if p["panel_data"]["obs_date"].nunique() >= 14]
     pools.sort(key=lambda p: p["initial_tvl"], reverse=True)
@@ -580,9 +628,8 @@ def main():
 
         t0 = time.time()
 
-        # Preload price data once per pool (avoids re-reading parquet per run)
-        sorted_tokens = sorted(tokens)
-        price_data = get_historic_parquet_data(sorted_tokens, ["close"])
+        # Price data was preloaded during panel clipping
+        price_data = pool["price_data"]
 
         pool_info = {
             "tokens": tokens,
@@ -594,7 +641,10 @@ def main():
             "weights": pool["weights"],
             "pool_type": pool_type,
             "reclamm_params": pool.get("reclamm_params"),
-            "price_data": price_data,
+            # Only pass preloaded price_data in single-worker mode.
+            # For multi-worker, each subprocess loads its own to avoid
+            # pickling multi-million-row DataFrames across processes.
+            "price_data": price_data if args.workers <= 1 else None,
         }
 
         all_daily_rows = []

@@ -658,7 +658,7 @@ class NestedHashabledict(dict):
 # These are excluded when creating static_dict from run_fingerprint
 _TRAINING_ONLY_FIELDS = frozenset({
     "optimisation_settings",  # Contains lr, optimizer, etc.
-    "startDateString",  # Data loading dates
+    # startDateString kept in static dict — needed by calibrated noise model
     "endDateString",
     "endTestDateString",
     "subsidary_pools",  # Handled separately
@@ -675,6 +675,10 @@ _TRAINING_ONLY_FIELDS = frozenset({
     "initial_raw_width",
     "initial_raw_exponents",
     "initial_pre_exp_scaling",
+    # Noise model arrays — loaded from path at runtime, not hashable
+    "noise_base_array",
+    "noise_tvl_coeff_array",
+    "competitor_tvl_array",
 })
 
 
@@ -1228,6 +1232,7 @@ def _to_dynamic_input_arrays(
     arb_fees_array,
     lp_supply_array,
     reclamm_price_ratio_updates_array,
+    oracle_prices_array,
 ) -> DynamicInputArrays:
     """Normalize optional numpy arrays into the hot-path container."""
     empty = empty_dynamic_input_arrays()
@@ -1241,6 +1246,11 @@ def _to_dynamic_input_arrays(
             empty.reclamm_price_ratio_updates
             if reclamm_price_ratio_updates_array is None
             else jnp.asarray(reclamm_price_ratio_updates_array, dtype=jnp.float64)
+        ),
+        oracle_prices=(
+            empty.oracle_prices
+            if oracle_prices_array is None
+            else jnp.asarray(oracle_prices_array, dtype=jnp.float64)
         ),
     )
 
@@ -1402,6 +1412,7 @@ def prepare_dynamic_inputs(
     arb_fees_df = dynamic_input_frames.arb_fees
     lp_supply_df = dynamic_input_frames.lp_supply
     reclamm_price_ratio_updates = dynamic_input_frames.reclamm_price_ratio_updates
+    oracle_prices_df = dynamic_input_frames.oracle_prices
     dynamic_input_flags = dynamic_input_flags_from_frames(dynamic_input_frames)
 
     if raw_trades is not None:
@@ -1517,6 +1528,30 @@ def prepare_dynamic_inputs(
             else None
         )
 
+    oracle_prices_array = (
+        raw_fee_like_amounts_to_fee_like_array(
+            oracle_prices_df,
+            run_fingerprint["startDateString"],
+            run_fingerprint["endDateString"],
+            names=get_unique_tokens(run_fingerprint),
+            fill_method="ffill",
+        )
+        if oracle_prices_df is not None
+        else None
+    )
+    if do_test_period:
+        test_oracle_prices_array = (
+            raw_fee_like_amounts_to_fee_like_array(
+                oracle_prices_df,
+                run_fingerprint["endDateString"],
+                run_fingerprint["endTestDateString"],
+                names=get_unique_tokens(run_fingerprint),
+                fill_method="ffill",
+            )
+            if oracle_prices_df is not None
+            else None
+        )
+
     reclamm_price_ratio_updates_array = (
         _normalize_reclamm_price_ratio_updates_for_window(
             reclamm_price_ratio_updates,
@@ -1582,6 +1617,7 @@ def prepare_dynamic_inputs(
                 arb_fees_array,
                 lp_supply_array,
                 reclamm_price_ratio_updates_array,
+                oracle_prices_array,
             ),
             "test_dynamic_inputs": _to_dynamic_input_arrays(
                 test_period_trades,
@@ -1590,6 +1626,7 @@ def prepare_dynamic_inputs(
                 test_arb_fees_array,
                 test_lp_supply_array,
                 test_reclamm_price_ratio_updates_array,
+                test_oracle_prices_array,
             ),
             "dynamic_input_flags": dynamic_input_flags,
         }
@@ -1601,6 +1638,7 @@ def prepare_dynamic_inputs(
             arb_fees_array,
             lp_supply_array,
             reclamm_price_ratio_updates_array,
+            oracle_prices_array,
         ),
         "dynamic_input_flags": dynamic_input_flags,
     }

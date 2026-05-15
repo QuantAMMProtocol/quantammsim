@@ -84,7 +84,7 @@ run_fingerprint_defaults = {
     "return_val": "daily_log_sharpe",
     "initial_pool_value": 1000000.0,
     "fees": 0.0,
-    "protocol_fee_split": 0.0,  # fraction of swap fees diverted from LP reserves to protocol treasury
+    "protocol_fee_split": 0.25,  # fraction of swap fees diverted from LP reserves to protocol treasury
     "arb_fees": 0.0,
     "gas_cost": 0.0,
     "use_alt_lamb": False,
@@ -222,6 +222,42 @@ optuna_settings = {
             "high": 10,
             "log_scale": False,
             "scalar": False,
+        },
+        "hypersurge_arb_max_fee": {
+            "low": 0.0,
+            "high": 0.20,
+            "log_scale": False,
+            "scalar": True,
+        },
+        "hypersurge_arb_threshold": {
+            "low": 0.0,
+            "high": 1.0,
+            "log_scale": False,
+            "scalar": True,
+        },
+        "hypersurge_arb_cap_deviation": {
+            "low": 0.0,
+            "high": 2.0,
+            "log_scale": False,
+            "scalar": True,
+        },
+        "hypersurge_noise_max_fee": {
+            "low": 0.0,
+            "high": 0.50,
+            "log_scale": False,
+            "scalar": True,
+        },
+        "hypersurge_noise_threshold": {
+            "low": 0.0,
+            "high": 1.0,
+            "log_scale": False,
+            "scalar": True,
+        },
+        "hypersurge_noise_cap_deviation": {
+            "low": 0.0,
+            "high": 2.0,
+            "log_scale": False,
+            "scalar": True,
         },
     },
 }

@@ -14,6 +14,7 @@ class DynamicInputFrames:
     arb_fees: Optional[Any] = None
     lp_supply: Optional[Any] = None
     reclamm_price_ratio_updates: Optional[Any] = None
+    oracle_prices: Optional[Any] = None
 
 
 class DynamicInputArrays(NamedTuple):
@@ -25,6 +26,7 @@ class DynamicInputArrays(NamedTuple):
     arb_fees: jnp.ndarray
     lp_supply: jnp.ndarray
     reclamm_price_ratio_updates: jnp.ndarray
+    oracle_prices: jnp.ndarray = jnp.ones((1, 1))
 
 
 def default_dynamic_input_flags() -> dict:
@@ -37,6 +39,7 @@ def default_dynamic_input_flags() -> dict:
         "has_dynamic_arb_fees": False,
         "has_lp_supply": False,
         "has_reclamm_price_ratio_updates": False,
+        "has_oracle_prices": False,
     }
 
 
@@ -55,6 +58,7 @@ def dynamic_input_flags_from_frames(dynamic_input_frames: Optional[DynamicInputF
         "has_reclamm_price_ratio_updates": (
             dynamic_input_frames.reclamm_price_ratio_updates is not None
         ),
+        "has_oracle_prices": dynamic_input_frames.oracle_prices is not None,
     }
     flags["use_dynamic_inputs"] = any(flags.values())
     return flags
@@ -83,6 +87,7 @@ def empty_dynamic_input_arrays() -> DynamicInputArrays:
         lp_supply=jnp.ones((1,)),
         # Columns: has_event, target_price_ratio, end_step, start_price_ratio_override
         reclamm_price_ratio_updates=jnp.array([[0.0, 0.0, 0.0, jnp.nan]]),
+        oracle_prices=jnp.ones((1, 1)),
     )
 
 
@@ -117,8 +122,13 @@ def resolve_dynamic_input_components(
         ),
         "reclamm_price_ratio_updates": (
             arrays.reclamm_price_ratio_updates
-            if dynamic_input_flags["has_reclamm_price_ratio_updates"]
+            if dynamic_input_flags.get("has_reclamm_price_ratio_updates", False)
             else empty_dynamic_input_arrays().reclamm_price_ratio_updates
+        ),
+        "oracle_prices": (
+            arrays.oracle_prices
+            if dynamic_input_flags.get("has_oracle_prices", False)
+            else empty_dynamic_input_arrays().oracle_prices
         ),
     }
 
@@ -160,6 +170,7 @@ def materialize_dynamic_inputs(
             "has_dynamic_arb_fees": True,
             "has_lp_supply": True,
             "has_reclamm_price_ratio_updates": True,
+            "has_oracle_prices": True,
         }
     else:
         flags = resolve_dynamic_input_flags(dynamic_inputs, dynamic_input_flags)
@@ -189,6 +200,12 @@ def materialize_dynamic_inputs(
         reclamm_price_ratio_updates=_broadcast_dynamic_input_leaf(
             "reclamm_price_ratio_updates",
             resolved["reclamm_price_ratio_updates"],
+            scan_len,
+            dtype,
+        ),
+        oracle_prices=_broadcast_dynamic_input_leaf(
+            "oracle_prices",
+            resolved["oracle_prices"],
             scan_len,
             dtype,
         ),
