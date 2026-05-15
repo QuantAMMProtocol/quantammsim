@@ -3,12 +3,11 @@
 Soup-to-nuts guide for going from no data on disk to a set of trained reCLAMM
 params and the heatmap / weight / fee-revenue plots used in reports.
 
-All commands assume the working directory is the repo root and the conda env
-`qsim_reclamm_public` is active:
+All commands assume the working directory is the repo root and the canonical
+conda env from the README (`qsim`) is active:
 
 ```
-cd /Users/matthew/Projects/quantammsim-reclamm-public/quantammsim
-source ~/miniconda3/etc/profile.d/conda.sh && conda activate qsim_reclamm_public
+conda activate qsim
 ```
 
 The pipeline has five stages. Outputs of each stage feed the next, so order
