@@ -92,7 +92,8 @@ been useful.
 The calibration set the MM model is trained on is the survivor set after
 downstream filters: pools with both tokens matched to Binance data and with
 enough clean daily snapshots. The survivors are cached in
-`local_data/noise_calibration/_cache/stage1.pkl` (the `matched_clean` dict).
+`results/token_factored_calibration/_cache/stage1.pkl` (the `matched_clean`
+dict).
 `scripts/fetch_competitor_tvl.py` and `scripts/run_mm_noise.py` both read
 that file for their pool list and do not expose a per-pool selector.
 
@@ -149,8 +150,10 @@ writes `local_data/noise_calibration/token_mcaps.json`.
 ## 2. Build the per-pool arb-volume grids
 
 ```
-python scripts/build_pool_grids.py --workers 6 --train-days 90
+python scripts/build_pool_grids.py --workers 1 --train-days 90
 ```
+
+Increase the worker count based on the memory available on your machine. 
 
 Sweeps `(cadence, gas)` per real Balancer pool to produce PCHIP grids of daily
 arb volume. Output: `results/pool_grids_v2/<pool_id_prefix>_daily.parquet` per
@@ -172,6 +175,15 @@ log(V_noise) = log_alpha_i + x_market @ gamma + log(TVL) − log(K_i + TVL)
 V_total      = V_arb(cadence_i) + exp(log_V_noise)
 Loss         = Huber(log(V_total) − log(V_obs))
 ```
+
+First generate the shared stage-1 cache used by the competitor-TVL and MM
+scripts:
+
+```
+python scripts/run_token_factored_calibration.py --stage1-only
+```
+
+This writes `results/token_factored_calibration/_cache/stage1.pkl`.
 
 ```
 python scripts/run_mm_noise.py \

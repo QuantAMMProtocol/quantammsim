@@ -34,6 +34,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from quantammsim.core_simulator.dynamic_inputs import DynamicInputFrames
 from quantammsim.runners.jax_runners import do_run_on_historic_data
 from quantammsim.utils.data_processing.historic_data_utils import get_historic_parquet_data
 
@@ -365,9 +366,13 @@ def run_arb_sim(tokens, fee, initial_tvl, start, end, cadence, gas_cost,
         else:
             params = {"initial_weights_logits": jnp.array([0.0, 0.0])}
 
+    dynamic_input_frames = (
+        DynamicInputFrames(lp_supply=lp_supply_df)
+        if lp_supply_df is not None else None
+    )
     result = do_run_on_historic_data(
-        fp, params, lp_supply_df=lp_supply_df, verbose=False,
-        price_data=price_data, preslice_burnin=False,
+        fp, params, verbose=False, price_data=price_data,
+        dynamic_input_frames=dynamic_input_frames, preslice_burnin=False,
     )
 
     reserves = np.array(result["reserves"])

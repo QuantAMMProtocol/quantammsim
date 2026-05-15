@@ -65,6 +65,22 @@ def load_and_match():
 
     matched = match_grids_to_panel(GRID_DIR, panel)
     print(f"Matched: {len(matched)} pools with grids")
+    if not matched:
+        daily_grids = [
+            f for f in os.listdir(GRID_DIR)
+            if f.endswith("_daily.parquet")
+        ] if os.path.isdir(GRID_DIR) else []
+        if not daily_grids:
+            raise RuntimeError(
+                "No daily pool grids found. Build them first with "
+                "`python scripts/build_pool_grids.py --workers 6 --train-days 90`; "
+                f"expected files like {GRID_DIR}/<pool_prefix>_daily.parquet."
+            )
+        raise RuntimeError(
+            "No panel pools matched the available daily grid prefixes. Rebuild "
+            "the grids from the current panel with "
+            "`python scripts/build_pool_grids.py --workers 6 --train-days 90`."
+        )
     return panel, matched
 
 
@@ -691,6 +707,10 @@ def main():
         "--cross-pool-only", action="store_true",
         help="Skip baseline ablation, load from cache, run only cross-pool",
     )
+    parser.add_argument(
+        "--stage1-only", action="store_true",
+        help="Build stage1.pkl and exit before ablation fits",
+    )
     args = parser.parse_args()
 
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
@@ -720,6 +740,10 @@ def main():
         matched_clean, option_c_clean = filter_pathological(matched, option_c)
         diag = run_phase0_diagnostic(matched_clean, option_c_clean)
         _save_stage1(matched_clean, option_c_clean, diag)
+
+    if args.stage1_only:
+        print("\nStage 1 cache generated; exiting before ablation fits.")
+        return
 
     # ---- Ablation 1: Baseline ----
     if args.cross_pool_only:

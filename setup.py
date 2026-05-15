@@ -12,6 +12,7 @@ setup(
         "flask",
         "flask-jwt-extended",
         "scipy",
+        "scikit-learn",
         "seaborn",
         "cvxpy",
         "matplotlib",
