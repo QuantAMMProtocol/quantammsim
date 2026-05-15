@@ -203,6 +203,8 @@ def _build_opt_settings(args):
                 "tol": 1e-8,
                 "n_evaluation_points": args.cma_eval_points,
                 "compute_dtype": "float32",
+                **({"overfitting_penalty": args.overfitting_penalty}
+                   if args.overfitting_penalty is not None else {}),
             },
         }
     else:

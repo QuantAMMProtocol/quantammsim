@@ -222,8 +222,27 @@ def save_optuna_results_sgd_format(
 
         # Add metadata in SGD format
         param_dict["step"] = trial.number
-        param_dict["test_objective"] = float(trial.user_attrs.get("validation_value", float("-inf")))
-        param_dict["train_objective"] = float(trial.user_attrs.get("train_value", float("-inf")))
+
+        # train_objective / test_objective / continuous_test_metrics in the
+        # same list-of-dict shape produced by save_multi_params (BFGS,
+        # CMA-ES). test_objective and continuous_test_metrics carry the
+        # same dict — the test-period metrics extracted from the continuous
+        # train→test forward pass — mirroring how save_multi_params is
+        # called in the BFGS/CMA-ES branches.
+        train_metrics_dict = trial.user_attrs.get("train_metrics_dict")
+        cont_test_metrics_dict = trial.user_attrs.get("continuous_test_metrics_dict")
+        if train_metrics_dict:
+            param_dict["train_objective"] = [train_metrics_dict]
+        else:
+            # Back-compat for trials saved before the rich dicts were
+            # captured: fall back to the scalar training-objective value.
+            param_dict["train_objective"] = float(trial.user_attrs.get("train_value", float("-inf")))
+        if cont_test_metrics_dict:
+            param_dict["test_objective"] = [cont_test_metrics_dict]
+            param_dict["continuous_test_metrics"] = [cont_test_metrics_dict]
+        else:
+            param_dict["test_objective"] = float(trial.user_attrs.get("validation_value", float("-inf")))
+
         param_dict["objective"] = float(trial.value) if trial.value is not None else float("-inf")
         param_dict["hessian_trace"] = 0  # Not applicable for optuna
         param_dict["local_learning_rate"] = 0  # Not applicable for optuna

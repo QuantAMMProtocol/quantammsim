@@ -1499,6 +1499,20 @@ def _train_on_historic_data_impl(
                     continuous_prices,
                 )
 
+                # Full train-period metric dict, parallel to the BFGS/CMA-ES
+                # save_multi_params path. Persisted on the trial so
+                # save_optuna_results_sgd_format can write the same
+                # list-of-dict schema other methods use.
+                train_dict_for_metrics = {
+                    "value": train_outputs["value"],
+                    "reserves": train_outputs["reserves"],
+                }
+                if "fee_revenue" in train_outputs:
+                    train_dict_for_metrics["fee_revenue"] = train_outputs["fee_revenue"]
+                train_metrics_dict = calculate_period_metrics(
+                    train_dict_for_metrics, train_outputs["prices"],
+                )
+
                 # Calculate validation metrics
                 train_length = data_dict["bout_length"]
                 if val_fraction > 0:
@@ -1608,6 +1622,14 @@ def _train_on_historic_data_impl(
                 trial.set_user_attr("continuous_test_return", continuous_test_metrics["return"])
                 trial.set_user_attr("continuous_test_returns_over_hodl", continuous_test_metrics["returns_over_hodl"])
                 trial.set_user_attr("continuous_test_returns_over_uniform_hodl", continuous_test_metrics["returns_over_uniform_hodl"])
+                # Full metric dicts for save_optuna_results_sgd_format —
+                # match the list-of-dict schema produced by save_multi_params
+                # (BFGS / CMA-ES). Plain floats so optuna can persist them.
+                # `.item()` handles 0-d and (1,) JAX arrays alike.
+                def _scalarise(d):
+                    return {k: float(np.asarray(v).reshape(-1)[0]) for k, v in d.items()}
+                trial.set_user_attr("train_metrics_dict", _scalarise(train_metrics_dict))
+                trial.set_user_attr("continuous_test_metrics_dict", _scalarise(continuous_test_metrics))
 
                 if run_fingerprint["optimisation_settings"]["optuna_settings"][
                     "multi_objective"
@@ -2208,6 +2230,9 @@ def _train_on_historic_data_impl(
         tol = cma_settings["tol"]
         n_eval_points = cma_settings["n_evaluation_points"]
         population_size_override = cma_settings.get("population_size")
+        overfitting_penalty = float(cma_settings.get("overfitting_penalty", 0.0))
+        # Penalty only meaningful when there's a held-out validation period.
+        apply_penalty = overfitting_penalty > 0.0 and val_fraction > 0
 
         # Generate fixed evaluation points (same as BFGS/optuna)
         min_spacing = data_dict["bout_length"] // 2
@@ -2219,6 +2244,23 @@ def _train_on_historic_data_impl(
             min_spacing,
             run_fingerprint["optimisation_settings"]["initial_random_key"],
         )
+        n_train_eval = len(evaluation_starts)
+        if apply_penalty:
+            # Sample evaluation points from the validation period and append
+            # them to the fixed start indexes. The split point n_train_eval
+            # separates train-period objectives from val-period objectives.
+            val_eval_starts = generate_evaluation_points(
+                val_start_idx,
+                data_dict["end_idx"],
+                bout_length_window,
+                n_eval_points,
+                min_spacing,
+                run_fingerprint["optimisation_settings"]["initial_random_key"] + 1,
+            )
+            evaluation_starts = list(evaluation_starts) + list(val_eval_starts)
+            if verbose:
+                print(f"[CMA-ES] Overfitting penalty {overfitting_penalty} active: "
+                      f"{n_train_eval} train + {len(val_eval_starts)} val eval points")
         fixed_start_indexes = jnp.array(
             [(s, 0) for s in evaluation_starts], dtype=jnp.int32
         )
@@ -2281,9 +2323,22 @@ def _train_on_historic_data_impl(
 
         # Build eval function: population (lam, n_flat) -> fitness (lam,)
         # Each individual is evaluated as -objective (we minimise, objective is maximised)
-        def eval_single(flat_x):
-            p = unravel_fn(flat_x)
-            return -batched_obj(p, fixed_start_indexes)
+        if apply_penalty:
+            # Mirror the optuna penalty: penalised = mean_train - α·max(0, mean_train - mean_val)
+            _alpha = jnp.asarray(overfitting_penalty, dtype=flat_x0_template.dtype)
+            _split = n_train_eval
+            def eval_single(flat_x):
+                p = unravel_fn(flat_x)
+                per_pt = batched_pts(p, fixed_start_indexes)
+                mean_train = jnp.mean(per_pt[:_split])
+                mean_val = jnp.mean(per_pt[_split:])
+                gap = mean_train - mean_val
+                penalised = mean_train - _alpha * jnp.maximum(0.0, gap)
+                return -penalised
+        else:
+            def eval_single(flat_x):
+                p = unravel_fn(flat_x)
+                return -batched_obj(p, fixed_start_indexes)
 
         # Un-jitted vmap for fusion into lax.while_loop's XLA program
         eval_fn_raw = vmap(eval_single)
