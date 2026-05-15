@@ -11,8 +11,8 @@ Output: results/competitor_tvl/competitor_tvl.npz
   - competitor_tvl: (n_dates, n_pools) array of daily competitor TVL in USD
 
 Usage:
-    python experiments/fetch_competitor_tvl.py
-    python experiments/fetch_competitor_tvl.py --cache-dir results/competitor_tvl
+    python scripts/fetch_competitor_tvl.py
+    python scripts/fetch_competitor_tvl.py --cache-dir results/competitor_tvl
 """
 
 import argparse

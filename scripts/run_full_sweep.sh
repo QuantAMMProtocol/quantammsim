@@ -57,7 +57,7 @@ mkdir -p "$OUTDIR"
 # Build COMMON command based on method
 if [ "$METHOD" = "cma_es" ]; then
     CMA_GENS="${CMA_GENERATIONS:-500}"
-    COMMON="python experiments/tune_reclamm_calibrated_noise.py --noise-model mm_observed --artifact-dir results/mm_noise --method cma_es --cma-generations $CMA_GENS"
+    COMMON="python scripts/tune_reclamm_calibrated_noise.py --noise-model mm_observed --artifact-dir results/mm_noise --method cma_es --cma-generations $CMA_GENS"
     METHOD_TAG="_cmaes"
     echo "=== CMA-ES mode ($CMA_GENS generations) ==="
 else
@@ -68,7 +68,7 @@ else
     else
         METHOD_TAG=""
     fi
-    COMMON="python experiments/tune_reclamm_calibrated_noise.py --noise-model mm_observed --artifact-dir results/mm_noise --n-trials $TRIALS $PR_MAX_FLAG"
+    COMMON="python scripts/tune_reclamm_calibrated_noise.py --noise-model mm_observed --artifact-dir results/mm_noise --n-trials $TRIALS $PR_MAX_FLAG"
     echo "=== Optuna mode ($TRIALS trials${PR_MAX:+, PR max=$PR_MAX}) ==="
 fi
 

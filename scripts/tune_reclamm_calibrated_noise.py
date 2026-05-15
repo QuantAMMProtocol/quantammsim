@@ -22,16 +22,16 @@ Usage:
     source ~/miniconda3/etc/profile.d/conda.sh && conda activate qsim_reclamm_public
 
     # AAVE/ETH with market_linear noise (default)
-    python experiments/tune_reclamm_calibrated_noise.py
+    python scripts/tune_reclamm_calibrated_noise.py
 
     # COW/ETH with no noise model
-    python experiments/tune_reclamm_calibrated_noise.py --tokens COW ETH --noise-model none
+    python scripts/tune_reclamm_calibrated_noise.py --tokens COW ETH --noise-model none
 
     # All objectives
-    python experiments/tune_reclamm_calibrated_noise.py --all-objectives
+    python scripts/tune_reclamm_calibrated_noise.py --all-objectives
 
     # More trials
-    python experiments/tune_reclamm_calibrated_noise.py --n-trials 200
+    python scripts/tune_reclamm_calibrated_noise.py --n-trials 200
 """
 
 import argparse

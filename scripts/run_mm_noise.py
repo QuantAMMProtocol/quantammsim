@@ -20,9 +20,9 @@ Parameters:
     log_cadence_i: per-pool arb frequency (via PCHIP)
 
 Usage:
-    python experiments/run_mm_noise.py
-    python experiments/run_mm_noise.py --epochs 5000 --lr 3e-4
-    python experiments/run_mm_noise.py --per-pool-gamma  # per-pool market coeffs
+    python scripts/run_mm_noise.py
+    python scripts/run_mm_noise.py --epochs 5000 --lr 3e-4
+    python scripts/run_mm_noise.py --per-pool-gamma  # per-pool market coeffs
 """
 
 import argparse

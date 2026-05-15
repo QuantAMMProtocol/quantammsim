@@ -9,7 +9,7 @@ source ~/miniconda3/etc/profile.d/conda.sh && conda activate qsim_reclamm_public
 
 TRIALS=400
 MAX_PARALLEL=8
-COMMON="python experiments/tune_reclamm_calibrated_noise.py --noise-model mm_observed --artifact-dir results/mm_noise --n-trials $TRIALS"
+COMMON="python scripts/tune_reclamm_calibrated_noise.py --noise-model mm_observed --artifact-dir results/mm_noise --n-trials $TRIALS"
 
 OBJECTIVES=(
     daily_log_sharpe
