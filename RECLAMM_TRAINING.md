@@ -215,6 +215,33 @@ writes per-pool fit overlays to `results/mm_noise/plots/`.
 
 ---
 
+## 3b. Smoke test before sweeping
+
+Before kicking off a multi-hour sweep, run a tiny single-config job to verify
+the data, the MM artifact, and the competitor-TVL bundle are all in place and
+the simulator returns sensible numbers:
+
+```
+python scripts/tune_reclamm_calibrated_noise.py \
+    --noise-model mm_observed --artifact-dir results/mm_noise \
+    --n-trials 5 \
+    --tokens AAVE ETH --pool-id 0x9d1fcf346ea1b0 \
+    --gas-cost 1.0 --fees 0.0025 \
+    --initial-pool-value 1000000 \
+    --objective calmar \
+    --start-date "2025-01-01 00:00:00" --end-date "2025-10-05 00:00:00" \
+    --output /tmp/smoke.json
+```
+
+Completes in a couple of minutes. A non-empty `/tmp/smoke.json` and a new
+`results/run_<hash>.json` with five trial entries means the pipeline is wired
+correctly end-to-end. `scripts/demo_run_reclamm.py` is a complementary smoke
+test that runs reCLAMM and Balancer-50/50 forward passes side-by-side without
+training, useful for sanity-checking the simulator independently of any
+optimiser.
+
+---
+
 ## 4. Training sweep
 
 `scripts/run_full_sweep.sh` is the orchestrator; it shells out to
@@ -260,6 +287,41 @@ Override either with the env var.
 | optuna | TPE sampler, median pruner | ~20–40 min | Single-objective; multi-objective optional via `--multi-objective`. |
 | cma_es | CMA-ES with box constraints from `parameter_config` | ~30–60 min | One restart per `n_parameter_sets`. |
 | bfgs | `jax.scipy.optimize.minimize(method="BFGS")` | depends on `bfgs_maxiter` | Unconstrained; needs sp_/logit_ reparametrisation to stay in bounds. |
+
+### What each objective measures
+
+`--objective` picks which scalar the optimiser maximises:
+
+- `returns_over_hodl` — final pool value minus the HODL counterfactual,
+  divided by initial. Direct profitability against holding the constituent
+  tokens.
+- `fee_revenue_over_value` — cumulative LP fee revenue as a fraction of
+  initial pool value.
+- `calmar` — annualised return divided by max drawdown.
+- `daily_log_sharpe_excess` — pool's daily log-Sharpe minus the HODL daily
+  log-Sharpe; risk-adjusted excess return vs. holding.
+
+### Overfitting penalty
+
+`--overfitting-penalty α` adds a generalisation penalty. Optuna and CMA-ES
+both reserve `val_fraction` of the training window (default 0.2; see
+`default_run_fingerprint.py`) as a held-out validation window. The
+optimised objective becomes:
+
+```
+penalised = mean_train_obj − α · max(0, mean_train_obj − mean_val_obj)
+```
+
+When train looks better than val, the gap is subtracted. `α = 0` recovers
+the raw training objective. `run_full_sweep.sh` sweeps three variants per
+(pair, TVL, objective): `α = 0`, `α = 1.0`, `α = 5.0`.
+
+### Single-process alternative
+
+`scripts/tune_reclamm_calibrated_noise.py --all-objectives` runs the four
+objectives sequentially in a single Python process, without the
+penalty-variant axis. Useful for quick single-machine exploration without
+spawning the orchestrator's parallel processes.
 
 ---
 
@@ -402,10 +464,17 @@ the final-sims selector. `--pair <name>` filters to a single pair when needed.
 
 ## Caveats / things to watch
 
-- **The `results/run_*.json` cache is fingerprint-keyed**. Changing any field
-  in `run_fingerprint` (method, penalty, TVL, ste_temperature, …) produces a
-  fresh hash. Identical fingerprints will reload from cache instead of
-  re-training. Delete the matching `run_<hash>.json` to force a fresh run.
+- **The `results/run_*.json` cache is fingerprint-keyed**. The hash is
+  `SHA256(json.dumps(run_fingerprint, sort_keys=True))`, computed in
+  `quantammsim/core_simulator/result_exporter.py:get_run_location`. Every
+  field of `run_fingerprint` participates: token pair, pool_id, TVL, fees,
+  gas_cost, objective, method-specific settings (`n_trials`, `n_generations`,
+  `overfitting_penalty`, `val_fraction`), noise-model config, and simulator
+  config (`arb_frequency`, `ste_temperature`, `max_memory_days`, …).
+  Identical fingerprints reload from cache instead of re-training; delete
+  the matching `run_<hash>.json` to force a fresh run. To map a hash back
+  to its fingerprint, read the first entry of the JSON:
+  `json.loads(json.load(open(path)))[0]`.
 
 - **CMA-ES penalty** factors into the run_fingerprint. If you have older
   `run_*.json` files from a version where the penalty was not in the
@@ -425,6 +494,13 @@ the final-sims selector. `--pair <name>` filters to a single pair when needed.
 - **PR axis on heatmaps** is what you pass via `--prs`. The default upper
   bound is 10; pass higher values when the selected PR for the pair exceeds
   that.
+
+- **CPU vs GPU**. The simulator runs on whichever device JAX picks.
+  `scripts/build_pool_grids.py` forces `JAX_PLATFORMS=cpu` so the grid build
+  is deterministic. The update-rule estimator backend (scan vs conv/FFT) is
+  selected by `DEFAULT_BACKEND` in
+  `quantammsim/pools/G3M/quantamm/update_rule_estimators/estimators.py` and
+  defaults to scan on CPU; it is not exposed as a CLI flag.
 
 ---
 
