@@ -9,7 +9,7 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
-from .constants import CACHE_DIR
+from .constants import CACHE_DIR, BALANCER_API_CHAINS
 from .data_pipeline import (
     enumerate_balancer_pools, fetch_all_snapshots,
     fetch_token_prices, assemble_panel,
@@ -23,6 +23,60 @@ from .postprocessing import (
 )
 from .plotting import plot_diagnostics
 from .output import generate_output_json, _save_sample_cache
+
+
+CHAIN_NAME_ALIASES = {
+    "ethereum": "MAINNET",
+    "mainnet": "MAINNET",
+    "base": "BASE",
+    "gnosis": "GNOSIS",
+    "polygon": "POLYGON",
+    "arbitrum": "ARBITRUM",
+    "optimism": "OPTIMISM",
+    "avalanche": "AVALANCHE",
+    "sonic": "SONIC",
+}
+
+
+def normalize_chain_name(chain: str | None) -> str | None:
+    if chain is None:
+        return None
+
+    normalized = chain.strip()
+    if not normalized:
+        return None
+
+    upper = normalized.upper()
+    if upper in BALANCER_API_CHAINS:
+        return upper
+
+    aliased = CHAIN_NAME_ALIASES.get(normalized.lower())
+    if aliased is not None:
+        return aliased
+
+    accepted = sorted(set(BALANCER_API_CHAINS) | set(CHAIN_NAME_ALIASES))
+    raise ValueError(
+        f"Unknown chain '{chain}'. Expected one of: {', '.join(accepted)}"
+    )
+
+
+def merge_chain_scoped_cache(
+    existing_df: pd.DataFrame | None,
+    new_df: pd.DataFrame,
+    chains_to_replace: list[str],
+    sort_columns: list[str],
+) -> pd.DataFrame:
+    if existing_df is None or existing_df.empty:
+        merged = new_df.copy()
+    else:
+        merged = existing_df[~existing_df["chain"].isin(chains_to_replace)].copy()
+        merged = pd.concat([merged, new_df], ignore_index=True)
+
+    if sort_columns:
+        available_sort_columns = [col for col in sort_columns if col in merged.columns]
+        if available_sort_columns:
+            merged = merged.sort_values(available_sort_columns).reset_index(drop=True)
+    return merged
 
 
 def _parse_args():
@@ -56,8 +110,12 @@ def _parse_args():
                         help="Plot output directory (default: results)")
 
     # Predict args
-    parser.add_argument("--chain", default=None,
-                        help="Chain for --predict")
+    parser.add_argument(
+        "--chain",
+        default=None,
+        help="Chain for --predict or to limit --fetch "
+             "(e.g. ethereum/base/gnosis or MAINNET/BASE/GNOSIS)",
+    )
     parser.add_argument("--tokens", nargs="+", default=None,
                         help="Tokens for --predict")
     parser.add_argument("--fee", type=float, default=0.003,
@@ -123,6 +181,12 @@ def main():
               "is required", file=sys.stderr)
         sys.exit(1)
 
+    try:
+        normalized_chain = normalize_chain_name(args.chain)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
+
     cache_dir = args.cache_dir or CACHE_DIR
 
     # --- JAX setup (BEFORE any JAX ops / imports) ---
@@ -157,17 +221,33 @@ def main():
         print("=" * 60)
 
         print("\n1. Enumerating pools...")
-        pools_df = enumerate_balancer_pools(min_tvl=args.min_tvl)
+        fetch_chains = [normalized_chain] if normalized_chain else None
+        if fetch_chains:
+            print(f"   Limiting fetch to chain: {fetch_chains[0]}")
+        fetched_pools_df = enumerate_balancer_pools(
+            chains=fetch_chains,
+            min_tvl=args.min_tvl,
+        )
+        if fetch_chains and os.path.exists(pools_cache):
+            existing_pools_df = pd.read_parquet(pools_cache)
+            pools_df = merge_chain_scoped_cache(
+                existing_pools_df,
+                fetched_pools_df,
+                fetch_chains,
+                sort_columns=["chain", "pool_id"],
+            )
+        else:
+            pools_df = fetched_pools_df
         os.makedirs(cache_dir, exist_ok=True)
         pools_df.to_parquet(pools_cache, index=False)
         print(f"   Saved {len(pools_df)} pools -> {pools_cache}")
 
         print("\n2. Fetching daily snapshots...")
-        snapshots_df = fetch_all_snapshots(pools_df, cache_path=snaps_cache)
+        snapshots_df = fetch_all_snapshots(fetched_pools_df, cache_path=snaps_cache)
 
         print("\n3. Fetching token prices...")
         token_addr_by_chain = {}
-        for _, pool in pools_df.iterrows():
+        for _, pool in fetched_pools_df.iterrows():
             chain = pool["chain"]
             tokens = pool["tokens"]
             addresses = pool["token_addresses"]
@@ -182,7 +262,17 @@ def main():
         )
 
         print("\n4. Assembling panel (with lagged TVL)...")
-        panel = assemble_panel(pools_df, snapshots_df, token_prices)
+        fetched_panel = assemble_panel(fetched_pools_df, snapshots_df, token_prices)
+        if fetch_chains and os.path.exists(panel_cache):
+            existing_panel = pd.read_parquet(panel_cache)
+            panel = merge_chain_scoped_cache(
+                existing_panel,
+                fetched_panel,
+                fetch_chains,
+                sort_columns=["chain", "pool_id", "date"],
+            )
+        else:
+            panel = fetched_panel
         panel.to_parquet(panel_cache, index=False)
         print(f"   Saved panel -> {panel_cache}")
 
@@ -412,6 +502,6 @@ def main():
             data_meta = json.load(f)
 
         result = predict_new_pool(
-            sample_dict, data_meta, args.chain, args.tokens, args.fee
+            sample_dict, data_meta, normalized_chain, args.tokens, args.fee
         )
         print(json.dumps(result, indent=2))

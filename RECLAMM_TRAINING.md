@@ -64,6 +64,8 @@ python scripts/download_data.py BTC ETH AAVE COW USDC USDT WBTC
 Reads from `scripts/ticker_list.txt` if no tickers are passed. Output:
 `quantammsim/data/<TOKEN>_USD.parquet` (minute resolution) and
 `<TOKEN>_USD_daily.csv`. Used by all simulator runs and noise calibration.
+`USDT` is fetched against `USD` when needed, since `USDT/USDT` is not a real
+market.
 
 ### 1b. Balancer pool snapshots (volume + TVL)
 

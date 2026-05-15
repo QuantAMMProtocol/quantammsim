@@ -726,6 +726,71 @@ def get_binance_vision_data(token, numeraire, root):
     return result_df
 
 
+def get_quote_currency_candidates(token):
+    """Return quote currencies to try when bootstrapping minute data."""
+    if token == "USDT":
+        return ["USD", "USDC"]
+    return ["USDT"]
+
+
+def get_coinbase_live_data(token, numeraire):
+    """Download minute OHLCV data from Coinbase and standardize the schema."""
+    market = f"{token}-{numeraire}"
+    start_time = "2016-01-01-00-00"
+    end_time = datetime.utcnow().strftime("%Y-%m-%d-%H-%M")
+
+    try:
+        retrieved_data = HistoricalData(
+            market, 60, start_time, end_time
+        ).retrieve_data()
+    except Exception as exc:
+        print(f"No Coinbase live data found for {market}: {exc}")
+        return None
+
+    if retrieved_data is None or retrieved_data.empty:
+        print(f"No Coinbase live data returned for {market}")
+        return None
+
+    standardized_df = retrieved_data.reset_index()
+    date_column = standardized_df.columns[0]
+    standardized_df = standardized_df.rename(
+        columns={
+            date_column: "date",
+            "volume": f"Volume {token}",
+        }
+    )
+    standardized_df["date"] = pd.to_datetime(
+        standardized_df["date"], utc=True
+    ).dt.tz_localize(None)
+    standardized_df["unix"] = pddatetime_to_unixtimestamp(standardized_df["date"])
+    standardized_df["symbol"] = f"{token}/{numeraire}"
+    standardized_df["Volume USD"] = (
+        standardized_df[f"Volume {token}"] * standardized_df["close"]
+    )
+
+    standardized_df = standardized_df[
+        [
+            "unix",
+            "date",
+            "symbol",
+            "open",
+            "high",
+            "low",
+            "close",
+            "Volume USD",
+            f"Volume {token}",
+        ]
+    ]
+    standardized_df = standardized_df.sort_values("unix")
+    standardized_df = standardized_df.drop_duplicates(
+        subset="unix", keep="last"
+    ).reset_index(drop=True)
+    standardized_df["date"] = standardized_df["date"].dt.strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    return standardized_df
+
+
 def update_historic_data(token, root):
     """Update historic data for a given token, handling reruns gracefully.
 
@@ -743,18 +808,42 @@ def update_historic_data(token, root):
     os.makedirs(outputPath, exist_ok=True)
     os.makedirs(root + "concat_binance_data/", exist_ok=True)
 
-    # Try binance.vision data first
-    print(f"Attempting to get Binance vision data for {token}")
     filled_timestamps = {}
-    concated_df = get_binance_vision_data(token, "USDT", root)
-    if concated_df is not None:
-        print(f"Binance vision data available for {token}")
+    quote_currency_candidates = get_quote_currency_candidates(token)
+    primary_numeraire = quote_currency_candidates[0]
+    concated_df = None
+    filled_timestamps["Binance Vision"] = []
+
+    # Try binance.vision data first, using a USD quote for assets like USDT.
+    for numeraire in quote_currency_candidates:
+        print(f"Attempting to get Binance vision data for {token} quoted in {numeraire}")
+        candidate_df = get_binance_vision_data(token, numeraire, root)
+        if candidate_df is None:
+            continue
+        concated_df = candidate_df
+        primary_numeraire = numeraire
+        print(f"Binance vision data available for {token} quoted in {numeraire}")
         if concated_df.index.name != "unix":
             concated_df.set_index("unix", inplace=True)
-        filled_binance_vision_unix_values = concated_df.index.tolist()
-        filled_timestamps["Binance Vision"] = filled_binance_vision_unix_values
-    else:
-        print(f"No Binance vision data available for {token}")
+        filled_timestamps["Binance Vision"] = concated_df.index.tolist()
+        break
+
+    if concated_df is None:
+        for numeraire in quote_currency_candidates:
+            print(f"Attempting to get Coinbase live data for {token} quoted in {numeraire}")
+            candidate_df = get_coinbase_live_data(token, numeraire)
+            if candidate_df is None:
+                continue
+            concated_df = candidate_df
+            primary_numeraire = numeraire
+            print(f"Coinbase live data available for {token} quoted in {numeraire}")
+            if concated_df.index.name != "unix":
+                concated_df.set_index("unix", inplace=True)
+            filled_timestamps["Coinbase Live"] = concated_df.index.tolist()
+            break
+
+    if concated_df is None:
+        print(f"No live market data available for {token}")
         concated_df = pd.DataFrame(
             columns=[
                 "date",
@@ -767,11 +856,13 @@ def update_historic_data(token, root):
                 f"Volume {token}",
             ]
         )
-        filled_timestamps["Binance Vision"] = []
+        concated_df.index.name = "unix"
     # Fill gaps with cryptodatadownload Binance data
-    print("Filling gaps with cryptodatadownload Binance data")
+    print(
+        f"Filling gaps with cryptodatadownload Binance data quoted in {primary_numeraire}"
+    )
     concated_df, filled_binance_unix_values = fill_in_missing_rows_with_exchange_data(
-        concated_df, token, "USDT", root, "raw_binance_data/", "Binance_"
+        concated_df, token, primary_numeraire, root, "raw_binance_data/", "Binance_"
     )
     filled_timestamps["Binance CDD"] = filled_binance_unix_values
     if concated_df is None:
@@ -897,6 +988,10 @@ def update_historic_data(token, root):
         filled_timestamps["Aerodrome"] = filled_aerodrome_unix_values
         print("Filled aerodrome data")
         print(len(filled_aerodrome_unix_values))
+    if concated_df.empty:
+        raise FileNotFoundError(
+            f"No market data found for {token} using quote currencies {quote_currency_candidates}"
+        )
     # Ensure data is properly sorted and has no duplicates
     concated_df = concated_df.sort_index()
     concated_df = concated_df[~concated_df.index.duplicated(keep="first")]
