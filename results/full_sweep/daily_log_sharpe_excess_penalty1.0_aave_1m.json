@@ -1,0 +1,9 @@
+{
+  "daily_log_sharpe_excess": {
+    "price_ratio": 1.012011484075616,
+    "centeredness_margin": 0.026628408428241428,
+    "shift_exponent": 0.08827350039359076,
+    "subsidary_params": [],
+    "initial_weights_logits": "[0. 0.]"
+  }
+}

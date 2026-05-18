@@ -1,0 +1,9 @@
+{
+  "returns_over_hodl": {
+    "price_ratio": 5.832161383230471,
+    "centeredness_margin": 0.7765835409120687,
+    "shift_exponent": 0.00018668202918720232,
+    "subsidary_params": [],
+    "initial_weights_logits": "[0. 0.]"
+  }
+}
