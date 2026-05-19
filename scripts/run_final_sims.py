@@ -24,6 +24,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from datetime import datetime
 
 from quantammsim.runners.jax_runners import do_run_on_historic_data
@@ -164,6 +165,78 @@ def run_forward(pair_cfg, tvl, params, start, end, noise_path):
     return result
 
 
+def _trial_hash(best):
+    """Extract the originating run hash from a selected trial."""
+    study_id = str(best.get("study_id", "unknown"))
+    return study_id.removeprefix("run_")
+
+
+def _unix_values_for_result(result):
+    """Return the unix timestamp vector aligned to result['value']."""
+    value_len = len(np.asarray(result["value"]))
+    if "unix_values" in result:
+        unix_values = np.asarray(result["unix_values"])
+    else:
+        data_dict = result.get("data_dict")
+        if data_dict is None or "unix_values" not in data_dict:
+            raise KeyError("Forward result has no unix_values or data_dict['unix_values']")
+        start_idx = int(data_dict.get("start_idx", 0))
+        unix_values = np.asarray(data_dict["unix_values"])[start_idx:start_idx + value_len]
+
+    if len(unix_values) != value_len:
+        raise ValueError(
+            f"Timestamp/value length mismatch: unix={len(unix_values)} value={value_len}"
+        )
+    return unix_values.astype(np.int64)
+
+
+def export_forward_csvs(result, run_fingerprint, output_dir, identifier, source_hash):
+    """Write value, reserves, and per-token value CSVs for one forward pass."""
+    value = np.asarray(result["value"], dtype=np.float64)
+    reserves = np.asarray(result["reserves"], dtype=np.float64)
+    prices = np.asarray(result["prices"], dtype=np.float64)
+    unix_values = _unix_values_for_result(result)
+
+    tokens = list(run_fingerprint["tokens"])
+    if tokens != sorted(tokens):
+        raise ValueError(
+            "Final-sim CSV export assumes run_fingerprint['tokens'] is alphabetically "
+            f"ordered to match runner price/reserve arrays; got {tokens}"
+        )
+
+    if reserves.shape != prices.shape:
+        raise ValueError(f"Reserves/prices shape mismatch: {reserves.shape} vs {prices.shape}")
+    if reserves.shape[0] != value.shape[0]:
+        raise ValueError(f"Reserves/value length mismatch: {reserves.shape[0]} vs {value.shape[0]}")
+
+    token_values = reserves * prices
+    value_from_tokens = token_values.sum(axis=1)
+    if not np.allclose(value_from_tokens, value, rtol=1e-8, atol=1e-6):
+        max_diff = float(np.max(np.abs(value_from_tokens - value)))
+        raise ValueError(
+            f"Token value sanity check failed for {identifier}: max_diff={max_diff:.6g}"
+        )
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    file_stem = f"{identifier}_{source_hash}"
+
+    pd.DataFrame({"unix": unix_values, "value": value}).to_csv(
+        output_path / f"run_Value_{file_stem}.csv", index=False,
+    )
+
+    reserve_df = pd.DataFrame({"unix": unix_values})
+    for idx, token in enumerate(tokens):
+        reserve_df[f"reserve_{token}"] = reserves[:, idx]
+    reserve_df.to_csv(output_path / f"run_Reserves_{file_stem}.csv", index=False)
+
+    token_value_df = pd.DataFrame({"unix": unix_values})
+    for idx, token in enumerate(tokens):
+        token_value_df[f"{token}_value"] = token_values[:, idx]
+    token_value_df.to_csv(output_path / f"run_TokenValues_{file_stem}.csv", index=False)
+    print(f"  Saved CSVs: run_{{Value,Reserves,TokenValues}}_{file_stem}.csv")
+
+
 def make_plot_data(all_results, pair_cfg, start, end):
     """Convert our results into the format expected by plot_reclamm_optuna_result functions.
 
@@ -212,7 +285,7 @@ def make_plot_data(all_results, pair_cfg, start, end):
         pr = float(jnp.asarray(p.get("price_ratio", 0)).flatten()[0])
         margin = float(jnp.asarray(p.get("centeredness_margin", 0)).flatten()[0])
         shift = float(jnp.asarray(p.get("shift_exponent", 0)).flatten()[0])
-        name = f"reCLAMM ${tvl_label} (PR={pr:.2f}, m={margin:.2f}, s={shift:.3f})"
+        name = f"Auto-range ${tvl_label} (PR={pr:.2f}, m={margin:.2f}, s={shift:.3f})"
         configs[name] = {
             "tvl_label": tvl_label,
             "params": p,
@@ -269,6 +342,13 @@ def run_pair(pair_name, pair_cfg, trials, output_dir):
         # Train period forward pass
         print(f"  Running train period...")
         train_result = run_forward(pair_cfg, tvl, params, TRAIN_START, TRAIN_END, train_noise)
+        source_hash = _trial_hash(best)
+        train_fp = build_fingerprint(pair_cfg, tvl, TRAIN_START, TRAIN_END, train_noise)
+        export_forward_csvs(
+            train_result, train_fp, output_dir,
+            identifier=f"{pair_name}_{tvl_label}_train",
+            source_hash=source_hash,
+        )
         train_results[tvl_label] = {"result": train_result, "params": params, "best": best}
 
         # Clear JIT caches between runs to manage memory
@@ -277,6 +357,12 @@ def run_pair(pair_name, pair_cfg, trials, output_dir):
         # Test period forward pass
         print(f"  Running test period...")
         test_result = run_forward(pair_cfg, tvl, params, TEST_START, TEST_END, test_noise)
+        test_fp = build_fingerprint(pair_cfg, tvl, TEST_START, TEST_END, test_noise)
+        export_forward_csvs(
+            test_result, test_fp, output_dir,
+            identifier=f"{pair_name}_{tvl_label}_test",
+            source_hash=source_hash,
+        )
         test_results[tvl_label] = {"result": test_result, "params": params, "best": best}
 
         jax.clear_caches()

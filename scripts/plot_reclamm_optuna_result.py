@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 
 import jax.numpy as jnp
@@ -39,14 +40,56 @@ ONCHAIN_CURRENT_PARAMS = {
     "price_ratio": 4.0, "centeredness_margin": 0.1, "shift_exponent": 0.001,
 }
 
-BG = "#162536"
-TEXT_COLOR = "#E6CE97"
-# Extended palette for multi-file comparison
-COLORS = [
-    "#3498db", "#2ecc71", "#e74c3c", "#f39c12", "#9b59b6",
-    "#1abc9c", "#e67e22", "#2980b9", "#c0392b", "#8e44ad",
-    "#27ae60", "#d35400", "#16a085", "#f1c40f", "#7f8c8d",
-]
+THEME_ORDER = ("light", "dark")
+THEMES = {
+    "light": {
+        "bg": "#F7FAFC",
+        "text": "#171923",
+        "subtle_text": "#4A5568",
+        "reference": "#112055",
+        "grid": "#4F5764",
+        "colors": [
+            "#2048e9", "#008361", "#b43821", "#c2410c", "#5c38c9",
+            "#6D4F2C", "#457dff", "#00a474", "#d7462b", "#ea580c",
+            "#7f6ae8", "#92693A", "#183bbb", "#00674e", "#718096",
+        ],
+    },
+    "dark": {
+        "bg": "#171923",
+        "text": "#EDF2F7",
+        "subtle_text": "#CBD5E0",
+        "reference": "#F7FAFC",
+        "grid": "#4F5764",
+        "colors": [
+            "#457dff", "#00d395", "#ea6249", "#f97316", "#7f6ae8",
+            "#B68449", "#2554ff", "#00a474", "#d7462b", "#fb923c",
+            "#6c4add", "#92693A", "#2048e9", "#008361", "#A0AEC0",
+        ],
+    },
+}
+BG = THEMES["dark"]["bg"]
+TEXT_COLOR = THEMES["dark"]["text"]
+SUBTLE_TEXT_COLOR = THEMES["dark"]["subtle_text"]
+REFERENCE_COLOR = THEMES["dark"]["reference"]
+GRID_COLOR = THEMES["dark"]["grid"]
+COLORS = THEMES["dark"]["colors"]
+
+
+def _apply_theme(theme_name):
+    """Apply one of the chart themes derived from colors.ts."""
+    global BG, TEXT_COLOR, SUBTLE_TEXT_COLOR, REFERENCE_COLOR, GRID_COLOR, COLORS
+    theme = THEMES[theme_name]
+    BG = theme["bg"]
+    TEXT_COLOR = theme["text"]
+    SUBTLE_TEXT_COLOR = theme["subtle_text"]
+    REFERENCE_COLOR = theme["reference"]
+    GRID_COLOR = theme["grid"]
+    COLORS = theme["colors"]
+
+
+def _themed_output_path(output, theme_name):
+    root, ext = os.path.splitext(output)
+    return f"{root}_{theme_name}{ext or '.png'}"
 
 # Short labels for objectives
 _OBJ_SHORT = {
@@ -159,7 +202,7 @@ def run_full_period(params, config, fees_override=None):
     return do_run_on_historic_data(run_fingerprint=fp, params=jax_params)
 
 
-def plot_results(configs, time_series, hodl_values, ref_config, args):
+def _plot_results_once(configs, time_series, hodl_values, ref_config, args, theme_name):
     """Two-panel plot: value-over-time + cumulative fee revenue."""
     train_end_str = ref_config["endDateString"]
     train_end_dt = datetime.strptime(train_end_str, "%Y-%m-%d %H:%M:%S")
@@ -217,22 +260,22 @@ def plot_results(configs, time_series, hodl_values, ref_config, args):
 
     hodl_daily = hodl_values[::step] * val_scale
     ax_val.plot(dates_daily[:len(hodl_daily)], hodl_daily, linewidth=2,
-                color="white", alpha=0.7, linestyle="--", label="HODL")
+                color=REFERENCE_COLOR, alpha=0.7, linestyle="--", label="HODL")
 
     if train_end_dt > start_dt and train_end_dt < dates[-1]:
-        ax_val.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5, linewidth=1.5)
+        ax_val.axvline(x=train_end_dt, color=REFERENCE_COLOR, linestyle=":", alpha=0.5, linewidth=1.5)
         ylims = ax_val.get_ylim()
         ax_val.text(train_end_dt - pd.Timedelta(days=5), ylims[1] * 0.97, "Train",
-                    color="white", alpha=0.6, fontsize=11, ha="right", va="top")
+                    color=SUBTLE_TEXT_COLOR, alpha=0.8, fontsize=11, ha="right", va="top")
         ax_val.text(train_end_dt + pd.Timedelta(days=5), ylims[1] * 0.97, "Test",
-                    color="white", alpha=0.6, fontsize=11, ha="left", va="top")
+                    color=SUBTLE_TEXT_COLOR, alpha=0.8, fontsize=11, ha="left", va="top")
 
     _style_axis(ax_val)
     ax_val.set_ylabel(val_ylabel, color=TEXT_COLOR, fontsize=12)
     tokens_str = "/".join(ref_config["tokens"])
     date_range_str = f"{start_dt.strftime('%b %Y')} — {dates[-1].strftime('%b %Y')}"
     ax_val.set_title(
-        f"reCLAMM {tokens_str} — {date_range_str}",
+        f"Auto-range {tokens_str} — {date_range_str}",
         color=TEXT_COLOR, fontsize=13, pad=15,
     )
     ax_val.legend(loc="upper left", fontsize=8, facecolor=BG,
@@ -255,7 +298,7 @@ def plot_results(configs, time_series, hodl_values, ref_config, args):
                         zorder=3 if is_optimized else 2)
 
         if train_end_dt > start_dt and train_end_dt < dates[-1]:
-            ax_fee.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5, linewidth=1.5)
+            ax_fee.axvline(x=train_end_dt, color=REFERENCE_COLOR, linestyle=":", alpha=0.5, linewidth=1.5)
         _style_axis(ax_fee)
         ax_fee.set_ylabel(fee_ylabel, color=TEXT_COLOR, fontsize=12)
         ax_fee.legend(loc="upper left", fontsize=8, facecolor=BG,
@@ -294,7 +337,7 @@ def plot_results(configs, time_series, hodl_values, ref_config, args):
                         zorder=3 if is_optimized else 2)
 
         if train_end_dt > start_dt and train_end_dt < dates[-1]:
-            ax_vol.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5, linewidth=1.5)
+            ax_vol.axvline(x=train_end_dt, color=REFERENCE_COLOR, linestyle=":", alpha=0.5, linewidth=1.5)
         _style_axis(ax_vol)
         ax_vol.set_ylabel(vol_ylabel, color=TEXT_COLOR, fontsize=12)
         ax_vol.set_xlabel("Date", color=TEXT_COLOR, fontsize=12)
@@ -306,13 +349,22 @@ def plot_results(configs, time_series, hodl_values, ref_config, args):
     fig.patch.set_facecolor(BG)
     plt.tight_layout()
 
-    output = args.output or f"reclamm_optuna_{tokens_str.replace('/', '_')}.png"
+    output = _themed_output_path(
+        args.output or f"reclamm_optuna_{tokens_str.replace('/', '_')}.png",
+        theme_name,
+    )
     plt.savefig(output, dpi=200, bbox_inches="tight", facecolor=BG)
     print(f"\nSaved plot to {output}")
     plt.close()
 
 
-def plot_test_only(configs, time_series, hodl_values, ref_config, args):
+def plot_results(configs, time_series, hodl_values, ref_config, args):
+    for theme_name in THEME_ORDER:
+        _apply_theme(theme_name)
+        _plot_results_once(configs, time_series, hodl_values, ref_config, args, theme_name)
+
+
+def _plot_test_only_once(configs, time_series, hodl_values, ref_config, args, theme_name):
     """Test-period plot with all curves normalised to start at 1.0."""
     train_end_str = ref_config["endDateString"]
     train_end_dt = datetime.strptime(train_end_str, "%Y-%m-%d %H:%M:%S")
@@ -348,9 +400,9 @@ def plot_test_only(configs, time_series, hodl_values, ref_config, args):
     if len(hodl_test) > 0:
         hodl_norm = hodl_test / hodl_test[0]
         ax.plot(test_dates[:len(hodl_norm)], hodl_norm, linewidth=2,
-                color="white", alpha=0.7, linestyle="--", label="HODL")
+                color=REFERENCE_COLOR, alpha=0.7, linestyle="--", label="HODL")
 
-    ax.axhline(1.0, color="white", linestyle=":", alpha=0.3, linewidth=1)
+    ax.axhline(1.0, color=REFERENCE_COLOR, linestyle=":", alpha=0.3, linewidth=1)
     _style_axis(ax)
     tokens_str = "/".join(ref_config["tokens"])
     ax.set_title(f"Test Period Only (normalised) — {tokens_str}",
@@ -363,13 +415,19 @@ def plot_test_only(configs, time_series, hodl_values, ref_config, args):
     fig.patch.set_facecolor(BG)
     plt.tight_layout()
     base = (args.output or f"reclamm_optuna_{tokens_str.replace('/', '_')}.png")
-    output = base.replace(".png", "_test_only.png")
+    output = _themed_output_path(base.replace(".png", "_test_only.png"), theme_name)
     plt.savefig(output, dpi=200, bbox_inches="tight", facecolor=BG)
     print(f"Saved plot to {output}")
     plt.close()
 
 
-def plot_weights(configs, time_series, ref_config, args):
+def plot_test_only(configs, time_series, hodl_values, ref_config, args):
+    for theme_name in THEME_ORDER:
+        _apply_theme(theme_name)
+        _plot_test_only_once(configs, time_series, hodl_values, ref_config, args, theme_name)
+
+
+def _plot_weights_once(configs, time_series, ref_config, args, theme_name):
     """Effective weight (value fraction) of token 0 over time."""
     start_dt = datetime.strptime(ref_config["startDateString"], "%Y-%m-%d %H:%M:%S")
     train_end_dt = datetime.strptime(ref_config["endDateString"], "%Y-%m-%d %H:%M:%S")
@@ -395,19 +453,19 @@ def plot_weights(configs, time_series, ref_config, args):
                 alpha=0.9 if is_optimized else 0.7,
                 zorder=3 if is_optimized else 2)
 
-    ax.axhline(0.5, color="white", linestyle="--", alpha=0.3, linewidth=1)
+    ax.axhline(0.5, color=REFERENCE_COLOR, linestyle="--", alpha=0.3, linewidth=1)
     if train_end_dt > start_dt and train_end_dt < dates[-1]:
-        ax.axvline(x=train_end_dt, color="white", linestyle=":", alpha=0.5, linewidth=1.5)
+        ax.axvline(x=train_end_dt, color=REFERENCE_COLOR, linestyle=":", alpha=0.5, linewidth=1.5)
         ylims = ax.get_ylim()
         ax.text(train_end_dt - pd.Timedelta(days=5), ylims[1] * 0.97, "Train",
-                color="white", alpha=0.6, fontsize=11, ha="right", va="top")
+                color=SUBTLE_TEXT_COLOR, alpha=0.8, fontsize=11, ha="right", va="top")
         ax.text(train_end_dt + pd.Timedelta(days=5), ylims[1] * 0.97, "Test",
-                color="white", alpha=0.6, fontsize=11, ha="left", va="top")
+                color=SUBTLE_TEXT_COLOR, alpha=0.8, fontsize=11, ha="left", va="top")
 
     _style_axis(ax)
     tokens_str = "/".join(ref_config["tokens"])
     date_range_str = f"{start_dt.strftime('%b %Y')} — {dates[-1].strftime('%b %Y')}"
-    ax.set_title(f"Effective {token_name} Weight — reCLAMM {tokens_str} — {date_range_str}",
+    ax.set_title(f"Effective {token_name} Weight — Auto-range {tokens_str} — {date_range_str}",
                  color=TEXT_COLOR, fontsize=13, pad=15)
     ax.set_ylabel(f"{token_name} weight (value fraction)", color=TEXT_COLOR, fontsize=12)
     ax.set_xlabel("Date", color=TEXT_COLOR, fontsize=12)
@@ -417,21 +475,27 @@ def plot_weights(configs, time_series, ref_config, args):
     fig.patch.set_facecolor(BG)
     plt.tight_layout()
     base = (args.output or f"reclamm_optuna_{tokens_str.replace('/', '_')}.png")
-    output = base.replace(".png", "_weights.png")
+    output = _themed_output_path(base.replace(".png", "_weights.png"), theme_name)
     plt.savefig(output, dpi=200, bbox_inches="tight", facecolor=BG)
     print(f"Saved plot to {output}")
     plt.close()
+
+
+def plot_weights(configs, time_series, ref_config, args):
+    for theme_name in THEME_ORDER:
+        _apply_theme(theme_name)
+        _plot_weights_once(configs, time_series, ref_config, args, theme_name)
 
 
 def _style_axis(ax):
     ax.set_facecolor(BG)
     ax.tick_params(colors=TEXT_COLOR)
     for spine in ax.spines.values():
-        spine.set_color(TEXT_COLOR)
-        spine.set_alpha(0.3)
+        spine.set_color(GRID_COLOR)
+        spine.set_alpha(0.8)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.grid(True, alpha=0.15, color=TEXT_COLOR)
+    ax.grid(True, alpha=0.35, color=GRID_COLOR)
 
 
 def main():
