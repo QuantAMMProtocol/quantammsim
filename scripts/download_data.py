@@ -3,6 +3,22 @@ import hashlib
 import zipfile
 import argparse
 from pathlib import Path
+
+# binance_historical_data uses mpire with the default fork start method. quantammsim
+# transitively imports JAX (multithreaded), and fork-after-threads deadlocks on macOS.
+# Force spawn workers before any mpire pool is constructed.
+import mpire
+
+_orig_workerpool_init = mpire.WorkerPool.__init__
+
+
+def _workerpool_init_spawn(self, *args, **kwargs):
+    kwargs.setdefault("start_method", "spawn")
+    return _orig_workerpool_init(self, *args, **kwargs)
+
+
+mpire.WorkerPool.__init__ = _workerpool_init_spawn
+
 from tqdm import tqdm
 from quantammsim.utils.data_processing.historic_data_utils import (
     update_historic_data,
