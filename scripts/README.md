@@ -67,7 +67,7 @@ All four grids additionally cross over the same **cross-cutting axes** (`ste`, `
 | flag | default | what it does |
 |---|---|---|
 | `--optimiser` | `adam` | picks the sweep grid |
-| `--rule` | `momentum` | pre-canned strategy name (see the quantamm pools: `momentum`, `anti_momentum`, `power_channel`, `mean_reversion_channel`) |
+| `--rule` | `momentum` | pre-canned strategy name. QuantAMM pools: `momentum`, `anti_momentum`, `power_channel`, `mean_reversion_channel`, `difference_momentum`, `min_variance`, `hodling_index_market_cap`, `trad_hodling_index_market_cap`. Other pools: `balancer`, `cow`, `gyroscope`, `hodl`, `reclamm` (see the [reclamm](#reclamm) section below). |
 | `--tokens ETH USDC` | ETH USDC | pool assets, must match downloaded data |
 | `--start` / `--end` / `--test-end` | 2023-06-01 / 2025-06-01 / 2026-01-01 | train window + held-out test window |
 | `--n-parameter-sets` | 4 | parallel multi-start param sets per run |
@@ -106,6 +106,44 @@ python scripts/train_strategy.py --optimiser adam --dry-run
 ### Gotcha: optuna + `expand_around`
 
 There's an upstream bug in `create_trial_params` where `expand_around=True` produces invalid `low > high` bounds for `logit_lamb` (because the optuna path overrides `parameter_config["logit_lamb"]` with absolute bounds but the expand_around branch treats them as deltas). The script pins `expand_around=False` in `base_fingerprint` as a workaround. If optuna silently returns 0 completed trials, check `./optuna_studies/optimization.log`.
+
+### reclamm
+
+reCLAMM is a concentrated-liquidity pool (`ReClammPool` in `quantammsim/pools/reCLAMM/reclamm.py`, dispatched from `creator.py:232`). It plugs into the same sweep pipeline as the QuantAMM rules — `--rule reclamm` is all you need on the CLI. Optuna is the natural optimiser because most trainable knobs are scalar log-scaled rates, not gradient-friendly weight vectors; Adam works but expects a different parameter shape.
+
+```bash
+# Train a reclamm sweep on AAVE/ETH with Optuna.
+python scripts/train_strategy.py \
+    --rule reclamm \
+    --tokens AAVE ETH \
+    --optimiser optuna \
+    --start "2024-06-01 00:00:00" \
+    --end   "2025-06-01 00:00:00"
+
+# Smoke-test reclamm end-to-end in seconds.
+python scripts/train_strategy.py --rule reclamm --tokens AAVE ETH --optimiser optuna --smoke --max-runs 4
+```
+
+reclamm-specific knobs live in `quantammsim/runners/default_run_fingerprint.py` and apply only when `rule == "reclamm"`:
+
+| key | default | what it does |
+|---|---|---|
+| `reclamm_interpolation_method` | `"geometric"` | `"geometric"` or `"constant_arc_length"` |
+| `reclamm_arc_length_speed` | `None` | auto-calibrate from geometric onset; or fix a number |
+| `reclamm_centeredness_scaling` | `False` | scale speed by margin/centeredness |
+| `reclamm_learn_arc_length_speed` | `False` | include `arc_length_speed` in trainable params |
+| `reclamm_use_shift_exponent` | `False` | parametrise shift rate as `shift_exponent` (log-friendly) |
+| `reclamm_learn_fees` | `False` | include `fees` in the Optuna search |
+
+These aren't exposed as CLI flags — override them by editing `base_fingerprint()` in `train_strategy.py` (or by reaching into `fp[...]` after `base_fingerprint(args)` returns).
+
+Reference scripts:
+
+- `scripts/demo_run_reclamm.py` — single-run simulation (no training); use to sanity-check tokens/dates before kicking off a sweep.
+- `scripts/calibrate_reclamm_noise.py` — calibrate `price_noise_sigma` from real reCLAMM behaviour; run before training if you want realistic noise injection.
+- `scripts/plot_reclamm_optuna_result.py` and `scripts/reclamm/` — analysis/plotting helpers for reclamm trial results.
+
+After training, the rest of the pipeline is unchanged — `evaluate_trials.py` then `readout.py` work the same way as for QuantAMM rules.
 
 ---
 

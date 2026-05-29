@@ -701,18 +701,14 @@ def get_binance_vision_data(token, numeraire, root):
 
     # Combine and format data
     combined_df = pd.concat(monthly_files + daily_files)
-    # Convert unix timestamps to milliseconds if they're in nanoseconds or seconds
-    # Typical millisecond timestamps are ~13 digits
-    # Nanosecond timestamps are ~19 digits
-    # Second timestamps are ~10 digits
-    # First convert nanoseconds to milliseconds
-    combined_df["unix"] = combined_df["unix"].apply(
-        lambda x: x // 1_000_000 if len(str(int(x))) > 13 else x
-    )
-    # Then convert seconds to milliseconds
-    combined_df["unix"] = combined_df["unix"].apply(
-        lambda x: x * 1000 if len(str(int(x))) <= 10 else x
-    )
+    # Normalize unix timestamps to milliseconds. Binance Vision shipped klines in ms
+    # historically (13 digits) and switched to microseconds in 2025 (16 digits); nanosecond
+    # (19 digits) and second (10 digits) variants also exist in other sources.
+    u = combined_df["unix"].to_numpy(dtype=np.int64)
+    u = np.where((u >= 10**15) & (u < 10**18), u // 1_000, u)        # us -> ms
+    u = np.where(u >= 10**18, u // 1_000_000, u)                      # ns -> ms
+    u = np.where(u < 10**12, u * 1_000, u)                            # s  -> ms
+    combined_df["unix"] = u
     combined_df["date"] = pd.to_datetime(combined_df["unix"], unit="ms").dt.strftime("%Y-%m-%d %H:%M:%S")
     combined_df["symbol"] = f"{token}/{numeraire}"
     combined_df[f"Volume {token}"] = combined_df["volume"]
@@ -984,7 +980,7 @@ def update_historic_data(token, root):
     agg_dict = {k: v for k, v in agg_dict.items() if k in concated_df_hourly.columns}
 
     # Perform resampling
-    hourly_data = concated_df_hourly.resample("1H").agg(agg_dict).reset_index()
+    hourly_data = concated_df_hourly.resample("1h").agg(agg_dict).reset_index()
 
     # Save hourly data
     hourly_data.to_csv(hourlyPath, index=False)
