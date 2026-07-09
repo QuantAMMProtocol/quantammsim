@@ -213,7 +213,6 @@ _jax_ewma_at_infinity_via_conv_padded = vmap(
 )
 
 
-# NOTE THE [1: ] slice here maybe should be a [0: ] slice BUT THIS SHOULD BE TESTED
 @jit
 def _jax_gradients_at_infinity_via_conv_1D_padded_with_alt_ewma(
     arr_in, ewma, alt_ewma, kernel, saturated_b
@@ -233,7 +232,6 @@ _jax_gradients_at_infinity_via_conv_padded_with_alt_ewma = vmap(
 )
 
 
-# NOTE THE [1: ] slice here maybe should be a [0: ] slice BUT THIS SHOULD BE TESTED
 @jit
 def _jax_gradients_at_infinity_via_conv_1D(arr_in, ewma, kernel, saturated_b):
     ewma_diff = arr_in[1:] - ewma
@@ -249,7 +247,6 @@ _jax_gradients_at_infinity_via_conv = vmap(
 )
 
 
-# NOTE THE [1: ] slice here maybe should be a [0: ] slice BUT THIS SHOULD BE TESTED
 @jit
 def _jax_gradients_at_infinity_via_conv_1D_padded(arr_in, ewma, kernel, saturated_b):
     ewma_diff = arr_in - ewma
@@ -265,7 +262,6 @@ _jax_gradients_at_infinity_via_conv_padded = vmap(
 )
 
 
-# NOTE THE [1: ] slice here maybe should be a [0: ] slice BUT THIS SHOULD BE TESTED
 @jit
 def _jax_gradients_at_infinity_via_conv_1D_with_alt_ewma(
     arr_in, ewma, alt_ewma, kernel, saturated_b
@@ -285,7 +281,6 @@ _jax_gradients_at_infinity_via_conv_with_alt_ewma = vmap(
 )
 
 
-# NOTE THE [1: ] slice here maybe should be a [0: ] slice BUT THIS SHOULD BE TESTED
 @jit
 def _jax_gradients_at_infinity_via_conv_1D_padded_with_alt_ewma(
     arr_in, ewma, alt_ewma, kernel, saturated_b
@@ -312,21 +307,8 @@ _jax_gradients_at_infinity_via_conv_padded_with_alt_ewma = vmap(
 def _jax_variance_at_infinity_via_sums_1D(
     arr_in, ewma, kernel, control_idx, kernel_len
 ):
-    # ewma_diff = (arr_in[2:] - ewma[:-1])
-    # ewma_diff = arr_in - dynamic_slice(ewma,(control_idx,),(1,))
-    # ewma_diff = dynamic_slice(arr_in,(2,),(int(control_idx),)) - ewma[control_idx]
-    # ewma_diff = (arr_in[2:] - ewma[:-1]) * (arr_in[2:] - ewma[1:])
-    # ewma_diff = (arr_in[1:] - ewma) * (arr_in[:-1] - ewma)
-    # a = jnp.convolve(ewma_diff ** 2, kernel, mode="full")
-    # a = jnp.zeros_like(ewma_diff)
-    # a = a.at[:control_idx].set(ewma_diff[:control_idx])
     a = dynamic_slice(arr_in, (control_idx,), (kernel_len,))
     ewma_diff = a - dynamic_slice(ewma, (control_idx,), (1,))
-    # ZERO PAD THE ARR IN, EWMA, ETC TO HAVE LEN(Kernel)
-    # LEADING ZEROS, THEN WE CAN ALWAYS DYNAMICALLy SLICE THE
-    # SAME SIZE ARRAY, AND DELETE THE CONV
-    #  NEED TO DO SOME SMART BOOLEAN INDEXING/SLICING, AS ALL THE ZERO_PAD ZEROS - EWMA SHOULD NOT BE COUNTED IN THE SUM!
-    # return ((a ** 2.0) * kernel)
     return jnp.nansum((ewma_diff**2.0) * kernel, 0)
 
 
@@ -360,20 +342,6 @@ def _jax_covariance_at_infinity_via_conv(arr_in, ewma, kernel, lamb):
     cov = a[: len(outer)] * (1 - lamb)
     return jnp.concatenate([jnp.zeros((1, n, n), dtype=jnp.float64), cov], axis=0)
 
-
-# _jax_covariance_at_infinity_via_conv = vmap(
-#     _jax_covariance_at_infinity_via_conv_1D, in_axes=[-1, -1, -1, -1], out_axes=-1
-# )
-
-# _jax_variance_at_infinity_via_sums_1D(jnp.pad(chunkwise_price_values[:,0],((len(kernel)-1,0)),constant_values=jnp.nan),ewma[:,0],kernel[:,0][::-1],1,len(kernel))
-
-# _jax_variance_at_infinity_via_sums_1D_ = Partial(_jax_variance_at_infinity_via_sums_1D,kernel_len=len(kernel))
-
-# _jax_covariance_at_infinity_via_conv_intermediate = jit(vmap(
-#     _jax_variance_at_infinity_via_conv_1D,
-#     in_axes=[None,None,0,0],
-#     out_axes=-1,
-# ))
 
 _jax_variance_at_infinity_via_conv = jit(
     vmap(
@@ -455,7 +423,6 @@ def _jax_gradients_at_infinity_via_scan(arr_in, lamb, carry_list_init=None):
 
     G_inf = 1.0 / (1.0 - lamb)
     saturated_b = lamb / ((1 - lamb) ** 3)
-    # scan_fn = Partial(_jax_gradient_scan_function, {'G_inf': G_inf, 'lamb': lamb})
     scan_fn = Partial(
         _jax_gradient_scan_function, G_inf=G_inf, lamb=lamb, saturated_b=saturated_b
     )
@@ -495,7 +462,6 @@ def _jax_gradients_at_infinity_via_scan_with_readout(arr_in, lamb):
 
     G_inf = 1.0 / (1.0 - lamb)
     saturated_b = lamb / ((1 - lamb) ** 3)
-    # scan_fn = Partial(_jax_gradient_scan_function, {'G_inf': G_inf, 'lamb': lamb})
     scan_fn = Partial(
         _jax_gradient_scan_function_with_readout,
         G_inf=G_inf,
@@ -540,7 +506,6 @@ def _jax_gradients_at_infinity_via_scan_with_alt_ewma(arr_in, lamb, alt_lamb):
     alt_G_inf = 1.0 / (1.0 - alt_lamb)
 
     saturated_b = lamb / ((1 - lamb) ** 3)
-    # scan_fn = Partial(_jax_gradient_scan_function, {'G_inf': G_inf, 'lamb': lamb})
     scan_fn = Partial(
         _jax_gradient_scan_function_with_alt_ewma,
         G_inf=G_inf,
@@ -580,7 +545,6 @@ def _jax_gradients_at_infinity_via_scan_alt1(arr_in, lamb):
 
     G_inf = 1.0 / (1.0 - lamb)
     saturated_b = lamb / ((1 - lamb) ** 3)
-    # scan_fn = Partial(_jax_gradient_scan_function, {'G_inf': G_inf, 'lamb': lamb})
     scan_fn = Partial(
         _jax_gradient_scan_function, G_inf=G_inf, lamb=lamb, saturated_b=saturated_b
     )
@@ -621,7 +585,6 @@ def _jax_gradients_at_infinity_via_scan_alt2(arr_in, lamb):
 
     G_inf = 1.0 / (1.0 - lamb)
     saturated_b = lamb / ((1 - lamb) ** 3)
-    # scan_fn = Partial(_jax_gradient_scan_function, {'G_inf': G_inf, 'lamb': lamb})
     scan_fn = Partial(
         _jax_gradient_scan_function, G_inf=G_inf, lamb=lamb, saturated_b=saturated_b
     )
@@ -644,8 +607,6 @@ def _jax_covariance_scan_function(carry_list, arr_in, G_inf, lamb):
     ewma = ewma + (arr_in - ewma) / G_inf
     diff_new = arr_in - ewma
     running_a = lamb * running_a + jnp.outer(diff_old, diff_new)
-    # if np.sum(np.abs(running_a) < 1e-10) > 0:
-    # running_a[np.abs(running_a) < 1e-10] = 0
     covariance = running_a / G_inf
     return [ewma, running_a], covariance
 
@@ -667,18 +628,9 @@ def _jax_covariance_matrix_at_infinity_via_scan(arr_in, lamb):
 
     """
     dim = arr_in.shape[1]
-    # covariance = np.empty(
-    #     (
-    #         n,
-    #         dim,
-    #         dim,
-    #     ),
-    #     dtype=float64,
-    # )
     G_inf = 1.0 / (1.0 - lamb)
     ewma = arr_in[0]
     running_a = jnp.eye(dim)
-    # , dtype=jnp.float64)
 
     scan_fn = Partial(_jax_covariance_scan_function, G_inf=G_inf, lamb=lamb)
 
