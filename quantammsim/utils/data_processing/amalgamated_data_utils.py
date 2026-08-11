@@ -21,7 +21,7 @@ def import_crypto_historical_data(token, root_path):
     )
 
     # Convert UTC datetime to unix timestamp (ms)
-    df["unix"] = df["datetime"].astype(np.int64) // 10**6
+    df["unix"] = df["datetime"].dt.as_unit("ms").astype(np.int64)
 
     # Add required columns to match existing format
     df["symbol"] = f"{token}/USD"
@@ -43,7 +43,7 @@ def forward_fill_ohlcv_data(df, token):
         end=pd.to_datetime(df.index.max(), unit="ms"),
         freq="1min",
     )
-    full_index = full_index.astype(np.int64) // 10**6
+    full_index = full_index.as_unit("ms").astype(np.int64)
     # Reindex with the complete minute-level index
     df = df.reindex(full_index)
 

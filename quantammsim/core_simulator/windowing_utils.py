@@ -128,14 +128,11 @@ def raw_trades_to_trade_array(raw_trades, start_date_string, end_date_string, to
         filled with zeros.
     """
     # Create a DataFrame with a continuous range of Unix timestamps
-    full_index = (
-        pd.date_range(
-            start=pd.to_datetime(start_date_string, format="%Y-%m-%d %H:%M:%S"),
-            end=pd.to_datetime(end_date_string, format="%Y-%m-%d %H:%M:%S"),
-            freq="T",
-        ).astype(int)
-        // 10**6
-    )
+    full_index = pd.date_range(
+        start=pd.to_datetime(start_date_string, format="%Y-%m-%d %H:%M:%S"),
+        end=pd.to_datetime(end_date_string, format="%Y-%m-%d %H:%M:%S"),
+        freq="T",
+    ).as_unit("ms").astype(np.int64)
     full_index_df = pd.DataFrame(
         index=full_index, columns=["token_in", "token_out", "amount_in"], data=0
     )
@@ -193,14 +190,11 @@ def raw_fee_like_amounts_to_fee_like_array(
         Timestamps without values are filled with zeros.
     """
     # Create a DataFrame with a continuous range of Unix timestamps
-    full_index = (
-        pd.date_range(
-            start=pd.to_datetime(start_date_string, format="%Y-%m-%d %H:%M:%S"),
-            end=pd.to_datetime(end_date_string, format="%Y-%m-%d %H:%M:%S"),
-            freq="min",
-        ).astype(int)
-        // 10**6
-    )[:-1]
+    full_index = pd.date_range(
+        start=pd.to_datetime(start_date_string, format="%Y-%m-%d %H:%M:%S"),
+        end=pd.to_datetime(end_date_string, format="%Y-%m-%d %H:%M:%S"),
+        freq="min",
+    ).as_unit("ms").astype(np.int64)[:-1]
     full_index_df = pd.DataFrame(
         index=full_index, 
         columns=names, 
@@ -226,7 +220,7 @@ def raw_fee_like_amounts_to_fee_like_array(
                     raise KeyError(f"raw_inputs missing required column: {name}")
 
             # Convert start_date_string to unix timestamp
-            start_unix = pd.to_datetime(start_date_string, format="%Y-%m-%d %H:%M:%S").value // 10**6
+            start_unix = int(pd.to_datetime(start_date_string, format="%Y-%m-%d %H:%M:%S").timestamp() * 1000)
 
             # Ensure unix values are valid
             valid_unix = pd.to_numeric(raw_inputs['unix'], errors='coerce')

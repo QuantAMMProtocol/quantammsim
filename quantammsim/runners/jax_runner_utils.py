@@ -1395,7 +1395,7 @@ def create_daily_unix_array(start_date_str, end_date_str):
     end_date = pd.to_datetime(end_date_str)
     # Create a date range ending the day before the end_date
     date_range = pd.date_range(start=start_date_str, end=end_date, freq="D")
-    daily_unix_values = date_range.view("int64") // 10**6
+    daily_unix_values = date_range.as_unit("ms").astype(np.int64)
     return daily_unix_values.tolist()
 
 
